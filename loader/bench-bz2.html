@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — _bz2 throughput</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  table { border-collapse: collapse; margin: 1rem 0; width: 100%; font-size: 13px; }
+  th, td { padding: 5px 10px; text-align: right; border-bottom: 1px solid #ddd; font-variant-numeric: tabular-nums; }
+  th { background: #f4f4f4; text-align: left; }
+  td:first-child { text-align: left; }
+  .mbps { background: #fff8e0; font-weight: 600; }
+  #log { white-space: pre-wrap; font-family: monospace; background: #f8f8f8; padding: 1rem; border-radius: 4px; max-height: 250px; overflow: auto; font-size: 12px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+
+<h1>Wasthon — <code>_bz2</code> throughput</h1>
+<p>Brython has no <code>_bz2</code> — we measure raw throughput on Lorem-Ipsum-like text and on bytes(range(256)) patterns.</p>
+
+<table id="results">
+  <thead><tr>
+    <th>Operation</th><th>Input size</th><th>Output size</th>
+    <th>Ratio</th><th>Time (ms)</th><th class="mbps">MB/s</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<h3>Log</h3>
+<pre id="log"></pre>
+
+<script type="module">
+const log = (...args) => {
+    const el = document.getElementById('log');
+    el.textContent += args.map(a => typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    el.scrollTop = el.scrollHeight;
+};
+window.__bench_log = log;
+window.__bench_render = (op, inLen, outLen, ms, mbps) => {
+    const tbody = document.querySelector('#results tbody');
+    const tr = document.createElement('tr');
+    const ratio = inLen > 0 ? (outLen / inLen).toFixed(3) : '—';
+    tr.innerHTML = `
+        <td>${op}</td>
+        <td>${inLen.toLocaleString()}</td>
+        <td>${outLen.toLocaleString()}</td>
+        <td>${ratio}</td>
+        <td>${ms.toFixed(2)}</td>
+        <td class="mbps">${mbps.toFixed(2)}</td>
+    `;
+    tbody.appendChild(tr);
+};
+
+try {
+    log('Loading _bz2…');
+    await wasthonLoad('_bz2', '../build/_bz2.mjs');
+    log('Loaded. Booting Brython…');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__bench_log
+render = window.__bench_render
+perf = window.performance.now
+
+import _bz2
+
+# Build test corpora
+LOREM = (b'Lorem ipsum dolor sit amet, consectetur adipiscing elit. '
+         b'Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. ')
+PATTERN = bytes(range(256))
+
+sizes = [
+    ('text 10 KB',   LOREM * (10 * 1024 // len(LOREM) + 1)),
+    ('text 100 KB',  LOREM * (100 * 1024 // len(LOREM) + 1)),
+    ('text 1 MB',    LOREM * (1024 * 1024 // len(LOREM) + 1)),
+    ('binary 10 KB', PATTERN * (10 * 1024 // 256)),
+    ('binary 1 MB',  PATTERN * (1024 * 1024 // 256)),
+]
+
+log('Running benchmarks (level=9)…\\n')
+for name, data in sizes:
+    data = data[:len(data) // 1024 * 1024]  # round to KB
+
+    # Compress
+    iters = 3 if len(data) > 500000 else 10
+    c = _bz2.BZ2Compressor(9)
+    c.compress(data); c.flush()  # warmup
+    t0 = perf()
+    compressed = None
+    for _ in range(iters):
+        c = _bz2.BZ2Compressor(9)
+        compressed = c.compress(data) + c.flush()
+    t1 = perf()
+    ms_per = (t1 - t0) / iters
+    mbps = (len(data) / (1024 * 1024)) / (ms_per / 1000) if ms_per > 0 else 0
+    log(f'  compress  {name:14}: {len(data):>8} → {len(compressed):>7}   {ms_per:6.2f}ms  {mbps:6.2f} MB/s')
+    render(f'compress {name}', len(data), len(compressed), ms_per, mbps)
+
+    # Decompress
+    d = _bz2.BZ2Decompressor()
+    d.decompress(compressed)  # warmup
+    t0 = perf()
+    restored = None
+    for _ in range(iters):
+        d = _bz2.BZ2Decompressor()
+        restored = d.decompress(compressed)
+    t1 = perf()
+    ms_per = (t1 - t0) / iters
+    mbps = (len(restored) / (1024 * 1024)) / (ms_per / 1000) if ms_per > 0 else 0
+    log(f'  decompress {name:14}: {len(compressed):>7} → {len(restored):>8}  {ms_per:6.2f}ms  {mbps:6.2f} MB/s')
+    render(f'decompress {name}', len(compressed), len(restored), ms_per, mbps)
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

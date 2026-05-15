@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — hashlib test (md5/sha1/sha2/sha3/blake2/hmac)</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>wasthon — md5 / sha1 / sha2 / sha3 / blake2 / hmac</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    const fmt = a => typeof a === 'string' ? a :
+        (typeof a === 'number' || typeof a === 'boolean') ? String(a) :
+        (() => { try { return JSON.stringify(a); } catch (_) { return Object.prototype.toString.call(a); }})();
+    document.getElementById('log').textContent += args.map(fmt).join(' ') + '\n';
+    console.log('[cascade]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading wasthon modules…');
+    await wasthonLoad('_md5',    '../build/_md5.mjs');
+    await wasthonLoad('_sha1',   '../build/_sha1.mjs');
+    await wasthonLoad('_sha2',   '../build/_sha2.mjs');
+    await wasthonLoad('_sha3',   '../build/_sha3.mjs');
+    await wasthonLoad('_blake2', '../build/_blake2.mjs');
+    await wasthonLoad('_hmac',   '../build/_hmac.mjs');
+    log('All loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _md5, _sha1, _sha2, _sha3, _blake2, _hmac
+msg = b'abc'
+
+# Reference vectors (from RFC 1321 / FIPS 180-4 / FIPS 202 / RFC 7693 / RFC 4231)
+expected = {
+    'md5':         '900150983cd24fb0d6963f7d28e17f72',
+    'sha1':        'a9993e364706816aba3e25717850c26c9cd0d89d',
+    'sha224':      '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7',
+    'sha256':      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    'sha384':      'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7',
+    'sha512':      'ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f',
+    'sha3_224':    'e642824c3f8cf24ad09234ee7d3c766fc9a3a5168d0c94ad73b46fdf',
+    'sha3_256':    '3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532',
+    'sha3_384':    'ec01498288516fc926459f58e2c6ad8df9b473cb0fc08c2596da7cf0e49be4b298d88cea927ac7f539f1edf228376d25',
+    'sha3_512':    'b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0',
+    'blake2b':     'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923',
+    'blake2s':     '508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982',
+}
+
+def chk(name, h):
+    got = h.hexdigest()
+    ok = got == expected[name]
+    log(f'  {name:10}  {got}  {"✓" if ok else "✗ FAIL ("+expected[name]+")"}')
+    return ok
+
+ok = True
+ok &= chk('md5',      _md5.md5(msg))
+ok &= chk('sha1',     _sha1.sha1(msg))
+ok &= chk('sha224',   _sha2.sha224(msg))
+ok &= chk('sha256',   _sha2.sha256(msg))
+ok &= chk('sha384',   _sha2.sha384(msg))
+ok &= chk('sha512',   _sha2.sha512(msg))
+ok &= chk('sha3_224', _sha3.sha3_224(msg))
+ok &= chk('sha3_256', _sha3.sha3_256(msg))
+ok &= chk('sha3_384', _sha3.sha3_384(msg))
+ok &= chk('sha3_512', _sha3.sha3_512(msg))
+ok &= chk('blake2b',  _blake2.blake2b(msg))
+ok &= chk('blake2s',  _blake2.blake2s(msg))
+
+# HMAC: RFC 4231 Test Case 1 — key = 20 × 0x0b, data = b'Hi There'
+hmac_key  = b'\\x0b' * 20
+hmac_data = b'Hi There'
+hmac_expected = 'b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7'
+hmac_got = _hmac.compute_sha2_256(hmac_key, hmac_data).hex()
+hmac_ok = hmac_got == hmac_expected
+log(f'  {"hmac/sha256":10}  {hmac_got}  {"✓" if hmac_ok else "✗ FAIL ("+hmac_expected+")"}')
+ok &= hmac_ok
+
+log('')
+log('=== ALL OK ===' if ok else '=== SOME FAILED ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED:', e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

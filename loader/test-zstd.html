@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — _zstd smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>Wasthon — _zstd smoke test</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[zstd]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading _zstd…');
+    await wasthonLoad('_zstd', '../build/_zstd.mjs');
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _zstd
+
+# Test 1: module attributes
+log('Test 1: module attributes')
+for name in ('ZstdCompressor', 'ZstdDecompressor', 'ZstdDict', 'ZstdError'):
+    log(f'  _zstd.{name}: {"OK" if hasattr(_zstd, name) else "MISSING"}')
+
+# Test 2: round-trip with default settings
+log('\\nTest 2: round-trip')
+try:
+    data = b'Hello, Wasthon Zstandard! ' * 100
+    log(f'  original size: {len(data)} bytes')
+    c = _zstd.ZstdCompressor()
+    compressed = c.compress(data) + c.flush()
+    log(f'  compressed size: {len(compressed)} bytes')
+    log(f'  ratio: {len(compressed)/len(data):.3f}')
+    log(f'  first 4 bytes: {compressed[:4].hex()}')
+    d = _zstd.ZstdDecompressor()
+    restored = d.decompress(compressed)
+    log(f'  decompressed size: {len(restored)} bytes')
+    log(f'  match: {"OK" if restored == data else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 3: Zstd magic bytes (0x28 0xb5 0x2f 0xfd)
+log('\\nTest 3: Zstd magic bytes')
+try:
+    c = _zstd.ZstdCompressor()
+    out = c.compress(b'x') + c.flush()
+    magic = bytes([0x28, 0xb5, 0x2f, 0xfd])
+    log(f'  first 4 bytes: {out[:4].hex()}')
+    log(f'  matches Zstd magic 28b52ffd: {"OK" if out[:4] == magic else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 4: streamed
+log('\\nTest 4: streamed decompression')
+try:
+    data = bytes(range(256)) * 200  # 51200 bytes
+    c = _zstd.ZstdCompressor()
+    compressed = c.compress(data) + c.flush()
+    log(f'  compressed {len(data)} → {len(compressed)} bytes')
+    d = _zstd.ZstdDecompressor()
+    chunks = []
+    chunk_size = 100
+    for i in range(0, len(compressed), chunk_size):
+        chunks.append(d.decompress(compressed[i:i+chunk_size]))
+    restored = b''.join(chunks)
+    log(f'  decompressed in {len(chunks)} chunks → {len(restored)} bytes')
+    log(f'  match: {"OK" if restored == data else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 5: different compression levels
+log('\\nTest 5: levels 1, 3, 9, 19')
+try:
+    data = b'The quick brown fox jumps over the lazy dog. ' * 100
+    for level in (1, 3, 9, 19):
+        c = _zstd.ZstdCompressor(level=level)
+        out = c.compress(data) + c.flush()
+        log(f'  level {level}: {len(data)} → {len(out)} bytes')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

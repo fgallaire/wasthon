@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — _sre smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>wasthon — _sre smoke test</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    const fmt = a => typeof a === 'string' ? a :
+        (typeof a === 'number' || typeof a === 'boolean') ? String(a) :
+        (() => { try { return JSON.stringify(a); } catch (_) { return Object.prototype.toString.call(a); }})();
+    document.getElementById('log').textContent += args.map(fmt).join(' ') + '\n';
+    console.log('[sre]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading wasthon _sre…');
+    // _sre is loaded under '_wasthon_sre' so Brython's native _sre (if any)
+    // remains usable for comparison. The C-side init symbol is PyInit__sre.
+    await wasthonLoad('_wasthon_sre', '../build/_sre.mjs', { initName: '_sre' });
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _wasthon_sre as wsre
+
+log('_sre module attrs:')
+log('  ' + ', '.join(a for a in dir(wsre) if not a.startswith('_')))
+
+# Probe some module-level constants/methods that re.py expects.
+log('')
+log('Module-level functions present:')
+for name in ['compile', 'ascii_tolower', 'ascii_iscased',
+             'unicode_tolower', 'unicode_iscased',
+             'MAGIC', 'MAXREPEAT', 'MAXGROUPS', 'CODESIZE']:
+    has = hasattr(wsre, name)
+    log(f'  {name:20}  {"✓ present" if has else "✗ missing"}')
+
+# Try the simpler attrs first.
+try:
+    log('')
+    log(f'_sre.MAGIC      = {wsre.MAGIC}')
+    log(f'_sre.MAXREPEAT  = {wsre.MAXREPEAT}')
+    log(f'_sre.CODESIZE   = {wsre.CODESIZE}')
+except Exception as e:
+    log(f'attr access FAIL: {e}')
+
+# Char classifiers — should round-trip through unicodectype.
+try:
+    log('')
+    log(f'_sre.ascii_tolower(ord("A"))      = {wsre.ascii_tolower(ord("A"))}  (expect 97)')
+    log(f'_sre.unicode_tolower(ord("É"))    = {wsre.unicode_tolower(ord("É"))}  (expect {ord("é")})')
+    log(f'_sre.unicode_iscased(ord("A"))    = {wsre.unicode_iscased(ord("A"))}  (expect True)')
+    log(f'_sre.unicode_iscased(ord("1"))    = {wsre.unicode_iscased(ord("1"))}  (expect False)')
+except Exception as e:
+    log(f'classifier FAIL: {e}')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED to bootstrap:', e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

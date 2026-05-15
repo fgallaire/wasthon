@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — pyexpat smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>Wasthon — pyexpat smoke test</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[pyexpat]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading pyexpat…');
+    await wasthonLoad('pyexpat', '../build/pyexpat.mjs');
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import pyexpat
+
+# Test 1: module attributes
+log('Test 1: module attributes')
+for name in ('ParserCreate', 'ErrorString', 'EXPAT_VERSION'):
+    log(f'  pyexpat.{name}: {"OK" if hasattr(pyexpat, name) else "MISSING"}')
+
+# Test 2: create parser and parse simple XML
+log('\\nTest 2: parse simple XML')
+try:
+    events = []
+    def start(name, attrs):
+        events.append(('start', name, dict(attrs)))
+    def end(name):
+        events.append(('end', name))
+    def data(text):
+        if text.strip():
+            events.append(('data', text))
+
+    p = pyexpat.ParserCreate()
+    p.StartElementHandler = start
+    p.EndElementHandler = end
+    p.CharacterDataHandler = data
+
+    xml = '<root><a id="1">hello</a><b/></root>'
+    p.Parse(xml, True)
+    log(f'  events = {events}')
+    log(f'  got {len(events)} events')
+    empty = {}
+    first_ok = events[0] == ("start", "root", empty)
+    last_ok = events[-1] == ("end", "root")
+    data_ok = ("data", "hello") in events
+    log(f'  has start root: {"OK" if first_ok else "FAIL"}')
+    log(f'  has data hello: {"OK" if data_ok else "FAIL"}')
+    log(f'  has end root: {"OK" if last_ok else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 3: attributes
+log('\\nTest 3: attributes')
+try:
+    starts = []
+    def st(n, a):
+        starts.append((n, dict(a)))
+    p = pyexpat.ParserCreate()
+    p.StartElementHandler = st
+    p.Parse('<item name="alice" age="30" city="paris"/>', True)
+    log(f'  starts = {starts}')
+    ok = (len(starts) == 1 and starts[0][1].get('name') == 'alice')
+    log(f'  match: {"OK" if ok else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 4: nested elements + UTF-8 text
+log('\\nTest 4: UTF-8 text content')
+try:
+    captured = []
+    def cap(text):
+        captured.append(text)
+    p = pyexpat.ParserCreate()
+    p.CharacterDataHandler = cap
+    p.Parse('<root>caf\\xc3\\xa9 ☕</root>'.encode('utf-8') if False else '<root>café ☕</root>', True)
+    log(f'  captured = {captured}')
+    full = ''.join(captured)
+    log(f'  full text = {full!r}')
+    ok = ('café' in full or 'caf\\xe9' in full)
+    log(f'  utf8 ok: {"OK" if "café" in full else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 5: large-ish XML parse
+log('\\nTest 5: parse 1000 items')
+try:
+    items = []
+    def st(n, a):
+        if n == 'item':
+            items.append(a.get('id'))
+    rows = ''.join(f'<item id="{i}"/>' for i in range(1000))
+    xml = f'<root>{rows}</root>'
+    p = pyexpat.ParserCreate()
+    p.StartElementHandler = st
+    p.Parse(xml, True)
+    log(f'  parsed {len(items)} items')
+    log(f'  ok: {"OK" if len(items) == 1000 and items[0] == "0" and items[-1] == "999" else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

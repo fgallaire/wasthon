@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — cmath smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>Wasthon — cmath smoke test</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[cmath]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading cmath…');
+    await wasthonLoad('_wasthon_cmath', '../build/cmath.mjs', { initName: 'cmath' });
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _wasthon_cmath as cm
+
+# Test 1: constants
+log('Test 1: constants')
+log(f'  pi  = {cm.pi}')
+log(f'  e   = {cm.e}')
+log(f'  inf = {cm.inf}')
+log(f'  nan = {cm.nan}')
+
+# Test 2: sqrt of negative real → imaginary
+log('\\nTest 2: sqrt(-1) = j')
+try:
+    r = cm.sqrt(-1)
+    log(f'  sqrt(-1) = {r}')
+    log(f'  real={r.real}, imag={r.imag}')
+    log(f'  match: {"OK" if abs(r.imag - 1.0) < 1e-10 and abs(r.real) < 1e-10 else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 3: exp(i*pi) = -1 (Euler's identity)
+log('\\nTest 3: exp(i*pi) = -1')
+try:
+    z = complex(0, cm.pi)
+    r = cm.exp(z)
+    log(f'  exp(i*pi) = {r}')
+    log(f'  match: {"OK" if abs(r.real + 1) < 1e-10 and abs(r.imag) < 1e-10 else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 4: log + exp round-trip
+log('\\nTest 4: log(exp(z)) = z')
+try:
+    z = complex(1.5, 2.5)
+    r = cm.log(cm.exp(z))
+    log(f'  z = {z}, log(exp(z)) = {r}')
+    log(f'  match: {"OK" if abs(r.real - 1.5) < 1e-10 and abs(r.imag - 2.5) < 1e-10 else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 5: polar / rect round-trip
+log('\\nTest 5: polar / rect round-trip')
+try:
+    z = complex(3, 4)
+    r, phi = cm.polar(z)
+    log(f'  polar(3+4j) = (r={r}, phi={phi})')
+    log(f'  expected r=5: {"OK" if abs(r - 5.0) < 1e-10 else "FAIL"}')
+    z2 = cm.rect(r, phi)
+    log(f'  rect back = {z2}')
+    log(f'  round-trip match: {"OK" if abs(z2.real - 3) < 1e-10 and abs(z2.imag - 4) < 1e-10 else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 6: phase
+log('\\nTest 6: phase')
+try:
+    log(f'  phase(1+0j) = {cm.phase(complex(1, 0))} (expect 0)')
+    log(f'  phase(0+1j) = {cm.phase(complex(0, 1))} (expect pi/2 = {cm.pi/2})')
+    log(f'  phase(-1+0j) = {cm.phase(complex(-1, 0))} (expect pi = {cm.pi})')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 7: trig
+log('\\nTest 7: sin / cos')
+try:
+    z = complex(1, 1)
+    s = cm.sin(z)
+    c = cm.cos(z)
+    log(f'  sin(1+j) = {s}')
+    log(f'  cos(1+j) = {c}')
+    # sin^2 + cos^2 = 1
+    one = s*s + c*c
+    log(f'  sin²+cos² = {one}')
+    log(f'  identity match: {"OK" if abs(one.real - 1) < 1e-10 and abs(one.imag) < 1e-10 else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 8: predicates
+log('\\nTest 8: isnan / isinf / isfinite')
+try:
+    log(f'  isnan(complex(nan, 0)) = {cm.isnan(complex(cm.nan, 0))}')
+    log(f'  isinf(complex(inf, 0)) = {cm.isinf(complex(cm.inf, 0))}')
+    log(f'  isfinite(1+2j) = {cm.isfinite(complex(1, 2))}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — pyexpat throughput</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  table { border-collapse: collapse; margin: 1rem 0; width: 100%; font-size: 13px; }
+  th, td { padding: 5px 10px; text-align: right; border-bottom: 1px solid #ddd; font-variant-numeric: tabular-nums; }
+  th { background: #f4f4f4; text-align: left; }
+  td:first-child { text-align: left; }
+  .mbps { background: #fff8e0; font-weight: 600; }
+  .note { background: #fef8c0; padding: 0.6rem; border-radius: 4px; font-size: 13px; }
+  #log { white-space: pre-wrap; font-family: monospace; background: #f8f8f8; padding: 1rem; border-radius: 4px; max-height: 300px; overflow: auto; font-size: 12px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+
+<h1>Wasthon — <code>pyexpat</code> throughput</h1>
+<p class="note"><strong>Note:</strong> Brython's own <code>pyexpat</code>, <code>xml.etree</code>,
+and <code>xml.dom</code> modules are missing or broken — there's no working XML parser to compare
+against. We measure absolute throughput on libexpat 2.6.4 in WASM with various callback patterns.</p>
+
+<table id="results">
+  <thead><tr>
+    <th>Operation</th>
+    <th>Doc size</th>
+    <th>Time (ms)</th>
+    <th class="mbps">Elements/sec</th>
+    <th class="mbps">KB/sec</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<h3>Log</h3>
+<pre id="log"></pre>
+
+<script type="module">
+const log = (...args) => {
+    const el = document.getElementById('log');
+    el.textContent += args.map(a => typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    el.scrollTop = el.scrollHeight;
+};
+window.__bench_log = log;
+window.__bench_render = (op, docKB, ms, elementsPerSec, kbPerSec) => {
+    const tbody = document.querySelector('#results tbody');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+        <td>${op}</td>
+        <td>${docKB.toFixed(1)} KB</td>
+        <td>${ms.toFixed(2)}</td>
+        <td class="mbps">${Math.round(elementsPerSec).toLocaleString()}</td>
+        <td class="mbps">${Math.round(kbPerSec).toLocaleString()}</td>
+    `;
+    tbody.appendChild(tr);
+};
+
+try {
+    log('Loading wasthon pyexpat…');
+    await wasthonLoad('_wasthon_pyexpat', '../build/pyexpat.mjs', { initName: 'pyexpat' });
+    log('Loaded. Booting Brython…');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__bench_log
+render = window.__bench_render
+perf = window.performance.now
+
+import _wasthon_pyexpat as wexp
+
+def build_doc(n_items):
+    rows = ''.join(f'<item id="{i}" name="row{i}"><value>{i*7}</value></item>' for i in range(n_items))
+    return f'<root>{rows}</root>'
+
+DOCS = {
+    100:  build_doc(100),
+    1000: build_doc(1000),
+    5000: build_doc(5000),
+}
+
+def parse_no_handlers(doc):
+    p = wexp.ParserCreate()
+    p.Parse(doc, True)
+
+def parse_count_starts(doc):
+    n = [0]
+    def st(name, attrs):
+        n[0] += 1
+    p = wexp.ParserCreate()
+    p.StartElementHandler = st
+    p.Parse(doc, True)
+    return n[0]
+
+def parse_full_handlers(doc):
+    n_start = [0]; n_end = [0]; n_data = [0]
+    def st(name, attrs):
+        n_start[0] += 1
+    def en(name):
+        n_end[0] += 1
+    def cd(text):
+        n_data[0] += 1
+    p = wexp.ParserCreate()
+    p.StartElementHandler = st
+    p.EndElementHandler = en
+    p.CharacterDataHandler = cd
+    p.Parse(doc, True)
+    return (n_start[0], n_end[0], n_data[0])
+
+def time_loop(fn, iters):
+    fn(); fn()
+    t0 = perf()
+    for _ in range(iters):
+        fn()
+    t1 = perf()
+    return (t1 - t0) / iters
+
+log('Running benchmarks…\\n')
+for n_items, doc in DOCS.items():
+    docKB = len(doc) / 1024
+    iters = 20 if n_items <= 1000 else 5
+
+    # Each item contains 1 <value> child = 2 elements + 1 root = 2*n+1 elements total
+    # Plus characterdata for each <value>.
+    elements_per_parse = 2 * n_items + 1
+
+    for label, fn in [
+        ("parse only (no handlers)", parse_no_handlers),
+        ("parse + count starts",     parse_count_starts),
+        ("parse + start/end/data",   parse_full_handlers),
+    ]:
+        ms = time_loop(lambda: fn(doc), iters)
+        eps = elements_per_parse / (ms / 1000) if ms > 0 else 0
+        kbs = docKB / (ms / 1000) if ms > 0 else 0
+        log(f'  {label:30} {n_items:5} items   {ms:7.2f}ms   {eps:>10,.0f} el/s   {kbs:>7,.0f} KB/s')
+        render(f'{label} ({n_items} items)', docKB, ms, eps, kbs)
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

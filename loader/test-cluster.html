@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — cluster test (_random / _struct / unicodedata)</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>wasthon — cluster test (<code>_random</code> / <code>_struct</code> / <code>unicodedata</code>)</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[cluster-test]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading wasthon modules…');
+    await wasthonLoad('_wasthon_random',      '../build/_random.mjs',      { initName: '_random' });
+    await wasthonLoad('_wasthon_struct',      '../build/_struct.mjs',      { initName: '_struct' });
+    await wasthonLoad('_wasthon_unicodedata', '../build/_unicodedata.mjs', { initName: 'unicodedata' });
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _wasthon_random as wrandom
+import _wasthon_struct as wstruct
+import _wasthon_unicodedata as wuni
+
+ok_all = True
+def check(name, fn):
+    """Run fn() in a try/except so one bad check doesn't kill the whole page.
+    fn() must return (cond, detail_string)."""
+    global ok_all
+    try:
+        cond, detail = fn()
+    except Exception as e:
+        cond = False
+        detail = f'{type(e).__name__}: {e}'
+    mark = '✓' if cond else '✗'
+    log(f'  {mark}  {name}{("  -- " + detail) if detail and not cond else ""}')
+    if not cond: ok_all = False
+
+# --- _random ---
+log('=== _random ===')
+def _t_random_inrange():
+    r = wrandom.Random(42)
+    v1, v2 = r.random(), r.random()
+    return (0.0 <= v1 < 1.0 and 0.0 <= v2 < 1.0, f'got {v1}, {v2}')
+check('Random(42).random() in [0, 1)', _t_random_inrange)
+
+def _t_random_differ():
+    r = wrandom.Random(42)
+    return (r.random() != r.random(), '')
+check('two random() calls differ', _t_random_differ)
+
+def _t_random_seed():
+    a, b = wrandom.Random(42), wrandom.Random(42)
+    return (a.random() == b.random() and a.random() == b.random(), '')
+check('same seed → same sequence', _t_random_seed)
+
+def _t_getrandbits():
+    bits = wrandom.Random(42).getrandbits(32)
+    return (0 <= bits < (1 << 32), f'got {bits}')
+check('getrandbits(32) fits in 32 bits', _t_getrandbits)
+
+# --- _struct ---
+log('\\n=== _struct ===')
+check("calcsize('>I') == 4",  lambda: (wstruct.calcsize('>I')   == 4,  ''))
+check("calcsize('<10I') == 40", lambda: (wstruct.calcsize('<10I') == 40, ''))
+check("calcsize('>d') == 8",  lambda: (wstruct.calcsize('>d')   == 8,  ''))
+
+def _t_pack_I():
+    p = wstruct.pack('>I', 0x12345678)
+    return (p == b'\\x12\\x34\\x56\\x78', f'got {p}')
+check("pack '>I' bytes", _t_pack_I)
+
+check("unpack round-trip '>I'",
+      lambda: (wstruct.unpack('>I', wstruct.pack('>I', 0x12345678)) == (0x12345678,), ''))
+
+def _t_pack_d():
+    p = wstruct.pack('<d', 3.14159)
+    v = wstruct.unpack('<d', p)[0]
+    return (abs(v - 3.14159) < 1e-10, f'got {v}')
+check("pack/unpack '<d' round-trip", _t_pack_d)
+
+check("multi-format pack/unpack",
+      lambda: (wstruct.unpack('>Bif', wstruct.pack('>Bif', 0xAB, -42, 1.5)) == (0xAB, -42, 1.5), ''))
+
+# --- unicodedata ---
+log('\\n=== unicodedata ===')
+check("name('A') == 'LATIN CAPITAL LETTER A'",
+      lambda: (wuni.name('A') == 'LATIN CAPITAL LETTER A', ''))
+check("name('é')",
+      lambda: (wuni.name('é') == 'LATIN SMALL LETTER E WITH ACUTE', ''))
+check("category('1') == 'Nd'", lambda: (wuni.category('1') == 'Nd', ''))
+check("category(' ') == 'Zs'", lambda: (wuni.category(' ') == 'Zs', ''))
+
+# Normalization round-trip: é (precomposed) → NFD → 2 codepoints, NFC → 1
+def _t_nfd():
+    nfd = wuni.normalize('NFD', '\\u00e9')
+    return (len(nfd) == 2, f'len={len(nfd)}')
+check("normalize NFD splits é into 2 codepoints", _t_nfd)
+
+check("normalize NFC recombines to é",
+      lambda: (wuni.normalize('NFC', wuni.normalize('NFD', '\\u00e9')) == '\\u00e9', ''))
+
+check("numeric('½') == 0.5", lambda: (wuni.numeric('½') == 0.5, ''))
+
+log('\\n=== ALL OK ===' if ok_all else '\\n=== SOME FAILED ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

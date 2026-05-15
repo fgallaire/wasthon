@@ -1,0 +1,5 @@
+# Downloaded upstream source trees (CPython, libexpat, liblzma, libzstd, bzip2)
+external/
+
+# Per-module build artifacts: copied sources, .o, .mjs, .wasm
+build/

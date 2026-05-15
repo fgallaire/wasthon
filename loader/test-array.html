@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — array smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>Wasthon — array smoke test</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[array]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading array…');
+    await wasthonLoad('array', '../build/array.mjs');
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import array
+
+# Test 1: module attributes
+log('Test 1: module attributes')
+for name in ('array', 'typecodes'):
+    log(f'  array.{name}: {"OK" if hasattr(array, name) else "MISSING"}')
+
+# Test 2: construct array of ints
+log('\\nTest 2: array of signed ints')
+try:
+    a = array.array('i', [1, 2, 3, 4, 5])
+    log(f'  array = {a}')
+    log(f'  len = {len(a)}')
+    log(f'  itemsize = {a.itemsize}')
+    log(f'  typecode = {a.typecode}')
+    log(f'  match: {"OK" if list(a) == [1,2,3,4,5] else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 3: doubles
+log('\\nTest 3: array of doubles')
+try:
+    a = array.array('d', [1.5, 2.5, 3.5])
+    log(f'  array = {a}')
+    log(f'  itemsize = {a.itemsize}')
+    log(f'  match: {"OK" if list(a) == [1.5, 2.5, 3.5] else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 4: bytes round-trip
+log('\\nTest 4: tobytes() + frombytes()')
+try:
+    a = array.array('i', [10, 20, 30, 40])
+    raw = a.tobytes()
+    log(f'  tobytes: {len(raw)} bytes')
+    b = array.array('i')
+    b.frombytes(raw)
+    log(f'  reparsed = {list(b)}')
+    log(f'  match: {"OK" if list(b) == list(a) else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 5: append / extend
+log('\\nTest 5: append + extend')
+try:
+    a = array.array('h', [1, 2])
+    a.append(3)
+    a.extend([4, 5, 6])
+    log(f'  array = {list(a)}')
+    log(f'  match: {"OK" if list(a) == [1,2,3,4,5,6] else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 6: all typecodes
+log('\\nTest 6: every typecode')
+for tc, sample in [('b', [-1, 0, 127]), ('B', [0, 128, 255]),
+                   ('h', [-1000, 1000]), ('H', [0, 60000]),
+                   ('i', [-100000, 100000]), ('I', [0, 200000]),
+                   ('l', [-100000, 100000]), ('L', [0, 200000]),
+                   ('q', [-1000000, 1000000]), ('Q', [0, 2000000]),
+                   ('f', [1.5, -2.5]), ('d', [3.14, -2.71])]:
+    try:
+        a = array.array(tc, sample)
+        out = list(a)
+        ok = out == sample or all(abs(o-s) < 1e-3 for o, s in zip(out, sample))
+        log(f'  {tc!r}: {"OK" if ok else "FAIL"} (itemsize={a.itemsize}, out={out})')
+    except Exception as e:
+        log(f'  {tc!r}: FAIL {type(e).__name__}: {e}')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

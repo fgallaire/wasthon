@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — bench _decimal vs Brython's pure-Python decimal</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  table { border-collapse: collapse; margin: 1rem 0; width: 100%; font-size: 13px; }
+  th, td { padding: 5px 10px; text-align: right; border-bottom: 1px solid #ddd; font-variant-numeric: tabular-nums; }
+  th { background: #f4f4f4; text-align: left; }
+  td:first-child { text-align: left; }
+  td.match { color: #0a0; }
+  td.miss  { color: #a00; }
+  .speedup { background: #fff8e0; font-weight: 600; }
+  #log { white-space: pre-wrap; font-family: monospace; background: #f8f8f8; padding: 1rem; border-radius: 4px; max-height: 300px; overflow: auto; font-size: 12px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+
+<h1>wasthon — _decimal vs Brython's pure-Python <code>decimal</code></h1>
+<p>Comparing CPython's <code>Modules/_decimal/_decimal.c</code> + libmpdec via WASM
+against Brython's <code>Lib/decimal.py</code> (pure-Python <code>_pydecimal</code>).</p>
+
+<table id="results">
+  <thead><tr>
+    <th>Operation</th><th>wasthon ms/call</th><th>Brython ms/call</th>
+    <th class="speedup">Speedup</th><th>Result (wasthon / Brython)</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<h3>Log</h3>
+<pre id="log"></pre>
+
+<script type="module">
+const log = (...args) => {
+    const el = document.getElementById('log');
+    el.textContent += args.map(a => typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    el.scrollTop = el.scrollHeight;
+};
+window.__bench_log = log;
+window.__bench_render = (op, wMs, bMs, wRes, bRes) => {
+    const tbody = document.querySelector('#results tbody');
+    const tr = document.createElement('tr');
+    // A timing of 0 means either (a) sub-millisecond too fast for perf.now
+    // resolution, or (b) the call raised an exception. Distinguish via
+    // wRes: '?' means the Python side set wout=None (exception path),
+    // anything else means a real value was returned.
+    const wFail = (wMs === 0 && wRes === '?');
+    const bFail = (bMs === 0 && bRes === '?');
+    const wCell = wFail ? 'FAIL' : (wMs === 0 ? '< 0.01' : wMs.toFixed(4));
+    const bCell = bFail ? 'FAIL' : (bMs === 0 ? '< 0.01' : bMs.toFixed(4));
+    const speedup = (bMs > 0 && wMs > 0) ? (bMs / wMs).toFixed(2) + '×' : '—';
+    const match = (wRes === bRes);
+    tr.innerHTML = `
+        <td>${op}</td>
+        <td>${wCell}</td>
+        <td>${bCell}</td>
+        <td class="speedup">${speedup}</td>
+        <td class="${match ? 'match' : 'miss'}">${wRes} / ${bRes}</td>
+    `;
+    tbody.appendChild(tr);
+};
+
+try {
+    log('Loading wasthon _decimal…');
+    await wasthonLoad('_wasthon_decimal', '../build/_decimal.mjs', { initName: '_decimal' });
+    log('Loaded. Booting Brython…');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__bench_log
+render = window.__bench_render
+perf = window.performance.now
+
+import _wasthon_decimal as wdec
+import decimal as bdec  # Brython's pure-Python _pydecimal
+
+WDec = wdec.Decimal
+BDec = bdec.Decimal
+
+def time_loop(fn, iters):
+    fn(); fn()  # warm-up
+    t0 = perf()
+    out = None
+    for _ in range(iters):
+        out = fn()
+    t1 = perf()
+    return (t1 - t0) / iters, out
+
+cases = [
+    # (label, wasthon_fn, brython_fn, iters)
+    ("Decimal('1.234567890')           x1",
+        lambda: WDec('1.234567890'),
+        lambda: BDec('1.234567890'),
+        100),
+
+    ("Decimal(42)                      x1",
+        lambda: WDec(42),
+        lambda: BDec(42),
+        100),
+
+    ("Decimal(12345678901234567890)    x1",
+        lambda: WDec(12345678901234567890),
+        lambda: BDec(12345678901234567890),
+        100),
+
+    ("Decimal('0.1') + Decimal('0.2')  x1",
+        lambda: WDec('0.1') + WDec('0.2'),
+        lambda: BDec('0.1') + BDec('0.2'),
+        100),
+
+    ("Decimal('1.1') * Decimal('2.2')  x1",
+        lambda: WDec('1.1') * WDec('2.2'),
+        lambda: BDec('1.1') * BDec('2.2'),
+        100),
+
+    ("Decimal('1.5') ** 10             x1",
+        lambda: WDec('1.5') ** 10,
+        lambda: BDec('1.5') ** 10,
+        50),
+
+    ("sum of 100 Decimal('0.01')",
+        lambda: sum((WDec('0.01') for _ in range(100)), WDec(0)),
+        lambda: sum((BDec('0.01') for _ in range(100)), BDec(0)),
+        20),
+
+    ("Decimal(2**128)                  x1",
+        lambda: WDec(2**128),
+        lambda: BDec(2**128),
+        50),
+]
+
+log('Running benchmarks…\\n')
+for name, wfn, bfn, iters in cases:
+    try:
+        wms, wout = time_loop(wfn, iters)
+    except Exception as e:
+        log(f'  wasthon {name} FAIL: {type(e).__name__}: {e}')
+        wms, wout = 0, None
+    try:
+        bms, bout = time_loop(bfn, iters)
+    except Exception as e:
+        log(f'  brython {name} FAIL: {type(e).__name__}: {e}')
+        bms, bout = 0, None
+    ws = str(wout) if wout is not None else '?'
+    bs = str(bout) if bout is not None else '?'
+    log(f'  {name:42}  wasthon={wms:.4f}  brython={bms:.4f}  {ws} / {bs}')
+    render(name, wms, bms, ws, bs)
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED to bootstrap: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

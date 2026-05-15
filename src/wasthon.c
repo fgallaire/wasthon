@@ -1,0 +1,509 @@
+/*
+ * Copyright (C) 2026 Florent Gallaire <fgallaire@gmail.com>
+ *
+ * BSD 3-Clause License
+ *
+ * wasthon.c — definitions for the extern variables declared in wasthon.h
+ *
+ * The bridge treats `Py_None`, `PyExc_TypeError`, `PyType_Type`, etc. as
+ * regular C extern variables (matching CPython source semantics, so that
+ * unmodified `sha2module.c` etc. compile and link against this header).
+ *
+ * At runtime, before any of the ported modules are used, the host
+ * (Brython side) must call `wasthon_init()`. That populates each
+ * extern variable with a handle obtained from JS via the `wasthon_get_*`
+ * accessors implemented in wasthon.js.
+ */
+
+#include "wasthon.h"
+
+/* Weak fallback implementations of _PyUnicode_To{Decimal,Digit,Numeric}.
+ * The real CPython versions (in Objects/unicodectype.c) are only linked
+ * into the `unicodedata` module's build — when present, the linker picks
+ * them over these weak stubs. For other modules (e.g. `_decimal`) that
+ * reference the macros via wasthon.h but don't link the full Unicode
+ * tables, these stubs keep the linker happy with an ASCII-only behaviour.
+ * Anything outside ASCII returns -1 / -1.0 ("not a digit / not numeric"),
+ * which is the safe answer for modules whose code paths don't depend on
+ * Unicode digit recognition beyond ASCII. */
+__attribute__((weak)) int _PyUnicode_ToDecimalDigit(unsigned int ch) {
+    if (ch >= '0' && ch <= '9') return (int)(ch - '0');
+    return -1;
+}
+__attribute__((weak)) int _PyUnicode_ToDigit(unsigned int ch) {
+    if (ch >= '0' && ch <= '9') return (int)(ch - '0');
+    return -1;
+}
+__attribute__((weak)) double _PyUnicode_ToNumeric(unsigned int ch) {
+    if (ch >= '0' && ch <= '9') return (double)(ch - '0');
+    return -1.0;
+}
+
+/* ---- Built-in type sentinels ---- */
+/* Built-in type singletons: struct storage in BSS. Fields populated
+ * by wasthon_init() from JS-side helpers. The address of each
+ * struct is registered in the JS handle table at init so that
+ * `(PyObject *)&PyTuple_Type` unwraps to Brython's `tuple` class. */
+PyTypeObject PyType_Type    = {0};
+PyTypeObject PyTuple_Type   = {0};
+PyTypeObject PyDict_Type    = {0};
+PyTypeObject PyList_Type    = {0};
+PyTypeObject PyLong_Type    = {0};
+PyTypeObject PyFloat_Type   = {0};
+PyTypeObject PyUnicode_Type = {0};
+PyTypeObject PyBytes_Type   = {0};
+PyTypeObject PyBool_Type    = {0};
+
+/* ---- Exception class references ---- */
+PyObject *PyExc_TypeError       = (PyObject *)0;
+PyObject *PyExc_ValueError      = (PyObject *)0;
+PyObject *PyExc_OverflowError   = (PyObject *)0;
+PyObject *PyExc_RuntimeError    = (PyObject *)0;
+PyObject *PyExc_MemoryError     = (PyObject *)0;
+PyObject *PyExc_SystemError     = (PyObject *)0;
+PyObject *PyExc_IndexError      = (PyObject *)0;
+PyObject *PyExc_RecursionError  = (PyObject *)0;
+PyObject *PyExc_EOFError        = (PyObject *)0;
+PyObject *PyExc_StopIteration   = (PyObject *)0;
+PyObject *PyExc_BufferError     = (PyObject *)0;
+PyObject *PyExc_KeyError              = (PyObject *)0;
+PyObject *PyExc_LookupError           = (PyObject *)0;
+PyObject *PyExc_NotImplementedError   = (PyObject *)0;
+PyObject *PyExc_UnicodeError          = (PyObject *)0;
+PyObject *PyExc_UnicodeDecodeError    = (PyObject *)0;
+PyObject *PyExc_UnicodeEncodeError    = (PyObject *)0;
+PyObject *PyExc_ImportError           = (PyObject *)0;
+PyObject *PyExc_Exception             = (PyObject *)0;
+PyObject *PyExc_OSError               = (PyObject *)0;
+PyObject *PyExc_AttributeError        = (PyObject *)0;
+PyObject *PyExc_ArithmeticError       = (PyObject *)0;
+PyObject *PyExc_DeprecationWarning    = (PyObject *)0;
+PyObject *PyExc_ZeroDivisionError     = (PyObject *)0;
+
+/* ---- Singleton object handles ---- */
+PyObject *Py_None  = (PyObject *)0;
+PyObject *Py_True  = (PyObject *)0;
+PyObject *Py_False = (PyObject *)0;
+PyObject *Py_NotImplemented = (PyObject *)0;
+
+/* ---- Accessors implemented JS-side in wasthon.js ---- */
+extern PyObject *wasthon_get_PyExc_TypeError(void);
+extern PyObject *wasthon_get_PyExc_ValueError(void);
+extern PyObject *wasthon_get_PyExc_OverflowError(void);
+extern PyObject *wasthon_get_PyExc_RuntimeError(void);
+extern PyObject *wasthon_get_PyExc_MemoryError(void);
+extern PyObject *wasthon_get_PyExc_SystemError(void);
+extern PyObject *wasthon_get_PyExc_IndexError(void);
+extern PyObject *wasthon_get_PyExc_RecursionError(void);
+extern PyObject *wasthon_get_PyExc_EOFError(void);
+extern PyObject *wasthon_get_PyExc_StopIteration(void);
+extern PyObject *wasthon_get_PyExc_BufferError(void);
+extern PyObject *wasthon_get_PyExc_KeyError(void);
+extern PyObject *wasthon_get_PyExc_LookupError(void);
+extern PyObject *wasthon_get_PyExc_NotImplementedError(void);
+extern PyObject *wasthon_get_PyExc_UnicodeError(void);
+extern PyObject *wasthon_get_PyExc_UnicodeDecodeError(void);
+extern PyObject *wasthon_get_PyExc_UnicodeEncodeError(void);
+extern PyObject *wasthon_get_PyExc_ImportError(void);
+extern PyObject *wasthon_get_PyExc_Exception(void);
+extern PyObject *wasthon_get_PyExc_OSError(void);
+extern PyObject *wasthon_get_PyExc_AttributeError(void);
+extern PyObject *wasthon_get_PyExc_ArithmeticError(void);
+extern PyObject *wasthon_get_PyExc_DeprecationWarning(void);
+extern PyObject *wasthon_get_PyExc_ZeroDivisionError(void);
+
+extern PyObject *wasthon_get_Py_None(void);
+extern PyObject *wasthon_get_Py_True(void);
+extern PyObject *wasthon_get_Py_False(void);
+extern PyObject *wasthon_get_Py_NotImplemented(void);
+
+/* JS-side helper: binds the struct address of each built-in type singleton
+ * to the corresponding Brython class so unwrap(&PyTuple_Type) == _b_.tuple,
+ * and provides a generic tp_iter that wraps PyObject_GetIter(). */
+extern void wasthon_bind_builtin_type(int tag, PyTypeObject *type);
+extern PyObject *wasthon_builtin_tp_iter(PyObject *self);
+
+#define BT_TYPE     0
+#define BT_TUPLE    1
+#define BT_DICT     2
+#define BT_LIST     3
+#define BT_LONG     4
+#define BT_FLOAT    5
+#define BT_UNICODE  6
+#define BT_BYTES    7
+#define BT_BOOL     8
+
+/*
+ * Called once after the WASM module is instantiated and before any
+ * C-side code reads the externs above. Exposed via EMSCRIPTEN_KEEPALIVE
+ * so the Brython-side loader can invoke it.
+ */
+#include <emscripten.h>
+
+EMSCRIPTEN_KEEPALIVE
+void wasthon_init(void) {
+    Py_None  = wasthon_get_Py_None();
+    Py_True  = wasthon_get_Py_True();
+    Py_False = wasthon_get_Py_False();
+    Py_NotImplemented = wasthon_get_Py_NotImplemented();
+
+    PyExc_TypeError      = wasthon_get_PyExc_TypeError();
+    PyExc_ValueError     = wasthon_get_PyExc_ValueError();
+    PyExc_OverflowError  = wasthon_get_PyExc_OverflowError();
+    PyExc_RuntimeError   = wasthon_get_PyExc_RuntimeError();
+    PyExc_MemoryError    = wasthon_get_PyExc_MemoryError();
+    PyExc_SystemError    = wasthon_get_PyExc_SystemError();
+    PyExc_IndexError     = wasthon_get_PyExc_IndexError();
+    PyExc_RecursionError = wasthon_get_PyExc_RecursionError();
+    PyExc_EOFError       = wasthon_get_PyExc_EOFError();
+    PyExc_StopIteration  = wasthon_get_PyExc_StopIteration();
+    PyExc_BufferError    = wasthon_get_PyExc_BufferError();
+    PyExc_KeyError              = wasthon_get_PyExc_KeyError();
+    PyExc_LookupError           = wasthon_get_PyExc_LookupError();
+    PyExc_NotImplementedError   = wasthon_get_PyExc_NotImplementedError();
+    PyExc_UnicodeError          = wasthon_get_PyExc_UnicodeError();
+    PyExc_UnicodeDecodeError    = wasthon_get_PyExc_UnicodeDecodeError();
+    PyExc_UnicodeEncodeError    = wasthon_get_PyExc_UnicodeEncodeError();
+    PyExc_ImportError           = wasthon_get_PyExc_ImportError();
+    PyExc_Exception             = wasthon_get_PyExc_Exception();
+    PyExc_OSError               = wasthon_get_PyExc_OSError();
+    PyExc_AttributeError        = wasthon_get_PyExc_AttributeError();
+    PyExc_ArithmeticError       = wasthon_get_PyExc_ArithmeticError();
+    PyExc_DeprecationWarning    = wasthon_get_PyExc_DeprecationWarning();
+    PyExc_ZeroDivisionError     = wasthon_get_PyExc_ZeroDivisionError();
+
+    /* Bind each built-in type singleton's address to its Brython class,
+     * and wire tp_iter so member access works (e.g. _decimal calls
+     * PyTuple_Type.tp_iter(t) directly). All built-ins share the same
+     * generic tp_iter that dispatches to Brython's iter(). */
+    PyType_Type.tp_iter    = wasthon_builtin_tp_iter;
+    PyTuple_Type.tp_iter   = wasthon_builtin_tp_iter;
+    PyDict_Type.tp_iter    = wasthon_builtin_tp_iter;
+    PyList_Type.tp_iter    = wasthon_builtin_tp_iter;
+    PyLong_Type.tp_iter    = wasthon_builtin_tp_iter;
+    PyFloat_Type.tp_iter   = wasthon_builtin_tp_iter;
+    PyUnicode_Type.tp_iter = wasthon_builtin_tp_iter;
+    PyBytes_Type.tp_iter   = wasthon_builtin_tp_iter;
+    PyBool_Type.tp_iter    = wasthon_builtin_tp_iter;
+
+    wasthon_bind_builtin_type(BT_TYPE,    &PyType_Type);
+    wasthon_bind_builtin_type(BT_TUPLE,   &PyTuple_Type);
+    wasthon_bind_builtin_type(BT_DICT,    &PyDict_Type);
+    /* PyODict_Type — Brython has no separate OrderedDict at C-type level;
+     * alias to dict so PyModule_AddType(&PyODict_Type) finds something. */
+    wasthon_bind_builtin_type(BT_DICT,    &PyODict_Type);
+    wasthon_bind_builtin_type(BT_LIST,    &PyList_Type);
+    wasthon_bind_builtin_type(BT_LONG,    &PyLong_Type);
+    wasthon_bind_builtin_type(BT_FLOAT,   &PyFloat_Type);
+    wasthon_bind_builtin_type(BT_UNICODE, &PyUnicode_Type);
+    wasthon_bind_builtin_type(BT_BYTES,   &PyBytes_Type);
+    wasthon_bind_builtin_type(BT_BOOL,    &PyBool_Type);
+
+    /* Populate tp_as_number for PyLong_Type / PyFloat_Type so _decimal
+     * (and other modules that cache nb_* pointers) can read them. */
+    extern void wasthon_init_number_protocols(void);
+    wasthon_init_number_protocols();
+}
+
+/*
+ * Implementation of Py_TYPE: Brython-side lookup of an object's class.
+ * Declared in wasthon.h as _wasthon_Py_TYPE.
+ */
+extern PyTypeObject *wasthon_get_type_of(PyObject *op);
+
+PyTypeObject *_wasthon_Py_TYPE(PyObject *op) {
+    return wasthon_get_type_of(op);
+}
+
+/* ---- Type-check predicates: thin wrappers around JS-side helpers ---- */
+extern int wasthon_isinstance_of_builtin(PyObject *op, int builtinTag);
+
+#define WT_TAG_UNICODE  1
+#define WT_TAG_BYTES    2
+#define WT_TAG_DICT     3
+#define WT_TAG_TUPLE    4
+#define WT_TAG_LIST     5
+#define WT_TAG_LONG     6
+#define WT_TAG_FLOAT    7
+
+int PyUnicode_Check(PyObject *o)      { return wasthon_isinstance_of_builtin(o, WT_TAG_UNICODE); }
+int PyUnicode_CheckExact(PyObject *o) { return wasthon_isinstance_of_builtin(o, WT_TAG_UNICODE); }
+int PyBytes_Check(PyObject *o)        { return wasthon_isinstance_of_builtin(o, WT_TAG_BYTES);   }
+int PyBytes_CheckExact(PyObject *o)   { return wasthon_isinstance_of_builtin(o, WT_TAG_BYTES);   }
+int PyDict_Check(PyObject *o)         { return wasthon_isinstance_of_builtin(o, WT_TAG_DICT);    }
+int PyDict_CheckExact(PyObject *o)    { return wasthon_isinstance_of_builtin(o, WT_TAG_DICT);    }
+int PyTuple_Check(PyObject *o)        { return wasthon_isinstance_of_builtin(o, WT_TAG_TUPLE);   }
+int PyList_Check(PyObject *o)         { return wasthon_isinstance_of_builtin(o, WT_TAG_LIST);    }
+int PyLong_Check(PyObject *o)         { return wasthon_isinstance_of_builtin(o, WT_TAG_LONG);    }
+int PyLong_CheckExact(PyObject *o)    { return wasthon_isinstance_of_builtin(o, WT_TAG_LONG);    }
+int PyFloat_Check(PyObject *o)        { return wasthon_isinstance_of_builtin(o, WT_TAG_FLOAT);   }
+
+/* ---------------------------------------------------------------- *
+ * Buffer protocol                                                  *
+ *                                                                  *
+ * Strategy: the JS side handles the data marshalling (copy from a  *
+ * Brython bytes/bytearray into WASM linear memory) and returns the *
+ * raw pointer + length. The C side fills the Py_buffer struct,     *
+ * including shape/strides pointers (which point inside the struct  *
+ * itself for 1-D buffers, the standard CPython idiom).             *
+ * ---------------------------------------------------------------- */
+
+#include <stdlib.h>
+
+extern int wasthon_get_buffer_data(PyObject *obj,
+                                   void **out_buf,
+                                   Py_ssize_t *out_len);
+
+int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
+    (void)flags;  /* PyBUF_SIMPLE only; no flag interpretation yet. */
+    void *buf = NULL;
+    Py_ssize_t len = 0;
+
+    if (wasthon_get_buffer_data(obj, &buf, &len) != 0) {
+        /* JS side already set the appropriate exception. */
+        view->buf = NULL;
+        view->obj = NULL;
+        return -1;
+    }
+
+    view->buf       = buf;
+    view->obj       = obj;       /* No refcount: handle stays alive in JS. */
+    view->len       = len;
+    view->itemsize  = 1;
+    view->readonly  = 1;
+    view->ndim      = 1;
+    view->format    = (char *)"B";
+    view->shape     = &view->len;
+    view->strides   = &view->itemsize;
+    view->suboffsets = NULL;
+    view->internal  = NULL;
+    return 0;
+}
+
+void PyBuffer_Release(Py_buffer *view) {
+    if (view == NULL || view->buf == NULL) {
+        return;
+    }
+    free(view->buf);
+    view->buf = NULL;
+    view->obj = NULL;
+}
+
+int PyObject_CheckBuffer(PyObject *obj) {
+    extern int wasthon_object_check_buffer(PyObject *obj);
+    return wasthon_object_check_buffer(obj);
+}
+
+/* ---------------------------------------------------------------- *
+ * Module state                                                    *
+ *                                                                  *
+ * In CPython, modules can carry per-module state (a malloc'd struct *
+ * whose size is declared in PyModuleDef.m_size). Types created via *
+ * PyType_FromModuleAndSpec remember the module they belong to.     *
+ *                                                                  *
+ * Implementation: a JS-side WeakMap-like registry mapping module   *
+ * handles to state pointers, and type handles to their module.     *
+ * The state itself lives in WASM linear memory (allocated by C     *
+ * code or by the bridge during module creation).                   *
+ * ---------------------------------------------------------------- */
+
+extern void *wasthon_module_get_state(PyObject *module);
+extern PyObject *wasthon_type_get_module(PyTypeObject *type);
+
+void *_PyModule_GetState(PyObject *module) {
+    return wasthon_module_get_state(module);
+}
+
+PyObject *PyType_GetModule(PyTypeObject *type) {
+    return wasthon_type_get_module(type);
+}
+
+void *_PyType_GetModuleState(PyTypeObject *type) {
+    PyObject *mod = wasthon_type_get_module(type);
+    if (mod == NULL) return NULL;
+    return wasthon_module_get_state(mod);
+}
+
+/* Public-API aliases (no leading underscore). md5module.c calls these
+ * directly; sha2 used the internal forms. Same semantics. */
+void *PyModule_GetState(PyObject *module) {
+    return wasthon_module_get_state(module);
+}
+
+void *PyType_GetModuleState(PyTypeObject *type) {
+    PyObject *mod = wasthon_type_get_module(type);
+    if (mod == NULL) return NULL;
+    return wasthon_module_get_state(mod);
+}
+
+/* PyMem allocator — straight aliases to libc malloc/free. CPython's
+ * PyMem_Malloc historically went through a custom arena allocator;
+ * we don't bother (single linear memory, JS-side GC). */
+#include <stdlib.h>
+#include <string.h>
+
+void *PyMem_Malloc(size_t size)  { return malloc(size); }
+void *PyMem_Calloc(size_t n, size_t s) { return calloc(n, s); }
+void *PyMem_Realloc(void *p, size_t s) { return realloc(p, s); }
+void  PyMem_Free(void *p)         { free(p); }
+void *PyMem_RawMalloc(size_t size) { return malloc(size); }
+void *PyMem_RawCalloc(size_t n, size_t s) { return calloc(n, s); }
+void *PyMem_RawRealloc(void *p, size_t s) { return realloc(p, s); }
+void  PyMem_RawFree(void *p)      { free(p); }
+
+/* _PyOnceFlag — single-threaded WASM. Init runs exactly once. */
+int _PyOnceFlag_CallOnce(_PyOnceFlag *flag, int (*func)(void *), void *arg) {
+    if (*flag == 0) {
+        int r = func(arg);
+        *flag = 1;
+        return r;
+    }
+    return 0;
+}
+
+/* Default tp_alloc — delegates to wasthon_object_gc_new which reads the
+ * type's basicsize from the JS-side type registry. Variable-length types
+ * (nitems > 0) use wasthon_object_gc_new_var. */
+extern PyObject *wasthon_object_gc_new(PyTypeObject *type);
+extern PyObject *wasthon_object_gc_new_var(PyTypeObject *type, Py_ssize_t n);
+
+PyObject *wasthon_default_tp_alloc(PyTypeObject *type, Py_ssize_t nitems) {
+    if (nitems > 0) return wasthon_object_gc_new_var(type, nitems);
+    return wasthon_object_gc_new(type);
+}
+
+/* Accessor so the JS bridge can read the function pointer (table index)
+ * for wasthon_default_tp_alloc and install it into newly-created type
+ * structs at offset 12 (tp_alloc). */
+#include <emscripten.h>
+EMSCRIPTEN_KEEPALIVE
+void *wasthon_get_default_tp_alloc(void) {
+    return (void *)wasthon_default_tp_alloc;
+}
+
+/* Same shape for tp_iter — returns the WASM table index of the JS-side
+ * wasthon_builtin_tp_iter library function so the bridge can install it
+ * at offset 20 of newly-created type structs. */
+EMSCRIPTEN_KEEPALIVE
+void *wasthon_get_builtin_tp_iter(void) {
+    return (void *)wasthon_builtin_tp_iter;
+}
+
+
+/* Number-protocol slot dispatchers for built-in PyLong/PyFloat. _decimal
+ * caches function pointers from PyLong_Type.tp_as_number->nb_multiply etc.
+ * and calls them later — these implementations forward to Brython. */
+extern PyObject *wasthon_long_nb_multiply(PyObject *, PyObject *);
+extern PyObject *wasthon_long_nb_floor_divide(PyObject *, PyObject *);
+extern PyObject *wasthon_long_nb_power(PyObject *, PyObject *, PyObject *);
+extern PyObject *wasthon_float_nb_absolute(PyObject *);
+
+/* tp_methods entries the built-in types expose. _decimal walks these via
+ * cfunc_noargs(t, "name") looking up by name then stashes the function
+ * pointer for later direct invocation. */
+extern PyObject *wasthon_long_bit_length(PyObject *, PyObject *);
+extern PyObject *wasthon_float_as_integer_ratio(PyObject *, PyObject *);
+
+#define METH_NOARGS  0x0004
+
+static PyNumberMethods wasthon_long_nb;
+static PyNumberMethods wasthon_float_nb;
+
+static struct PyMethodDef wasthon_long_methods[] = {
+    {"bit_length", (void *)wasthon_long_bit_length, METH_NOARGS, 0},
+    {0, 0, 0, 0},
+};
+
+static struct PyMethodDef wasthon_float_methods[] = {
+    {"as_integer_ratio", (void *)wasthon_float_as_integer_ratio, METH_NOARGS, 0},
+    {0, 0, 0, 0},
+};
+
+void wasthon_init_number_protocols(void) {
+    wasthon_long_nb.nb_multiply     = wasthon_long_nb_multiply;
+    wasthon_long_nb.nb_floor_divide = wasthon_long_nb_floor_divide;
+    wasthon_long_nb.nb_power        = wasthon_long_nb_power;
+    PyLong_Type.tp_as_number = &wasthon_long_nb;
+    PyLong_Type.tp_methods   = wasthon_long_methods;
+
+    wasthon_float_nb.nb_absolute = wasthon_float_nb_absolute;
+    PyFloat_Type.tp_as_number = &wasthon_float_nb;
+    PyFloat_Type.tp_methods   = wasthon_float_methods;
+}
+
+/* PyThread stubs — single-threaded WASM. Locks always "succeed". We
+ * return a non-zero sentinel so callers don't think allocation failed. */
+PyThread_type_lock PyThread_allocate_lock(void) {
+    static struct { int _x; } sentinel;
+    return (PyThread_type_lock)&sentinel;
+}
+void PyThread_free_lock(PyThread_type_lock lock)             { (void)lock; }
+int  PyThread_acquire_lock(PyThread_type_lock l, int wait)   { (void)l; (void)wait; return 1; }
+void PyThread_release_lock(PyThread_type_lock lock)          { (void)lock; }
+
+/* ---------------------------------------------------------------- *
+ * Argument parsing                                                 *
+ *                                                                  *
+ * `_PyArg_UnpackKeywords` is what clinic-generated glue calls to   *
+ * dispatch positional+keyword args for METH_FASTCALL|METH_KEYWORDS.*
+ * We delegate to the JS bridge which reads the parser struct fields, *
+ * the NULL-terminated `_keywords` C-string array, and the kwnames  *
+ * tuple, then fills `buf` slot-by-slot. Returns `buf` on success,  *
+ * NULL on error (with the appropriate exception set).              *
+ *                                                                  *
+ * Note: `kwargs` (the dict-style param for older calling conv) is  *
+ * always NULL for FASTCALL|KEYWORDS — we accept it but ignore it.  *
+ * `_PyArg_BadArgument` and `_PyArg_CheckPositional` are also       *
+ * referenced by some clinic outputs; sha2's doesn't use them, so   *
+ * they're not implemented yet.                                     *
+ * ---------------------------------------------------------------- */
+
+extern PyObject **wasthon_unpack_keywords(
+    PyObject *const *args, Py_ssize_t nargs,
+    PyObject *kwargs, PyObject *kwnames,
+    _PyArg_Parser *parser,
+    int minpos, int maxpos, int minkw, int varpos,
+    PyObject **buf);
+
+PyObject **_PyArg_UnpackKeywords(
+    PyObject *const *args, Py_ssize_t nargs,
+    PyObject *kwargs, PyObject *kwnames,
+    _PyArg_Parser *parser,
+    int minpos, int maxpos, int minkw, int varpos,
+    PyObject **buf)
+{
+    return wasthon_unpack_keywords(args, nargs, kwargs, kwnames, parser,
+                                    minpos, maxpos, minkw, varpos, buf);
+}
+
+/* ---- pyexpat shims ---- */
+/* _Py_HashSecret — hash randomization seed. Fixed value is fine: we don't
+ * need cryptographic randomization in a single-page browser context. */
+#include "pycore_pyhash.h"
+_Py_HashSecret_t _Py_HashSecret = {{0}};
+
+/* _PyImport_SetModule — register a module under sys.modules[name].
+ * pyexpat uses this for its `errors` and `model` submodules. No-op
+ * keeps the parser working; submodule access via `from xml.parsers.expat
+ * import errors` would need additional plumbing. */
+int _PyImport_SetModule(PyObject *name, PyObject *module) {
+    (void)name; (void)module;
+    return 0;
+}
+
+/* _PyTraceback_Add — append a synthetic frame to the traceback.
+ * No-op: we don't maintain a Python-side traceback. */
+int _PyTraceback_Add(const char *funcname, const char *filename, int lineno) {
+    (void)funcname; (void)filename; (void)lineno;
+    return 0;
+}
+
+/* Py_hexdigits — used by _json for hex-encoding ASCII escape sequences. */
+const char Py_hexdigits[] = "0123456789abcdef";
+
+/* PyODict_Type — C-level base type of CPython's OrderedDict. Brython has no
+ * separate OrderedDict at type-object level (Python 3.7+ dicts preserve
+ * insertion order anyway). Alias to PyDict_Type so the C-level inheritance
+ * resolves; the user-facing OrderedDict will behave like a plain dict for
+ * iteration order (the same in practice) and miss move_to_end semantics. */
+PyTypeObject PyODict_Type;  /* populated at wasthon_init time */

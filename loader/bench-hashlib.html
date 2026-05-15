@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — hashlib bench (md5/sha1/sha2/sha3/blake2/hmac, 13 variants)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  table { border-collapse: collapse; margin: 1rem 0; width: 100%; font-size: 13px; }
+  th, td { padding: 5px 10px; text-align: right; border-bottom: 1px solid #ddd; font-variant-numeric: tabular-nums; }
+  th { background: #f4f4f4; text-align: left; }
+  td:first-child { text-align: left; font-weight: 600; }
+  td.match { color: #0a0; }
+  td.miss  { color: #a00; }
+  .speedup { background: #fff8e0; }
+  #log { white-space: pre-wrap; font-family: monospace; background: #f8f8f8; padding: 1rem; border-radius: 4px; max-height: 300px; overflow: auto; font-size: 12px; }
+  .config { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+  input[type=number] { width: 6em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+
+<h1>wasthon — bench Brython (wasthon vs hashlib natif)</h1>
+<p>
+  Tout depuis Python dans Brython : <code>_md5/_sha1/_sha2/_sha3/_blake2/_hmac</code>
+  via wasthon-WASM vs <code>hashlib/hmac</code> natif Brython (passe par CryptoJS).
+</p>
+
+<div class="config">
+  <label>Buffer size: <input type="number" id="size_mb" value="0.5" min="0.001" max="64" step="0.001"> MB</label>
+  <label>Iterations: <input type="number" id="iters" value="10" min="1" max="50"></label>
+  <button id="run" disabled>Loading…</button>
+</div>
+
+<table id="results">
+  <thead>
+    <tr>
+      <th>Algorithm</th>
+      <th>wasthon (MB/s)</th>
+      <th>hashlib/CryptoJS (MB/s)</th>
+      <th class="speedup">Speedup</th>
+      <th>wasthon (ms/call)</th>
+      <th>hashlib (ms/call)</th>
+      <th>Match</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h3>Log</h3>
+<pre id="log"></pre>
+
+<script type="module">
+const log = (...args) => {
+    const el = document.getElementById('log');
+    const fmt = a => typeof a === 'string' ? a : (typeof a === 'number' || typeof a === 'boolean') ? String(a) : (() => { try { return JSON.stringify(a); } catch (_) { return Object.prototype.toString.call(a); } })();
+    el.textContent += args.map(fmt).join(' ') + '\n';
+    el.scrollTop = el.scrollHeight;
+};
+window.__bench_log = log;
+
+window.__bench_render_row = (algo, wMBs, hMBs, wMs, hMs, match) => {
+    const tbody = document.querySelector('#results tbody');
+    const tr = document.createElement('tr');
+    const speedup = (hMs > 0 && wMs > 0) ? (hMs / wMs).toFixed(2) + '×' : '—';
+    tr.innerHTML = `
+        <td>${algo}</td>
+        <td>${wMBs.toFixed(1)}</td>
+        <td>${hMBs.toFixed(1)}</td>
+        <td class="speedup">${speedup}</td>
+        <td>${wMs.toFixed(3)}</td>
+        <td>${hMs.toFixed(3)}</td>
+        <td class="${match?'match':'miss'}">${match?'✓':'✗'}</td>
+    `;
+    tbody.appendChild(tr);
+};
+
+try {
+    log('Loading wasthon modules…');
+    await wasthonLoad('_md5',    '../build/_md5.mjs');
+    await wasthonLoad('_sha1',   '../build/_sha1.mjs');
+    await wasthonLoad('_sha2',   '../build/_sha2.mjs');
+    await wasthonLoad('_sha3',   '../build/_sha3.mjs');
+    await wasthonLoad('_blake2', '../build/_blake2.mjs');
+    await wasthonLoad('_hmac',   '../build/_hmac.mjs');
+    log('All loaded. Booting Brython…');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.id = 'bench_main';
+    py.textContent = `
+from browser import window, document
+import _md5, _sha1, _sha2, _sha3, _blake2, _hmac
+import hashlib, hmac
+
+log = window.__bench_log
+render = window.__bench_render_row
+perf = window.performance.now
+
+# _hmac.compute_* returns raw bytes; wrap it so the bench can call
+# .hexdigest() uniformly across all algos.
+class _BytesDigest:
+    def __init__(self, b): self.b = b
+    def hexdigest(self): return self.b.hex()
+
+HMAC_KEY = b'wasthon-bench-key'
+
+ALGOS = [
+    # (name, wasthon_callable, hashlib_callable)
+    ('md5',         lambda d: _md5.md5(d),                                                  lambda d: hashlib.md5(d)),
+    ('sha1',        lambda d: _sha1.sha1(d),                                                lambda d: hashlib.sha1(d)),
+    ('sha224',      lambda d: _sha2.sha224(d),                                              lambda d: hashlib.sha224(d)),
+    ('sha256',      lambda d: _sha2.sha256(d),                                              lambda d: hashlib.sha256(d)),
+    ('sha384',      lambda d: _sha2.sha384(d),                                              lambda d: hashlib.sha384(d)),
+    ('sha512',      lambda d: _sha2.sha512(d),                                              lambda d: hashlib.sha512(d)),
+    ('sha3_224',    lambda d: _sha3.sha3_224(d),                                            lambda d: hashlib.sha3_224(d)),
+    ('sha3_256',    lambda d: _sha3.sha3_256(d),                                            lambda d: hashlib.sha3_256(d)),
+    ('sha3_384',    lambda d: _sha3.sha3_384(d),                                            lambda d: hashlib.sha3_384(d)),
+    ('sha3_512',    lambda d: _sha3.sha3_512(d),                                            lambda d: hashlib.sha3_512(d)),
+    ('blake2b',     lambda d: _blake2.blake2b(d),                                           lambda d: hashlib.blake2b(d)),
+    ('blake2s',     lambda d: _blake2.blake2s(d),                                           lambda d: hashlib.blake2s(d)),
+    ('hmac/sha256', lambda d: _BytesDigest(_hmac.compute_sha2_256(HMAC_KEY, d)),            lambda d: hmac.new(HMAC_KEY, d, 'sha256')),
+]
+
+def make_payload(size):
+    unit = bytes(range(256)) * 16  # 4 KiB
+    n = max(1, size // len(unit))
+    return unit * n
+
+def time_call(fn, payload, iters):
+    # Warm-up
+    for _ in range(2):
+        fn(payload).hexdigest()
+    t0 = perf()
+    digest = None
+    for _ in range(iters):
+        digest = fn(payload).hexdigest()
+    t1 = perf()
+    return (t1 - t0) / iters, digest
+
+def run():
+    size = int(float(document['size_mb'].value) * 1024 * 1024)
+    iters = int(document['iters'].value)
+    log(f'\\n=== {size/(1024*1024):.3f} MB × {iters} iters ===')
+    payload = make_payload(size)
+    actual = len(payload)
+
+    for name, wfn, hfn in ALGOS:
+        log(f'Running {name}…')
+        try:
+            wms, wdigest = time_call(wfn, payload, iters)
+            wmbs = (actual / (wms/1000.0)) / (1024*1024)
+        except Exception as e:
+            log(f'  wasthon FAIL: {e}')
+            wms, wmbs, wdigest = 0, 0, ''
+        try:
+            hms, hdigest = time_call(hfn, payload, iters)
+            hmbs = (actual / (hms/1000.0)) / (1024*1024)
+        except Exception as e:
+            log(f'  hashlib FAIL: {e}')
+            hms, hmbs, hdigest = 0, 0, ''
+        match = wdigest == hdigest and wdigest != ''
+        log(f'  wasthon {wmbs:.1f} MB/s, hashlib {hmbs:.1f} MB/s, match {"✓" if match else "✗"}')
+        render(name, wmbs, hmbs, wms, hms, match)
+
+    log('Done.')
+
+document['run'].bind('click', lambda ev: run())
+document['run'].textContent = 'Run benchmark'
+document['run'].disabled = False
+log('Ready. Click "Run benchmark".')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED to bootstrap:', e.message);
+    console.error(e);
+}
+</script>
+
+</body>
+</html>

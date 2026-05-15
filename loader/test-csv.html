@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — _csv smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>Wasthon — _csv smoke test</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[csv]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading _csv…');
+    await wasthonLoad('_csv', '../build/_csv.mjs');
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _csv
+import io
+
+# Test 1: module attributes
+log('Test 1: module attributes')
+for name in ('reader', 'writer', 'Dialect', 'QUOTE_ALL', 'QUOTE_MINIMAL', 'QUOTE_NONE', 'register_dialect'):
+    log(f'  _csv.{name}: {"✓" if hasattr(_csv, name) else "✗"}')
+
+# Test 2: simple read
+log('\\nTest 2: simple comma-separated read')
+try:
+    data = io.StringIO('a,b,c\\n1,2,3\\nhello,world,!')
+    rows = list(_csv.reader(data))
+    expected = [['a', 'b', 'c'], ['1', '2', '3'], ['hello', 'world', '!']]
+    log(f'  rows = {rows}')
+    log(f'  match: {"✓" if rows == expected else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 3: quoted fields
+log('\\nTest 3: quoted fields with embedded commas')
+try:
+    data = io.StringIO('a,"b,c",d\\n"hello world","x""y",ok')
+    rows = list(_csv.reader(data))
+    expected = [['a', 'b,c', 'd'], ['hello world', 'x"y', 'ok']]
+    log(f'  rows = {rows}')
+    log(f'  match: {"✓" if rows == expected else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 4: tab-delimited
+log('\\nTest 4: tab-delimited (custom dialect)')
+try:
+    data = io.StringIO('a\\tb\\tc\\n1\\t2\\t3')
+    rows = list(_csv.reader(data, delimiter='\\t'))
+    expected = [['a', 'b', 'c'], ['1', '2', '3']]
+    log(f'  rows = {rows}')
+    log(f'  match: {"✓" if rows == expected else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 5: writer round-trip
+log('\\nTest 5: writer round-trip')
+try:
+    out = io.StringIO()
+    w = _csv.writer(out)
+    w.writerow(['name', 'age', 'note'])
+    w.writerow(['Alice', 30, 'has, comma'])
+    w.writerow(['Bob', 25, ''])
+    written = out.getvalue()
+    log(f'  written = {written!r}')
+    parsed = list(_csv.reader(io.StringIO(written)))
+    log(f'  reparsed = {parsed}')
+    expected = [['name', 'age', 'note'], ['Alice', '30', 'has, comma'], ['Bob', '25', '']]
+    log(f'  round-trip match: {"✓" if parsed == expected else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

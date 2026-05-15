@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — _statistics smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>Wasthon — <code>_statistics</code> smoke test</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[statistics]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading _statistics…');
+    await wasthonLoad('_wasthon_statistics', '../build/_statistics.mjs', { initName: '_statistics' });
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _wasthon_statistics as st
+
+# Test 1: inv_cdf at median (p=0.5) — must be exactly mu
+log('Test 1: _normal_dist_inv_cdf(0.5, 0, 1) == 0')
+try:
+    r = st._normal_dist_inv_cdf(0.5, 0.0, 1.0)
+    log(f'  result = {r}')
+    log(f'  match: {"OK" if abs(r) < 1e-12 else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 2: known quantiles for standard normal
+# inv_cdf(0.975) ≈ 1.959964 (the famous 1.96)
+log('\\nTest 2: inv_cdf(0.975, 0, 1) ≈ 1.959964')
+try:
+    r = st._normal_dist_inv_cdf(0.975, 0.0, 1.0)
+    log(f'  result = {r}')
+    log(f'  match: {"OK" if abs(r - 1.959963984540054) < 1e-10 else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 3: symmetry — inv_cdf(p) == -inv_cdf(1-p) for standard normal
+log('\\nTest 3: symmetry inv_cdf(0.025) == -inv_cdf(0.975)')
+try:
+    a = st._normal_dist_inv_cdf(0.025, 0.0, 1.0)
+    b = st._normal_dist_inv_cdf(0.975, 0.0, 1.0)
+    log(f'  inv_cdf(0.025) = {a}')
+    log(f'  inv_cdf(0.975) = {b}')
+    log(f'  symmetry: {"OK" if abs(a + b) < 1e-10 else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 4: mu and sigma shift / scale
+log('\\nTest 4: mu=10, sigma=2 → inv_cdf(0.5) == 10, inv_cdf(0.975) ≈ 10 + 1.96*2')
+try:
+    a = st._normal_dist_inv_cdf(0.5, 10.0, 2.0)
+    b = st._normal_dist_inv_cdf(0.975, 10.0, 2.0)
+    log(f'  inv_cdf(0.5, 10, 2)   = {a}')
+    log(f'  inv_cdf(0.975, 10, 2) = {b}')
+    expected = 10.0 + 1.959963984540054 * 2.0
+    log(f'  expected ≈ {expected}')
+    log(f'  match: {"OK" if abs(a - 10.0) < 1e-10 and abs(b - expected) < 1e-10 else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 5: edge cases — p<=0 or p>=1 must raise ValueError
+log('\\nTest 5: p=0 raises ValueError')
+try:
+    r = st._normal_dist_inv_cdf(0.0, 0.0, 1.0)
+    log(f'  FAIL: no exception, got {r}')
+except ValueError as e:
+    log(f'  OK: ValueError raised ({e})')
+except Exception as e:
+    log(f'  WRONG TYPE: {type(e).__name__}: {e}')
+
+log('\\nTest 6: p=1 raises ValueError')
+try:
+    r = st._normal_dist_inv_cdf(1.0, 0.0, 1.0)
+    log(f'  FAIL: no exception, got {r}')
+except ValueError as e:
+    log(f'  OK: ValueError raised ({e})')
+except Exception as e:
+    log(f'  WRONG TYPE: {type(e).__name__}: {e}')
+
+# Test 7: extreme quantile (tail) — inv_cdf(0.999, 0, 1) ≈ 3.090
+log('\\nTest 7: inv_cdf(0.999, 0, 1) ≈ 3.090232')
+try:
+    r = st._normal_dist_inv_cdf(0.999, 0.0, 1.0)
+    log(f'  result = {r}')
+    log(f'  match: {"OK" if abs(r - 3.090232306167814) < 1e-10 else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

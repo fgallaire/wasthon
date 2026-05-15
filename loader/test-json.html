@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — _json smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>Wasthon — _json smoke test</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[json]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading _json…');
+    await wasthonLoad('_json', '../build/_json.mjs');
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _json
+
+# Test 1: module attributes
+log('Test 1: module attributes')
+for name in ('encode_basestring', 'encode_basestring_ascii', 'make_scanner', 'make_encoder', 'scanstring'):
+    log(f'  _json.{name}: {"OK" if hasattr(_json, name) else "MISSING"}')
+
+# Test 2: encode_basestring (no escape)
+log('\\nTest 2: encode_basestring')
+try:
+    out = _json.encode_basestring('hello world')
+    expected = chr(34) + 'hello world' + chr(34)
+    log(f'  out = {out!r}')
+    ok = out == expected
+    log(f'  match: {"OK" if ok else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 3: encode_basestring with escapes
+log('\\nTest 3: encode_basestring with quotes + backslash + newline')
+try:
+    raw = 'a' + chr(34) + 'b' + chr(92) + 'c' + chr(10) + 'd'
+    out = _json.encode_basestring(raw)
+    log(f'  in  raw = {raw!r}')
+    log(f'  out = {out!r}')
+    # Should contain JSON escapes: backslash-quote, backslash-backslash, backslash-n
+    needles = [chr(92) + chr(34), chr(92) + chr(92), chr(92) + 'n']
+    ok = all(n in out for n in needles)
+    log(f'  has escapes: {"OK" if ok else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 4: encode_basestring_ascii on unicode
+log('\\nTest 4: encode_basestring_ascii on unicode')
+try:
+    out = _json.encode_basestring_ascii('café ☕')
+    log(f'  out = {out!r}')
+    # Non-ASCII chars escape to \\uNNNN (backslash u)
+    ok = (chr(92) + 'u') in out
+    log(f'  has unicode escape: {"OK" if ok else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 5: scanstring (low-level parser)
+log('\\nTest 5: scanstring')
+try:
+    # scanstring(s, end, strict) — start scanning at position end (after opening quote)
+    res, end = _json.scanstring('"hello"more', 1)
+    log(f'  scanned = {res!r}, end = {end}')
+    log(f'  match: {"OK" if res == "hello" and end == 7 else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 6: integration with Brython's json module (KNOWN LIMITATION).
+# Brython ships its own json wrapper (JS-based) that is not API-compatible
+# with CPython's stdlib json package — JSONDecoder, JSONEncoder, etc. are
+# absent. The fix is to bundle CPython's Lib/json/ into Brython so it
+# delegates to our _json C module; that's a planned integration step,
+# not a wasthon-side bug. Tests 1-5 above confirm the _json module
+# itself is correctly exposed and functional.
+log('\\nTest 6: integration with Brython json (expected to fail today)')
+try:
+    import json
+    data = {'name': 'Alice', 'age': 30, 'tags': ['a', 'b', 'c'], 'active': True}
+    s = json.dumps(data)
+    log(f'  dumps -> {s}')
+    parsed = json.loads(s)
+    log(f'  loads -> {parsed}')
+    log(f'  round-trip: {"OK" if parsed == data else "FAIL"}')
+except Exception as e:
+    log(f'  known limitation ({type(e).__name__}): {e}')
+    log(f'  → resolved once Lib/json/ is bundled into Brython (planned)')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

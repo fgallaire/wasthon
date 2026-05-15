@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — math smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>Wasthon — math smoke test</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[math]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading math (wasthon, registered as _wasthon_math to avoid clash)…');
+    await wasthonLoad('_wasthon_math', '../build/math.mjs', { initName: 'math' });
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _wasthon_math as m
+
+# Test 1: constants
+log('Test 1: constants')
+log(f'  pi = {m.pi}')
+log(f'  e = {m.e}')
+log(f'  tau = {m.tau}')
+log(f'  inf = {m.inf}')
+
+# Test 2: float trig
+log('\\nTest 2: float trig')
+try:
+    log(f'  sin(pi/2) = {m.sin(m.pi/2):.6f}')
+    log(f'  cos(0) = {m.cos(0):.6f}')
+    log(f'  sqrt(2) = {m.sqrt(2):.6f}')
+    log(f'  log(e) = {m.log(m.e):.6f}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 3: int helpers — factorial
+log('\\nTest 3: factorial')
+try:
+    for n, expected in [(0, 1), (5, 120), (10, 3628800), (20, 2432902008176640000)]:
+        out = m.factorial(n)
+        log(f'  factorial({n}) = {out} (expect {expected}) {"OK" if out == expected else "FAIL"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 4: gcd / lcm
+log('\\nTest 4: gcd / lcm')
+try:
+    log(f'  gcd(12, 18) = {m.gcd(12, 18)} (expect 6)')
+    log(f'  gcd(100, 75, 50) = {m.gcd(100, 75, 50)} (expect 25)')
+    log(f'  lcm(4, 6) = {m.lcm(4, 6)} (expect 12)')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 5: comb / perm
+log('\\nTest 5: comb / perm')
+try:
+    log(f'  comb(5, 2) = {m.comb(5, 2)} (expect 10)')
+    log(f'  comb(20, 10) = {m.comb(20, 10)} (expect 184756)')
+    log(f'  perm(5, 2) = {m.perm(5, 2)} (expect 20)')
+    log(f'  perm(10, 5) = {m.perm(10, 5)} (expect 30240)')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 6: isqrt
+log('\\nTest 6: isqrt')
+try:
+    log(f'  isqrt(100) = {m.isqrt(100)} (expect 10)')
+    log(f'  isqrt(99) = {m.isqrt(99)} (expect 9)')
+    log(f'  isqrt(10**18) = {m.isqrt(10**18)} (expect 1000000000)')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 7: prod
+log('\\nTest 7: prod')
+try:
+    log(f'  prod([1,2,3,4]) = {m.prod([1,2,3,4])} (expect 24)')
+    log(f'  prod([2]*10) = {m.prod([2]*10)} (expect 1024)')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 8: float predicates
+log('\\nTest 8: float predicates')
+try:
+    log(f'  isnan(nan) = {m.isnan(m.nan)} (expect True)')
+    log(f'  isinf(inf) = {m.isinf(m.inf)} (expect True)')
+    log(f'  isfinite(1.5) = {m.isfinite(1.5)} (expect True)')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

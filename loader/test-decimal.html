@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — _decimal smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>wasthon — _decimal smoke test</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    const fmt = a => typeof a === 'string' ? a :
+        (typeof a === 'number' || typeof a === 'boolean') ? String(a) :
+        (() => { try { return JSON.stringify(a); } catch (_) { return Object.prototype.toString.call(a); }})();
+    document.getElementById('log').textContent += args.map(fmt).join(' ') + '\n';
+    console.log('[decimal]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading _decimal…');
+    await wasthonLoad('_decimal', '../build/_decimal.mjs');
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _decimal as D
+
+# Test 1: module attrs
+log('Test 1: module attributes')
+for name in ('Decimal', 'Context', 'getcontext', 'setcontext', 'ROUND_HALF_EVEN'):
+    log(f'  _decimal.{name}: {"✓" if hasattr(D, name) else "✗"}')
+
+# Test 2: simple construction + arithmetic
+log('\\nTest 2: basic arithmetic')
+try:
+    a = D.Decimal('1.5')
+    b = D.Decimal('2.5')
+    c = a + b
+    log(f'  Decimal("1.5") + Decimal("2.5") = {c}  (expect 4.0): {"✓" if str(c) == "4.0" else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 3: exact arithmetic (where float fails)
+log('\\nTest 3: exact arithmetic')
+try:
+    d = D.Decimal('0.1') + D.Decimal('0.2')
+    log(f'  Decimal("0.1") + Decimal("0.2") = {d}  (expect 0.3): {"✓" if str(d) == "0.3" else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 4: multiplication
+log('\\nTest 4: multiplication')
+try:
+    e = D.Decimal('1.1') * D.Decimal('2.2')
+    log(f'  Decimal("1.1") * Decimal("2.2") = {e}  (expect 2.42): {"✓" if str(e) == "2.42" else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 5: from int
+log('\\nTest 5: from int')
+try:
+    f = D.Decimal(42)
+    log(f'  Decimal(42) = {f}: {"✓" if str(f) == "42" else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 6: from large int (exercise PyLong_Export digits path)
+log('\\nTest 6: from big int')
+try:
+    big = 12345678901234567890
+    g = D.Decimal(big)
+    log(f'  Decimal({big}) = {g}: {"✓" if str(g) == str(big) else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 7: high-precision power
+log('\\nTest 7: power')
+try:
+    h = D.Decimal('1.5') ** 10
+    expected = D.Decimal('57.6650390625')
+    log(f'  Decimal("1.5") ** 10 = {h}')
+    log(f'  expected {expected}: {"✓" if h == expected else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED to bootstrap: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

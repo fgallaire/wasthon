@@ -1,0 +1,7211 @@
+/*
+ * Copyright (C) 2026 Florent Gallaire <fgallaire@gmail.com>
+ *
+ * BSD 3-Clause License
+ *
+ * wasthon.js — JS-side implementation of wasthon.h.
+ *
+ * This is the C-to-Brython bridge: C extension code compiled to WASM
+ * calls into CPython C-API functions (declared in wasthon.h), and those
+ * calls are routed here to be served by Brython's JS runtime. The bridge
+ * crosses both a language boundary (C ↔ JS) and a runtime boundary
+ * (WASM ↔ V8/SpiderMonkey).
+ *
+ * Loaded into WASM modules built with `emcc --js-library wasthon.js`.
+ * Provides the JS implementation of every prototype declared in wasthon.h.
+ *
+ * PyObject* values are 32-bit integer handles into a JS-side handle table
+ * holding strong references to Brython objects. This is the only object-
+ * lifetime mechanism: refcounting in C is a no-op, JS GC keeps Brython
+ * objects alive while a handle references them, and freed handles release
+ * the reference.
+ *
+ * Coverage in this file: tiers 4 (built-in constructors/accessors),
+ * 5 (errors), 6 (helpers). Other tiers will be added incrementally.
+ */
+
+mergeInto(LibraryManager.library, {
+
+    /* --------------------------------------------------------------- *
+     * $WasthonRT — runtime: handle table, sentinels, exception state. *
+     * Everything that needs persistent state goes here.               *
+     * --------------------------------------------------------------- */
+
+    $WasthonRT__postset: 'WasthonRT.init(); Module["wasthon"] = WasthonRT;',
+    $WasthonRT: {
+        _b_: null,
+        $B: null,
+
+        // Handle table — a Map keyed by an integer "handle ID" returning
+        // the corresponding Brython/JS object. Two handle ranges:
+        //   • Sentinels & non-instance handles: small auto-incremented IDs
+        //     (1, 2, 3, …). They never alias real WASM pointers because
+        //     the C heap doesn't return such low addresses.
+        //   • Instance handles (for types created via PyType_FromModuleAndSpec):
+        //     the real WASM pointer to the C-allocated struct, also stored
+        //     in this map so JS can retrieve the Brython wrapper.
+        handles: null,           // Map<int, object>
+        nextHandleId: 5,         // 1-4 reserved for sentinels
+        freeList: [],
+
+        // Sentinel handle IDs (filled at init).
+        SLOT_NONE: 1,
+        SLOT_TRUE: 2,
+        SLOT_FALSE: 3,
+        SLOT_NOTIMPLEMENTED: 4,
+
+        // Pending exception, or null.
+        pendingException: null,
+
+        // Module/type registries.
+        // moduleDefs:  Map<defPtr,    {def, name, size, methods, slots, traverse, clear, free}>
+        // modules:     Map<moduleH,   {def, statePtr, name, dict, types: []}>
+        // types:       Map<typeH,     {basicsize, itemsize, flags, slots, methods, getset, brythonClass, moduleH}>
+        moduleDefs: null,
+        modules: null,
+        types: null,
+
+        init: function() {
+            var B = globalThis.__BRYTHON__;
+            if (!B) {
+                throw new Error("Wasthon bridge: __BRYTHON__ global not found. " +
+                    "Brython must be loaded before instantiating a Wasthon module.");
+            }
+            this.$B = B;
+            this._b_ = B.builtins;
+            this.handles = new Map();
+            this.moduleDefs = new Map();
+            this.modules = new Map();
+            this.types = new Map();
+
+            this.handles.set(this.SLOT_NONE,  this._b_.None);
+            this.handles.set(this.SLOT_TRUE,  this._b_.True);
+            this.handles.set(this.SLOT_FALSE, this._b_.False);
+            this.handles.set(this.SLOT_NOTIMPLEMENTED, this._b_.NotImplemented);
+        },
+
+        _allocSentinelId: function() {
+            if (this.freeList.length > 0) return this.freeList.pop();
+            // Sentinel IDs and malloc-derived struct-pointer handles share
+            // the same key space in `handles`. After ~tens of thousands of
+            // allocations, nextHandleId can collide with a real type-struct
+            // pointer (e.g. Dialect_Type = 73112) and overwrite the binding.
+            // Skip past any in-use slot.
+            while (this.handles.has(this.nextHandleId)) this.nextHandleId++;
+            return this.nextHandleId++;
+        },
+
+        // Public: wrap a Brython/JS object as a PyObject* handle. Allocates
+        // a fresh sentinel-range ID. For *instances* (allocated via
+        // PyObject_GC_New), use bindInstance instead.
+        wrap: function(obj) {
+            if (obj === undefined || obj === null) return 0;
+            if (obj === this._b_.None)  return this.SLOT_NONE;
+            if (obj === this._b_.True)  return this.SLOT_TRUE;
+            if (obj === this._b_.False) return this.SLOT_FALSE;
+            if (obj === this._b_.NotImplemented) return this.SLOT_NOTIMPLEMENTED;
+            // Instances allocated by wasthon_object_gc_new carry their
+            // C-side pointer as __wasthon_ptr__. The handle IS that pointer
+            // so C-side `self->field` dereferences hit the right linear
+            // memory. Round-tripping the same instance through wrap/unwrap
+            // (e.g. when a dict caches a struct instance and another call
+            // reads it back) must preserve this pointer-handle identity —
+            // otherwise we get a fresh sentinel id, the C code casts it
+            // as if it were a struct pointer, and dereferences garbage.
+            if (obj.__wasthon_ptr__) {
+                if (!this.handles.has(obj.__wasthon_ptr__)) {
+                    this.handles.set(obj.__wasthon_ptr__, obj);
+                }
+                return obj.__wasthon_ptr__;
+            }
+            var id = this._allocSentinelId();
+            this.handles.set(id, obj);
+            return id;
+        },
+
+        unwrap: function(handle) {
+            // Treat handle 0 as Python NULL pointer; everything else looks
+            // up the table by exact presence. Falsy *values* (0, "", false)
+            // are valid Python objects — we must NOT coalesce them to null.
+            if (handle === 0) return null;
+            return this.handles.has(handle) ? this.handles.get(handle) : null;
+        },
+
+        // Bind a Brython instance to a real WASM pointer. The handle == ptr.
+        bindInstance: function(ptr, brythonInstance) {
+            this.handles.set(ptr, brythonInstance);
+        },
+
+        release: function(handle) {
+            if (handle === 0) return;
+            if (handle === this.SLOT_NONE ||
+                handle === this.SLOT_TRUE ||
+                handle === this.SLOT_FALSE ||
+                handle === this.SLOT_NOTIMPLEMENTED) return;
+            this.handles.delete(handle);
+            // Only sentinel-range IDs (small ints) are recycled; pointer
+            // handles aren't (their memory is freed by the dealloc path).
+            if (handle < 0x10000) this.freeList.push(handle);
+        },
+
+        lastCall: null,
+        trace: function(name, info) {
+            this.lastCall = name + (info ? '(' + info + ')' : '');
+            // Uncomment for verbose: console.log('[wasthon trace]', this.lastCall);
+        },
+        /* Lazily back a Brython type class with a real PyTypeObject struct
+         * in linear memory, so C code can dereference cls->tp_dict, etc.
+         * Used for types that arrive via call-Python-and-get-a-type-back
+         * paths (namedtuple, PyObject_GetAttrString, ...) — they don't go
+         * through PyType_FromModuleAndSpec, so they have no struct otherwise.
+         * Idempotent: caches the struct pointer on the class as
+         * __wasthon_type_handle__. Returns the handle (struct pointer). */
+        ensureTypeStruct: function(cls) {
+            if (!cls) return 0;
+            if (cls.__wasthon_type_handle__) return cls.__wasthon_type_handle__;
+            if (!this._defaultTpAlloc) this._defaultTpAlloc = _wasthon_get_default_tp_alloc();
+            if (!this._builtinTpIter)  this._builtinTpIter  = _wasthon_get_builtin_tp_iter();
+            var typeStructPtr = _malloc(56);
+            HEAPU8.fill(0, typeStructPtr, typeStructPtr + 56);
+            // tp_dict at offset 4: ensure the class has a dict, then wrap.
+            var dictObj = this.$B.get_dict(cls);
+            if (!dictObj) {
+                this.$B.init_dict(cls);
+                dictObj = this.$B.get_dict(cls);
+            }
+            HEAP32[(typeStructPtr +  4) >> 2] = this.wrap(dictObj);
+            // tp_name (offset 8): use the class's tp_name if known.
+            // Skip — leaving 0 (NULL) is fine for callers that don't read it.
+            HEAP32[(typeStructPtr + 12) >> 2] = this._defaultTpAlloc;
+            HEAP32[(typeStructPtr + 20) >> 2] = this._builtinTpIter;
+            cls.__wasthon_type_handle__ = typeStructPtr;
+            this.handles.set(typeStructPtr, cls);
+            // Register a minimal types-map entry so callers that look up
+            // via rt.types.get(handle) (PyModule_AddType, etc.) succeed.
+            // The full PyType_FromModuleAndSpec entry would also have
+            // basicsize/itemsize/flags/slots/methods/getset — for Brython-
+            // originating classes those fields are inapplicable.
+            /* tp_name is conventionally "module.qualname.LeafName" (dotted).
+             * PyModule_AddType wants only the leaf name as the attribute,
+             * so split on the last dot here. */
+            var fullName = cls.tp_name || (cls.$infos && cls.$infos.__name__) || '<type>';
+            var leafIdx = fullName.lastIndexOf('.');
+            var shortName = leafIdx >= 0 ? fullName.slice(leafIdx + 1) : fullName;
+            this.types.set(typeStructPtr, {
+                brythonClass: cls,
+                shortName: shortName,
+                fullName: fullName,
+            });
+            return typeStructPtr;
+        },
+
+        /* Wrap a Brython object as a handle, but if it's a type class give
+         * it a struct-backed handle so C code can dereference its fields. */
+        wrapMaybeType: function(obj) {
+            if (obj && this.$B && this._b_ && this._b_.type) {
+                try {
+                    if (this.$B.$isinstance(obj, this._b_.type)) {
+                        return this.ensureTypeStruct(obj);
+                    }
+                } catch (_) {}
+            }
+            return this.wrap(obj);
+        },
+
+        setError: function(excHandle, msg) {
+            this.pendingException = { exc: excHandle, msg: msg };
+        },
+
+        // Normalise any Brython str-like to a primitive JS string.
+        // Brython represents BMP strings as primitives, but astral-plane
+        // strings (codepoints > U+FFFF) and certain str-subclass instances
+        // arrive as boxed String wrappers or Brython str objects whose
+        // toString gives the codepoint sequence. typeof of those is "object",
+        // so a naive `typeof obj === 'string'` check rejects them.
+        asJSStr: function(obj) {
+            if (typeof obj === 'string') return obj;
+            if (obj instanceof String) return obj.valueOf();
+            // Brython str-like: has a __class__ of _b_.str and toString/valueOf.
+            if (obj && obj.__class__ === this._b_.str) {
+                if (typeof obj.valueOf === 'function') {
+                    var v = obj.valueOf();
+                    if (typeof v === 'string') return v;
+                }
+                return String(obj);
+            }
+            // PyUnicode_New placeholder: linear-memory buffer waiting for
+            // PyUnicode_1BYTE_DATA + memcpy to populate. Materialize once
+            // and cache on the placeholder itself.
+            if (obj && obj.__wasthon_unicode_buf__) {
+                if (obj.__wasthon_unicode_cached__ !== undefined) {
+                    return obj.__wasthon_unicode_cached__;
+                }
+                var buf = obj.__wasthon_unicode_buf__;
+                var size = obj.__wasthon_unicode_size__;
+                var kind = obj.__wasthon_unicode_kind__;
+                var chars = new Array(size);
+                for (var i = 0; i < size; i++) {
+                    if (kind === 4)      chars[i] = String.fromCodePoint(HEAPU32[(buf + i * 4) >> 2]);
+                    else if (kind === 2) chars[i] = String.fromCodePoint(HEAPU16[(buf + i * 2) >> 1]);
+                    else                 chars[i] = String.fromCharCode(HEAPU8[buf + i]);
+                }
+                obj.__wasthon_unicode_cached__ = chars.join('');
+                return obj.__wasthon_unicode_cached__;
+            }
+            return null;
+        },
+    },
+
+    /* --------------------------------------------------------------- *
+     * Built-in type constructors & accessors                          *
+     * --------------------------------------------------------------- */
+
+    PyBytes_FromStringAndSize__deps: ['$WasthonRT'],
+    PyBytes_FromStringAndSize: function(strPtr, size) {
+        var rt = WasthonRT;
+        if (strPtr === 0) {
+            // Writable buffer path (decompressors, codec output, etc.).
+            // Back the bytes object directly with linear memory so that
+            // PyBytes_AsString returns its pointer without a malloc+copy,
+            // and the producer (C) writes straight into the memory the
+            // bytes object owns. _PyBytes_Resize materializes the final
+            // source array from this buffer in one pass. Net cost on the
+            // output path drops from 4 O(n) passes to 3.
+            var ptr = _malloc((size | 0) + 1);
+            if (ptr === 0) {
+                rt.setError(rt.wrap(rt._b_.MemoryError),
+                    "PyBytes_FromStringAndSize");
+                return 0;
+            }
+            HEAPU8.fill(0, ptr, ptr + size + 1);
+            var src = new Array(size);
+            for (var i = 0; i < size; i++) src[i] = 0;
+            var bytesObj = rt._b_.bytes.$factory(src);
+            bytesObj.__wasthon_cstr__ = ptr;
+            bytesObj.__wasthon_cstr_size__ = size;
+            return rt.wrap(bytesObj);
+        }
+        // Initial-content path: copy from C buffer to JS Array in one pass
+        // (skips the Uint8Array → Array.from intermediate).
+        var arr = new Array(size);
+        for (var i = 0; i < size; i++) arr[i] = HEAPU8[strPtr + i];
+        return rt.wrap(rt._b_.bytes.$factory(arr));
+    },
+
+    PyUnicode_FromStringAndSize__deps: ['$WasthonRT'],
+    PyUnicode_FromStringAndSize: function(uPtr, size) {
+        if (uPtr === 0) {
+            return WasthonRT.wrap("");
+        }
+        // Decode as UTF-8 (CPython semantics for char* + len).
+        var s = UTF8ToString(uPtr, size);
+        return WasthonRT.wrap(s);
+    },
+
+    /* PyUnicode_AsUTF8String — encode a str as UTF-8 bytes. Returns a new
+     * bytes object. */
+    PyUnicode_AsUTF8String__deps: ['$WasthonRT'],
+    PyUnicode_AsUTF8String: function(sH) {
+        var rt = WasthonRT;
+        var s = rt.asJSStr(rt.unwrap(sH));
+        if (s === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "PyUnicode_AsUTF8String: not a str");
+            return 0;
+        }
+        var bytes = new TextEncoder().encode(s);
+        return rt.wrap(rt._b_.bytes.$factory(Array.from(bytes)));
+    },
+
+    /* PyUnicode_AsUTF8AndSize(s, *size_out) — same as PyUnicode_AsUTF8 but
+     * also writes the byte length to *size_out (if non-NULL). The pointer
+     * is cached on the string so the call is idempotent. */
+    PyUnicode_AsUTF8AndSize__deps: ['$WasthonRT', 'PyUnicode_AsUTF8'],
+    PyUnicode_AsUTF8AndSize: function(handle, sizePtr) {
+        var rt = WasthonRT;
+        var ptr = _PyUnicode_AsUTF8(handle);
+        if (ptr === 0) return 0;
+        if (sizePtr !== 0) {
+            // Read back the cached length: re-encode to compute it (cheap;
+            // the JS string is small and we already cached the pointer).
+            var s = rt.asJSStr(rt.unwrap(handle));
+            HEAP32[sizePtr >> 2] = new TextEncoder().encode(s).length;
+        }
+        return ptr;
+    },
+
+    /* PyUnicode_DecodeUTF8(buf, size, errors) — decode UTF-8 bytes to a
+     * Python str. We ignore the errors argument (strict-mode behaviour). */
+    PyUnicode_DecodeUTF8__deps: ['$WasthonRT'],
+    PyUnicode_DecodeUTF8: function(strPtr, size, errorsPtr) {
+        if (strPtr === 0) return WasthonRT.wrap("");
+        return WasthonRT.wrap(UTF8ToString(strPtr, size));
+    },
+
+    /* PyUnicode_DecodeASCII — same as UTF8 decode for 0x00-0x7F. */
+    PyUnicode_DecodeASCII__deps: ['$WasthonRT'],
+    PyUnicode_DecodeASCII: function(strPtr, size, errorsPtr) {
+        if (strPtr === 0) return WasthonRT.wrap("");
+        var s = "";
+        for (var i = 0; i < size; i++) s += String.fromCharCode(HEAPU8[strPtr + i]);
+        return WasthonRT.wrap(s);
+    },
+
+    /* PyObject_GetIter(o) — iter(o). */
+    PyObject_GetIter__deps: ['$WasthonRT'],
+    PyObject_GetIter: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (obj === null) return 0;
+        try { return rt.wrap(rt._b_.iter(obj)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* PyIter_Next(iter) — next(iter) or NULL at StopIteration. */
+    PyIter_Next__deps: ['$WasthonRT'],
+    PyIter_Next: function(iterH) {
+        var rt = WasthonRT;
+        var iter = rt.unwrap(iterH);
+        if (iter === null) return 0;
+        try { return rt.wrap(rt._b_.next(iter)); }
+        catch (e) {
+            // StopIteration: return NULL with NO exception set (CPython contract).
+            // Brython's $B.is_exc handles all the type-check edge cases.
+            try {
+                if (rt.$B.is_exc && rt.$B.is_exc(e, rt._b_.StopIteration)) return 0;
+            } catch (_) {}
+            // Other exceptions: forward to pendingException via class lookup.
+            var excCls = (e && e.__class__) ? e.__class__ : rt._b_.RuntimeError;
+            var msg;
+            if (e && e.args && e.args.length > 0) msg = String(e.args[0]);
+            else if (e && e.message) msg = e.message;
+            else msg = String(e);
+            rt.setError(rt.wrap(excCls), msg);
+            return 0;
+        }
+    },
+
+    /* PyNumber_Check(o) — int/float/Decimal/etc.? */
+    PyNumber_Check__deps: ['$WasthonRT'],
+    PyNumber_Check: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (typeof obj === 'number' || typeof obj === 'bigint') return 1;
+        if (obj === null || obj === undefined) return 0;
+        try {
+            return (rt.$B.$isinstance(obj, rt._b_.int) ||
+                    rt.$B.$isinstance(obj, rt._b_.float) ||
+                    rt.$B.$isinstance(obj, rt._b_.complex)) ? 1 : 0;
+        } catch (e) { return 0; }
+    },
+
+    /* PyNumber_Float(o) — float(o) coercion. */
+    PyNumber_Float__deps: ['$WasthonRT'],
+    PyNumber_Float: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        try { return rt.wrap(rt._b_.float.$factory(obj)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* PyObject_VectorcallDict(callable, args, nargs, kwargs) — call with
+     * positional args from a contiguous PyObject** buffer + kwargs dict. */
+    PyObject_VectorcallDict__deps: ['$WasthonRT'],
+    PyObject_VectorcallDict: function(fnH, argsPtr, nargs, kwargsH) {
+        var rt = WasthonRT;
+        var fn = rt.unwrap(fnH);
+        if (!fn) return 0;
+        var args = [];
+        for (var i = 0; i < nargs; i++) {
+            args.push(rt.unwrap(HEAP32[(argsPtr + i * 4) >> 2]));
+        }
+        // For kwargs, Brython expects them as a special $kw object.
+        var kw = kwargsH === 0 ? null : rt.unwrap(kwargsH);
+        if (kw) {
+            var kwArg = { $nat: 'kw', $kw: kw };
+            args.push(kwArg);
+        }
+        try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
+        catch (e) {
+            var excCls = (e && e.__class__) ? e.__class__ : rt._b_.RuntimeError;
+            var msg;
+            if (e && e.args && e.args.length > 0) msg = String(e.args[0]);
+            else if (e && e.message) msg = e.message;
+            else msg = String(e);
+            rt.setError(rt.wrap(excCls), msg);
+            return 0;
+        }
+    },
+
+    /* PyErr_WarnEx — emit a runtime warning. We swallow it: not having
+     * Python's warnings module wired in WASM, the closest correct behaviour
+     * is silent success. Returns 0 (no exception raised). */
+    PyErr_WarnEx__deps: ['$WasthonRT'],
+    PyErr_WarnEx: function(categoryH, msgPtr, stacklevel) {
+        return 0;
+    },
+
+    PyUnicode_FromString__deps: ['$WasthonRT'],
+    /* PyUnicode_InternFromString — like FromString, but the result is
+     * interned. We don't have a separate intern pool; Brython hashes
+     * strings by content, so identity isn't required to be unique.
+     * Equivalent behaviour for non-identity-sensitive callers. */
+    PyUnicode_InternFromString__deps: ['$WasthonRT', 'PyUnicode_FromString'],
+    PyUnicode_InternFromString: function(uPtr) {
+        return _PyUnicode_FromString(uPtr);
+    },
+
+    PyUnicode_FromString__deps: ['$WasthonRT'],
+    PyUnicode_FromString: function(uPtr) {
+        if (uPtr === 0) return 0;
+        return WasthonRT.wrap(UTF8ToString(uPtr));
+    },
+
+    PyLong_FromLong__deps: ['$WasthonRT'],
+    PyLong_FromLong: function(v) {
+        // Brython ints are JS numbers (or BigInt for long). For sha2-scale
+        // values, plain JS number is correct.
+        return WasthonRT.wrap(v | 0);
+    },
+
+    PyLong_FromUInt32__deps: ['$WasthonRT'],
+    PyLong_FromUInt32: function(v) { return WasthonRT.wrap(v >>> 0); },
+
+    PyLong_FromVoidPtr__deps: ['$WasthonRT'],
+    PyLong_FromVoidPtr: function(p) { return WasthonRT.wrap(p >>> 0); },
+
+    PyBool_FromLong__deps: ['$WasthonRT'],
+    PyBool_FromLong: function(v) { return v ? WasthonRT.SLOT_TRUE : WasthonRT.SLOT_FALSE; },
+
+    PyFloat_FromDouble__deps: ['$WasthonRT'],
+    PyFloat_FromDouble: function(v) {
+        var rt = WasthonRT;
+        /* Brython distinguishes int from float at the type level. A JS
+         * Number that happens to equal an integer (e.g. 1.0) round-trips
+         * as a Python int, which is wrong for math.sqrt(1) etc. Wrap as
+         * an explicit _b_.float instance so format strings like `:.6f`
+         * find a proper Python float to dispatch on. */
+        if (rt._b_ && rt._b_.float && rt._b_.float.$factory) {
+            return rt.wrap(rt._b_.float.$factory(v));
+        }
+        return rt.wrap(v);
+    },
+
+    PyFloat_AsDouble__deps: ['$WasthonRT'],
+    PyFloat_AsDouble: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (typeof obj === 'number') return obj;
+        if (obj && typeof obj.value === 'number') return obj.value;
+        WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+            "PyFloat_AsDouble: argument is not a float");
+        return -1;
+    },
+
+    /* PyTime — _random uses this for seeding. Store nanoseconds as i64. */
+    PyTime_Time__deps: ['$WasthonRT'],
+    PyTime_Time: function(resultPtr) {
+        // Date.now() is ms since epoch; nanoseconds = ms * 1e6
+        var ms = Date.now();
+        var ns = BigInt(ms) * 1000000n;
+        HEAP32[ resultPtr      >> 2] = Number(ns & 0xFFFFFFFFn);
+        HEAP32[(resultPtr + 4) >> 2] = Number((ns >> 32n) & 0xFFFFFFFFn);
+        return 0;
+    },
+
+    PyTime_Monotonic__deps: ['$WasthonRT'],
+    PyTime_Monotonic: function(resultPtr) {
+        var ns = BigInt(Math.floor(performance.now() * 1000000));
+        HEAP32[ resultPtr      >> 2] = Number(ns & 0xFFFFFFFFn);
+        HEAP32[(resultPtr + 4) >> 2] = Number((ns >> 32n) & 0xFFFFFFFFn);
+        return 0;
+    },
+
+    /* Random seeding — _random falls back to PyOS_URandomNonblock when no
+     * explicit seed is given. Use the WebCrypto RNG. */
+    _PyOS_URandom__deps: ['$WasthonRT'],
+    _PyOS_URandom: function(bufPtr, size) {
+        var view = HEAPU8.subarray(bufPtr, bufPtr + size);
+        var CHUNK = 65536;  // crypto.getRandomValues cap
+        for (var off = 0; off < size; off += CHUNK) {
+            var n = Math.min(CHUNK, size - off);
+            crypto.getRandomValues(view.subarray(off, off + n));
+        }
+        return 0;
+    },
+    _PyOS_URandomNonblock__deps: ['$WasthonRT'],
+    _PyOS_URandomNonblock: function(bufPtr, size) {
+        return __PyOS_URandom(bufPtr, size);
+    },
+
+    /* 64-bit unsigned converter — _random uses this for seed values. */
+    _PyLong_UInt64_Converter__deps: ['$WasthonRT'],
+    _PyLong_UInt64_Converter: function(handle, ptr) {
+        var obj = WasthonRT.unwrap(handle);
+        var bv;
+        if (typeof obj === 'number') {
+            if (obj < 0) {
+                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
+                    "can't convert negative int to unsigned");
+                return 0;
+            }
+            bv = BigInt(Math.trunc(obj));
+        } else if (typeof obj === 'bigint') {
+            if (obj < 0n) {
+                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
+                    "can't convert negative int to unsigned");
+                return 0;
+            }
+            bv = obj;
+        } else {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+                "an integer is required");
+            return 0;
+        }
+        HEAPU32[ ptr        >> 2] = Number(bv & 0xFFFFFFFFn);
+        HEAPU32[(ptr + 4)   >> 2] = Number((bv >> 32n) & 0xFFFFFFFFn);
+        return 1;
+    },
+
+    _PyLong_UInt32_Converter__deps: ['$WasthonRT'],
+    _PyLong_UInt32_Converter: function(handle, ptr) {
+        var obj = WasthonRT.unwrap(handle);
+        var v;
+        if (typeof obj === 'number') v = obj;
+        else if (typeof obj === 'bigint') v = Number(obj);
+        else {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+                "an integer is required");
+            return 0;
+        }
+        if (v < 0) {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
+                "can't convert negative int to unsigned");
+            return 0;
+        }
+        HEAPU32[ptr >> 2] = v >>> 0;
+        return 1;
+    },
+
+    _PyArg_BadArgument__deps: ['$WasthonRT'],
+    _PyArg_BadArgument: function(fnPtr, dispPtr, expPtr, argH) {
+        var rt = WasthonRT;
+        var fname = fnPtr ? UTF8ToString(fnPtr) : "function";
+        var disp  = dispPtr ? UTF8ToString(dispPtr) : "argument";
+        var exp   = expPtr ? UTF8ToString(expPtr) : "?";
+        rt.setError(rt.wrap(rt._b_.TypeError),
+            fname + "() " + disp + " must be " + exp);
+        return 0;
+    },
+
+    /* List API — Brython list is a JS Array with __class__ = _b_.list. */
+    PyList_New__deps: ['$WasthonRT'],
+    PyList_New: function(size) {
+        var arr = new Array(size | 0);
+        for (var i = 0; i < size; i++) arr[i] = WasthonRT._b_.None;
+        // Tag as a Brython list so Brython routines accept it.
+        arr.__class__ = WasthonRT._b_.list;
+        return WasthonRT.wrap(arr);
+    },
+
+    PyList_Append__deps: ['$WasthonRT'],
+    PyList_Append: function(listHandle, itemHandle) {
+        var arr = WasthonRT.unwrap(listHandle);
+        if (!Array.isArray(arr)) return -1;
+        arr.push(WasthonRT.unwrap(itemHandle));
+        return 0;
+    },
+
+    PyList_GetItem__deps: ['$WasthonRT'],
+    PyList_GetItem: function(listHandle, i) {
+        var arr = WasthonRT.unwrap(listHandle);
+        if (!Array.isArray(arr) || i < 0 || i >= arr.length) return 0;
+        return WasthonRT.wrap(arr[i]);
+    },
+
+    PyList_SetItem__deps: ['$WasthonRT'],
+    PyList_SetItem: function(listHandle, i, itemHandle) {
+        var arr = WasthonRT.unwrap(listHandle);
+        if (!Array.isArray(arr)) return -1;
+        arr[i] = WasthonRT.unwrap(itemHandle);
+        return 0;
+    },
+
+    PyList_Size__deps: ['$WasthonRT'],
+    PyList_Size: function(listHandle) {
+        var arr = WasthonRT.unwrap(listHandle);
+        return Array.isArray(arr) ? arr.length : 0;
+    },
+
+    PyList_Sort__deps: ['$WasthonRT'],
+    PyList_Sort: function(listHandle) {
+        var arr = WasthonRT.unwrap(listHandle);
+        if (!Array.isArray(arr)) return -1;
+        arr.sort();
+        return 0;
+    },
+
+    PyList_Insert__deps: ['$WasthonRT'],
+    PyList_Insert: function(listHandle, index, itemHandle) {
+        var arr = WasthonRT.unwrap(listHandle);
+        if (!Array.isArray(arr)) return -1;
+        var n = arr.length;
+        var i = index | 0;
+        if (i < 0) i = Math.max(0, n + i);
+        if (i > n) i = n;
+        arr.splice(i, 0, WasthonRT.unwrap(itemHandle));
+        return 0;
+    },
+
+    /* PyList_SetSlice — assigns itemlist (or NULL/empty for deletion) to
+     * list[low:high]. Used by heapq.heappop to drop the last element. */
+    PyList_SetSlice__deps: ['$WasthonRT'],
+    PyList_SetSlice: function(listHandle, low, high, itemHandle) {
+        var rt = WasthonRT;
+        var arr = rt.unwrap(listHandle);
+        if (!Array.isArray(arr)) return -1;
+        var n = arr.length;
+        var lo = low | 0, hi = high | 0;
+        if (lo < 0) lo = Math.max(0, n + lo);
+        if (hi < 0) hi = Math.max(0, n + hi);
+        lo = Math.min(lo, n);
+        hi = Math.min(Math.max(hi, lo), n);
+        var src = (itemHandle === 0) ? [] : rt.unwrap(itemHandle);
+        if (!Array.isArray(src)) {
+            try { src = Array.from(src); } catch (e) { src = []; }
+        }
+        arr.splice.apply(arr, [lo, hi - lo].concat(src));
+        return 0;
+    },
+
+    /* Tuple — Brython tuple is a JS array with __class__ = _b_.tuple. */
+    PyTuple_New__deps: ['$WasthonRT'],
+    PyTuple_New: function(size) {
+        var arr = new Array(size | 0);
+        for (var i = 0; i < size; i++) arr[i] = null;
+        arr.__class__ = WasthonRT._b_.tuple;
+        return WasthonRT.wrap(arr);
+    },
+
+    PyTuple_SetItem__deps: ['$WasthonRT'],
+    PyTuple_SetItem: function(tupH, i, itemH) {
+        var arr = WasthonRT.unwrap(tupH);
+        if (!Array.isArray(arr)) return -1;
+        arr[i] = WasthonRT.unwrap(itemH);
+        return 0;
+    },
+
+    PyTuple_GetItem__deps: ['$WasthonRT'],
+    PyTuple_GetItem: function(tupH, i) {
+        var arr = WasthonRT.unwrap(tupH);
+        if (!Array.isArray(arr) || i < 0 || i >= arr.length) return 0;
+        return WasthonRT.wrap(arr[i]);
+    },
+
+    PyTuple_Size__deps: ['$WasthonRT'],
+    PyTuple_Size: function(handle) {
+        var arr = WasthonRT.unwrap(handle);
+        return Array.isArray(arr) ? arr.length : 0;
+    },
+
+    /* PyTuple_Pack(n, o1, o2, ..., oN) — varargs tuple constructor. emcc
+     * lays out the variadic PyObject* args contiguously after `n` as
+     * 4-byte slots. We pull n handles starting at the varargs pointer. */
+    PyTuple_Pack__deps: ['$WasthonRT'],
+    PyTuple_Pack: function(n, varargs) {
+        var rt = WasthonRT;
+        var arr = new Array(n);
+        for (var i = 0; i < n; i++) {
+            arr[i] = rt.unwrap(HEAP32[(varargs + i * 4) >> 2]);
+        }
+        return rt.wrap(rt._b_.tuple.$factory(arr));
+    },
+
+    /* Callable check + call iter. */
+    PyCallable_Check__deps: ['$WasthonRT'],
+    PyCallable_Check: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        return (typeof obj === 'function' || (obj && obj.$is_func)) ? 1 : 0;
+    },
+
+    PyCallIter_New__deps: ['$WasthonRT'],
+    PyCallIter_New: function(callableH, sentinelH) {
+        var rt = WasthonRT;
+        var fn = rt.unwrap(callableH);
+        var sentinel = rt.unwrap(sentinelH);
+        if (!fn) return 0;
+        // Brython's callable_iterator(fn, sentinel) — emulate with a generator.
+        function* gen() {
+            while (true) {
+                var v = rt.$B.$call(fn);
+                if (v === sentinel) return;
+                yield v;
+            }
+        }
+        return rt.wrap(gen());
+    },
+
+    /* PyObject_Vectorcall — call with fastcall ABI from C. We translate to
+     * a Brython call with the unwrapped args. */
+    PyObject_Vectorcall__deps: ['$WasthonRT'],
+    PyObject_Vectorcall: function(callableH, argsPtr, nargsf, kwnamesH) {
+        var rt = WasthonRT;
+        var fn = rt.unwrap(callableH);
+        if (fn === null) return 0;
+        var nargs = nargsf & 0x7FFFFFFF;  // PY_VECTORCALL_ARGUMENTS_OFFSET mask
+        var args = [];
+        for (var i = 0; i < nargs; i++) {
+            args.push(rt.unwrap(HEAP32[(argsPtr + i * 4) >> 2]));
+        }
+        // kwnames support is rare in sre's call sites; skip for now.
+        try {
+            return rt.wrap(rt.$B.$call.apply(rt.$B, [fn].concat(args)));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* PyImport_ImportModuleAttrString — import `modname` then return getattr(mod, attr).
+     * For dotted modules (e.g. "collections.abc"), Brython's __import__ without
+     * fromlist returns the TOP package ("collections"), not the leaf. Pass the
+     * leaf via fromlist so we get the submodule directly. */
+    PyImport_ImportModuleAttrString__deps: ['$WasthonRT'],
+    PyImport_ImportModuleAttrString: function(modnamePtr, attrPtr) {
+        var rt = WasthonRT;
+        var modname = UTF8ToString(modnamePtr);
+        var attr = UTF8ToString(attrPtr);
+        try {
+            var imp = rt._b_.__import__;
+            var mod;
+            if (modname.indexOf('.') !== -1) {
+                var parts = modname.split('.');
+                var leaf = parts[parts.length - 1];
+                mod = imp(modname, rt._b_.None, rt._b_.None,
+                          rt._b_.tuple.$factory([leaf]));
+                if (mod && mod.__name__ !== modname) {
+                    for (var i = 1; i < parts.length; i++) {
+                        var sub = rt.$B.$getattr(mod, parts[i], rt._b_.None);
+                        if (sub && sub !== rt._b_.None) mod = sub;
+                    }
+                }
+            } else {
+                mod = imp(modname);
+            }
+            return rt.wrap(rt.$B.$getattr(mod, attr));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.ImportError),
+                "wasthon: failed to import " + modname + "." + attr + ": " + (e.message || e));
+            return 0;
+        }
+    },
+
+    /* Bytes — FromObject converts a buffer-like to bytes, Join concatenates. */
+    PyBytes_FromObject__deps: ['$WasthonRT'],
+    PyBytes_FromObject: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        try {
+            return rt.wrap(rt._b_.bytes.$factory(obj));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "PyBytes_FromObject: cannot convert");
+            return 0;
+        }
+    },
+
+    /* Dict — Brython _b_.dict is a Symbol-keyed object. We use its public
+     * functions (str_dict_set / $setitem / $contains / $delitem). */
+    PyDict_New__deps: ['$WasthonRT'],
+    PyDict_New: function() {
+        return WasthonRT.wrap(WasthonRT.$B.empty_dict());
+    },
+
+    PyDict_GetItemWithError__deps: ['$WasthonRT'],
+    PyDict_GetItemWithError: function(dictH, keyH) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictH);
+        var k = rt.unwrap(keyH);
+        if (!d) return 0;
+        try {
+            var v = rt._b_.dict.$getitem(d, k);
+            return v === undefined ? 0 : rt.wrap(v);
+        } catch (e) {
+            // KeyError → return NULL with NO exception (per CPython contract).
+            return 0;
+        }
+    },
+
+    PyDict_SetItem__deps: ['$WasthonRT'],
+    PyDict_SetItem: function(dictH, keyH, valueH) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictH);
+        var k = rt.unwrap(keyH);
+        var v = rt.unwrap(valueH);
+        if (!d) return -1;
+        try { rt._b_.dict.$setitem(d, k, v); return 0; }
+        catch (e) { return -1; }
+    },
+
+    PyDict_Contains__deps: ['$WasthonRT'],
+    PyDict_Contains: function(dictH, keyH) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictH);
+        var k = rt.unwrap(keyH);
+        try { return rt._b_.dict.$contains(d, k) ? 1 : 0; } catch (e) { return 0; }
+    },
+
+    PyDict_DelItem__deps: ['$WasthonRT'],
+    PyDict_DelItem: function(dictH, keyH) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictH);
+        var k = rt.unwrap(keyH);
+        try { rt._b_.dict.__delitem__(d, k); return 0; } catch (e) { return -1; }
+    },
+
+    PyDict_Clear__deps: ['$WasthonRT'],
+    PyDict_Clear: function(dictH) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictH);
+        if (d === null) return -1;
+        try { rt._b_.dict.clear(d); return 0; } catch (e) { return -1; }
+    },
+
+    PyDict_Size__deps: ['$WasthonRT'],
+    PyDict_Size: function(dictH) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictH);
+        if (d === null) return -1;
+        try { return rt._b_.dict.mp_length(d) | 0; } catch (e) { return -1; }
+    },
+
+    PyDict_Keys__deps: ['$WasthonRT'],
+    PyDict_Keys: function(dictH) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictH);
+        if (d === null) return 0;
+        try { return rt.wrap(rt._b_.list.$factory(rt._b_.dict.keys(d))); }
+        catch (e) { return 0; }
+    },
+
+    /* PyDict_Pop(dict, key, *result) — remove key, write removed value
+     * to *result. Returns 1 on success, 0 if key absent, -1 on error. */
+    PyDict_Pop__deps: ['$WasthonRT'],
+    PyDict_Pop: function(dictH, keyH, resultPtr) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictH);
+        var k = rt.unwrap(keyH);
+        if (d === null) return -1;
+        try {
+            if (rt._b_.dict.$contains_string(d, k)) {
+                var v = rt._b_.dict.$getitem(d, k);
+                rt._b_.dict.$delitem(d, k);
+                if (resultPtr !== 0) HEAP32[resultPtr >> 2] = rt.wrap(v);
+                return 1;
+            }
+            if (resultPtr !== 0) HEAP32[resultPtr >> 2] = 0;
+            return 0;
+        } catch (e) {
+            if (resultPtr !== 0) HEAP32[resultPtr >> 2] = 0;
+            return -1;
+        }
+    },
+
+    /* PyDict_GetItemRef — like GetItem but with refcount semantics.
+     * For us refcount is a no-op; just write the result handle into *result. */
+    PyDict_GetItemRef__deps: ['$WasthonRT'],
+    PyDict_GetItemRef: function(dictH, keyH, resultPtr) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictH);
+        var k = rt.unwrap(keyH);
+        if (!d) { HEAP32[resultPtr >> 2] = 0; return -1; }
+        try {
+            var v = rt._b_.dict.$getitem(d, k);
+            if (v === undefined) { HEAP32[resultPtr >> 2] = 0; return 0; }
+            HEAP32[resultPtr >> 2] = rt.wrap(v);
+            return 1;
+        } catch (e) {
+            HEAP32[resultPtr >> 2] = 0;
+            return 0;  // not present
+        }
+    },
+
+    PyObject_GenericSetAttr__deps: ['$WasthonRT'],
+    PyObject_GenericSetAttr: function(objH, nameH, valueH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var name = rt.unwrap(nameH);
+        var v = rt.unwrap(valueH);
+        try { rt._b_.setattr(obj, name, v); return 0; } catch (e) { return -1; }
+    },
+
+    /* PyType_GetSlot — read a slot off a type at runtime. */
+    PyType_GetSlot__deps: ['$WasthonRT'],
+    PyType_GetSlot: function(typeHandle, slotId) {
+        var rt = WasthonRT;
+        var info = rt.types.get(typeHandle);
+        if (!info || !info.slots) return 0;
+        return info.slots[slotId] || 0;
+    },
+
+    /* PyType_GetBaseByToken(type, token, *result) — CPython 3.14 stable
+     * way to identify "is this object's type a subclass of one I created
+     * via PyType_Spec spec X". We stash the spec pointer on each Brython
+     * class at PyType_FromModuleAndSpec time as __wasthon_type_token__;
+     * here we walk the MRO and pointer-compare. Returns:
+     *   1  match found, *result set to that base's type handle (if non-NULL)
+     *   0  no match, *result set to 0 (if non-NULL)
+     *  -1  error (token == NULL — CPython contract: TypeError)
+     */
+    PyType_GetBaseByToken__deps: ['$WasthonRT'],
+    PyType_GetBaseByToken: function(typeH, token, resultPtr) {
+        var rt = WasthonRT;
+        if (token === 0) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "PyType_GetBaseByToken called with token=NULL");
+            if (resultPtr !== 0) HEAP32[resultPtr >> 2] = 0;
+            return -1;
+        }
+        var cls = rt.unwrap(typeH);
+        if (cls === null) {
+            if (resultPtr !== 0) HEAP32[resultPtr >> 2] = 0;
+            return 0;
+        }
+        // Walk MRO. Brython exposes it as cls.__mro__ (an array of classes).
+        var mro = cls.__mro__;
+        if (mro) {
+            // Include cls itself first.
+            if (cls.__wasthon_type_token__ === token) {
+                if (resultPtr !== 0) HEAP32[resultPtr >> 2] = cls.__wasthon_type_handle__ || 0;
+                return 1;
+            }
+            for (var i = 0; i < mro.length; i++) {
+                var base = mro[i];
+                if (base && base.__wasthon_type_token__ === token) {
+                    if (resultPtr !== 0) HEAP32[resultPtr >> 2] = base.__wasthon_type_handle__ || 0;
+                    return 1;
+                }
+            }
+        } else if (cls.__wasthon_type_token__ === token) {
+            if (resultPtr !== 0) HEAP32[resultPtr >> 2] = cls.__wasthon_type_handle__ || 0;
+            return 1;
+        }
+        if (resultPtr !== 0) HEAP32[resultPtr >> 2] = 0;
+        return 0;
+    },
+
+    /* PyArg_Parse(arg, fmt, &out) — parse ONE object against a format
+     * char, write into *out. Critical for arraymodule's per-item type
+     * conversion (b_setitem, h_setitem, ... each call PyArg_Parse to coerce
+     * an iterable's value into the typed slot before storing it). */
+    PyArg_Parse__deps: ['$WasthonRT'],
+    PyArg_Parse: function(argH, fmtPtr, varargs) {
+        var rt = WasthonRT;
+        var fmt = fmtPtr ? UTF8ToString(fmtPtr) : "";
+        var sep = fmt.search(/[:;]/);
+        if (sep >= 0) fmt = fmt.slice(0, sep);
+        if (fmt.length === 0) return 1;
+        var c = fmt[0];
+        var arg = rt.unwrap(argH);
+        var outPtr = HEAP32[varargs >> 2];
+        if (outPtr === 0) return 1;
+
+        if (c === 'O') {
+            HEAP32[outPtr >> 2] = argH;
+            return 1;
+        }
+        if (c === 'C') {
+            var s = rt.asJSStr(arg);
+            if (s === null || s.length !== 1) {
+                rt.setError(rt.wrap(rt._b_.TypeError), "expected single char str");
+                return 0;
+            }
+            HEAP32[outPtr >> 2] = s.codePointAt(0) || s.charCodeAt(0);
+            return 1;
+        }
+
+        var n;
+        if (typeof arg === 'number')      n = arg;
+        else if (typeof arg === 'bigint') n = arg;
+        else if (arg === true)            n = 1;
+        else if (arg === false)           n = 0;
+        else if (arg && typeof arg.value === 'number') {
+            /* Brython float wraps a JS number in an object with .value */
+            n = arg.value;
+        } else {
+            try {
+                var idx = rt.$B.$getattr(arg, '__index__', null) ||
+                          rt.$B.$getattr(arg, '__int__', null) ||
+                          rt.$B.$getattr(arg, '__float__', null);
+                if (idx) {
+                    var iv = idx();
+                    if (typeof iv === 'bigint') n = iv;
+                    else if (iv && typeof iv.value === 'number') n = iv.value;
+                    else n = Number(iv);
+                } else { n = Number(arg); }
+                if (typeof n !== 'number' && typeof n !== 'bigint') {
+                    throw new Error("coercion produced " + typeof n);
+                }
+                if (typeof n === 'number' && isNaN(n)) {
+                    throw new Error("coercion gave NaN");
+                }
+            } catch (e) {
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                    "PyArg_Parse: cannot convert (got " + (typeof arg) + ")");
+                return 0;
+            }
+        }
+
+        var num = (typeof n === 'bigint') ? Number(n) : n;
+        switch (c) {
+            case 'b': case 'B':
+                HEAPU8[outPtr] = num & 0xff;
+                break;
+            case 'h': case 'H':
+                HEAP16[outPtr >> 1] = num & 0xffff;
+                break;
+            case 'i': case 'I': case 'l': case 'k': case 'n':
+                HEAP32[outPtr >> 2] = num | 0;
+                break;
+            case 'L': case 'K': case 'q': case 'Q': {
+                var big = (typeof n === 'bigint') ? n : BigInt(Math.trunc(num));
+                if (big < 0n) big = (1n << 64n) + big;
+                HEAP32[outPtr >> 2] = Number(big & 0xffffffffn);
+                HEAP32[(outPtr + 4) >> 2] = Number((big >> 32n) & 0xffffffffn);
+                break;
+            }
+            case 'f': HEAPF32[outPtr >> 2] = num; break;
+            case 'd': HEAPF64[outPtr >> 3] = num; break;
+            default:
+                rt.setError(rt.wrap(rt._b_.SystemError),
+                    "PyArg_Parse: format char '" + c + "' not implemented");
+                return 0;
+        }
+        return 1;
+    },
+
+    /* _PyBytesWriter — incremental bytes builder used by _struct for pack.
+     * Struct layout (from pycore_bytesobject.h):
+     *   +0   PyObject *buffer       (repurposed as raw WASM ptr)
+     *   +4   Py_ssize_t allocated
+     *   +8   Py_ssize_t min_size
+     *   +12  int overallocate
+     *   +16  int use_small_buffer  (we ignore — always heap-allocate)
+     */
+    _PyBytesWriter_Init: function(writerPtr) {
+        for (var i = 0; i < 20; i += 4) HEAP32[(writerPtr + i) >> 2] = 0;
+    },
+
+    _PyBytesWriter_Alloc: function(writerPtr, size) {
+        var alloc = Math.max(64, size | 0);
+        var buf = _malloc(alloc);
+        HEAP32[ writerPtr      >> 2] = buf;
+        HEAP32[(writerPtr + 4) >> 2] = alloc;
+        HEAP32[(writerPtr + 8) >> 2] = size | 0;
+        return buf;
+    },
+
+    _PyBytesWriter_Prepare: function(writerPtr, strPtr, size) {
+        var buf  = HEAP32[ writerPtr      >> 2];
+        var alloc = HEAP32[(writerPtr + 4) >> 2];
+        var written = strPtr - buf;
+        var needed = written + (size | 0);
+        if (needed <= alloc) return strPtr;
+        var newAlloc = Math.max(needed, alloc * 2);
+        var newBuf = _malloc(newAlloc);
+        HEAPU8.set(HEAPU8.subarray(buf, buf + written), newBuf);
+        _free(buf);
+        HEAP32[ writerPtr      >> 2] = newBuf;
+        HEAP32[(writerPtr + 4) >> 2] = newAlloc;
+        return newBuf + written;
+    },
+
+    _PyBytesWriter_Resize__deps: ['_PyBytesWriter_Prepare'],
+    _PyBytesWriter_Resize: function(writerPtr, strPtr, size) {
+        return __PyBytesWriter_Prepare(writerPtr, strPtr,
+            (size | 0) - (strPtr - HEAP32[writerPtr >> 2]));
+    },
+
+    _PyBytesWriter_Finish__deps: ['$WasthonRT'],
+    _PyBytesWriter_Finish: function(writerPtr, strPtr) {
+        var rt = WasthonRT;
+        var buf = HEAP32[writerPtr >> 2];
+        var len = strPtr - buf;
+        var arr = Array.from(HEAPU8.subarray(buf, buf + len));
+        var bytesObj = rt._b_.bytes.$factory(arr);
+        _free(buf);
+        HEAP32[writerPtr >> 2] = 0;
+        return rt.wrap(bytesObj);
+    },
+
+    _PyBytesWriter_Dealloc: function(writerPtr) {
+        var buf = HEAP32[writerPtr >> 2];
+        if (buf) {
+            _free(buf);
+            HEAP32[writerPtr >> 2] = 0;
+        }
+    },
+
+    PyDictProxy_New__deps: ['$WasthonRT'],
+    PyDictProxy_New: function(dictH) {
+        // mappingproxy in Brython
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictH);
+        if (d === null) return 0;
+        try { return rt.wrap(rt.$B.mappingproxy.tp_new(rt.$B.mappingproxy, [d])); }
+        catch (e) { return 0; }
+    },
+
+    /* PyIndex_Check / PyNumber_AsSsize_t — accept ints */
+    PyIndex_Check__deps: ['$WasthonRT'],
+    PyIndex_Check: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        return (typeof obj === 'number' && Number.isInteger(obj)) ||
+               typeof obj === 'bigint' ? 1 : 0;
+    },
+
+    PyNumber_AsSsize_t__deps: ['$WasthonRT'],
+    PyNumber_AsSsize_t: function(handle, excH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (typeof obj === 'number') return obj | 0;
+        if (typeof obj === 'bigint') return Number(obj) | 0;
+        if (excH) rt.setError(excH, "cannot convert to Py_ssize_t");
+        return -1;
+    },
+
+    _PyLong_GetZero__deps: ['$WasthonRT'],
+    _PyLong_GetZero: function() { return WasthonRT.wrap(0); },
+    _PyLong_GetOne__deps: ['$WasthonRT'],
+    _PyLong_GetOne: function() { return WasthonRT.wrap(1); },
+
+    PyNumber_Absolute__deps: ['$WasthonRT'],
+    PyNumber_Absolute: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (typeof obj === 'number') return rt.wrap(Math.abs(obj));
+        if (typeof obj === 'bigint') return rt.wrap(obj < 0n ? -obj : obj);
+        try { return rt.wrap(rt.$B.$call(rt._b_.abs, obj)); }
+        catch (e) { return 0; }
+    },
+
+    /* PyType_GetModuleByDef — looks up the module that owns a type, given
+     * a module def. Used in the per-module state pattern. We already track
+     * type→module via __wasthon_module__; def matching is loose. */
+    PyType_GetModuleByDef__deps: ['$WasthonRT'],
+    PyType_GetModuleByDef: function(typeHandle, defHandle) {
+        var rt = WasthonRT;
+        var t = rt.unwrap(typeHandle);
+        if (!t || !t.__wasthon_module__) return 0;
+        return t.__wasthon_module__;
+    },
+
+    /* PyType_GenericNew — default tp_new that allocates via tp_alloc. */
+    PyType_GenericNew__deps: ['$WasthonRT'],
+    PyType_GenericNew: function(typeHandle, argsHandle, kwdsHandle) {
+        return _wasthon_object_gc_new(typeHandle);
+    },
+
+    /* PyObject_Free — free the C-side instance memory. */
+    PyObject_Free__deps: ['$WasthonRT'],
+    PyObject_Free: function(ptr) {
+        if (ptr === 0) return;
+        WasthonRT.handles.delete(ptr);
+        _free(ptr);
+    },
+
+    /* PyObject_Type — return the class of an object. */
+    PyObject_Type__deps: ['$WasthonRT'],
+    PyObject_Type: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        if (obj.__wasthon_type__) return obj.__wasthon_type__;
+        var cls = obj.__class__ || rt.$B.get_class(obj);
+        return rt.wrap(cls);
+    },
+
+    /* _PyArg_NoKeywords — error if kwargs non-empty. */
+    _PyArg_NoKeywords__deps: ['$WasthonRT'],
+    _PyArg_NoKeywords: function(fnamePtr, kwHandle) {
+        var rt = WasthonRT;
+        if (!kwHandle) return 1;
+        var kw = rt.unwrap(kwHandle);
+        if (kw === null) return 1;
+        try {
+            if (rt._b_.dict.mp_length(kw) === 0) return 1;
+        } catch (e) {}
+        var fname = fnamePtr ? UTF8ToString(fnamePtr) : "function";
+        rt.setError(rt.wrap(rt._b_.TypeError),
+            fname + "() takes no keyword arguments");
+        return 0;
+    },
+
+    /* _PyArg_NoPositional — error if args has any positional arg. */
+    _PyArg_NoPositional__deps: ['$WasthonRT'],
+    _PyArg_NoPositional: function(fnamePtr, argsHandle) {
+        var rt = WasthonRT;
+        if (!argsHandle) return 1;
+        var args = rt.unwrap(argsHandle);
+        if (args === null || args === undefined) return 1;
+        var n = Array.isArray(args) ? args.length :
+                (args.length !== undefined ? args.length : 0);
+        if (n === 0) return 1;
+        var fname = fnamePtr ? UTF8ToString(fnamePtr) : "function";
+        rt.setError(rt.wrap(rt._b_.TypeError),
+            fname + "() takes no positional arguments");
+        return 0;
+    },
+
+    _wasthon_Py_SET_SIZE__deps: ['$WasthonRT'],
+    _wasthon_Py_SET_SIZE: function(op, size) {
+        var obj = WasthonRT.unwrap(op);
+        if (obj && obj.__wasthon_ptr__ === op) {
+            HEAP32[op >> 2] = size | 0;
+            return;
+        }
+        if (Array.isArray(obj) && size < obj.length) obj.length = size;
+    },
+
+    /* Py_BuildValue(fmt, ...) — build a Python object from a format string.
+     *
+     * Each format char consumes one (or two for 64-bit / double) varargs
+     * slots. Emscripten passes the trailing `...` as a pointer to a stack
+     * buffer (the va_list) in the first arg after fmtPtr; the slot layout
+     * follows wasm32 ABI: every arg is 4 bytes, with doubles/L taking 8
+     * aligned to 8.
+     *
+     * Grouping: `(items)` → tuple, `[items]` → list, `{k:v,...}` → dict. */
+    Py_BuildValue__deps: ['$WasthonRT'],
+    Py_BuildValue: function(fmtPtr, va) {
+        var rt = WasthonRT;
+        var fmt = fmtPtr ? UTF8ToString(fmtPtr) : "";
+        if (fmt === "" || fmt === "None") return rt.SLOT_NONE;
+
+        var p = va;
+        function readInt()    { var v = HEAP32[p >> 2] | 0; p += 4; return v; }
+        function readUInt()   { var v = HEAPU8[p] | (HEAPU8[p+1] << 8) | (HEAPU8[p+2] << 16) | (HEAPU8[p+3] << 24); p += 4; return v >>> 0; }
+        function readPtr()    { var v = HEAP32[p >> 2] >>> 0; p += 4; return v; }
+        function readDouble() { p = (p + 7) & ~7; var v = HEAPF64[p >> 3]; p += 8; return v; }
+        function readLong64() { p = (p + 7) & ~7; var lo = HEAP32[p >> 2] >>> 0; var hi = HEAP32[(p+4) >> 2] | 0; p += 8; return BigInt(hi) * 0x100000000n + BigInt(lo); }
+
+        function readOne(i) {
+            var c = fmt[i];
+            switch (c) {
+                case 'O': case 'N': case 'S': {
+                    var h = readPtr();
+                    return [rt.unwrap(h), i+1];
+                }
+                case 's': case 'z': case 'U': {
+                    var ptr = readPtr();
+                    if (ptr === 0) return [rt._b_.None, i+1];
+                    return [UTF8ToString(ptr), i+1];
+                }
+                case 'y': {
+                    var ptr = readPtr();
+                    if (ptr === 0) return [rt._b_.None, i+1];
+                    return [rt._b_.bytes.$factory(UTF8ToString(ptr)), i+1];
+                }
+                case 'i': case 'h': case 'b': case 'l':
+                    return [readInt(), i+1];
+                case 'I': case 'H': case 'B': case 'k':
+                    return [readUInt(), i+1];
+                case 'L': case 'K': {
+                    var big = readLong64();
+                    if (big >= -2147483648n && big <= 2147483647n) return [Number(big), i+1];
+                    return [big, i+1];
+                }
+                case 'n':
+                    return [readInt(), i+1];
+                case 'd': case 'f':
+                    return [readDouble(), i+1];
+                case '(': case '[': case '{': {
+                    var close = c === '(' ? ')' : (c === '[' ? ']' : '}');
+                    var items = [];
+                    var j = i + 1;
+                    while (j < fmt.length && fmt[j] !== close) {
+                        var r = readOne(j);
+                        items.push(r[0]); j = r[1];
+                    }
+                    var coll;
+                    if (c === '(') coll = rt._b_.tuple.$factory(items);
+                    else if (c === '[') coll = items;  /* JS array == Brython list */
+                    else {
+                        coll = rt.$B.empty_dict ? rt.$B.empty_dict() : rt._b_.dict.$factory();
+                        for (var k = 0; k + 1 < items.length; k += 2) {
+                            try {
+                                if (rt._b_.dict && rt._b_.dict.$setitem)
+                                    rt._b_.dict.$setitem(coll, items[k], items[k+1]);
+                                else coll[items[k]] = items[k+1];
+                            } catch (_) {}
+                        }
+                    }
+                    return [coll, j+1];
+                }
+                case ',': case ' ': case ':':
+                    return [null, i+1];  /* separator, ignored */
+                default:
+                    throw new Error("Py_BuildValue: unsupported format '" + c + "'");
+            }
+        }
+
+        try {
+            var results = [];
+            var i = 0;
+            while (i < fmt.length) {
+                var r = readOne(i);
+                if (r[0] !== null) results.push(r[0]);
+                i = r[1];
+            }
+            if (results.length === 1) return rt.wrap(results[0]);
+            return rt.wrap(rt._b_.tuple.$factory(results));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "Py_BuildValue(\"" + fmt + "\"): " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    /* Sequence access. */
+    PySequence_Fast__deps: ['$WasthonRT'],
+    PySequence_Fast: function(handle, errmsgPtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        // If it's already a list or tuple, pass through. Otherwise build a list.
+        if (Array.isArray(obj)) return handle;
+        try {
+            var arr = rt._b_.list.$factory(obj);
+            return rt.wrap(arr);
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                errmsgPtr ? UTF8ToString(errmsgPtr) : "expected a sequence");
+            return 0;
+        }
+    },
+
+    PySequence_Fast_GET_SIZE__deps: ['$WasthonRT'],
+    PySequence_Fast_GET_SIZE: function(handle) {
+        var arr = WasthonRT.unwrap(handle);
+        return Array.isArray(arr) ? arr.length : 0;
+    },
+
+    PySequence_Fast_GET_ITEM__deps: ['$WasthonRT'],
+    PySequence_Fast_GET_ITEM: function(handle, i) {
+        var arr = WasthonRT.unwrap(handle);
+        if (!Array.isArray(arr) || i < 0 || i >= arr.length) return 0;
+        return WasthonRT.wrap(arr[i]);
+    },
+
+    PySequence_Repeat__deps: ['$WasthonRT'],
+    PySequence_Repeat: function(handle, count) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        try {
+            if (Array.isArray(obj)) {
+                var out = [];
+                for (var i = 0; i < count; i++) out = out.concat(obj);
+                if (obj.__class__) out.__class__ = obj.__class__;
+                return rt.wrap(out);
+            }
+            if (typeof obj === 'string') return rt.wrap(obj.repeat(count));
+            return 0;
+        } catch (e) { return 0; }
+    },
+
+    PyObject_Hash__deps: ['$WasthonRT'],
+    PyObject_Hash: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        try { return rt.$B.$hash(obj) | 0; } catch (e) { return -1; }
+    },
+
+    /* PyObject_GenericHash — default tp_hash slot. Same as PyObject_Hash
+     * for our purposes (delegate to Brython). */
+    PyObject_GenericHash__deps: ['$WasthonRT', 'PyObject_Hash'],
+    PyObject_GenericHash: function(handle) { return _PyObject_Hash(handle); },
+
+    PyObject_RichCompareBool__deps: ['$WasthonRT'],
+    PyObject_RichCompareBool: function(o1H, o2H, op) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(o1H);
+        var b = rt.unwrap(o2H);
+        var r;
+        switch (op) {
+            case 0: r = a <  b; break;
+            case 1: r = a <= b; break;
+            case 2: r = a === b || rt.$B.$eq(a, b); break;
+            case 3: r = !(a === b || rt.$B.$eq(a, b)); break;
+            case 4: r = a >  b; break;
+            case 5: r = a >= b; break;
+            default: return -1;
+        }
+        return r ? 1 : 0;
+    },
+
+    /* Internal helpers exposed via pycore_*.h headers. _sre needs these. */
+    _PyUnicode_Copy__deps: ['$WasthonRT'],
+    _PyUnicode_Copy: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        return (typeof obj === 'string') ? WasthonRT.wrap(obj) : 0;
+    },
+
+    _PyUnicode_JoinArray__deps: ['$WasthonRT'],
+    _PyUnicode_JoinArray: function(sepH, itemsPtr, count) {
+        var rt = WasthonRT;
+        var sep = rt.unwrap(sepH);
+        // sep may be Py_None (our _Py_STR(empty) sentinel) → use ""
+        if (sep === rt._b_.None || typeof sep !== 'string') sep = "";
+        var parts = [];
+        for (var i = 0; i < count; i++) {
+            var h = HEAP32[(itemsPtr + i * 4) >> 2];
+            var v = rt.unwrap(h);
+            parts.push(typeof v === 'string' ? v : String(v));
+        }
+        return rt.wrap(parts.join(sep));
+    },
+
+    /* Public PyDict_Next is the 4-arg subset; just forward. */
+    PyDict_Next__deps: ['$WasthonRT', '_PyDict_Next'],
+    PyDict_Next: function(dictH, pposPtr, pkeyPtr, pvaluePtr) {
+        return __PyDict_Next(dictH, pposPtr, pkeyPtr, pvaluePtr, 0);
+    },
+
+    _PyDict_Next__deps: ['$WasthonRT'],
+    _PyDict_Next: function(dictH, pposPtr, pkeyPtr, pvaluePtr, phashPtr) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictH);
+        if (d === null) return 0;
+        // Get a snapshot of keys/values. For dict iteration `pos` advances
+        // through indices. Cache the snapshot per call site so repeated
+        // calls iterate consistently — keyed by dict identity + start pos.
+        if (!rt._dictIterCache) rt._dictIterCache = new WeakMap();
+        var snap = rt._dictIterCache.get(d);
+        if (!snap) {
+            snap = [];
+            try {
+                var items = rt._b_.dict.items(d);
+                for (var entry of rt.$B.make_js_iterator ?
+                                  rt.$B.make_js_iterator(items) : items) {
+                    snap.push([entry[0], entry[1]]);
+                }
+            } catch (e) { return 0; }
+            rt._dictIterCache.set(d, snap);
+        }
+        var pos = HEAP32[pposPtr >> 2];
+        if (pos < 0 || pos >= snap.length) return 0;
+        var pair = snap[pos];
+        if (pkeyPtr)   HEAP32[pkeyPtr   >> 2] = rt.wrap(pair[0]);
+        if (pvaluePtr) HEAP32[pvaluePtr >> 2] = rt.wrap(pair[1]);
+        if (phashPtr)  HEAP32[phashPtr  >> 2] = 0;  // not used by sre's call
+        HEAP32[pposPtr >> 2] = pos + 1;
+        return 1;
+    },
+
+    _PyDict_SetItem_KnownHash__deps: ['$WasthonRT'],
+    _PyDict_SetItem_KnownHash: function(dictH, keyH, valueH, hash) {
+        // Just delegate to regular SetItem — we don't use the hash hint.
+        return _PyDict_SetItem(dictH, keyH, valueH);
+    },
+
+    PyMapping_Items__deps: ['$WasthonRT'],
+    PyMapping_Items: function(handle) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(handle);
+        if (d === null) return 0;
+        try {
+            var items = rt._b_.list.$factory(rt._b_.dict.items(d));
+            return rt.wrap(items);
+        } catch (e) { return 0; }
+    },
+
+    PyBytes_Join__deps: ['$WasthonRT'],
+    PyBytes_Join: function(sepH, seqH) {
+        var rt = WasthonRT;
+        var sep = rt.unwrap(sepH);
+        var seq = rt.unwrap(seqH);
+        if (!sep || !seq) return 0;
+        try {
+            var out = sep.join ? sep.join(seq) :
+                      rt.$B.$getattr(sep, 'join')(seq);
+            return rt.wrap(out);
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* Bytes accessors. Brython bytes objects store their data in .source as
+     * Array<int>. PyBytes_AsString needs to return a C-side pointer; we
+     * allocate linear memory once per bytes-object and cache. */
+    PyBytes_AsString__deps: ['$WasthonRT'],
+    PyBytes_AsString: function(bytesHandle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(bytesHandle);
+        if (obj === null) return 0;
+        if (obj.__wasthon_cstr__) return obj.__wasthon_cstr__;
+        var src = obj.source || obj;
+        var len = src.length;
+        var ptr = _malloc(len + 1);
+        if (src instanceof Uint8Array) HEAPU8.set(src, ptr);
+        else for (var i = 0; i < len; i++) HEAPU8[ptr + i] = src[i] & 0xff;
+        HEAPU8[ptr + len] = 0;
+        try { obj.__wasthon_cstr__ = ptr; } catch (_) {}
+        return ptr;
+    },
+
+    PyBytes_Size__deps: ['$WasthonRT'],
+    PyBytes_Size: function(bytesHandle) {
+        var obj = WasthonRT.unwrap(bytesHandle);
+        if (obj === null) return 0;
+        if (obj.source) return obj.source.length;
+        if (obj.length !== undefined) return obj.length;
+        return 0;
+    },
+
+    /* List items materialisation — used by sre's `&PyList_GET_ITEM(list, 0)`.
+     * Allocates a PyObject*[N] in linear memory each call (per-call leak). */
+    wasthon_list_items__deps: ['$WasthonRT'],
+    wasthon_list_items: function(handle) {
+        var rt = WasthonRT;
+        var arr = rt.unwrap(handle);
+        if (!Array.isArray(arr)) return 0;
+        var n = arr.length;
+        var ptr = _malloc(Math.max(4, n * 4));
+        for (var i = 0; i < n; i++) {
+            HEAP32[(ptr + i * 4) >> 2] = rt.wrap(arr[i]);
+        }
+        return ptr;
+    },
+
+    /* Tracked list-items snapshot — used by heapq.
+     *
+     * Single-slot cache: only the most-recent tracked buffer is retained.
+     * Heapq only ever operates on one heap inside a single C-level call,
+     * so the latest snapshot is always the active one. On track:
+     *   - If the cached (handle, size) match, reuse the buffer as-is. Writes
+     *     stay synchronized because `wasthon_list_items_store` updates both
+     *     the WASM buffer slot and the Brython list slot in lockstep, so a
+     *     same-size buffer for the same handle is always consistent.
+     *   - Otherwise free the old buffer (avoiding a leak across calls with
+     *     different list handles), malloc a fresh one, and refill it from
+     *     the Brython list.
+     *
+     * Using one slot avoids two pitfalls of a per-handle Map: (1) stale
+     * entries accumulating across many calls with different handles, and
+     * (2) freed-and-reused `base` addresses colliding with cached entries,
+     * which would cause writes to land in the wrong list. */
+    wasthon_list_items_track__deps: ['$WasthonRT'],
+    wasthon_list_items_track: function(handle) {
+        var rt = WasthonRT;
+        var arr = rt.unwrap(handle);
+        if (!Array.isArray(arr)) return 0;
+        var n = arr.length;
+
+        var cached = rt._listTrackCur;
+        if (cached && cached.handle === handle) {
+            if (cached.size === n) {
+                cached.list = arr;
+                return cached.base;
+            }
+            if (n < cached.size) {
+                /* Trim (heappop drops the tail). No copy needed: surviving
+                 * slots already hold the correct values from prior writes. */
+                cached.size = n;
+                cached.list = arr;
+                return cached.base;
+            }
+            if (n <= cached.cap) {
+                /* Append within current capacity: copy only the new tail
+                 * slots from the Brython list. This is the hot path for
+                 * heappush: amortised O(1) per growth instead of O(N). */
+                for (var i = cached.size; i < n; i++) {
+                    HEAP32[(cached.base + i * 4) >> 2] = rt.wrap(arr[i]);
+                }
+                cached.size = n;
+                cached.list = arr;
+                return cached.base;
+            }
+            _free(cached.base);
+        } else if (cached) {
+            _free(cached.base);
+        }
+
+        /* Cold path: allocate with growth headroom to amortise future appends. */
+        var cap = Math.max(16, n + (n >> 1) + 8);
+        var ptr = _malloc(cap * 4);
+        for (var i = 0; i < n; i++) {
+            HEAP32[(ptr + i * 4) >> 2] = rt.wrap(arr[i]);
+        }
+        rt._listTrackCur = { handle: handle, list: arr, base: ptr, size: n, cap: cap };
+        return ptr;
+    },
+
+    /* Commit a single slot write back to the Brython list.
+     *
+     * Looks at the single-slot cache, computes the slot index from the
+     * pointer offset, and propagates the write to the Brython list. Called
+     * from the FT_ATOMIC_STORE_PTR_RELAXED override in pycore_list.h. The
+     * WASM buffer slot is also updated so reads from `arr[i]` later in the
+     * same C function see the latest value. */
+    wasthon_list_items_store__deps: ['$WasthonRT'],
+    wasthon_list_items_store: function(slot_ptr, value) {
+        var rt = WasthonRT;
+        var reg = rt._listTrackCur;
+        if (!reg) return;
+        var off = slot_ptr - reg.base;
+        if (off >= 0 && off < reg.size * 4 && (off & 3) === 0) {
+            var idx = off >> 2;
+            reg.list[idx] = rt.unwrap(value);
+            HEAP32[slot_ptr >> 2] = value;
+        }
+    },
+
+    /* Py_SIZE — for struct-backed objects (PyObject_VAR_HEAD declares
+     * `Py_ssize_t ob_size;` at offset 0) reads the field in linear memory.
+     * For JS-side handles (Brython bytes, list, etc.), falls back to the
+     * JS-level length. */
+    _wasthon_Py_SIZE__deps: ['$WasthonRT'],
+    _wasthon_Py_SIZE: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (obj && obj.__wasthon_ptr__ === handle) {
+            return HEAP32[handle >> 2] | 0;
+        }
+        if (obj === null) return 0;
+        if (Array.isArray(obj)) return obj.length;
+        if (obj.source) return obj.source.length;
+        if (obj.length !== undefined) return obj.length;
+        return 0;
+    },
+
+    PyLong_FromUnsignedLong__deps: ['$WasthonRT'],
+    PyLong_FromUnsignedLong: function(v) { return WasthonRT.wrap(v >>> 0); },
+
+    PyLong_FromSsize_t__deps: ['$WasthonRT'],
+    PyLong_FromSsize_t: function(v) { return WasthonRT.wrap(v | 0); },
+
+    PyLong_FromSize_t__deps: ['$WasthonRT'],
+    PyLong_FromSize_t: function(v) { return WasthonRT.wrap(v >>> 0); },
+
+    /* _PyLong_GCD(a, b) — Greatest common divisor of two PyLongs.
+     * Uses Euclid's algorithm on BigInts. */
+    _PyLong_GCD__deps: ['$WasthonRT'],
+    _PyLong_GCD: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH);
+        var b = rt.unwrap(bH);
+        function toBig(x) {
+            if (typeof x === 'bigint') return x < 0n ? -x : x;
+            if (typeof x === 'number') return BigInt(Math.abs(Math.trunc(x)));
+            return 0n;
+        }
+        var aa = toBig(a), bb = toBig(b);
+        while (bb !== 0n) { var t = bb; bb = aa % bb; aa = t; }
+        var n = Number(aa);
+        if (BigInt(n) === aa && Number.isSafeInteger(n)) return rt.wrap(n);
+        return rt.wrap(aa);
+    },
+
+    /* PyFloat_FromString — parse a string into a float. */
+    PyFloat_FromString__deps: ['$WasthonRT'],
+    PyFloat_FromString: function(sH) {
+        var rt = WasthonRT;
+        var s = rt.asJSStr(rt.unwrap(sH));
+        if (s === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "PyFloat_FromString: not a str");
+            return 0;
+        }
+        var v = parseFloat(s);
+        if (Number.isNaN(v) && s.trim().toLowerCase() !== 'nan') {
+            rt.setError(rt.wrap(rt._b_.ValueError),
+                "could not convert string to float: '" + s + "'");
+            return 0;
+        }
+        return rt.wrap(v);
+    },
+
+    /* _PyLong_NumBits — number of bits required to represent abs(v). */
+    _PyLong_NumBits__deps: ['$WasthonRT'],
+    _PyLong_NumBits: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        var n;
+        if (typeof obj === 'number') n = BigInt(Math.trunc(Math.abs(obj)));
+        else if (typeof obj === 'bigint') n = obj < 0n ? -obj : obj;
+        else return 0;
+        if (n === 0n) return 0;
+        var bits = 0;
+        while (n > 0n) { n >>= 1n; bits++; }
+        return bits;
+    },
+
+    /* _PyLong_FromByteArray — inverse of _PyLong_AsByteArray. Constructs a
+     * Python int from byte representation. */
+    _PyLong_FromByteArray__deps: ['$WasthonRT'],
+    _PyLong_FromByteArray: function(bytesPtr, n, littleEndian, isSigned) {
+        var v = 0n;
+        for (var i = 0; i < n; i++) {
+            var off = littleEndian ? (n - 1 - i) : i;
+            v = (v << 8n) | BigInt(HEAPU8[bytesPtr + off]);
+        }
+        if (isSigned && n > 0) {
+            var bits = BigInt(n * 8);
+            var sign = 1n << (bits - 1n);
+            if (v >= sign) v -= 1n << bits;
+        }
+        // Return as Number if it fits, BigInt otherwise.
+        var asNum = Number(v);
+        if (BigInt(asNum) === v && Number.isSafeInteger(asNum)) {
+            return WasthonRT.wrap(asNum);
+        }
+        return WasthonRT.wrap(v);
+    },
+
+    /* _PyLong_AsByteArray — serialize int into byte buffer. _random uses
+     * this to compute the seed array from arbitrary-size Python ints. */
+    _PyLong_AsByteArray__deps: ['$WasthonRT'],
+    _PyLong_AsByteArray: function(handle, bytesPtr, n, littleEndian, isSigned, withExc) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        var v;
+        if (typeof obj === 'number') v = BigInt(Math.trunc(obj));
+        else if (typeof obj === 'bigint') v = obj;
+        else return -1;
+        // Two's complement for negative if signed
+        if (v < 0n) {
+            if (!isSigned) {
+                if (withExc) rt.setError(rt.wrap(rt._b_.OverflowError),
+                    "can't convert negative int to unsigned");
+                return -1;
+            }
+            v = (1n << BigInt(n * 8)) + v;
+        }
+        for (var i = 0; i < n; i++) {
+            var byte = Number(v & 0xFFn);
+            var off  = littleEndian ? i : (n - 1 - i);
+            HEAPU8[bytesPtr + off] = byte;
+            v >>= 8n;
+        }
+        return 0;
+    },
+
+    /* PyUnicode_FromFormat — minimal subset. CPython supports a large
+     * format vocabulary (%s, %d, %U, %p, etc.). We implement what
+     * hmacmodule actually uses: %U (PyObject* as str), %p (pointer). */
+    PyUnicode_FromFormat__deps: ['$WasthonRT'],
+    /* PyUnicode_FromFormat(fmt, ...) — printf-style format with Python
+     * extensions. Variadic args reach us via emcc's va_list ABI: the
+     * second formal arg `va` points into linear memory where each
+     * variadic value is laid out in order. Read with HEAP32[p>>2] etc.,
+     * advancing p by the value's size. WASM ABI promotes char/short to
+     * int (4 bytes); long long and double need 8-byte alignment.
+     *
+     * Supported conversions (covers CPython stdlib usage we've seen):
+     *   %s            char* C string (UTF-8)
+     *   %d %i         int
+     *   %u            unsigned int
+     *   %ld %li       long (== int on wasm32)
+     *   %lu           unsigned long
+     *   %lld %lli     long long
+     *   %llu          unsigned long long
+     *   %zd %zi       Py_ssize_t (== int on wasm32)
+     *   %zu           size_t
+     *   %x %X         hex int (lower / upper case)
+     *   %lx %zx       hex long / size_t
+     *   %c            char (single Unicode codepoint, passed as int)
+     *   %p            pointer (rendered as 0x..)
+     *   %R            PyObject* -> repr()
+     *   %S            PyObject* -> str()
+     *   %U %V         PyObject* (Unicode object, used as-is)
+     *   %%            literal %
+     *
+     * Flags / width / precision: minimal — supports `%5d`, `%05d`,
+     * `%-5s`, `%.20s`. Long form `%.*s` (precision from int arg) and
+     * leading zero padding for ints are honored.
+     */
+    PyUnicode_FromFormat__deps: ['$WasthonRT'],
+    PyUnicode_FromFormat: function(fmtPtr, va) {
+        var rt = WasthonRT;
+        var fmt = fmtPtr ? UTF8ToString(fmtPtr) : "";
+        var p = va | 0;
+        function readInt32()   { var v = HEAP32[p >> 2] | 0; p += 4; return v; }
+        function readUInt32()  { var v = HEAP32[p >> 2] >>> 0; p += 4; return v; }
+        function readPtr()     { var v = HEAP32[p >> 2] >>> 0; p += 4; return v; }
+        function readInt64()   {
+            p = (p + 7) & ~7;
+            var lo = HEAP32[p >> 2] >>> 0;
+            var hi = HEAP32[(p+4) >> 2] | 0;
+            p += 8;
+            return BigInt(hi) * 0x100000000n + BigInt(lo);
+        }
+        function readUInt64()  {
+            p = (p + 7) & ~7;
+            var lo = HEAP32[p >> 2] >>> 0;
+            var hi = HEAP32[(p+4) >> 2] >>> 0;
+            p += 8;
+            return BigInt(hi) * 0x100000000n + BigInt(lo);
+        }
+        function pad(s, width, leftAlign, zero) {
+            if (width <= s.length) return s;
+            var fill = zero ? '0' : ' ';
+            var padding = fill.repeat(width - s.length);
+            return leftAlign ? (s + padding) : (padding + s);
+        }
+        var out = '';
+        var i = 0;
+        while (i < fmt.length) {
+            var c = fmt.charAt(i);
+            if (c !== '%') { out += c; i++; continue; }
+            i++; // consume %
+            if (i >= fmt.length) { out += '%'; break; }
+            // Parse flags
+            var leftAlign = false, zero = false;
+            while (i < fmt.length) {
+                var f = fmt.charAt(i);
+                if (f === '-') { leftAlign = true; i++; }
+                else if (f === '0') { zero = true; i++; }
+                else break;
+            }
+            // Parse width (digits or *)
+            var width = 0;
+            while (i < fmt.length && fmt.charAt(i) >= '0' && fmt.charAt(i) <= '9') {
+                width = width * 10 + (fmt.charCodeAt(i) - 48);
+                i++;
+            }
+            // Parse precision: . then digits or *
+            var precision = -1;
+            if (i < fmt.length && fmt.charAt(i) === '.') {
+                i++;
+                if (fmt.charAt(i) === '*') {
+                    precision = readInt32();
+                    i++;
+                } else {
+                    precision = 0;
+                    while (i < fmt.length && fmt.charAt(i) >= '0' && fmt.charAt(i) <= '9') {
+                        precision = precision * 10 + (fmt.charCodeAt(i) - 48);
+                        i++;
+                    }
+                }
+            }
+            // Parse length modifier: l, ll, z
+            var len = '';
+            if (fmt.charAt(i) === 'l') {
+                len = 'l'; i++;
+                if (fmt.charAt(i) === 'l') { len = 'll'; i++; }
+            } else if (fmt.charAt(i) === 'z') {
+                len = 'z'; i++;
+            }
+            // Conversion char
+            var conv = fmt.charAt(i); i++;
+            var piece = '';
+            switch (conv) {
+                case '%': piece = '%'; break;
+                case 's': {
+                    var sp = readPtr();
+                    piece = sp === 0 ? '<NULL>' : UTF8ToString(sp);
+                    if (precision >= 0 && piece.length > precision) {
+                        piece = piece.substring(0, precision);
+                    }
+                    break;
+                }
+                case 'd': case 'i': {
+                    var iv = (len === 'll') ? readInt64() : readInt32();
+                    piece = iv.toString();
+                    break;
+                }
+                case 'u': {
+                    var uv = (len === 'll') ? readUInt64() : readUInt32();
+                    piece = uv.toString();
+                    break;
+                }
+                case 'x': {
+                    var xv = (len === 'll') ? readUInt64() : readUInt32();
+                    piece = xv.toString(16);
+                    break;
+                }
+                case 'X': {
+                    var xV = (len === 'll') ? readUInt64() : readUInt32();
+                    piece = xV.toString(16).toUpperCase();
+                    break;
+                }
+                case 'c': {
+                    var cv = readInt32();
+                    piece = String.fromCodePoint(cv & 0xFFFFFFFF);
+                    break;
+                }
+                case 'p': {
+                    var pv = readPtr();
+                    piece = '0x' + pv.toString(16);
+                    break;
+                }
+                case 'R': {
+                    var oh = readPtr();
+                    var obj = rt.unwrap(oh);
+                    try { piece = String(rt._b_.repr(obj)); }
+                    catch (e) { piece = '<repr-err>'; }
+                    break;
+                }
+                case 'S': {
+                    var oh2 = readPtr();
+                    var obj2 = rt.unwrap(oh2);
+                    try { piece = String(rt._b_.str.$factory(obj2)); }
+                    catch (e) { piece = '<str-err>'; }
+                    break;
+                }
+                case 'U': case 'V': {
+                    var oh3 = readPtr();
+                    var obj3 = rt.unwrap(oh3);
+                    piece = (obj3 == null) ? '' : (typeof obj3 === 'string' ? obj3 : String(obj3));
+                    break;
+                }
+                default:
+                    // Unknown conversion: emit it raw so we notice in tests
+                    piece = '%' + conv;
+                    break;
+            }
+            // Apply width (padding) for short pieces. Don't truncate.
+            if (width > piece.length) {
+                // For string types %s/%R/%S/%U we ignore the zero flag (CPython
+                // does too — zero only applies to numerics).
+                var useZero = zero && (conv === 'd' || conv === 'i' ||
+                                       conv === 'u' || conv === 'x' ||
+                                       conv === 'X');
+                piece = pad(piece, width, leftAlign, useZero);
+            }
+            out += piece;
+        }
+        return rt.wrap(out);
+    },
+
+    PyLong_AsLong__deps: ['$WasthonRT'],
+    PyLong_AsLong: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (typeof obj === 'number') return obj | 0;
+        if (typeof obj === 'bigint') return Number(obj) | 0;
+        WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+            "an integer is required");
+        return -1;
+    },
+
+    PyLong_AsInt__deps: ['$WasthonRT'],
+    PyLong_AsInt: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (typeof obj === 'number') return obj | 0;
+        if (typeof obj === 'bigint') return Number(obj) | 0;
+        WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+            "an integer is required");
+        return -1;
+    },
+
+    PyLong_AsUnsignedLong__deps: ['$WasthonRT'],
+    PyLong_AsUnsignedLong: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (typeof obj === 'number') return obj >>> 0;
+        if (typeof obj === 'bigint') return Number(obj) >>> 0;
+        WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+            "an integer is required");
+        return 0xFFFFFFFF;
+    },
+
+    PyLong_AsUnsignedLongMask__deps: ['$WasthonRT'],
+    PyLong_AsUnsignedLongMask: function(handle) {
+        // Wrap-around semantics — same as AsUnsignedLong but no error
+        var obj = WasthonRT.unwrap(handle);
+        if (typeof obj === 'number') return obj >>> 0;
+        if (typeof obj === 'bigint') return Number(obj & 0xFFFFFFFFn) >>> 0;
+        return 0;
+    },
+
+    PyLong_AsSsize_t__deps: ['$WasthonRT'],
+    PyLong_AsSsize_t: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (typeof obj === 'number') return obj | 0;
+        if (typeof obj === 'bigint') return Number(obj) | 0;
+        WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+            "an integer is required");
+        return -1;
+    },
+
+    PyLong_AsSize_t__deps: ['$WasthonRT'],
+    PyLong_AsSize_t: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (typeof obj === 'number') return obj >>> 0;
+        if (typeof obj === 'bigint') return Number(obj) >>> 0;
+        return 0;
+    },
+
+    /* PyLong long-long variants. wasm has i64 emulated via i32 pairs at the
+     * ABI level — emcc handles this so the JS side sees standard numbers. */
+    PyLong_AsLongLong__deps: ['$WasthonRT'],
+    PyLong_AsLongLong: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (typeof obj === 'number') return BigInt(Math.trunc(obj));
+        if (typeof obj === 'bigint') return obj;
+        return 0n;
+    },
+
+    PyLong_AsUnsignedLongLong__deps: ['$WasthonRT'],
+    PyLong_AsUnsignedLongLong: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (typeof obj === 'number') return BigInt(Math.trunc(Math.abs(obj)));
+        if (typeof obj === 'bigint') return obj < 0n ? 0n : obj;
+        return 0n;
+    },
+
+    PyLong_FromLongLong__deps: ['$WasthonRT'],
+    PyLong_FromLongLong: function(v) {
+        // v is a BigInt at the JS boundary. Coalesce to Number only if
+        // it's within the safe-integer range (Number conversion of a huge
+        // BigInt yields Infinity, and BigInt(Infinity) throws).
+        if (typeof v === 'bigint') {
+            if (v < -9007199254740992n || v > 9007199254740992n) {
+                return WasthonRT.wrap(v);
+            }
+            return WasthonRT.wrap(Number(v));
+        }
+        return WasthonRT.wrap(v);
+    },
+
+    /* PyLong_FromInt64 — CPython 3.14 explicit-width alias of FromLongLong. */
+    PyLong_FromInt64__deps: ['$WasthonRT', 'PyLong_FromLongLong'],
+    PyLong_FromInt64: function(v) { return _PyLong_FromLongLong(v); },
+
+    /* ----------------------------------------------------------------
+     * PEP 757 — PyLong Export / Writer API (CPython 3.14)
+     *
+     * Native digit layout chosen for wasm32:
+     *   bits_per_digit  = 15
+     *   digit_size      = 2  (uint16_t)
+     *   digits_order    = -1 (least-significant digit first)
+     *   digit_endianness= -1 (little-endian per digit; wasm32 is LE)
+     *
+     * Matches CPython's 32-bit build, which is what libmpdec's
+     * mpd_qimport_u16 / mpd_qexport_u16 path is calibrated for.
+     *
+     * PyLongExport layout (24 bytes, 8-byte aligned):
+     *   +0   int64_t  value       (used when digits == NULL)
+     *   +8   uint8_t  negative
+     *   +12  Py_ssize_t ndigits
+     *   +16  void    *digits      (NULL if value fits in int64)
+     *   +20  uintptr_t _reserved  (we stash the malloc ptr here for free)
+     *
+     * PyLongLayout layout (4 bytes):
+     *   +0   uint8_t bits_per_digit
+     *   +1   uint8_t digit_size
+     *   +2   int8_t  digits_order
+     *   +3   int8_t  digit_endianness
+     * ---------------------------------------------------------------- */
+    PyLong_GetNativeLayout__deps: ['$WasthonRT'],
+    PyLong_GetNativeLayout: function() {
+        var rt = WasthonRT;
+        if (!rt._pyLongLayoutPtr) {
+            rt._pyLongLayoutPtr = _malloc(4);
+            HEAPU8[rt._pyLongLayoutPtr    ] = 15;  // bits_per_digit
+            HEAPU8[rt._pyLongLayoutPtr + 1] =  2;  // digit_size
+            HEAP8 [rt._pyLongLayoutPtr + 2] = -1;  // digits_order (LSB-first)
+            HEAP8 [rt._pyLongLayoutPtr + 3] = -1;  // digit_endianness (LE)
+        }
+        return rt._pyLongLayoutPtr;
+    },
+
+    PyLong_Export__deps: ['$WasthonRT'],
+    PyLong_Export: function(objH, exportPtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        // Coerce to BigInt.
+        var v;
+        if (typeof obj === 'bigint') v = obj;
+        else if (typeof obj === 'number') {
+            if (!Number.isFinite(obj) || !Number.isSafeInteger(obj)) {
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                            "PyLong_Export: not an integer");
+                return -1;
+            }
+            v = BigInt(obj);
+        } else if (obj === true)  v = 1n;
+        else   if (obj === false) v = 0n;
+        else {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                        "PyLong_Export: not an int");
+            return -1;
+        }
+
+        // Zero the 24-byte struct first.
+        HEAPU8.fill(0, exportPtr, exportPtr + 24);
+
+        var INT64_MAX = 0x7FFFFFFFFFFFFFFFn;
+        var INT64_MIN = -(0x8000000000000000n);
+        if (v >= INT64_MIN && v <= INT64_MAX) {
+            // Fits in int64 — write value, leave digits NULL.
+            var asU = v < 0n ? (v + 0x10000000000000000n) : v;
+            var lo = Number(asU & 0xFFFFFFFFn);
+            var hi = Number((asU >> 32n) & 0xFFFFFFFFn);
+            HEAP32[ exportPtr       >> 2] = lo | 0;
+            HEAP32[(exportPtr + 4)  >> 2] = hi | 0;
+            return 0;
+        }
+
+        // Doesn't fit — allocate uint16_t digit buffer, little-endian
+        // 15-bit per digit. Sign goes in the `negative` field.
+        var neg = v < 0n;
+        var n = neg ? -v : v;
+        var digits = [];
+        while (n > 0n) {
+            digits.push(Number(n & 0x7FFFn));
+            n >>= 15n;
+        }
+        if (digits.length === 0) digits.push(0);  // shouldn't happen (fits int64)
+        var bufPtr = _malloc(digits.length * 2);
+        for (var i = 0; i < digits.length; i++) {
+            HEAPU16[(bufPtr + i * 2) >> 1] = digits[i];
+        }
+        HEAPU8 [exportPtr + 8 ]      = neg ? 1 : 0;
+        HEAP32[(exportPtr + 12) >> 2] = digits.length;
+        HEAP32[(exportPtr + 16) >> 2] = bufPtr;
+        HEAP32[(exportPtr + 20) >> 2] = bufPtr;  // _reserved = same ptr for free
+        return 0;
+    },
+
+    PyLong_FreeExport__deps: ['$WasthonRT'],
+    PyLong_FreeExport: function(exportPtr) {
+        var freePtr = HEAP32[(exportPtr + 20) >> 2];
+        if (freePtr !== 0) _free(freePtr);
+        HEAP32[(exportPtr + 16) >> 2] = 0;
+        HEAP32[(exportPtr + 20) >> 2] = 0;
+    },
+
+    /* PyLongWriter — caller-driven inverse. Create yields a digit buffer
+     * the caller fills; Finish builds the BigInt; Discard aborts.
+     *
+     * Writer-state layout in linear memory (12 bytes):
+     *   +0   void *digits
+     *   +4   Py_ssize_t ndigits
+     *   +8   int negative
+     */
+    PyLongWriter_Create__deps: ['$WasthonRT'],
+    PyLongWriter_Create: function(negative, ndigits, digitsOutPtr) {
+        if (ndigits < 0) return 0;
+        var bufPtr = ndigits > 0 ? _malloc(ndigits * 2) : 0;
+        if (bufPtr !== 0) HEAPU8.fill(0, bufPtr, bufPtr + ndigits * 2);
+        var writer = _malloc(12);
+        HEAP32[ writer       >> 2] = bufPtr;
+        HEAP32[(writer + 4)  >> 2] = ndigits;
+        HEAP32[(writer + 8)  >> 2] = negative ? 1 : 0;
+        if (digitsOutPtr !== 0) HEAP32[digitsOutPtr >> 2] = bufPtr;
+        return writer;
+    },
+
+    PyLongWriter_Finish__deps: ['$WasthonRT'],
+    PyLongWriter_Finish: function(writer) {
+        var rt = WasthonRT;
+        var bufPtr  = HEAP32[ writer       >> 2];
+        var ndigits = HEAP32[(writer + 4)  >> 2];
+        var negative= HEAP32[(writer + 8)  >> 2];
+        // Reconstruct BigInt from little-endian 15-bit digits.
+        var n = 0n;
+        for (var i = ndigits - 1; i >= 0; i--) {
+            n = (n << 15n) | BigInt(HEAPU16[(bufPtr + i * 2) >> 1]);
+        }
+        if (negative) n = -n;
+        if (bufPtr !== 0) _free(bufPtr);
+        _free(writer);
+        // Coalesce to Number if it fits.
+        var asNum = Number(n);
+        if (BigInt(asNum) === n && Number.isSafeInteger(asNum)) return rt.wrap(asNum);
+        return rt.wrap(n);
+    },
+
+    PyLongWriter_Discard__deps: ['$WasthonRT'],
+    PyLongWriter_Discard: function(writer) {
+        var bufPtr = HEAP32[writer >> 2];
+        if (bufPtr !== 0) _free(bufPtr);
+        _free(writer);
+    },
+
+    PyLong_FromUnsignedLongLong__deps: ['$WasthonRT'],
+    PyLong_FromUnsignedLongLong: function(v) {
+        if (typeof v === 'bigint') {
+            if (v > 9007199254740992n) return WasthonRT.wrap(v);
+            return WasthonRT.wrap(Number(v));
+        }
+        return WasthonRT.wrap(v);
+    },
+
+    PyComplex_FromDoubles__deps: ['$WasthonRT'],
+    PyComplex_FromDoubles: function(real, imag) {
+        var rt = WasthonRT;
+        var c = (rt.$B && rt.$B.make_complex) ? rt.$B.make_complex(real, imag)
+                                              : { real: real, imag: imag, __class__: rt._b_.complex };
+        return rt.wrap(c);
+    },
+
+    /* PyComplex_FromCComplex(c) — emcc wasm32 ABI passes a struct-by-value
+     * via a hidden pointer (sret pattern). The first arg is a pointer to
+     * the Py_complex struct (8 bytes: 2 doubles), the second is unused.
+     * Read the real/imag doubles from linear memory. */
+    PyComplex_FromCComplex__deps: ['$WasthonRT'],
+    PyComplex_FromCComplex: function(structPtr) {
+        var rt = WasthonRT;
+        var real = HEAPF64[(structPtr) >> 3];
+        var imag = HEAPF64[(structPtr + 8) >> 3];
+        var c = (rt.$B && rt.$B.make_complex) ? rt.$B.make_complex(real, imag)
+                                              : { real: real, imag: imag, __class__: rt._b_.complex };
+        return rt.wrap(c);
+    },
+
+    PyComplex_Check__deps: ['$WasthonRT'],
+    PyComplex_Check: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        if (obj.__class__ === rt._b_.complex) return 1;
+        try { return rt.$B.$isinstance(obj, rt._b_.complex) ? 1 : 0; }
+        catch (e) { return 0; }
+    },
+
+    /* PyObject_IsInstance(o, cls) — Python isinstance(). Returns 1/0/-1. */
+    PyObject_IsInstance__deps: ['$WasthonRT'],
+    PyObject_IsInstance: function(objH, clsH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var cls = rt.unwrap(clsH);
+        if (cls === null) return -1;
+        try { return rt.$B.$isinstance(obj, cls) ? 1 : 0; }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return -1;
+        }
+    },
+
+    /* PyComplex_AsCComplex — extract (real, imag) into a Py_complex struct
+     * returned via a hidden pointer in emcc's struct-return ABI. The actual
+     * calling convention is: first arg is `ret*`, then `self`. */
+    PyComplex_AsCComplex__deps: ['$WasthonRT'],
+    PyComplex_AsCComplex: function(retPtr, handle) {
+        var obj = WasthonRT.unwrap(handle);
+        var real = 0, imag = 0;
+        function asNum(v) {
+            if (typeof v === 'number') return v;
+            if (typeof v === 'bigint') return Number(v);
+            if (v && typeof v.value === 'number') return v.value;  /* Brython float */
+            if (v && typeof v.value === 'bigint') return Number(v.value);
+            return Number(v) || 0;
+        }
+        if (obj && obj.real !== undefined) {
+            /* Brython complex object: {real: <float wrapper>, imag: <float wrapper>} */
+            real = asNum(obj.real);
+            imag = asNum(obj.imag);
+        } else if (typeof obj === 'number') {
+            real = obj;
+        } else {
+            real = asNum(obj);
+        }
+        // Py_complex layout: double real (offset 0), double imag (offset 8)
+        var buf = new ArrayBuffer(16);
+        var dv = new DataView(buf);
+        dv.setFloat64(0, real, true);
+        dv.setFloat64(8, imag, true);
+        HEAPU8.set(new Uint8Array(buf), retPtr);
+    },
+
+    PyLong_AsVoidPtr__deps: ['$WasthonRT'],
+    PyLong_AsVoidPtr: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (typeof obj === 'number') return obj >>> 0;
+        if (typeof obj === 'bigint') return Number(obj) >>> 0;
+        return 0;
+    },
+
+    /* Bytearray — Brython _b_.bytearray. */
+    PyByteArray_Check__deps: ['$WasthonRT'],
+    PyByteArray_Check: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (obj === null) return 0;
+        try { return WasthonRT.$B.$isinstance(obj, WasthonRT._b_.bytearray) ? 1 : 0; }
+        catch (e) { return 0; }
+    },
+
+    PyByteArray_AsString__deps: ['$WasthonRT'],
+    PyByteArray_AsString: function(handle) {
+        // Same caching as PyBytes_AsString.
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        if (obj.__wasthon_cstr__) return obj.__wasthon_cstr__;
+        var src = obj.source || obj;
+        var len = src.length;
+        var ptr = _malloc(len + 1);
+        if (src instanceof Uint8Array) HEAPU8.set(src, ptr);
+        else for (var i = 0; i < len; i++) HEAPU8[ptr + i] = src[i] & 0xff;
+        HEAPU8[ptr + len] = 0;
+        try { obj.__wasthon_cstr__ = ptr; } catch (_) {}
+        return ptr;
+    },
+
+    PyByteArray_Size__deps: ['$WasthonRT'],
+    PyByteArray_Size: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (obj === null) return 0;
+        if (obj.source) return obj.source.length;
+        if (obj.length !== undefined) return obj.length;
+        return 0;
+    },
+
+    /* PyType_GenericAlloc / PyObject_GenericGetAttr / PyObject_SelfIter —
+     * default slot implementations. We expose C function pointers so they
+     * can be installed into PyType_Slot[] arrays at compile time. */
+    PyType_GenericAlloc__deps: ['$WasthonRT'],
+    PyType_GenericAlloc: function(typeHandle, nitems) {
+        return _wasthon_object_gc_new(typeHandle);
+    },
+
+    PyObject_GenericGetAttr__deps: ['$WasthonRT'],
+    PyObject_GenericGetAttr: function(objH, nameH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var name = rt.unwrap(nameH);
+        try { return rt.wrap(rt.$B.$getattr(obj, name)); }
+        catch (e) { return 0; }
+    },
+
+    PyObject_SelfIter__deps: ['$WasthonRT'],
+    PyObject_SelfIter: function(handle) { return handle; },
+
+    /* _PyType_Name — return the short name of a type. */
+    _PyType_Name__deps: ['$WasthonRT'],
+    _PyType_Name: function(typeHandle) {
+        var rt = WasthonRT;
+        var t = rt.unwrap(typeHandle);
+        if (!t || !t.tp_name) return 0;
+        // Returns a C string pointer — cache one per type.
+        if (t.__wasthon_name_cstr__) return t.__wasthon_name_cstr__;
+        var bytes = new TextEncoder().encode(t.tp_name);
+        var ptr = _malloc(bytes.length + 1);
+        HEAPU8.set(bytes, ptr);
+        HEAPU8[ptr + bytes.length] = 0;
+        t.__wasthon_name_cstr__ = ptr;
+        return ptr;
+    },
+
+    /* PyUnicode_AsASCIIString — encode str to bytes, ASCII-only. */
+    PyUnicode_AsASCIIString__deps: ['$WasthonRT'],
+    PyUnicode_AsASCIIString: function(handle) {
+        var rt = WasthonRT;
+        var s = rt.asJSStr(rt.unwrap(handle));
+        if (s === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "expected str");
+            return 0;
+        }
+        var arr = [];
+        for (var i = 0; i < s.length; i++) {
+            var c = s.charCodeAt(i);
+            if (c > 0x7F) {
+                rt.setError(rt.wrap(rt._b_.UnicodeEncodeError),
+                    "non-ASCII character at index " + i);
+                return 0;
+            }
+            arr.push(c);
+        }
+        return rt.wrap(rt._b_.bytes.$factory(arr));
+    },
+
+    /* IEEE 754 pack/unpack — DataView handles 32/64 bit natively; 16-bit
+     * half-precision is done manually. _struct's e/f/d format codes. */
+    PyFloat_Pack4__deps: ['$WasthonRT'],
+    PyFloat_Pack4: function(x, ptr, le) {
+        var buf = new ArrayBuffer(4);
+        new DataView(buf).setFloat32(0, x, !!le);
+        HEAPU8.set(new Uint8Array(buf), ptr);
+        return 0;
+    },
+    PyFloat_Pack8__deps: ['$WasthonRT'],
+    PyFloat_Pack8: function(x, ptr, le) {
+        var buf = new ArrayBuffer(8);
+        new DataView(buf).setFloat64(0, x, !!le);
+        HEAPU8.set(new Uint8Array(buf), ptr);
+        return 0;
+    },
+    PyFloat_Unpack4__deps: ['$WasthonRT'],
+    PyFloat_Unpack4: function(ptr, le) {
+        var buf = new ArrayBuffer(4);
+        new Uint8Array(buf).set(HEAPU8.subarray(ptr, ptr + 4));
+        return new DataView(buf).getFloat32(0, !!le);
+    },
+    PyFloat_Unpack8__deps: ['$WasthonRT'],
+    PyFloat_Unpack8: function(ptr, le) {
+        var buf = new ArrayBuffer(8);
+        new Uint8Array(buf).set(HEAPU8.subarray(ptr, ptr + 8));
+        return new DataView(buf).getFloat64(0, !!le);
+    },
+    /* Half-precision (IEEE 754 binary16). Manual bit-pack since no native. */
+    PyFloat_Pack2__deps: ['$WasthonRT'],
+    PyFloat_Pack2: function(x, ptr, le) {
+        // Convert via Float32Array round-trip to truncate to half precision
+        var fb = new Float32Array([x]);
+        var ib = new Uint32Array(fb.buffer);
+        var bits32 = ib[0];
+        var sign = (bits32 >>> 16) & 0x8000;
+        var exp = (bits32 >>> 23) & 0xFF;
+        var mant = bits32 & 0x7FFFFF;
+        var half;
+        if (exp === 0xFF) {
+            half = sign | 0x7C00 | (mant ? 0x200 : 0);  // NaN or Inf
+        } else if (exp === 0) {
+            half = sign;
+        } else {
+            var e = exp - 127 + 15;
+            if (e >= 0x1F) half = sign | 0x7C00;
+            else if (e <= 0) half = sign;  // underflow to 0
+            else half = sign | (e << 10) | (mant >> 13);
+        }
+        HEAPU8[ptr + (le ? 0 : 1)] = half & 0xFF;
+        HEAPU8[ptr + (le ? 1 : 0)] = (half >> 8) & 0xFF;
+        return 0;
+    },
+    PyFloat_Unpack2__deps: ['$WasthonRT'],
+    PyFloat_Unpack2: function(ptr, le) {
+        var b0 = HEAPU8[ptr + (le ? 0 : 1)];
+        var b1 = HEAPU8[ptr + (le ? 1 : 0)];
+        var half = (b1 << 8) | b0;
+        var sign = (half & 0x8000) ? -1 : 1;
+        var exp = (half >> 10) & 0x1F;
+        var mant = half & 0x3FF;
+        if (exp === 0x1F) return mant ? NaN : sign * Infinity;
+        if (exp === 0) return sign * Math.pow(2, -14) * (mant / 1024);
+        return sign * Math.pow(2, exp - 15) * (1 + mant / 1024);
+    },
+
+    /* Clinic-generated glue (e.g. sha3module) uses this converter to
+     * read an unsigned-long argument into a C variable. Signature:
+     *     int _PyLong_UnsignedLong_Converter(PyObject *obj, void *ptr);
+     * Returns 1 on success (stores u32 at *ptr), 0 on failure (sets exc). */
+    _PyLong_UnsignedLong_Converter__deps: ['$WasthonRT'],
+    _PyLong_UnsignedLong_Converter: function(handle, ptr) {
+        var obj = WasthonRT.unwrap(handle);
+        var v;
+        if (typeof obj === 'number') v = obj;
+        else if (typeof obj === 'bigint') v = Number(obj);
+        else {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+                "an integer is required");
+            return 0;
+        }
+        if (v < 0) {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
+                "can't convert negative int to unsigned");
+            return 0;
+        }
+        HEAPU32[ptr >> 2] = v >>> 0;
+        return 1;
+    },
+
+    /* Positional argument count check used by clinic glue for fixed-arity
+     * functions. Returns 1 if min ≤ nargs ≤ max, else sets TypeError and
+     * returns 0. */
+    _PyArg_CheckPositional__deps: ['$WasthonRT'],
+    _PyArg_CheckPositional: function(fnamePtr, nargs, min, max) {
+        var rt = WasthonRT;
+        if (nargs < min || nargs > max) {
+            var fname = fnamePtr ? UTF8ToString(fnamePtr) : "function";
+            var expected = (min === max) ? min : (min + " to " + max);
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                fname + "() takes " + expected + " positional arguments but " + nargs + " were given");
+            return 0;
+        }
+        return 1;
+    },
+
+    /* Py_GetConstant — returns interned singletons. CPython 3.14 API. */
+    Py_GetConstant__deps: ['$WasthonRT'],
+    Py_GetConstant: function(id) {
+        var rt = WasthonRT;
+        switch (id) {
+            case 0: return rt.SLOT_NONE;
+            case 1: return rt.SLOT_FALSE;
+            case 2: return rt.SLOT_TRUE;
+            case 3: return rt.wrap(rt._b_.Ellipsis);
+            case 4: return rt.wrap(rt._b_.NotImplemented);
+            case 5: return rt.wrap(0);
+            case 6: return rt.wrap(1);
+            case 7: return rt.wrap("");
+            case 8: return rt.wrap(rt._b_.bytes.$factory([]));
+            case 9: return rt.wrap([]);  // empty tuple
+            default: return 0;
+        }
+    },
+
+    /* Py_FatalError — irrecoverable. Log loudly and abort. */
+    Py_FatalError__deps: ['$WasthonRT'],
+    Py_FatalError: function(msgPtr) {
+        var msg = msgPtr ? UTF8ToString(msgPtr) : "(no message)";
+        console.error("[wasthon] Py_FatalError:", msg);
+        throw new Error("Py_FatalError: " + msg);
+    },
+
+    /* Py_HashBuffer — simple FNV-like hash for keying _Py_hashtable_t entries. */
+    Py_HashBuffer__deps: ['$WasthonRT'],
+    Py_HashBuffer: function(ptr, len) {
+        var h = 2166136261 >>> 0;
+        for (var i = 0; i < len; i++) {
+            h = Math.imul(h ^ HEAPU8[ptr + i], 16777619) >>> 0;
+        }
+        return h | 0;  // signed for Py_hash_t
+    },
+
+    /* PyErr_NewExceptionWithDoc — same as PyErr_NewException, doc ignored. */
+    PyErr_NewExceptionWithDoc__deps: ['$WasthonRT', 'PyErr_NewException'],
+    PyErr_NewExceptionWithDoc: function(namePtr, docPtr, baseHandle, dictHandle) {
+        return _PyErr_NewException(namePtr, baseHandle, dictHandle);
+    },
+
+    /* PyErr_NewException — create a Brython subclass of `base`. */
+    PyErr_NewException__deps: ['$WasthonRT'],
+    PyErr_NewException: function(namePtr, baseHandle, dictHandle) {
+        var rt = WasthonRT;
+        var name = UTF8ToString(namePtr);
+        rt.trace('PyErr_NewException', name);
+        var dotIdx = name.lastIndexOf('.');
+        var shortName = dotIdx >= 0 ? name.slice(dotIdx + 1) : name;
+        var base = baseHandle ? rt.unwrap(baseHandle) : rt._b_.Exception;
+        // `base` may be a single class or a tuple/array of classes. Brython's
+        // make_builtin_class expects a flat array of classes; flatten if
+        // the caller passed a tuple of bases (PyTuple_Pack pattern).
+        var bases;
+        if (Array.isArray(base)) {
+            bases = base;
+        } else if (base && base.__class__ === rt._b_.tuple) {
+            bases = Array.from(base);
+        } else {
+            bases = [base];
+        }
+        var cls = rt.$B.make_builtin_class(shortName, bases);
+        cls.tp_name = name;
+        // The result may be used both as PyObject* (PyErr_SetString etc.) and
+        // as a PyTypeObject* (PyModule_AddType). Back it with a struct so
+        // both consumers work.
+        return rt.ensureTypeStruct(cls);
+    },
+
+    /* _Py_hashtable_t — JS-Map-backed minimal implementation. Used by
+     * hmacmodule to map algo-name → entry. We attach the Map directly to
+     * the handle via a JS WeakMap-style registry. */
+    $WasthonHashtables__deps: ['$WasthonRT'],
+    $WasthonHashtables: null,
+
+    _Py_hashtable_new_full__deps: ['$WasthonRT', '$WasthonHashtables'],
+    _Py_hashtable_new_full: function(_hash, _cmp, _kdtor, _vdtor, _alloc) {
+        if (!WasthonHashtables) WasthonHashtables = new Map();
+        var id = _malloc(4);  // unique handle; the 4-byte slot is unused
+        WasthonHashtables.set(id, new Map());
+        return id;
+    },
+
+    _Py_hashtable_destroy__deps: ['$WasthonHashtables'],
+    _Py_hashtable_destroy: function(ht) {
+        if (WasthonHashtables) WasthonHashtables.delete(ht);
+        _free(ht);
+    },
+
+    _Py_hashtable_set__deps: ['$WasthonHashtables'],
+    _Py_hashtable_set: function(ht, key, value) {
+        var m = WasthonHashtables && WasthonHashtables.get(ht);
+        if (!m) return -1;
+        m.set(key, value);
+        return 0;
+    },
+
+    _Py_hashtable_get__deps: ['$WasthonHashtables'],
+    _Py_hashtable_get: function(ht, key) {
+        var m = WasthonHashtables && WasthonHashtables.get(ht);
+        return (m && m.has(key)) ? m.get(key) : 0;
+    },
+
+    /* `_Py_hashtable_get_entry` returns a pointer to the entry struct or NULL.
+     * We allocate a 1-entry struct (key + value) per get call; minor leak. */
+    _Py_hashtable_get_entry__deps: ['$WasthonHashtables'],
+    _Py_hashtable_get_entry: function(ht, key) {
+        var m = WasthonHashtables && WasthonHashtables.get(ht);
+        if (!m || !m.has(key)) return 0;
+        var entryPtr = _malloc(8);
+        HEAP32[ entryPtr      >> 2] = key;
+        HEAP32[(entryPtr + 4) >> 2] = m.get(key);
+        return entryPtr;
+    },
+
+    /* GIL stubs (single-threaded WASM) */
+    PyGILState_Ensure: function() { return 1; },
+    PyGILState_Release: function(_s) {},
+    PyGILState_GetThisThreadState: function() { return 1; },  // non-null sentinel
+
+    /* Object protocol */
+    PyUnicode_AsUTF8__deps: ['$WasthonRT'],
+    PyUnicode_AsUTF8: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.asJSStr(rt.unwrap(handle));
+        if (obj === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "str expected");
+            return 0;
+        }
+        // Cache UTF-8 conversion on the JS string so the returned pointer
+        // remains valid until the object is GC'd. We allocate in linear
+        // memory and never free (CPython's PyUnicode_AsUTF8 also returns
+        // an internal pointer that stays alive with the str).
+        if (!rt._utf8Cache) rt._utf8Cache = new WeakMap();
+        // Strings aren't weak-keyable. Use a small Map keyed by string content.
+        if (!rt._utf8CacheStr) rt._utf8CacheStr = new Map();
+        if (rt._utf8CacheStr.has(obj)) return rt._utf8CacheStr.get(obj);
+        var bytes = new TextEncoder().encode(obj);
+        var ptr = _malloc(bytes.length + 1);
+        HEAPU8.set(bytes, ptr);
+        HEAPU8[ptr + bytes.length] = 0;
+        rt._utf8CacheStr.set(obj, ptr);
+        return ptr;
+    },
+
+    PyObject_CallMethodNoArgs__deps: ['$WasthonRT'],
+    PyObject_CallMethodNoArgs: function(selfHandle, nameHandle) {
+        var rt = WasthonRT;
+        var self = rt.unwrap(selfHandle);
+        var name = rt.unwrap(nameHandle);
+        if (self === null || typeof name !== 'string') {
+            rt.setError(rt.wrap(rt._b_.TypeError), "PyObject_CallMethodNoArgs");
+            return 0;
+        }
+        try {
+            var method = rt.$B.$getattr(self, name);
+            return rt.wrap(rt.$B.$call(method));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    PyObject_CallOneArg__deps: ['$WasthonRT'],
+    PyObject_CallOneArg: function(fnHandle, argHandle) {
+        var rt = WasthonRT;
+        var fn = rt.unwrap(fnHandle);
+        var arg = rt.unwrap(argHandle);
+        if (!fn) return 0;
+        try { return rt.wrap(rt.$B.$call(fn, arg)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* PyObject_CallMethod(obj, name, fmt, ...) — call obj.name(args), where
+     * args are unpacked from varargs according to a minimal Py_BuildValue-
+     * style format string. Supports just what _decimal needs:
+     *   O    PyObject*    (consumes 4 bytes from varargs)
+     *   s    const char*  (consumes 4 bytes — pointer to NUL-terminated str)
+     *   i    int          (consumes 4 bytes)
+     *   d    double       (consumes 8 bytes — double is naturally aligned)
+     * Surrounding '(', ')', ',', and spaces are ignored: "(OO)", "(O)",
+     * "(ss)" all parse like "OO", "O", "ss" respectively. */
+    PyObject_CallMethod__deps: ['$WasthonRT'],
+    PyObject_CallMethod: function(objH, namePtr, fmtPtr, varargs) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (!obj) {
+            rt.setError(rt.wrap(rt._b_.SystemError), "PyObject_CallMethod: NULL obj");
+            return 0;
+        }
+        var name = UTF8ToString(namePtr);
+        var fmt = fmtPtr === 0 ? "" : UTF8ToString(fmtPtr);
+        rt.trace('PyObject_CallMethod', name + ' fmt="' + fmt + '"');
+        var method;
+        try { method = rt.$B.$getattr(obj, name); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.AttributeError), e.message || String(e));
+            return 0;
+        }
+        var args = [], p = varargs;
+        for (var i = 0; i < fmt.length; i++) {
+            var c = fmt[i];
+            if (c === '(' || c === ')' || c === ',' || c === ' ') continue;
+            if (c === 'O') {
+                args.push(rt.unwrap(HEAP32[p >> 2]));
+                p += 4;
+            } else if (c === 's') {
+                var sp = HEAP32[p >> 2];
+                args.push(sp === 0 ? null : UTF8ToString(sp));
+                p += 4;
+            } else if (c === 'i') {
+                args.push(HEAP32[p >> 2]);
+                p += 4;
+            } else if (c === 'd') {
+                // Doubles in varargs must be 8-byte aligned.
+                if (p & 7) p = (p + 7) & ~7;
+                args.push(HEAPF64[p >> 3]);
+                p += 8;
+            }
+        }
+        try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [method].concat(args))); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* PyObject_CallObject(callable, args_tuple_or_NULL) — generic call with
+     * args supplied as a tuple (or NULL/None for no args). */
+    PyObject_CallObject__deps: ['$WasthonRT'],
+    PyObject_CallObject: function(fnHandle, argsHandle) {
+        var rt = WasthonRT;
+        var fn = rt.unwrap(fnHandle);
+        rt.trace('PyObject_CallObject', 'fnH=' + fnHandle);
+        if (!fn) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyObject_CallObject: NULL callable (handle " + fnHandle + ")");
+            return 0;
+        }
+        var args = argsHandle === 0 ? [] : rt.unwrap(argsHandle);
+        if (args === null) args = [];
+        try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError),
+                "PyObject_CallObject failed: " + (e && e.message ? e.message : String(e)));
+            return 0;
+        }
+    },
+
+    /* PyObject_GC_IsTracked: in our bridge there is no separate GC tracking
+     * (JS GC owns lifetime). _decimal uses this only inside assert()s. */
+    PyObject_GC_IsTracked__deps: ['$WasthonRT'],
+    PyObject_GC_IsTracked: function(handle) {
+        return handle === 0 ? 0 : 1;
+    },
+
+    /* ----------------------------------------------------------------
+     * Thread state (single-threaded WASM): one process-wide pseudo-
+     * tstate, with one process-wide per-state dict. _decimal stashes
+     * its module-level decimal-context here. The tstate "handle" is
+     * a fixed sentinel small int — never dereferenced as a struct. */
+    _PyThreadState_GET__deps: ['$WasthonRT'],
+    _PyThreadState_GET: function() {
+        var rt = WasthonRT;
+        if (!rt._tstateHandle) {
+            // Allocate one sentinel that survives forever.
+            rt._tstateHandle = rt._allocSentinelId();
+            rt.handles.set(rt._tstateHandle, { __wasthon_tstate__: true });
+        }
+        return rt._tstateHandle;
+    },
+
+    _PyThreadState_GetDict__deps: ['$WasthonRT'],
+    _PyThreadState_GetDict: function(tsH) {
+        var rt = WasthonRT;
+        if (!rt._tstateDict) {
+            rt._tstateDict = rt._b_.dict.$factory();
+            rt._tstateDictHandle = rt.wrap(rt._tstateDict);
+        }
+        return rt._tstateDictHandle;
+    },
+
+    PyThreadState_GetDict__deps: ['$WasthonRT', '_PyThreadState_GetDict'],
+    PyThreadState_GetDict: function() {
+        return __PyThreadState_GetDict(0);
+    },
+
+    /* Interpreter state — single-runtime WASM, one process-wide pseudo-
+     * interp with one dict (where _datetime caches its module). */
+    PyInterpreterState_Get__deps: ['$WasthonRT'],
+    PyInterpreterState_Get: function() {
+        var rt = WasthonRT;
+        if (!rt._interpHandle) {
+            rt._interpHandle = rt._allocSentinelId();
+            rt.handles.set(rt._interpHandle, { __wasthon_interp__: true });
+        }
+        return rt._interpHandle;
+    },
+    PyInterpreterState_GetDict__deps: ['$WasthonRT'],
+    PyInterpreterState_GetDict: function(interpH) {
+        var rt = WasthonRT;
+        if (!rt._interpDict) {
+            rt._interpDict = rt._b_.dict.$factory();
+            rt._interpDictHandle = rt.wrap(rt._interpDict);
+        }
+        return rt._interpDictHandle;
+    },
+
+    /* PyWeakref_NewRef(obj, callback) — returns a "weak ref" that's
+     * actually a strong ref in our model. Callback is ignored (no GC). */
+    PyWeakref_NewRef__deps: ['$WasthonRT'],
+    PyWeakref_NewRef: function(objH, callbackH) {
+        // Just return obj wrapped — strong-ref semantics suffice.
+        var rt = WasthonRT;
+        return rt.wrap(rt.unwrap(objH));
+    },
+
+    /* PyWeakref_GetRef(ref, *out) — write referenced obj to *out and
+     * return 1. Returns 0 if ref is None, -1 on error. */
+    PyWeakref_GetRef__deps: ['$WasthonRT'],
+    PyWeakref_GetRef: function(refH, outPtr) {
+        var rt = WasthonRT;
+        var ref = rt.unwrap(refH);
+        if (ref === null || ref === rt._b_.None) {
+            HEAP32[outPtr >> 2] = 0;
+            return 0;
+        }
+        HEAP32[outPtr >> 2] = rt.wrap(ref);
+        return 1;
+    },
+
+    /* Raw object allocator — alias to malloc. _datetime uses
+     * PyObject_Malloc to allocate small Decimal-like structs. */
+    PyObject_Malloc__deps: ['$WasthonRT'],
+    PyObject_Malloc: function(size) { return _malloc(size); },
+    PyObject_Free__deps: ['$WasthonRT'],
+    PyObject_Free: function(ptr) { if (ptr !== 0) _free(ptr); },
+
+    /* _PyObject_Init(op, type) — set ob_type. Returns op. */
+    _PyObject_Init__deps: ['$WasthonRT'],
+    _PyObject_Init: function(opH, typeH) {
+        // op is typically a freshly-allocated struct ptr. Bind it.
+        var rt = WasthonRT;
+        var t = rt.unwrap(typeH);
+        if (t) rt.handles.set(opH, { __wasthon_ptr__: opH, __class__: t, ob_type: t });
+        return opH;
+    },
+
+    /* Raised-exception API. We use the pendingException slot for both. */
+    PyErr_GetRaisedException__deps: ['$WasthonRT'],
+    PyErr_GetRaisedException: function() {
+        var rt = WasthonRT;
+        if (!rt.pendingException) return rt.SLOT_NONE;
+        var pe = rt.pendingException;
+        rt.pendingException = null;
+        // Materialize as an exception instance via $B.$call.
+        try {
+            var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
+            return rt.wrap(rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg)));
+        } catch (e) { return rt.SLOT_NONE; }
+    },
+    PyErr_SetRaisedException__deps: ['$WasthonRT'],
+    PyErr_SetRaisedException: function(excH) {
+        var rt = WasthonRT;
+        if (excH === 0 || excH === rt.SLOT_NONE) {
+            rt.pendingException = null;
+            return;
+        }
+        var exc = rt.unwrap(excH);
+        // exc is an exception INSTANCE; pass through.
+        rt.setError(rt.wrap(exc && exc.__class__ ? exc.__class__ : rt._b_.Exception),
+                    String(exc));
+    },
+    PyErr_FormatUnraisable__deps: ['$WasthonRT'],
+    PyErr_FormatUnraisable: function(fmtPtr) {
+        // Unraisable exceptions are logged in CPython; for us, drop.
+        var rt = WasthonRT;
+        rt.pendingException = null;
+    },
+
+    /* PyUnicodeWriter — minimal string-builder. Stored as a sentinel
+     * handle pointing to a JS array of chunks; Finish() joins. */
+    PyUnicodeWriter_Create__deps: ['$WasthonRT'],
+    PyUnicodeWriter_Create: function(_length) {
+        var rt = WasthonRT;
+        var w = { __wasthon_writer__: true, chunks: [] };
+        return rt.wrap(w);
+    },
+    PyUnicodeWriter_Finish__deps: ['$WasthonRT'],
+    PyUnicodeWriter_Finish: function(writerH) {
+        var rt = WasthonRT;
+        var w = rt.unwrap(writerH);
+        if (!w || !w.__wasthon_writer__) return 0;
+        return rt.wrap(w.chunks.join(''));
+    },
+    PyUnicodeWriter_Discard__deps: ['$WasthonRT'],
+    PyUnicodeWriter_Discard: function(writerH) {
+        // No allocation to free; the JS GC handles the chunks array.
+    },
+    PyUnicodeWriter_WriteUTF8__deps: ['$WasthonRT'],
+    PyUnicodeWriter_WriteUTF8: function(writerH, strPtr, size) {
+        var rt = WasthonRT;
+        var w = rt.unwrap(writerH);
+        if (!w || !w.__wasthon_writer__) return -1;
+        if (strPtr === 0) return 0;
+        w.chunks.push(size < 0 ? UTF8ToString(strPtr) : UTF8ToString(strPtr, size));
+        return 0;
+    },
+    PyUnicodeWriter_WriteStr__deps: ['$WasthonRT'],
+    PyUnicodeWriter_WriteStr: function(writerH, objH) {
+        var rt = WasthonRT;
+        var w = rt.unwrap(writerH);
+        if (!w || !w.__wasthon_writer__) return -1;
+        var s = rt.asJSStr(rt.unwrap(objH));
+        if (s === null) {
+            try { s = String(rt._b_.str.$factory(rt.unwrap(objH))); }
+            catch (e) { return -1; }
+        }
+        w.chunks.push(s);
+        return 0;
+    },
+    PyUnicodeWriter_WriteRepr__deps: ['$WasthonRT'],
+    PyUnicodeWriter_WriteRepr: function(writerH, objH) {
+        var rt = WasthonRT;
+        var w = rt.unwrap(writerH);
+        if (!w || !w.__wasthon_writer__) return -1;
+        try { w.chunks.push(String(rt._b_.repr(rt.unwrap(objH)))); return 0; }
+        catch (e) { return -1; }
+    },
+    PyUnicodeWriter_WriteSubstring__deps: ['$WasthonRT'],
+    PyUnicodeWriter_WriteSubstring: function(writerH, strH, start, end) {
+        var rt = WasthonRT;
+        var w = rt.unwrap(writerH);
+        if (!w || !w.__wasthon_writer__) return -1;
+        var s = rt.asJSStr(rt.unwrap(strH));
+        if (s === null) return -1;
+        w.chunks.push(s.substring(start, end));
+        return 0;
+    },
+
+    /* PySequence_GetItem(o, i) — o[i]. */
+    PySequence_GetItem__deps: ['$WasthonRT'],
+    PySequence_GetItem: function(objH, i) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (obj === null) return 0;
+        try { return rt.wrap(rt.$B.$getitem(obj, i)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.IndexError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* PySequence_Size(o) — len(o) treated as a sequence. Returns -1 on err. */
+    PySequence_Size__deps: ['$WasthonRT'],
+    PySequence_Size: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (obj === null || obj === undefined) return -1;
+        if (Array.isArray(obj)) return obj.length;
+        if (typeof obj === 'string') return obj.length;
+        try { return rt._b_.len(obj) | 0; }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "object has no len()");
+            return -1;
+        }
+    },
+
+    /* PyList_CheckExact(o) — is exactly a list (not a subclass). */
+    PyList_CheckExact__deps: ['$WasthonRT'],
+    PyList_CheckExact: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        return Array.isArray(obj) ? 1 : 0;
+    },
+
+    /* PyLong_AsNativeBytes(obj, buf, n, flags) — convert PyLong to bytes.
+     * Returns number of bytes actually used, or -1 on error. Implements
+     * native-endian and little/big-endian; we ignore the ALLOW_INDEX and
+     * UNSIGNED_BUFFER flags (we always accept ints, and our value-checking
+     * is the same in both modes for n ≤ 8). */
+    PyLong_AsNativeBytes__deps: ['$WasthonRT'],
+    PyLong_AsNativeBytes: function(objH, bufPtr, n, flags) {
+        var rt = WasthonRT;
+        var v = rt.unwrap(objH);
+        var big;
+        if (typeof v === 'bigint') big = v;
+        else if (typeof v === 'number') big = BigInt(Math.trunc(v));
+        else if (v && typeof v.valueOf === 'function') {
+            try { big = BigInt(v.valueOf()); }
+            catch (e) {
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                    "an integer is required");
+                return -1;
+            }
+        } else {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "an integer is required");
+            return -1;
+        }
+
+        var negative = big < 0n;
+        if (negative && (flags & 8)) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "can't convert negative int");
+            return -1;
+        }
+
+        // Endian: bit0 = big, bit1 = little, both = native (little for our env)
+        var endian = flags & 3;
+        var bigEndian = (endian === 1);  // native is little for wasm
+
+        // For negative numbers, use two's complement representation in n bytes.
+        var modValue = big;
+        if (negative) {
+            modValue = (1n << BigInt(n * 8)) + big;
+        }
+
+        // Write bytes
+        for (var i = 0; i < n; i++) {
+            var byte = Number(modValue & 0xffn);
+            modValue >>= 8n;
+            var off = bigEndian ? (n - 1 - i) : i;
+            HEAPU8[bufPtr + off] = byte;
+        }
+
+        // Compute minimal byte count needed to represent the value
+        var test = negative ? ~big : big;
+        if (test < 0n) test = -test;
+        var bitsNeeded = 0;
+        var t = test;
+        while (t > 0n) { bitsNeeded++; t >>= 1n; }
+        var bytesNeeded = Math.max(1, Math.ceil((bitsNeeded + (negative ? 1 : 0)) / 8));
+        return bytesNeeded;
+    },
+
+    /* PyMapping_Check(o) — does o support __getitem__? Conservative true
+     * for dict, list, tuple, str. */
+    PyMapping_Check__deps: ['$WasthonRT'],
+    PyMapping_Check: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (obj === null || obj === undefined) return 0;
+        if (Array.isArray(obj)) return 1;
+        if (obj.__class__ === rt._b_.dict || obj instanceof Map) return 1;
+        if (typeof obj === 'string') return 1;
+        try {
+            return rt.$B.$hasattr(obj, '__getitem__') ? 1 : 0;
+        } catch (e) { return 0; }
+    },
+
+    /* PyMapping_GetOptionalItemString(obj, key, *out) — like __getitem__
+     * but returns 0 (and *out=NULL) if key is missing, rather than raising
+     * KeyError. Returns 1 on success, 0 if missing, -1 on error. */
+    PyMapping_GetOptionalItemString__deps: ['$WasthonRT'],
+    PyMapping_GetOptionalItemString: function(objH, keyPtr, outPtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var key = keyPtr ? UTF8ToString(keyPtr) : "";
+        try {
+            var val;
+            if (obj && obj.__class__ === rt._b_.dict) {
+                if (!rt.$B.$dict_contains(obj, key)) {
+                    HEAP32[outPtr >> 2] = 0;
+                    return 0;
+                }
+                val = rt.$B.$dict_get(obj, key);
+            } else if (obj instanceof Map) {
+                if (!obj.has(key)) {
+                    HEAP32[outPtr >> 2] = 0;
+                    return 0;
+                }
+                val = obj.get(key);
+            } else {
+                try {
+                    val = rt.$B.$getitem(obj, key);
+                } catch (e) {
+                    if (rt.$B.is_exc(e, rt._b_.KeyError) ||
+                        rt.$B.is_exc(e, rt._b_.IndexError)) {
+                        HEAP32[outPtr >> 2] = 0;
+                        return 0;
+                    }
+                    throw e;
+                }
+            }
+            HEAP32[outPtr >> 2] = rt.wrap(val);
+            return 1;
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                e.args ? String(e.args[0]) : (e.message || String(e)));
+            return -1;
+        }
+    },
+
+    /* _Py_convert_optional_to_ssize_t — clinic converter for ssize_t|None.
+     * Returns 1 on success (sets *result), 0 on type error. None leaves
+     * *result untouched, preserving the caller-provided default. */
+    _Py_convert_optional_to_ssize_t__deps: ['$WasthonRT'],
+    _Py_convert_optional_to_ssize_t: function(objH, resultPtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (obj === rt._b_.None || obj === null || obj === undefined) {
+            return 1;
+        }
+        if (typeof obj === 'number') {
+            HEAP32[resultPtr >> 2] = obj | 0;
+            return 1;
+        }
+        if (typeof obj === 'bigint') {
+            HEAP32[resultPtr >> 2] = Number(obj) | 0;
+            return 1;
+        }
+        rt.setError(rt.wrap(rt._b_.TypeError),
+            "argument must be int or None");
+        return 0;
+    },
+
+    /* PyObject_CallMethodOneArg(self, name, arg) — self.name(arg). */
+    PyObject_CallMethodOneArg__deps: ['$WasthonRT'],
+    PyObject_CallMethodOneArg: function(selfH, nameH, argH) {
+        var rt = WasthonRT;
+        var self = rt.unwrap(selfH);
+        var name = rt.asJSStr(rt.unwrap(nameH));
+        var arg = rt.unwrap(argH);
+        if (!self || name === null) return 0;
+        try {
+            var m = rt.$B.$getattr(self, name);
+            return rt.wrap(rt.$B.$call(m, arg));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.AttributeError), name + ": " + (e.message || e));
+            return 0;
+        }
+    },
+
+    /* PyObject_Call(callable, args_tuple, kwargs_dict) — generic call. */
+    PyObject_Call__deps: ['$WasthonRT'],
+    PyObject_Call: function(fnH, argsH, kwargsH) {
+        var rt = WasthonRT;
+        var fn = rt.unwrap(fnH);
+        if (!fn) return 0;
+        var args = argsH === 0 ? [] : rt.unwrap(argsH);
+        if (args === null) args = [];
+        try {
+            // Brython's $call supports positional only; for kwargs, the
+            // caller object usually accepts them via a special dict.
+            return rt.wrap(rt.$B.$call.apply(null, [fn].concat(Array.from(args))));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* PyNumber_Long(o) — int(o) coercion. */
+    PyNumber_Long__deps: ['$WasthonRT'],
+    PyNumber_Long: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        try { return rt.wrap(rt._b_.int.$factory(obj)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* PyNumber_* binary ops — handle the (number, number), (bigint, *) and
+     * (*, bigint) combinations natively, fall through to Brython's __op__
+     * dispatch otherwise. The BigInt branch is essential for math.factorial
+     * and similar that build up arbitrary-precision ints in a tight C loop. */
+    PyNumber_Add__deps: ['$WasthonRT'],
+    PyNumber_Add: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH), b = rt.unwrap(bH);
+        try {
+            if (typeof a === 'number' && typeof b === 'number' &&
+                Number.isInteger(a) && Number.isInteger(b)) {
+                var sum = a + b;
+                if (Number.isFinite(sum) && Number.isSafeInteger(sum)) return rt.wrap(sum);
+                /* Overflow into BigInt land. */
+                return rt.wrap(BigInt(a) + BigInt(b));
+            }
+            if (typeof a === 'number' && typeof b === 'number') return rt.wrap(a + b);
+            if (typeof a === 'bigint' || typeof b === 'bigint') {
+                var ba = typeof a === 'bigint' ? a : BigInt(Math.trunc(Number(a)));
+                var bb = typeof b === 'bigint' ? b : BigInt(Math.trunc(Number(b)));
+                var r = ba + bb;
+                if (r >= -2147483648n && r <= 2147483647n) return rt.wrap(Number(r));
+                return rt.wrap(r);
+            }
+            return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__add__'), b));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return 0;
+        }
+    },
+    PyNumber_Multiply__deps: ['$WasthonRT'],
+    PyNumber_Multiply: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH), b = rt.unwrap(bH);
+        try {
+            if (typeof a === 'number' && typeof b === 'number' &&
+                Number.isInteger(a) && Number.isInteger(b)) {
+                var prod = a * b;
+                if (Number.isFinite(prod) && Number.isSafeInteger(prod)) return rt.wrap(prod);
+                /* Overflow into BigInt land. */
+                return rt.wrap(BigInt(a) * BigInt(b));
+            }
+            if (typeof a === 'number' && typeof b === 'number') return rt.wrap(a * b);
+            if (typeof a === 'bigint' || typeof b === 'bigint') {
+                var ba = typeof a === 'bigint' ? a : BigInt(Math.trunc(Number(a)));
+                var bb = typeof b === 'bigint' ? b : BigInt(Math.trunc(Number(b)));
+                var r = ba * bb;
+                if (r >= -2147483648n && r <= 2147483647n) return rt.wrap(Number(r));
+                return rt.wrap(r);
+            }
+            return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__mul__'), b));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return 0;
+        }
+    },
+    PyNumber_FloorDivide__deps: ['$WasthonRT'],
+    PyNumber_FloorDivide: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH), b = rt.unwrap(bH);
+        try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__floordiv__'), b)); }
+        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+    },
+    PyNumber_TrueDivide__deps: ['$WasthonRT'],
+    PyNumber_TrueDivide: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH), b = rt.unwrap(bH);
+        try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__truediv__'), b)); }
+        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+    },
+    PyNumber_Remainder__deps: ['$WasthonRT'],
+    PyNumber_Remainder: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH), b = rt.unwrap(bH);
+        try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__mod__'), b)); }
+        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+    },
+    PyNumber_And__deps: ['$WasthonRT'],
+    PyNumber_And: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH), b = rt.unwrap(bH);
+        try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__and__'), b)); }
+        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+    },
+
+    /* PyUnicode helpers */
+    PyUnicode_GetLength__deps: ['$WasthonRT'],
+    PyUnicode_GetLength: function(handle) {
+        var s = WasthonRT.asJSStr(WasthonRT.unwrap(handle));
+        return s === null ? -1 : s.length;
+    },
+    PyUnicode_AsLatin1String__deps: ['$WasthonRT'],
+    PyUnicode_AsLatin1String: function(handle) {
+        var rt = WasthonRT;
+        var s = rt.asJSStr(rt.unwrap(handle));
+        if (s === null) { rt.setError(rt.wrap(rt._b_.TypeError), "str expected"); return 0; }
+        var arr = new Array(s.length);
+        for (var i = 0; i < s.length; i++) arr[i] = s.charCodeAt(i) & 0xFF;
+        return rt.wrap(rt._b_.bytes.$factory(arr));
+    },
+
+    /* PyObject_GetOptionalAttr — like GetAttr but missing attr is OK.
+     * Returns 1 with *out set on success, 0 if missing, -1 on error. */
+    PyObject_GetOptionalAttr__deps: ['$WasthonRT'],
+    PyObject_GetOptionalAttr: function(objH, attrNameH, outPtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var name = rt.asJSStr(rt.unwrap(attrNameH));
+        if (obj === null || name === null) { HEAP32[outPtr >> 2] = 0; return 0; }
+        try {
+            var v = rt.$B.$getattr(obj, name, undefined);
+            if (v === undefined || v === null) { HEAP32[outPtr >> 2] = 0; return 0; }
+            HEAP32[outPtr >> 2] = rt.wrap(v);
+            return 1;
+        } catch (e) {
+            HEAP32[outPtr >> 2] = 0;
+            return 0;
+        }
+    },
+
+    /* _PyObject_GetState — return obj.__dict__ if present, else None.
+     * Used by pickle protocol. */
+    _PyObject_GetState__deps: ['$WasthonRT'],
+    _PyObject_GetState: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (!obj) return rt.SLOT_NONE;
+        var d = rt.$B.get_dict(obj);
+        if (!d) return rt.SLOT_NONE;
+        return rt.wrap(d);
+    },
+
+    /* PyObject_Str(o) — str(o). */
+    PyObject_Str__deps: ['$WasthonRT'],
+    PyObject_Str: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        try { return rt.wrap(rt._b_.str.$factory(obj)); }
+        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+    },
+
+    /* PyObject_CallMethodObjArgs(obj, name, arg1, ..., NULL) */
+    PyObject_CallMethodObjArgs__deps: ['$WasthonRT'],
+    PyObject_CallMethodObjArgs: function(objH, nameH, varargs) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var name = rt.asJSStr(rt.unwrap(nameH));
+        if (!obj || name === null) return 0;
+        var args = [];
+        for (var p = varargs; ; p += 4) {
+            var h = HEAP32[p >> 2];
+            if (h === 0) break;
+            args.push(rt.unwrap(h));
+        }
+        try {
+            var m = rt.$B.$getattr(obj, name);
+            return rt.wrap(rt.$B.$call.apply(null, [m].concat(args)));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.AttributeError), name + ": " + (e.message || e));
+            return 0;
+        }
+    },
+
+    /* PyImport_Import(name_str) — like PyImport_ImportModule but takes a
+     * PyObject* str instead of const char*. */
+    PyImport_Import__deps: ['$WasthonRT'],
+    PyImport_Import: function(nameH) {
+        var rt = WasthonRT;
+        var name = rt.asJSStr(rt.unwrap(nameH));
+        if (name === null) return 0;
+        try { return rt.wrap(rt._b_.__import__(name)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.ImportError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* PyArg_UnpackTuple(args, name, min, max, &v1, &v2, ...) — extract
+     * positional args from a tuple into out pointers. */
+    PyArg_UnpackTuple__deps: ['$WasthonRT'],
+    PyArg_UnpackTuple: function(argsH, namePtr, min, max, varargs) {
+        var rt = WasthonRT;
+        var args = rt.unwrap(argsH);
+        var arr;
+        if (Array.isArray(args)) arr = args;
+        else if (args && typeof args.length === 'number') arr = Array.from(args);
+        else arr = [];
+        if (arr.length < min || arr.length > max) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                (namePtr ? UTF8ToString(namePtr) : "function") +
+                "() takes " + min + " to " + max + " arguments, got " + arr.length);
+            return 0;
+        }
+        var p = varargs;
+        for (var i = 0; i < max; i++) {
+            var outPtr = HEAP32[p >> 2];
+            if (outPtr !== 0 && i < arr.length) {
+                HEAP32[outPtr >> 2] = rt.wrap(arr[i]);
+            }
+            p += 4;
+        }
+        return 1;
+    },
+
+    /* _PyTime — JS Date-backed time helpers. */
+    _PyTime_ObjectToTime_t__deps: ['$WasthonRT'],
+    _PyTime_ObjectToTime_t: function(objH, secOutPtr, _round) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var sec;
+        if (typeof obj === 'number') sec = Math.floor(obj);
+        else if (typeof obj === 'bigint') sec = Number(obj);
+        else { rt.setError(rt.wrap(rt._b_.TypeError), "expected number"); return -1; }
+        // time_t is 8 bytes on wasm32 (it's typedef'd to int64_t in emscripten).
+        var asU = sec < 0 ? (BigInt(sec) + 0x10000000000000000n) : BigInt(sec);
+        HEAP32[ secOutPtr      >> 2] = Number(asU & 0xFFFFFFFFn) | 0;
+        HEAP32[(secOutPtr + 4) >> 2] = Number((asU >> 32n) & 0xFFFFFFFFn) | 0;
+        return 0;
+    },
+    _PyTime_localtime__deps: ['$WasthonRT'],
+    _PyTime_localtime: function(t_lo, t_hi, tmPtr) {
+        // t is int64 split as two 32-bit args by emcc i64 ABI.
+        var sec = (t_hi * 0x100000000) + (t_lo >>> 0);
+        var d = new Date(sec * 1000);
+        // struct tm layout (per emscripten):
+        //   +0  tm_sec     int
+        //   +4  tm_min     int
+        //   +8  tm_hour    int
+        //   +12 tm_mday    int
+        //   +16 tm_mon     int (0-11)
+        //   +20 tm_year    int (year - 1900)
+        //   +24 tm_wday    int
+        //   +28 tm_yday    int
+        //   +32 tm_isdst   int
+        HEAP32[(tmPtr +  0) >> 2] = d.getSeconds();
+        HEAP32[(tmPtr +  4) >> 2] = d.getMinutes();
+        HEAP32[(tmPtr +  8) >> 2] = d.getHours();
+        HEAP32[(tmPtr + 12) >> 2] = d.getDate();
+        HEAP32[(tmPtr + 16) >> 2] = d.getMonth();
+        HEAP32[(tmPtr + 20) >> 2] = d.getFullYear() - 1900;
+        HEAP32[(tmPtr + 24) >> 2] = d.getDay();
+        // tm_yday — compute day of year
+        var start = new Date(d.getFullYear(), 0, 0);
+        HEAP32[(tmPtr + 28) >> 2] = Math.floor((d - start) / 86400000);
+        HEAP32[(tmPtr + 32) >> 2] = 0;  // tm_isdst — leave 0
+        return 0;
+    },
+
+    /* PyLong from/to double */
+    PyLong_FromDouble__deps: ['$WasthonRT'],
+    PyLong_FromDouble: function(v) {
+        return WasthonRT.wrap(Math.trunc(v));
+    },
+    PyLong_AsDouble__deps: ['$WasthonRT'],
+    PyLong_AsDouble: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (typeof obj === 'number') return obj;
+        if (typeof obj === 'bigint') return Number(obj);
+        return 0;
+    },
+    PyNumber_Divmod__deps: ['$WasthonRT'],
+    PyNumber_Divmod: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH), b = rt.unwrap(bH);
+        try { return rt.wrap(rt._b_.divmod(a, b)); }
+        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+    },
+
+    /* PyObject_CallNoArgs(callable) — callable(). */
+    PyObject_CallNoArgs__deps: ['$WasthonRT'],
+    PyObject_CallNoArgs: function(fnH) {
+        var rt = WasthonRT;
+        var fn = rt.unwrap(fnH);
+        if (!fn) return 0;
+        try { return rt.wrapMaybeType(rt.$B.$call(fn)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* Py_VaBuildValue — variadic value builder. Same grammar as PyObject_CallFunction. */
+    Py_VaBuildValue__deps: ['$WasthonRT'],
+    Py_VaBuildValue: function(fmtPtr, va) {
+        var rt = WasthonRT;
+        var fmt = fmtPtr === 0 ? "" : UTF8ToString(fmtPtr);
+        var p = va, i = 0;
+        function takeScalar(c) {
+            if (c === 'O') { var v = rt.unwrap(HEAP32[p >> 2]); p += 4; return v; }
+            if (c === 's') { var sp = HEAP32[p >> 2]; p += 4;
+                             return sp === 0 ? null : UTF8ToString(sp); }
+            if (c === 'i') { var v = HEAP32[p >> 2]; p += 4; return v; }
+            if (c === 'd') { if (p & 7) p = (p + 7) & ~7;
+                             var v = HEAPF64[p >> 3]; p += 8; return v; }
+            return undefined;
+        }
+        function parse(endChar) {
+            var out = [];
+            while (i < fmt.length) {
+                var c = fmt[i];
+                if (c === endChar) { i++; return out; }
+                if (c === ',' || c === ' ' || c === ':') { i++; continue; }
+                if (c === '(') { i++; out.push(rt._b_.tuple.$factory(parse(')'))); continue; }
+                if (c === '[') { i++; out.push(parse(']')); continue; }
+                if (c === '{') {
+                    i++;
+                    while (i < fmt.length && fmt[i] !== '}') i++;
+                    if (fmt[i] === '}') i++;
+                    out.push(rt._b_.dict.$factory());
+                    continue;
+                }
+                i++;
+                var v = takeScalar(c);
+                if (v !== undefined) out.push(v);
+            }
+            return out;
+        }
+        var args = parse(undefined);
+        // Py_VaBuildValue returns a single value if format yields one,
+        // else a tuple of values. (Matches CPython.)
+        if (args.length === 1) return rt.wrap(args[0]);
+        return rt.wrap(rt._b_.tuple.$factory(args));
+    },
+
+    /* _PyLong_DivmodNear(a, b) — round-half-to-even integer divmod.
+     * Returns a 2-tuple (quotient, remainder). */
+    _PyLong_DivmodNear__deps: ['$WasthonRT'],
+    _PyLong_DivmodNear: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH), b = rt.unwrap(bH);
+        var aBI = typeof a === 'bigint' ? a : BigInt(Math.trunc(a));
+        var bBI = typeof b === 'bigint' ? b : BigInt(Math.trunc(b));
+        if (bBI === 0n) {
+            rt.setError(rt.wrap(rt._b_.ZeroDivisionError), "integer division or modulo by zero");
+            return 0;
+        }
+        // Python divmod-with-rounding-half-to-even, mimicking CPython.
+        var q = aBI / bBI;
+        var r = aBI - q * bBI;
+        // Round half to even.
+        var twoR = r * 2n;
+        var absTwoR = twoR < 0n ? -twoR : twoR;
+        var absB = bBI < 0n ? -bBI : bBI;
+        if (absTwoR > absB || (absTwoR === absB && (q & 1n) === 1n)) {
+            if ((r < 0n) === (bBI < 0n)) q += 1n;
+            else q -= 1n;
+            r = aBI - q * bBI;
+        }
+        var qN = Number(q), rN = Number(r);
+        var qOut = (BigInt(qN) === q && Number.isSafeInteger(qN)) ? qN : q;
+        var rOut = (BigInt(rN) === r && Number.isSafeInteger(rN)) ? rN : r;
+        return rt.wrap(rt._b_.tuple.$factory([qOut, rOut]));
+    },
+
+    /* PyObject_CallFunctionObjArgs(callable, arg1, ..., NULL) — variadic call
+     * with a NULL-terminated arg list. C calling convention puts the NULL
+     * sentinel on the stack as a 0 handle, so we walk varargs reading 32-bit
+     * handle slots until we hit 0. We collect into a JS array and dispatch
+     * via Brython's $call. */
+    PyObject_CallFunctionObjArgs__sig: 'iii',
+    PyObject_CallFunctionObjArgs__deps: ['$WasthonRT'],
+    PyObject_CallFunctionObjArgs: function(callableH, varargs) {
+        var rt = WasthonRT;
+        var fn = rt.unwrap(callableH);
+        if (!fn) return 0;
+        var args = [];
+        for (var p = varargs; ; p += 4) {
+            var h = HEAP32[p >> 2];
+            if (h === 0) break;
+            args.push(rt.unwrap(h));
+        }
+        try { return rt.wrap(rt.$B.$call.apply(null, [fn].concat(args))); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* PyList_AsTuple — coerce a list into a tuple. */
+    PyList_AsTuple__deps: ['$WasthonRT'],
+    PyList_AsTuple: function(listH) {
+        var rt = WasthonRT;
+        var l = rt.unwrap(listH);
+        if (l === null) return 0;
+        try { return rt.wrap(rt._b_.tuple.$factory(l)); }
+        catch (e) { return 0; }
+    },
+
+    PyObject_GetAttrString__deps: ['$WasthonRT'],
+    PyObject_GetAttrString: function(objHandle, namePtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objHandle);
+        if (namePtr === 0) {
+            rt.setError(rt.wrap(rt._b_.SystemError), "PyObject_GetAttrString: NULL name");
+            return 0;
+        }
+        var name = UTF8ToString(namePtr);
+        rt.trace('PyObject_GetAttrString', name);
+        if (!obj) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyObject_GetAttrString: obj handle " + objHandle + " did not resolve (name=" + name + ")");
+            return 0;
+        }
+        try {
+            var v = rt.$B.$getattr(obj, name);
+            if (v === undefined || v === null) {
+                rt.setError(rt.wrap(rt._b_.AttributeError), "no attribute '" + name + "'");
+                return 0;
+            }
+            return rt.wrapMaybeType(v);
+        }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.AttributeError),
+                "PyObject_GetAttrString: '" + name + "' (" + (e.message || e) + ")");
+            return 0;
+        }
+    },
+
+    /* PyObject_SetAttrString — set attribute by C string name. */
+    PyObject_SetAttrString__deps: ['$WasthonRT'],
+    PyObject_SetAttrString: function(objHandle, namePtr, valueHandle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objHandle);
+        var name = namePtr ? UTF8ToString(namePtr) : null;
+        if (!obj || name === null) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyObject_SetAttrString: invalid args");
+            return -1;
+        }
+        try {
+            rt._b_.setattr(obj, name, rt.unwrap(valueHandle));
+            return 0;
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.AttributeError),
+                "set '" + name + "' failed: " + (e.message || String(e)));
+            return -1;
+        }
+    },
+
+    /* PyTuple_CheckExact — exactly a tuple. */
+    PyTuple_CheckExact__deps: ['$WasthonRT'],
+    PyTuple_CheckExact: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        return (obj && obj.__class__ === rt._b_.tuple) ? 1 : 0;
+    },
+
+    /* PyType_Freeze — new in 3.14. Single-threaded WASM has no benefit; no-op. */
+    PyType_Freeze: function(typeH) { return 0; },
+
+    /* PyObject_SetAttr — set attribute by str name PyObject. */
+    PyObject_SetAttr__deps: ['$WasthonRT'],
+    PyObject_SetAttr: function(objH, nameH, valueH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var name = rt.asJSStr(rt.unwrap(nameH));
+        if (!obj || name === null) {
+            rt.setError(rt.wrap(rt._b_.SystemError), "PyObject_SetAttr: invalid args");
+            return -1;
+        }
+        try {
+            rt._b_.setattr(obj, name, rt.unwrap(valueH));
+            return 0;
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.AttributeError),
+                "set '" + name + "': " + (e.message || String(e)));
+            return -1;
+        }
+    },
+
+    /* PyModule_New(name) — create a new empty module object. */
+    PyModule_New__deps: ['$WasthonRT'],
+    PyModule_New: function(namePtr) {
+        var rt = WasthonRT;
+        var name = namePtr ? UTF8ToString(namePtr) : "";
+        try {
+            var mod = rt.$B.module.tp_new(rt.$B.module);
+            rt.$B.module.tp_init(mod, name);
+            return rt.wrap(mod);
+        } catch (e) { return 0; }
+    },
+
+    /* PyDescr_NewGetSet — build a Brython property descriptor that wraps
+     * a C-side PyGetSetDef. Same wiring as __wasthon_install_getsets but
+     * for a single dynamic descriptor (pyexpat creates these at module
+     * exec time for each XML handler). */
+    PyDescr_NewGetSet__deps: ['$WasthonRT'],
+    PyDescr_NewGetSet: function(typeH, getsetPtr) {
+        var rt = WasthonRT;
+        if (!getsetPtr) return 0;
+        var namePtr   = HEAP32[ getsetPtr        >> 2];
+        var getPtr    = HEAP32[(getsetPtr +  4)  >> 2];
+        var setPtr    = HEAP32[(getsetPtr +  8)  >> 2];
+        var closurePtr = HEAP32[(getsetPtr + 16) >> 2];
+        var name      = namePtr ? UTF8ToString(namePtr) : "";
+
+        var capGet = getPtr, capSet = setPtr, capClosure = closurePtr;
+
+        var fget = capGet ? (function(getP, closP) {
+            return function(self) {
+                var selfH = (self && self.__wasthon_ptr__) ? self.__wasthon_ptr__ : rt.wrap(self);
+                rt.pendingException = null;
+                var resH = getWasmTableEntry(getP)(selfH, closP);
+                if (rt.pendingException) {
+                    var pe = rt.pendingException; rt.pendingException = null;
+                    var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
+                    throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                }
+                return rt.unwrap(resH);
+            };
+        })(capGet, capClosure) : rt._b_.None;
+
+        var fset = capSet ? (function(setP, closP) {
+            return function(self, value) {
+                var selfH = (self && self.__wasthon_ptr__) ? self.__wasthon_ptr__ : rt.wrap(self);
+                var valH = rt.wrap(value);
+                rt.pendingException = null;
+                var rc = getWasmTableEntry(setP)(selfH, valH, closP);
+                if (rt.pendingException) {
+                    var pe = rt.pendingException; rt.pendingException = null;
+                    var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
+                    throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                }
+                return rc;
+            };
+        })(capSet, capClosure) : rt._b_.None;
+
+        var prop = rt._b_.property.$factory(fget, fset);
+        prop.__name__ = name;
+        prop.__wasthon_getset__ = getsetPtr;
+        return rt.wrap(prop);
+    },
+
+    /* PyDescr_NAME — read the descriptor's __name__ field. */
+    PyDescr_NAME__deps: ['$WasthonRT'],
+    PyDescr_NAME: function(descrH) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(descrH);
+        return rt.wrap((d && d.__name__) || "");
+    },
+
+    /* PyDict_SetDefaultRef — set d[key]=default if missing, write back the
+     * existing or new value into *result. Returns 1 if key existed, 0 if
+     * default was set, -1 on error. */
+    PyDict_SetDefaultRef__deps: ['$WasthonRT'],
+    PyDict_SetDefaultRef: function(dH, kH, defH, resultPtr) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dH);
+        var k = rt.unwrap(kH);
+        try {
+            if (rt._b_.dict.$contains(d, k)) {
+                var v = rt._b_.dict.$getitem(d, k);
+                if (resultPtr) HEAP32[resultPtr >> 2] = rt.wrap(v);
+                return 1;
+            }
+            var dv = rt.unwrap(defH);
+            rt._b_.dict.$setitem(d, k, dv);
+            if (resultPtr) HEAP32[resultPtr >> 2] = defH;
+            return 0;
+        } catch (e) { return -1; }
+    },
+
+    /* PyUnicode_Decode(bytes, n, encoding, errors) — generic decoder. */
+    PyUnicode_Decode__deps: ['$WasthonRT'],
+    PyUnicode_Decode: function(sPtr, size, encodingPtr, errorsPtr) {
+        var rt = WasthonRT;
+        var enc = encodingPtr ? UTF8ToString(encodingPtr).toLowerCase() : 'utf-8';
+        try {
+            var bytes = HEAPU8.slice(sPtr, sPtr + size);
+            var s = new TextDecoder(enc, { fatal: false }).decode(bytes);
+            return rt.wrap(s);
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
+                "decode " + enc + " failed: " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    PyObject_HasAttrString__deps: ['$WasthonRT'],
+    PyObject_HasAttrString: function(objHandle, namePtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objHandle);
+        if (!obj || !namePtr) return 0;
+        var name = UTF8ToString(namePtr);
+        try { rt.$B.$getattr(obj, name); return 1; }
+        catch (e) { return 0; }
+    },
+
+    /* 64-bit variant. blake2module's clinic uses this for fanout/depth/
+     * leaf_length/node_offset/etc. We store as a pair of u32 (lo, hi). */
+    _PyLong_UnsignedLongLong_Converter__deps: ['$WasthonRT'],
+    _PyLong_UnsignedLongLong_Converter: function(handle, ptr) {
+        var obj = WasthonRT.unwrap(handle);
+        var bv;
+        if (typeof obj === 'number') {
+            if (obj < 0) {
+                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
+                    "can't convert negative int to unsigned");
+                return 0;
+            }
+            bv = BigInt(obj);
+        } else if (typeof obj === 'bigint') {
+            if (obj < 0n) {
+                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
+                    "can't convert negative int to unsigned");
+                return 0;
+            }
+            bv = obj;
+        } else {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+                "an integer is required");
+            return 0;
+        }
+        // Store little-endian u64 as two u32s.
+        HEAPU32[ ptr        >> 2] = Number(bv & 0xFFFFFFFFn);
+        HEAPU32[(ptr + 4)   >> 2] = Number((bv >> 32n) & 0xFFFFFFFFn);
+        return 1;
+    },
+
+    PyObject_IsTrue__deps: ['$WasthonRT'],
+    PyObject_IsTrue: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (obj === null || obj === undefined) return 0;
+        // Use Brython's truth semantics.
+        try {
+            return WasthonRT.$B.$bool(obj) ? 1 : 0;
+        } catch (e) {
+            // Failure path: set TypeError, return -1 per CPython contract.
+            var excHandle = WasthonRT.wrap(WasthonRT._b_.TypeError);
+            WasthonRT.setError(excHandle, e.message || "PyObject_IsTrue failed");
+            return -1;
+        }
+    },
+
+    /* Set a key in a Brython dict. blake2module uses this to populate
+     * tp_dict with module constants (SALT_SIZE, PERSON_SIZE, etc.). */
+    PyDict_SetItemString__deps: ['$WasthonRT'],
+    PyDict_SetItemString: function(dictHandle, namePtr, valueHandle) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dictHandle);
+        if (namePtr === 0) {
+            rt.setError(rt.wrap(rt._b_.SystemError), "PyDict_SetItemString: NULL name");
+            return -1;
+        }
+        var name = UTF8ToString(namePtr);
+        rt.trace('PyDict_SetItemString', name);
+        if (!d) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyDict_SetItemString: dict handle " + dictHandle + " did not resolve (name=" + name + ")");
+            return -1;
+        }
+        var v = rt.unwrap(valueHandle);
+        try {
+            rt.$B.str_dict_set(d, name, v);
+            return 0;
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError),
+                "PyDict_SetItemString: " + (e.message || e));
+            return -1;
+        }
+    },
+
+    /* Dict size — clinic glue uses this to count kwargs. */
+    PyDict_GET_SIZE__deps: ['$WasthonRT'],
+    PyDict_GET_SIZE: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (obj === null) return 0;
+        // Brython dicts: prefer .__len__ if a Python dict; else JS object key count.
+        if (obj && typeof obj.size === 'number') return obj.size;
+        if (obj && obj.$jsobj) return Object.keys(obj.$jsobj).length;
+        if (Array.isArray(obj)) return obj.length;
+        // Symbol-keyed Brython dict: walk own keys.
+        if (typeof obj === 'object') {
+            var n = 0;
+            for (var k in obj) if (Object.prototype.hasOwnProperty.call(obj, k)) n++;
+            return n;
+        }
+        return 0;
+    },
+
+    /* sha3 dealloc + various: PyErr_BadInternalCall sets SystemError. */
+    PyErr_BadInternalCall__deps: ['$WasthonRT'],
+    PyErr_BadInternalCall: function() {
+        WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.SystemError),
+            "bad argument to internal function");
+    },
+
+    /* _PyTuple_CAST(t)->ob_item — materialize a C-side struct
+     * { PyObject **ob_item; } in linear memory whose ob_item points
+     * to a freshly built PyObject*[N] array of handles. Leaks per call
+     * (one alloc per factory invocation), acceptable for now. */
+    wasthon_tuple_view__deps: ['$WasthonRT'],
+    wasthon_tuple_view: function(handle) {
+        var rt = WasthonRT;
+        var arr = rt.unwrap(handle);
+        if (!Array.isArray(arr)) {
+            // Brython tuples are JS arrays; defensively handle bytes/etc.
+            arr = arr ? [arr] : [];
+        }
+        var n = arr.length;
+        // 4 bytes (ob_item ptr) + 4*n (handles)
+        var structPtr = _malloc(4 + 4 * n);
+        if (structPtr === 0) return 0;
+        var itemsPtr = structPtr + 4;
+        HEAP32[structPtr >> 2] = itemsPtr;
+        for (var i = 0; i < n; i++) {
+            HEAP32[(itemsPtr + i*4) >> 2] = rt.wrap(arr[i]);
+        }
+        return structPtr;
+    },
+
+    PyTuple_GET_SIZE__deps: ['$WasthonRT'],
+    PyTuple_GET_SIZE: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (obj === null) return 0;
+        // Brython tuples are arrays with __class__ = _b_.tuple.
+        return obj.length || 0;
+    },
+
+    /* --------------------------------------------------------------- *
+     * Exception state                                                 *
+     * --------------------------------------------------------------- */
+
+    PyErr_NoMemory__deps: ['$WasthonRT'],
+    PyErr_NoMemory: function() {
+        var rt = WasthonRT;
+        rt.setError(rt.wrap(rt._b_.MemoryError), "out of memory");
+        return 0;  // NULL
+    },
+
+    PyErr_SetString__deps: ['$WasthonRT'],
+    PyErr_SetString: function(excHandle, msgPtr) {
+        var msg = msgPtr === 0 ? "" : UTF8ToString(msgPtr);
+        WasthonRT.setError(excHandle, msg);
+    },
+
+    /* PyErr_Format(exc, fmt, ...) — set the pending exception with a
+     * formatted message. We interpret a subset of CPython's printf-style
+     * codes: %s, %d, %ld, %u, %zd, %p, %R/%S (str-of). Other codes copy
+     * the format char verbatim so the message still gives a useful hint. */
+    PyErr_Format__deps: ['$WasthonRT'],
+    PyErr_Format: function(excHandle, fmtPtr, varargs) {
+        var rt = WasthonRT;
+        var fmt = fmtPtr === 0 ? "" : UTF8ToString(fmtPtr);
+        var out = "", p = varargs;
+        for (var i = 0; i < fmt.length; i++) {
+            if (fmt[i] !== '%') { out += fmt[i]; continue; }
+            // Consume optional length modifiers (l, ll, z).
+            var spec = "";
+            while (i + 1 < fmt.length && "lhzj".indexOf(fmt[i+1]) !== -1) { spec += fmt[++i]; }
+            var c = fmt[++i];
+            if (c === 's') {
+                var sp = HEAP32[p >> 2]; p += 4;
+                out += (sp === 0) ? "(null)" : UTF8ToString(sp);
+            } else if (c === 'd' || c === 'i') {
+                out += String(HEAP32[p >> 2] | 0); p += 4;
+            } else if (c === 'u') {
+                out += String(HEAPU32[p >> 2] >>> 0); p += 4;
+            } else if (c === 'p') {
+                out += "0x" + (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
+            } else if (c === 'R' || c === 'S' || c === 'A') {
+                var h = HEAP32[p >> 2]; p += 4;
+                var obj = rt.unwrap(h);
+                try { out += String(obj); } catch (_) { out += "<obj>"; }
+            } else if (c === '%') {
+                out += '%';
+            } else {
+                out += '%' + spec + c;  // unknown — leave as-is
+            }
+        }
+        rt.setError(excHandle, out);
+        return 0;
+    },
+
+    PyErr_Clear__deps: ['$WasthonRT'],
+    PyErr_Clear: function() {
+        WasthonRT.pendingException = null;
+    },
+
+    PyErr_Occurred__deps: ['$WasthonRT'],
+    PyErr_Occurred: function() {
+        return WasthonRT.pendingException ? WasthonRT.pendingException.exc : 0;
+    },
+
+    PyErr_SetNone__deps: ['$WasthonRT'],
+    PyErr_SetNone: function(excHandle) {
+        WasthonRT.setError(excHandle, "");
+    },
+
+    /* PyErr_SetObject(exc, value): like PyErr_SetString but value is any
+     * Python object (not just a C string). _decimal uses this to pass a
+     * list/tuple of signal flags as the exception value. The throw site
+     * does `exc.$factory(pe.msg)` — so storing the Python value in `msg`
+     * works directly: Brython exception classes accept any args as their
+     * .args tuple. */
+    PyErr_SetObject__deps: ['$WasthonRT'],
+    PyErr_SetObject: function(excHandle, valueHandle) {
+        var v = WasthonRT.unwrap(valueHandle);
+        WasthonRT.setError(excHandle, v === null ? "" : v);
+    },
+
+    /* PyObject_HashNotImplemented: used as a tp_hash slot to declare a type
+     * unhashable. CPython sets TypeError and returns -1. */
+    PyObject_HashNotImplemented__deps: ['$WasthonRT'],
+    PyObject_HashNotImplemented: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        var name = (obj && obj.__class__ && obj.__class__.$infos &&
+                    obj.__class__.$infos.__name__) || "object";
+        rt.setError(rt.wrap(rt._b_.TypeError), "unhashable type: '" + name + "'");
+        return -1;
+    },
+
+    /* _PyBytes_Resize — resize a bytes object in place (conceptually; we
+     * actually create a new one). If the bytes has a cached linear-memory
+     * pointer (because PyBytes_AS_STRING was called and C may have
+     * written into the buffer), read from the live pointer rather than
+     * from .source which can be stale. This is the path zlib uses to
+     * finalize a compressed output. */
+    _PyBytes_Resize__deps: ['$WasthonRT'],
+    _PyBytes_Resize: function(pvPtr, newsize) {
+        var rt = WasthonRT;
+        var handle = HEAP32[pvPtr >> 2];
+        var b = rt.unwrap(handle);
+        if (b === null) return -1;
+        var newArr = new Array(newsize);
+        if (b.__wasthon_cstr__) {
+            // Live data lives in linear memory.
+            var ptr = b.__wasthon_cstr__;
+            for (var i = 0; i < newsize; i++) newArr[i] = HEAPU8[ptr + i];
+        } else {
+            var src = b.source || [];
+            var oldLen = src.length;
+            for (var i = 0; i < newsize; i++) newArr[i] = i < oldLen ? (src[i] & 0xff) : 0;
+        }
+        var newBytes = rt._b_.bytes.$factory(newArr);
+        var newHandle = rt.wrap(newBytes);
+        HEAP32[pvPtr >> 2] = newHandle;
+        return 0;
+    },
+
+    /* _PyNumber_Index — convert to int. Pass-through for our purposes. */
+    _PyNumber_Index__deps: ['$WasthonRT'],
+    _PyNumber_Index: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (typeof obj === 'number' && Number.isInteger(obj)) return handle;
+        if (typeof obj === 'bigint') return handle;
+        try {
+            var v = rt._b_.int.$factory(obj);
+            return rt.wrap(v);
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "an integer is required");
+            return 0;
+        }
+    },
+
+    /* PyArg_ParseTuple / PyArg_ParseTupleAndKeywords — legacy varargs
+     * parsers. _decimal uses ONLY the 'O' (PyObject*) format with '|'
+     * for optional args — no 'i', 's', 'y*', etc. We implement that
+     * narrow subset. If a future module needs more codes, extend here.
+     *
+     * Format scan rules:
+     *   'O'  consume one PyObject** from varargs; bind to next arg
+     *   '|'  separator: everything after is optional
+     *
+     * Conventions:
+     *   - args: positional tuple/list of supplied values (may be empty)
+     *   - kwds: keyword dict, or NULL/0 if none
+     *   - kwlist: NULL-terminated array of (char *) names matching format slots
+     *   - varargs: PyObject** out pointers, one per non-'|' slot
+     *
+     * Returns 1 on success, 0 on failure (with TypeError set). Out pointers
+     * for absent optional args are left as-is (caller initializes them).
+     */
+    PyArg_ParseTupleAndKeywords__deps: ['$WasthonRT'],
+    PyArg_ParseTupleAndKeywords: function(argsH, kwdsH, formatPtr, kwlistPtr, varargs) {
+        var rt = WasthonRT;
+        var args = rt.unwrap(argsH);
+        var kwds = kwdsH === 0 ? null : rt.unwrap(kwdsH);
+        var format = formatPtr === 0 ? "" : UTF8ToString(formatPtr);
+
+        /* Strip trailing function name marker (":fname" or ";errmsg") which
+         * is the standard PyArg_ParseTuple convention for embedding a name
+         * to use in error messages. We don't surface that name today. */
+        var sep = format.search(/[:;]/);
+        if (sep >= 0) format = format.slice(0, sep);
+
+        // Count slots (non-'|' chars).
+        var totalSlots = 0;
+        for (var i = 0; i < format.length; i++) {
+            if (format[i] !== '|') totalSlots++;
+        }
+
+        // Read kwlist names.
+        var kwlist = [];
+        if (kwlistPtr !== 0) {
+            for (var i = 0; i < totalSlots; i++) {
+                var namePtr = HEAP32[(kwlistPtr + i * 4) >> 2];
+                if (namePtr === 0) break;
+                kwlist.push(UTF8ToString(namePtr));
+            }
+        }
+
+        // Normalise args to a JS array of positional values.
+        var posArgs;
+        if (Array.isArray(args)) posArgs = args;
+        else if (args && typeof args.length === 'number') posArgs = Array.from(args);
+        else if (args === null || args === undefined) posArgs = [];
+        else posArgs = [];
+
+        // Walk format, populating out pointers.
+        var slotIdx = 0;
+        var p = varargs;
+        var seenPipe = false;
+        for (var i = 0; i < format.length; i++) {
+            var c = format[i];
+            if (c === '|') { seenPipe = true; continue; }
+            if (c !== 'O' && c !== 'i' && c !== 'I' && c !== 'k' &&
+                c !== 'l' && c !== 'L' && c !== 'K' && c !== 'n' &&
+                c !== 'b' && c !== 'B' && c !== 'h' && c !== 'H' &&
+                c !== 'p' && c !== 'C') {
+                rt.setError(rt.wrap(rt._b_.SystemError),
+                    "PyArg_ParseTuple[AndKeywords]: format char '" + c + "' not implemented");
+                return 0;
+            }
+
+            var value = undefined;
+            if (slotIdx < posArgs.length) {
+                value = posArgs[slotIdx];
+            } else if (kwds && kwlist[slotIdx]) {
+                try {
+                    var got = rt.$B.$getattr(kwds, 'get');
+                    value = got(kwlist[slotIdx]);
+                    if (value === rt._b_.None) value = undefined;
+                } catch (_) { value = undefined; }
+                if (value === undefined) {
+                    try {
+                        if (rt._b_.dict.$contains_string(kwds, kwlist[slotIdx])) {
+                            value = rt._b_.dict.$getitem(kwds, kwlist[slotIdx]);
+                        }
+                    } catch (_) {}
+                }
+            }
+
+            if (value !== undefined) {
+                /* The varargs slot at p contains a *pointer* (&v); we
+                 * write the converted value to *p. The width and signedness
+                 * of the store depend on the format char. */
+                var outPtr = HEAP32[p >> 2];
+                if (outPtr !== 0) {
+                    if (c === 'O') {
+                        HEAP32[outPtr >> 2] = rt.wrap(value);
+                    } else if (c === 'p') {
+                        /* predicate: store 1 byte int 0/1 */
+                        HEAPU8[outPtr] = rt._b_.bool(value) ? 1 : 0;
+                    } else if (c === 'C') {
+                        /* single Python str char as C int (codepoint) */
+                        var s = rt.asJSStr(value);
+                        if (s === null || s.length !== 1) {
+                            rt.setError(rt.wrap(rt._b_.TypeError),
+                                "expected a single character str");
+                            return 0;
+                        }
+                        HEAP32[outPtr >> 2] = s.codePointAt(0) || s.charCodeAt(0);
+                    } else {
+                        /* numeric: convert to JS Number then store width-appropriate */
+                        var n;
+                        if (typeof value === 'number') n = value;
+                        else if (typeof value === 'bigint') n = Number(value);
+                        else if (value === true) n = 1;
+                        else if (value === false) n = 0;
+                        else { n = Number(value); if (isNaN(n)) n = 0; }
+                        switch (c) {
+                            case 'i': case 'I': case 'l':
+                                HEAP32[outPtr >> 2] = n | 0; break;
+                            case 'k': case 'L': case 'K':
+                                /* 64-bit slot: write low 32, zero high 32 */
+                                HEAP32[outPtr >> 2] = n | 0;
+                                HEAP32[(outPtr + 4) >> 2] = ((n / 0x100000000) | 0);
+                                break;
+                            case 'n':  /* Py_ssize_t: 32-bit in wasm32 */
+                                HEAP32[outPtr >> 2] = n | 0; break;
+                            case 'h': case 'H':
+                                HEAP16[outPtr >> 1] = n & 0xffff; break;
+                            case 'b': case 'B':
+                                HEAPU8[outPtr] = n & 0xff; break;
+                        }
+                    }
+                }
+            } else if (!seenPipe) {
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                    "missing required argument '" +
+                    (kwlist[slotIdx] || ('#' + slotIdx)) + "'");
+                return 0;
+            }
+            p += 4;
+            slotIdx++;
+        }
+
+        return 1;
+    },
+
+    PyArg_ParseTuple__deps: ['$WasthonRT', 'PyArg_ParseTupleAndKeywords'],
+    PyArg_ParseTuple: function(argsH, formatPtr, varargs) {
+        return _PyArg_ParseTupleAndKeywords(argsH, 0, formatPtr, 0, varargs);
+    },
+
+    /* --------------------------------------------------------------- *
+     * Helpers                                                         *
+     * --------------------------------------------------------------- */
+
+    _Py_strhex__deps: ['$WasthonRT'],
+    _Py_strhex: function(argbufPtr, argbuflen) {
+        // Hex-encode bytes to a lowercase string. Equivalent to
+        // CPython's _Py_strhex(buf, len) -> str.
+        var hex = "";
+        var hexChars = "0123456789abcdef";
+        for (var i = 0; i < argbuflen; i++) {
+            var b = HEAPU8[argbufPtr + i];
+            hex += hexChars[b >> 4] + hexChars[b & 0x0f];
+        }
+        return WasthonRT.wrap(hex);
+    },
+
+    /* --------------------------------------------------------------- *
+     * Sentinel accessors (called by wasthon_init)              *
+     *                                                                 *
+     * wasthon.c declares the externs (Py_None, PyExc_TypeError,        *
+     * PyType_Type, etc.) as PyObject * / PyTypeObject * variables and *
+     * fills them at module init by invoking these accessors. From     *
+     * then on, C code reads the externs directly with no JS round     *
+     * trip per access.                                                *
+     * --------------------------------------------------------------- */
+
+    /* ---- Singletons ---- */
+    wasthon_get_Py_None__deps:  ['$WasthonRT'],
+    wasthon_get_Py_None:        function() { return WasthonRT.SLOT_NONE;  },
+    wasthon_get_Py_True__deps:  ['$WasthonRT'],
+    wasthon_get_Py_True:        function() { return WasthonRT.SLOT_TRUE;  },
+    wasthon_get_Py_False__deps: ['$WasthonRT'],
+    wasthon_get_Py_False:       function() { return WasthonRT.SLOT_FALSE; },
+    wasthon_get_Py_NotImplemented__deps: ['$WasthonRT'],
+    wasthon_get_Py_NotImplemented: function() { return WasthonRT.SLOT_NOTIMPLEMENTED; },
+
+    /* ---- Exception classes ---- */
+    wasthon_get_PyExc_TypeError__deps:      ['$WasthonRT'],
+    wasthon_get_PyExc_TypeError:            function() { return WasthonRT.wrap(WasthonRT._b_.TypeError); },
+    wasthon_get_PyExc_ValueError__deps:     ['$WasthonRT'],
+    wasthon_get_PyExc_ValueError:           function() { return WasthonRT.wrap(WasthonRT._b_.ValueError); },
+    wasthon_get_PyExc_OverflowError__deps:  ['$WasthonRT'],
+    wasthon_get_PyExc_OverflowError:        function() { return WasthonRT.wrap(WasthonRT._b_.OverflowError); },
+    wasthon_get_PyExc_RuntimeError__deps:   ['$WasthonRT'],
+    wasthon_get_PyExc_RuntimeError:         function() { return WasthonRT.wrap(WasthonRT._b_.RuntimeError); },
+    wasthon_get_PyExc_MemoryError__deps:    ['$WasthonRT'],
+    wasthon_get_PyExc_MemoryError:          function() { return WasthonRT.wrap(WasthonRT._b_.MemoryError); },
+    wasthon_get_PyExc_SystemError__deps:    ['$WasthonRT'],
+    wasthon_get_PyExc_SystemError:          function() { return WasthonRT.wrap(WasthonRT._b_.SystemError); },
+    wasthon_get_PyExc_IndexError__deps:     ['$WasthonRT'],
+    wasthon_get_PyExc_IndexError:           function() { return WasthonRT.wrap(WasthonRT._b_.IndexError); },
+    wasthon_get_PyExc_RecursionError__deps: ['$WasthonRT'],
+    wasthon_get_PyExc_RecursionError:       function() { return WasthonRT.wrap(WasthonRT._b_.RecursionError); },
+    wasthon_get_PyExc_EOFError__deps:       ['$WasthonRT'],
+    wasthon_get_PyExc_EOFError:             function() { return WasthonRT.wrap(WasthonRT._b_.EOFError); },
+    wasthon_get_PyExc_StopIteration__deps:  ['$WasthonRT'],
+    wasthon_get_PyExc_StopIteration:        function() { return WasthonRT.wrap(WasthonRT._b_.StopIteration); },
+    wasthon_get_PyExc_BufferError__deps:    ['$WasthonRT'],
+    wasthon_get_PyExc_BufferError:          function() { return WasthonRT.wrap(WasthonRT._b_.BufferError); },
+    wasthon_get_PyExc_KeyError__deps:       ['$WasthonRT'],
+    wasthon_get_PyExc_KeyError:             function() { return WasthonRT.wrap(WasthonRT._b_.KeyError); },
+    wasthon_get_PyExc_LookupError__deps:    ['$WasthonRT'],
+    wasthon_get_PyExc_LookupError:          function() { return WasthonRT.wrap(WasthonRT._b_.LookupError); },
+    wasthon_get_PyExc_NotImplementedError__deps: ['$WasthonRT'],
+    wasthon_get_PyExc_NotImplementedError:  function() { return WasthonRT.wrap(WasthonRT._b_.NotImplementedError); },
+    wasthon_get_PyExc_UnicodeError__deps:   ['$WasthonRT'],
+    wasthon_get_PyExc_UnicodeError:         function() { return WasthonRT.wrap(WasthonRT._b_.UnicodeError); },
+    wasthon_get_PyExc_UnicodeDecodeError__deps: ['$WasthonRT'],
+    wasthon_get_PyExc_UnicodeDecodeError:   function() { return WasthonRT.wrap(WasthonRT._b_.UnicodeDecodeError); },
+    wasthon_get_PyExc_UnicodeEncodeError__deps: ['$WasthonRT'],
+    wasthon_get_PyExc_UnicodeEncodeError:   function() { return WasthonRT.wrap(WasthonRT._b_.UnicodeEncodeError); },
+    wasthon_get_PyExc_ImportError__deps:    ['$WasthonRT'],
+    wasthon_get_PyExc_ImportError:          function() { return WasthonRT.wrap(WasthonRT._b_.ImportError); },
+    wasthon_get_PyExc_Exception__deps:      ['$WasthonRT'],
+    wasthon_get_PyExc_Exception:            function() { return WasthonRT.wrap(WasthonRT._b_.Exception); },
+    wasthon_get_PyExc_OSError__deps:        ['$WasthonRT'],
+    wasthon_get_PyExc_OSError:              function() { return WasthonRT.wrap(WasthonRT._b_.OSError); },
+    wasthon_get_PyExc_AttributeError__deps: ['$WasthonRT'],
+    wasthon_get_PyExc_AttributeError:       function() { return WasthonRT.wrap(WasthonRT._b_.AttributeError); },
+    wasthon_get_PyExc_ArithmeticError__deps: ['$WasthonRT'],
+    wasthon_get_PyExc_ArithmeticError:      function() { return WasthonRT.wrap(WasthonRT._b_.ArithmeticError); },
+    wasthon_get_PyExc_DeprecationWarning__deps: ['$WasthonRT'],
+    wasthon_get_PyExc_DeprecationWarning:   function() { return WasthonRT.wrap(WasthonRT._b_.DeprecationWarning); },
+    wasthon_get_PyExc_ZeroDivisionError__deps: ['$WasthonRT'],
+    wasthon_get_PyExc_ZeroDivisionError:    function() { return WasthonRT.wrap(WasthonRT._b_.ZeroDivisionError); },
+
+    /* PyType_FromSpec — like PyType_FromModuleAndSpec but no module. The
+     * __deps clause keeps PyType_FromModuleAndSpec preserved so Emscripten
+     * doesn't tree-shake it; calls through `_<name>` as the C-export name. */
+    PyType_FromSpec__deps: ['$WasthonRT', 'PyType_FromModuleAndSpec'],
+    PyType_FromSpec: function(specPtr) {
+        return _PyType_FromModuleAndSpec(0, specPtr, 0);
+    },
+
+    /* PyType_FromMetaclass(metaclass, module, spec, bases) — CPython 3.12+
+     * generalisation of FromModuleAndSpec. We ignore the metaclass argument
+     * (no metaclass support in our bridge) and delegate the rest. */
+    PyType_FromMetaclass__deps: ['$WasthonRT', 'PyType_FromModuleAndSpec'],
+    PyType_FromMetaclass: function(metaH, moduleH, specPtr, basesH) {
+        return _PyType_FromModuleAndSpec(moduleH, specPtr, basesH);
+    },
+
+    /* PyType_Check(obj) — is obj a type (or type subclass) ?
+     * Macro in wasthon.h forwards `(PyObject*)x` to here so callers can
+     * pass either PyObject* or PyTypeObject*. */
+    _wasthon_PyType_Check__deps: ['$WasthonRT'],
+    _wasthon_PyType_Check: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        try { return rt.$B.$isinstance(obj, rt._b_.type) ? 1 : 0; }
+        catch (e) { return 0; }
+    },
+
+    /* PyType_IsSubtype(a, b) — is a a subtype of b? */
+    PyType_IsSubtype__deps: ['$WasthonRT'],
+    PyType_IsSubtype: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH);
+        var b = rt.unwrap(bH);
+        if (a === b) return 1;
+        try { return rt.$B.$issubclass(a, b) ? 1 : 0; }
+        catch (e) { return 0; }
+    },
+
+    /* PyObject_RichCompare(a, b, op) — public richcompare returning PyObject*. */
+    PyObject_RichCompare__deps: ['$WasthonRT'],
+    PyObject_RichCompare: function(aH, bH, op) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH);
+        var b = rt.unwrap(bH);
+        var ops = ['__lt__', '__le__', '__eq__', '__ne__', '__gt__', '__ge__'];
+        try {
+            var fn = rt.$B.$getattr(a, ops[op]);
+            var r = fn(b);
+            return rt.wrap(r);
+        } catch (e) {
+            try {
+                var rev = ops[[1,0,3,2,5,4][op]];
+                var fn2 = rt.$B.$getattr(b, rev);
+                var r2 = fn2(a);
+                return rt.wrap(r2);
+            } catch (e2) {
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                    "unorderable types");
+                return 0;
+            }
+        }
+    },
+
+    PyErr_BadArgument: function() {
+        var rt = WasthonRT;
+        rt.setError(rt.wrap(rt._b_.TypeError), "bad argument type for built-in operation");
+        return 0;
+    },
+
+    /* PyCFunction_Check — is obj a builtin C function ? In our bridge,
+     * we use trampolines wrapped in Brython builtin_method ob_type. */
+    PyCFunction_Check__deps: ['$WasthonRT'],
+    PyCFunction_Check: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        return (obj && obj.ob_type === WasthonRT.$B.builtin_method) ? 1 : 0;
+    },
+
+    /* PyCFunction_GetFunction — return the C function pointer behind a
+     * builtin method. Our trampolines don't expose the raw fn pointer; we
+     * return NULL so callers fall back to PyObject_Call. */
+    PyCFunction_GetFunction: function(handle) { return 0; },
+
+    /* _PyErr_FormatNote — append a note to the current exception.
+     * We don't track exception chaining; no-op. */
+    _PyErr_FormatNote: function() { return 0; },
+
+    /* PyObject_Repr(o) — repr(o). */
+    PyObject_Repr__deps: ['$WasthonRT'],
+    PyObject_Repr: function(handle) {
+        var rt = WasthonRT;
+        try { return rt.wrap(String(rt._b_.repr(rt.unwrap(handle)))); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "repr failed: " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    /* PyObject_GetAttr(o, name) — getattr by str-PyObject name. */
+    PyObject_GetAttr__deps: ['$WasthonRT'],
+    PyObject_GetAttr: function(objH, nameH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var name = rt.asJSStr(rt.unwrap(nameH));
+        if (!obj || name === null) return 0;
+        try { return rt.wrapMaybeType(rt.$B.$getattr(obj, name)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.AttributeError), "no attribute '" + name + "'");
+            return 0;
+        }
+    },
+
+    /* PyObject_SetItem(o, key, v) — o[key] = v. */
+    PyObject_SetItem__deps: ['$WasthonRT'],
+    PyObject_SetItem: function(objH, keyH, valH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var key = rt.unwrap(keyH);
+        var val = rt.unwrap(valH);
+        try { rt.$B.$setitem(obj, key, val); return 0; }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "setitem failed: " + (e.message || String(e)));
+            return -1;
+        }
+    },
+
+    /* PySequence_List(o) — list(o). */
+    PySequence_List__deps: ['$WasthonRT'],
+    PySequence_List: function(handle) {
+        var rt = WasthonRT;
+        try { return rt.wrap(rt._b_.list.$factory(rt.unwrap(handle))); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "list() failed");
+            return 0;
+        }
+    },
+
+    /* PySequence_GetSlice(o, low, high) — o[low:high]. */
+    PySequence_GetSlice__deps: ['$WasthonRT'],
+    PySequence_GetSlice: function(handle, low, high) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        try {
+            if (Array.isArray(obj)) return rt.wrap(obj.slice(low, high));
+            if (typeof obj === 'string') return rt.wrap(obj.slice(low, high));
+            var slice = rt._b_.slice.$factory(low, high);
+            return rt.wrap(rt.$B.$getitem(obj, slice));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "slice failed");
+            return 0;
+        }
+    },
+
+    /* _PyObject_CallNoArgs(callable) — callable(). */
+    _PyObject_CallNoArgs__deps: ['$WasthonRT'],
+    _PyObject_CallNoArgs: function(handle) {
+        var rt = WasthonRT;
+        var fn = rt.unwrap(handle);
+        try { return rt.wrap(rt.$B.$call(fn)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "call failed: " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    /* PyDict_Update(a, b) — a.update(b). */
+    PyDict_Update__deps: ['$WasthonRT'],
+    PyDict_Update: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH);
+        var b = rt.unwrap(bH);
+        try { rt._b_.dict.update(a, b); return 0; }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "dict.update failed");
+            return -1;
+        }
+    },
+
+    /* _PyObject_HashFast(o) — same as hash(o). */
+    _PyObject_HashFast__deps: ['$WasthonRT'],
+    _PyObject_HashFast: function(handle) {
+        var rt = WasthonRT;
+        try { return rt._b_.hash(rt.unwrap(handle)) | 0; }
+        catch (e) { return -1; }
+    },
+
+    /* _PyDict_GetItem_KnownHash(d, k, hash) — same as PyDict_GetItem, hash hint ignored. */
+    _PyDict_GetItem_KnownHash__deps: ['$WasthonRT'],
+    _PyDict_GetItem_KnownHash: function(dH, kH, hash) {
+        var rt = WasthonRT;
+        var d = rt.unwrap(dH);
+        var k = rt.unwrap(kH);
+        try {
+            if (rt._b_.dict.$contains(d, k)) return rt.wrap(rt._b_.dict.$getitem(d, k));
+            return 0;
+        } catch (e) { return 0; }
+    },
+
+    /* _PyType_Lookup / _PyType_LookupRef — walk the MRO for an attribute,
+     * return without calling __getattr__. */
+    _PyType_Lookup__deps: ['$WasthonRT'],
+    _PyType_Lookup: function(typeH, nameH) {
+        var rt = WasthonRT;
+        var type = rt.unwrap(typeH);
+        var name = rt.asJSStr(rt.unwrap(nameH));
+        if (!type || name === null) return 0;
+        try {
+            /* $B.search_in_mro is the canonical no-fallback MRO walk. */
+            if (rt.$B.search_in_mro) {
+                var v = rt.$B.search_in_mro(type, name, rt.$B.NULL);
+                if (v === rt.$B.NULL) return 0;
+                return rt.wrap(v);
+            }
+            return rt.wrap(rt.$B.$getattr(type, name));
+        } catch (e) { return 0; }
+    },
+
+    _PyType_LookupRef__deps: ['$WasthonRT', '_PyType_Lookup'],
+    _PyType_LookupRef: function(typeH, nameH) {
+        return __PyType_Lookup(typeH, nameH);
+    },
+
+    /* Py_ReprEnter / Py_ReprLeave — recursion guard for self-referencing
+     * repr (e.g. d = []; d.append(d); repr(d)). We track a single Set of
+     * "currently being repr'd" handles. */
+    Py_ReprEnter__deps: ['$WasthonRT'],
+    Py_ReprEnter: function(handle) {
+        var rt = WasthonRT;
+        if (!rt._reprStack) rt._reprStack = new Set();
+        if (rt._reprStack.has(handle)) return 1;
+        rt._reprStack.add(handle);
+        return 0;
+    },
+
+    Py_ReprLeave__deps: ['$WasthonRT'],
+    Py_ReprLeave: function(handle) {
+        var rt = WasthonRT;
+        if (rt._reprStack) rt._reprStack.delete(handle);
+    },
+
+    /* math module additions. */
+
+    _Py_bit_length: function(v) {
+        v = v >>> 0;
+        var n = 0;
+        while (v > 0) { n++; v = v >>> 1; }
+        return n;
+    },
+
+    PyFloat_CheckExact__deps: ['$WasthonRT'],
+    PyFloat_CheckExact: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        return (typeof obj === 'number' && !Number.isInteger(obj)) ||
+               (obj && obj.__class__ === WasthonRT._b_.float) ? 1 : 0;
+    },
+
+    PyLong_AsLongAndOverflow__deps: ['$WasthonRT'],
+    PyLong_AsLongAndOverflow: function(objH, overflowPtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var v = (typeof obj === 'bigint') ? obj :
+                (typeof obj === 'number') ? BigInt(Math.trunc(obj)) :
+                BigInt(Number(obj) || 0);
+        if (overflowPtr) {
+            HEAP32[overflowPtr >> 2] = (v > 2147483647n) ? 1 :
+                                       (v < -2147483648n) ? -1 : 0;
+        }
+        if (v > 2147483647n) return 2147483647;
+        if (v < -2147483648n) return -2147483648;
+        return Number(v) | 0;
+    },
+
+    /* _PyLong_Lshift(a, shift) — shift is int64_t at the emcc boundary,
+     * so arrives as a BigInt. */
+    _PyLong_Lshift__deps: ['$WasthonRT'],
+    _PyLong_Lshift: function(aH, shift) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH);
+        var bi = (typeof a === 'bigint') ? a :
+                 (typeof a === 'number') ? BigInt(Math.trunc(a)) : 0n;
+        var s = typeof shift === 'bigint' ? shift : BigInt(shift | 0);
+        var result = bi << s;
+        if (result >= -2147483648n && result <= 2147483647n) return rt.wrap(Number(result));
+        return rt.wrap(result);
+    },
+
+    _PyObject_MaybeCallSpecialNoArgs__deps: ['$WasthonRT'],
+    _PyObject_MaybeCallSpecialNoArgs: function(objH, nameH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var name = rt.asJSStr(rt.unwrap(nameH));
+        if (!obj || name === null) return 0;
+        try {
+            var m = rt.$B.$getattr(obj, name, null);
+            if (m === null || m === undefined) return 0;
+            return rt.wrap(rt.$B.$call(m));
+        } catch (e) { return 0; }
+    },
+
+    PyOS_double_to_string__deps: ['$WasthonRT'],
+    PyOS_double_to_string: function(val, formatCode, precision, flags, typePtr) {
+        var rt = WasthonRT;
+        var fc = String.fromCharCode(formatCode);
+        var s;
+        if (fc === 'r') s = val.toString();
+        else if (fc === 'g') s = val.toPrecision(precision || 6);
+        else if (fc === 'e') s = val.toExponential(precision);
+        else if (fc === 'f') s = val.toFixed(precision);
+        else s = val.toString();
+        /* If ADD_DOT_0 flag and string lacks "." and "e", append ".0". */
+        if ((flags & 2) && s.indexOf('.') === -1 && s.indexOf('e') === -1 &&
+            isFinite(val)) s += '.0';
+        var len = lengthBytesUTF8(s);
+        var ptr = _malloc(len + 1);
+        stringToUTF8(s, ptr, len + 1);
+        if (typePtr) HEAP32[typePtr >> 2] = 0;
+        return ptr;
+    },
+
+    PySequence_Tuple__deps: ['$WasthonRT'],
+    PySequence_Tuple: function(handle) {
+        var rt = WasthonRT;
+        try {
+            var arr = rt._b_.list.$factory(rt.unwrap(handle));
+            return rt.wrap(rt._b_.tuple.$factory(arr));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "tuple() failed");
+            return 0;
+        }
+    },
+
+    PyBool_Check__deps: ['$WasthonRT'],
+    PyBool_Check: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        return (obj === true || obj === false ||
+                obj === WasthonRT._b_.True || obj === WasthonRT._b_.False) ? 1 : 0;
+    },
+
+    PyErr_SetFromErrno__deps: ['$WasthonRT'],
+    PyErr_SetFromErrno: function(excH) {
+        var rt = WasthonRT;
+        rt.setError(excH ? excH : rt.wrap(rt._b_.OSError), "system error");
+        return 0;
+    },
+
+    PyLong_AsLongLongAndOverflow__deps: ['$WasthonRT'],
+    PyLong_AsLongLongAndOverflow: function(objH, overflowPtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var bi = (typeof obj === 'bigint') ? obj :
+                 (typeof obj === 'number') ? BigInt(Math.trunc(obj)) : 0n;
+        var max = 9223372036854775807n, min = -9223372036854775808n;
+        if (bi > max) {
+            if (overflowPtr) HEAP32[overflowPtr >> 2] = 1;
+            return 0n;  /* return BigInt 0 so emcc's i64 conversion doesn't see Infinity */
+        }
+        if (bi < min) {
+            if (overflowPtr) HEAP32[overflowPtr >> 2] = -1;
+            return 0n;
+        }
+        if (overflowPtr) HEAP32[overflowPtr >> 2] = 0;
+        return bi;  /* return as BigInt directly — emcc handles i64 returns natively */
+    },
+
+    /* _PyLong_Frexp(v, *e) — like frexp() but on arbitrary-precision PyLong.
+     * Returns mantissa in [0.5, 1) and writes exponent into *e. */
+    _PyLong_Frexp__deps: ['$WasthonRT'],
+    _PyLong_Frexp: function(vH, ePtr) {
+        var rt = WasthonRT;
+        var v = rt.unwrap(vH);
+        var bi = (typeof v === 'bigint') ? v :
+                 (typeof v === 'number') ? BigInt(Math.trunc(v)) : 0n;
+        var neg = bi < 0n;
+        if (neg) bi = -bi;
+        if (bi === 0n) {
+            if (ePtr) { HEAP32[ePtr >> 2] = 0; HEAP32[(ePtr + 4) >> 2] = 0; }
+            return 0;
+        }
+        /* Compute bit length. */
+        var bits = 0;
+        var t = bi;
+        while (t > 0n) { bits++; t >>= 1n; }
+        /* Mantissa = bi / 2^bits, in [0.5, 1). */
+        var shift = bits - 53;
+        var top;
+        if (shift > 0) top = Number(bi >> BigInt(shift));
+        else top = Number(bi) * Math.pow(2, -shift);
+        var mantissa = top / Math.pow(2, 53);
+        if (ePtr) {
+            HEAP32[ePtr >> 2] = bits | 0;
+            HEAP32[(ePtr + 4) >> 2] = 0;  /* high 32 — bits fits in 32 */
+        }
+        return neg ? -mantissa : mantissa;
+    },
+
+    _PyLong_IsNegative__deps: ['$WasthonRT'],
+    _PyLong_IsNegative: function(vH) {
+        var v = WasthonRT.unwrap(vH);
+        if (typeof v === 'bigint') return v < 0n ? 1 : 0;
+        if (typeof v === 'number') return v < 0 ? 1 : 0;
+        return 0;
+    },
+
+    _PyLong_IsPositive__deps: ['$WasthonRT'],
+    _PyLong_IsPositive: function(vH) {
+        var v = WasthonRT.unwrap(vH);
+        if (typeof v === 'bigint') return v > 0n ? 1 : 0;
+        if (typeof v === 'number') return v > 0 ? 1 : 0;
+        return 0;
+    },
+
+    _PyLong_IsZero__deps: ['$WasthonRT'],
+    _PyLong_IsZero: function(vH) {
+        var v = WasthonRT.unwrap(vH);
+        if (typeof v === 'bigint') return v === 0n ? 1 : 0;
+        if (typeof v === 'number') return v === 0 ? 1 : 0;
+        return 0;
+    },
+
+    /* _PyLong_Rshift(a, shift) — shift is int64_t at the emcc boundary. */
+    _PyLong_Rshift__deps: ['$WasthonRT'],
+    _PyLong_Rshift: function(aH, shift) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH);
+        var bi = (typeof a === 'bigint') ? a :
+                 (typeof a === 'number') ? BigInt(Math.trunc(a)) : 0n;
+        var s = typeof shift === 'bigint' ? shift : BigInt(shift | 0);
+        var result = bi >> s;
+        if (result >= -2147483648n && result <= 2147483647n) return rt.wrap(Number(result));
+        return rt.wrap(result);
+    },
+
+    PyNumber_Index__deps: ['$WasthonRT'],
+    PyNumber_Index: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (typeof obj === 'number' && Number.isInteger(obj)) return objH;
+        if (typeof obj === 'bigint') return objH;
+        try {
+            var v = rt.$B.$call(rt.$B.$getattr(obj, '__index__'));
+            return rt.wrap(v);
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "object cannot be interpreted as an integer");
+            return 0;
+        }
+    },
+
+    PyNumber_Subtract__deps: ['$WasthonRT'],
+    PyNumber_Subtract: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH);
+        var b = rt.unwrap(bH);
+        /* Coerce Brython int/float wrappers to plain JS number / bigint
+         * before doing any arithmetic. */
+        function toNum(v) {
+            if (typeof v === 'number' || typeof v === 'bigint') return v;
+            if (v && typeof v.value !== 'undefined') return v.value;
+            if (v === true) return 1;
+            if (v === false) return 0;
+            return Number(v);
+        }
+        try {
+            var na = toNum(a), nb = toNum(b);
+            if (typeof na === 'bigint' || typeof nb === 'bigint') {
+                var ba = typeof na === 'bigint' ? na : BigInt(Math.trunc(na));
+                var bb = typeof nb === 'bigint' ? nb : BigInt(Math.trunc(nb));
+                var r = ba - bb;
+                if (r >= -2147483648n && r <= 2147483647n) return rt.wrap(Number(r));
+                return rt.wrap(r);
+            }
+            return rt.wrap(na - nb);
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "subtract failed: " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    /* PyLong_FromString — parse C string as int. */
+    PyLong_FromString__deps: ['$WasthonRT'],
+    PyLong_FromString: function(strPtr, pendPtr, base) {
+        var rt = WasthonRT;
+        var s = strPtr ? UTF8ToString(strPtr) : "";
+        try {
+            var bi = base === 0 ? BigInt(s) : BigInt(parseInt(s, base));
+            if (bi >= -2147483648n && bi <= 2147483647n) return rt.wrap(Number(bi));
+            return rt.wrap(bi);
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.ValueError),
+                "invalid literal for int: '" + s + "'");
+            return 0;
+        }
+    },
+
+    /* Py_hexdigits is defined as a real C global in wasthon.c. */
+
+    /* PyImport_ImportModuleAttr — new in 3.13: import then getattr. */
+    PyImport_ImportModuleAttr__deps: ['$WasthonRT'],
+    PyImport_ImportModuleAttr: function(modNameH, attrNameH) {
+        var rt = WasthonRT;
+        var modName = rt.asJSStr(rt.unwrap(modNameH));
+        var attrName = rt.asJSStr(rt.unwrap(attrNameH));
+        if (modName === null || attrName === null) return 0;
+        try {
+            var imp = rt._b_.__import__;
+            var mod;
+            if (modName.indexOf('.') !== -1) {
+                var parts = modName.split('.');
+                var leaf = parts[parts.length - 1];
+                mod = imp(modName, rt._b_.None, rt._b_.None,
+                          rt._b_.tuple.$factory([leaf]));
+            } else {
+                mod = imp(modName);
+            }
+            return rt.wrap(rt.$B.$getattr(mod, attrName));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.ImportError),
+                "PyImport_ImportModuleAttr: " + modName + "." + attrName +
+                ": " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    /* PyUnicode_2BYTE_DATA_ / 4BYTE_DATA_ — materialise the str's UCS2/UCS4
+     * buffer into linear memory. Caller assumes the pointer is valid for
+     * the str's lifetime; we allocate a fresh buffer per call (leaks, but
+     * _json calls these once per string at encode time).
+     *
+     * In practice _json uses 2BYTE_DATA when the str's max codepoint is
+     * <= 0xFFFF and 4BYTE_DATA otherwise. We always return a fresh buffer
+     * with the codepoints. */
+    PyUnicode_2BYTE_DATA___deps: ['$WasthonRT'],
+    PyUnicode_2BYTE_DATA_: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        /* PyUnicode_New placeholder — return its underlying WASM buffer
+         * directly so C-side writes land in the real string. */
+        if (obj && obj.__wasthon_unicode_buf__) return obj.__wasthon_unicode_buf__;
+        /* Fallback: existing JS string — materialise into a fresh buffer
+         * (read-only use case). */
+        var s = rt.asJSStr(obj);
+        if (s === null) return 0;
+        var len = s.length;
+        var ptr = _malloc((len + 1) * 2);
+        for (var i = 0; i < len; i++) {
+            HEAP16[(ptr + i*2) >> 1] = s.charCodeAt(i);
+        }
+        HEAP16[(ptr + len*2) >> 1] = 0;
+        return ptr;
+    },
+
+    PyUnicode_4BYTE_DATA___deps: ['$WasthonRT'],
+    PyUnicode_4BYTE_DATA_: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj && obj.__wasthon_unicode_buf__) return obj.__wasthon_unicode_buf__;
+        var s = rt.asJSStr(obj);
+        if (s === null) return 0;
+        var len = s.length;
+        var ptr = _malloc((len + 1) * 4);
+        for (var i = 0; i < len; i++) {
+            HEAP32[(ptr + i*4) >> 2] = s.codePointAt(i) || s.charCodeAt(i);
+        }
+        HEAP32[(ptr + len*4) >> 2] = 0;
+        return ptr;
+    },
+
+    /* PyUnicodeWriter API — public in 3.14. Each writer is a struct in
+     * linear memory with a `pos` field and an opaque `_internal` slot.
+     * We use _internal to hold a JS-side handle into a Map of writer-id
+     * → string chunks array. Finish concatenates the chunks into a final
+     * Brython str. */
+    PyUnicodeWriter_Create__deps: ['$WasthonRT'],
+    PyUnicodeWriter_Create: function(initialLength) {
+        var rt = WasthonRT;
+        if (!rt._writers) { rt._writers = new Map(); rt._writerNextId = 1; }
+        var ptr = _malloc(8);
+        HEAP32[ptr >> 2] = 0;             /* pos */
+        var id = rt._writerNextId++;
+        HEAP32[(ptr + 4) >> 2] = id;      /* _internal — JS-side id */
+        rt._writers.set(id, []);
+        return ptr;
+    },
+
+    PyUnicodeWriter_Discard__deps: ['$WasthonRT'],
+    PyUnicodeWriter_Discard: function(writerPtr) {
+        var rt = WasthonRT;
+        if (writerPtr === 0) return;
+        var id = HEAP32[(writerPtr + 4) >> 2];
+        if (rt._writers) rt._writers.delete(id);
+        _free(writerPtr);
+    },
+
+    PyUnicodeWriter_Finish__deps: ['$WasthonRT'],
+    PyUnicodeWriter_Finish: function(writerPtr) {
+        var rt = WasthonRT;
+        if (writerPtr === 0) return 0;
+        var id = HEAP32[(writerPtr + 4) >> 2];
+        var chunks = rt._writers ? rt._writers.get(id) : null;
+        rt._writers.delete(id);
+        _free(writerPtr);
+        if (!chunks) return 0;
+        return rt.wrap(chunks.join(''));
+    },
+
+    PyUnicodeWriter_WriteChar__deps: ['$WasthonRT'],
+    PyUnicodeWriter_WriteChar: function(writerPtr, ch) {
+        var rt = WasthonRT;
+        var id = HEAP32[(writerPtr + 4) >> 2];
+        var chunks = rt._writers.get(id);
+        if (!chunks) return -1;
+        chunks.push(String.fromCodePoint(ch >>> 0));
+        HEAP32[writerPtr >> 2] += 1;
+        return 0;
+    },
+
+    PyUnicodeWriter_WriteStr__deps: ['$WasthonRT'],
+    PyUnicodeWriter_WriteStr: function(writerPtr, strH) {
+        var rt = WasthonRT;
+        var id = HEAP32[(writerPtr + 4) >> 2];
+        var chunks = rt._writers.get(id);
+        if (!chunks) return -1;
+        var s = rt.asJSStr(rt.unwrap(strH));
+        if (s === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "expected str");
+            return -1;
+        }
+        chunks.push(s);
+        HEAP32[writerPtr >> 2] += s.length;
+        return 0;
+    },
+
+    PyUnicodeWriter_WriteSubstring__deps: ['$WasthonRT'],
+    PyUnicodeWriter_WriteSubstring: function(writerPtr, strH, start, end) {
+        var rt = WasthonRT;
+        var id = HEAP32[(writerPtr + 4) >> 2];
+        var chunks = rt._writers.get(id);
+        if (!chunks) return -1;
+        var s = rt.asJSStr(rt.unwrap(strH));
+        if (s === null) return -1;
+        var sub = s.slice(start, end);
+        chunks.push(sub);
+        HEAP32[writerPtr >> 2] += sub.length;
+        return 0;
+    },
+
+    PyUnicodeWriter_WriteUTF8__deps: ['$WasthonRT'],
+    PyUnicodeWriter_WriteUTF8: function(writerPtr, strPtr, size) {
+        var rt = WasthonRT;
+        var id = HEAP32[(writerPtr + 4) >> 2];
+        var chunks = rt._writers.get(id);
+        if (!chunks) return -1;
+        var s;
+        if (size < 0) s = UTF8ToString(strPtr);
+        else {
+            var bytes = HEAPU8.slice(strPtr, strPtr + size);
+            s = new TextDecoder('utf-8').decode(bytes);
+        }
+        chunks.push(s);
+        HEAP32[writerPtr >> 2] += s.length;
+        return 0;
+    },
+
+    PyUnicodeWriter_WriteASCII__deps: ['$WasthonRT'],
+    PyUnicodeWriter_WriteASCII: function(writerPtr, strPtr, size) {
+        var rt = WasthonRT;
+        var id = HEAP32[(writerPtr + 4) >> 2];
+        var chunks = rt._writers.get(id);
+        if (!chunks) return -1;
+        var s;
+        if (size < 0) s = UTF8ToString(strPtr);
+        else {
+            var buf = "";
+            for (var i = 0; i < size; i++) buf += String.fromCharCode(HEAPU8[strPtr + i]);
+            s = buf;
+        }
+        chunks.push(s);
+        HEAP32[writerPtr >> 2] += s.length;
+        return 0;
+    },
+
+    PyUnicodeWriter_WriteRepr__deps: ['$WasthonRT'],
+    PyUnicodeWriter_WriteRepr: function(writerPtr, objH) {
+        var rt = WasthonRT;
+        var id = HEAP32[(writerPtr + 4) >> 2];
+        var chunks = rt._writers.get(id);
+        if (!chunks) return -1;
+        try {
+            var s = rt._b_.repr(rt.unwrap(objH));
+            chunks.push(String(s));
+            HEAP32[writerPtr >> 2] += String(s).length;
+            return 0;
+        } catch (e) { return -1; }
+    },
+
+    PyUnicodeWriter_Format__deps: ['$WasthonRT'],
+    PyUnicodeWriter_Format: function(writerPtr, fmtPtr, varargs) {
+        var rt = WasthonRT;
+        var id = HEAP32[(writerPtr + 4) >> 2];
+        var chunks = rt._writers.get(id);
+        if (!chunks) return -1;
+        /* Minimal: just append the format string with %s/%d resolved best-
+         * effort. _json only uses Format with literal strings; this is
+         * sufficient for the current call sites. */
+        var fmt = fmtPtr ? UTF8ToString(fmtPtr) : "";
+        chunks.push(fmt);
+        HEAP32[writerPtr >> 2] += fmt.length;
+        return 0;
+    },
+
+    /* _wasthon_id(name_cstr) — return a Brython str handle for "name".
+     * Backs the _Py_ID(name) macro that some C code uses as a stand-in for
+     * pre-interned identifiers. */
+    _wasthon_id__deps: ['$WasthonRT'],
+    _wasthon_id: function(namePtr) {
+        var rt = WasthonRT;
+        var name = namePtr ? UTF8ToString(namePtr) : "";
+        return rt.wrap(name);
+    },
+
+    /* _PyEval_GetBuiltin(name) — look up a builtin by name (str object). */
+    _PyEval_GetBuiltin__deps: ['$WasthonRT'],
+    _PyEval_GetBuiltin: function(nameH) {
+        var rt = WasthonRT;
+        var name = rt.asJSStr(rt.unwrap(nameH));
+        if (name === null) return 0;
+        var v = rt._b_[name];
+        if (v === undefined) {
+            rt.setError(rt.wrap(rt._b_.AttributeError), "no builtin '" + name + "'");
+            return 0;
+        }
+        return rt.wrap(v);
+    },
+
+    /* _PyBytes_Repeat(dst, dst_len, src, src_len) — fill dst by repeating src. */
+    _PyBytes_Repeat: function(dst, dstLen, src, srcLen) {
+        if (srcLen <= 0 || dstLen <= 0) return;
+        for (var off = 0; off < dstLen; off += srcLen) {
+            var chunk = Math.min(srcLen, dstLen - off);
+            HEAPU8.copyWithin(dst + off, src, src + chunk);
+        }
+    },
+
+    /* PySys_Audit(event, format, ...) — no-op in the bridge. */
+    PySys_Audit: function(eventPtr, formatPtr) { return 0; },
+
+    /* PyUnicode_AsWideChar(unicode, buf, n) — copies the unicode's code
+     * points as wchar_t into buf, up to n. Returns number of chars copied
+     * (or required if n is too small). */
+    PyUnicode_AsWideChar__deps: ['$WasthonRT'],
+    PyUnicode_AsWideChar: function(uH, bufPtr, n) {
+        var rt = WasthonRT;
+        var s = rt.asJSStr(rt.unwrap(uH));
+        if (s === null) return -1;
+        var len = s.length;
+        if (bufPtr === 0) return len;
+        var copy = Math.min(len, n);
+        for (var i = 0; i < copy; i++) {
+            HEAP32[(bufPtr + i*4) >> 2] = s.charCodeAt(i);
+        }
+        if (copy < n) HEAP32[(bufPtr + copy*4) >> 2] = 0;
+        return copy;
+    },
+
+    /* PyUnicode_AsWideCharString — malloc + copy. Returns wchar_t*. */
+    PyUnicode_AsWideCharString__deps: ['$WasthonRT'],
+    PyUnicode_AsWideCharString: function(uH, sizePtr) {
+        var rt = WasthonRT;
+        var s = rt.asJSStr(rt.unwrap(uH));
+        if (s === null) return 0;
+        var len = s.length;
+        var ptr = _malloc((len + 1) * 4);
+        for (var i = 0; i < len; i++) {
+            HEAP32[(ptr + i*4) >> 2] = s.charCodeAt(i);
+        }
+        HEAP32[(ptr + len*4) >> 2] = 0;
+        if (sizePtr) HEAP32[sizePtr >> 2] = len;
+        return ptr;
+    },
+
+    PyUnicode_AsUCS4__deps: ['$WasthonRT'],
+    PyUnicode_AsUCS4: function(uH, bufPtr, n, copyNull) {
+        var rt = WasthonRT;
+        var s = rt.asJSStr(rt.unwrap(uH));
+        if (s === null) return 0;
+        var len = s.length;
+        if (n < len + (copyNull ? 1 : 0)) {
+            rt.setError(rt.wrap(rt._b_.SystemError), "buffer too small");
+            return 0;
+        }
+        for (var i = 0; i < len; i++) {
+            HEAP32[(bufPtr + i*4) >> 2] = s.codePointAt(i) || s.charCodeAt(i);
+        }
+        if (copyNull) HEAP32[(bufPtr + len*4) >> 2] = 0;
+        return bufPtr;
+    },
+
+    PyUnicode_AsUCS4Copy__deps: ['$WasthonRT'],
+    PyUnicode_AsUCS4Copy: function(uH) {
+        var rt = WasthonRT;
+        var s = rt.asJSStr(rt.unwrap(uH));
+        if (s === null) return 0;
+        var len = s.length;
+        var ptr = _malloc((len + 1) * 4);
+        for (var i = 0; i < len; i++) {
+            HEAP32[(ptr + i*4) >> 2] = s.codePointAt(i) || s.charCodeAt(i);
+        }
+        HEAP32[(ptr + len*4) >> 2] = 0;
+        return ptr;
+    },
+
+    /* PyUnicode_DecodeUTF16 / UTF32 — decode raw bytes to str. */
+    PyUnicode_DecodeUTF16__deps: ['$WasthonRT'],
+    PyUnicode_DecodeUTF16: function(sPtr, size, errorsPtr, byteorderPtr) {
+        try {
+            var bo = byteorderPtr ? (HEAP32[byteorderPtr >> 2] | 0) : 0;
+            var label = bo < 0 ? 'utf-16le' : (bo > 0 ? 'utf-16be' : 'utf-16');
+            var bytes = HEAPU8.slice(sPtr, sPtr + size);
+            var s = new TextDecoder(label).decode(bytes);
+            return WasthonRT.wrap(s);
+        } catch (e) {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.UnicodeDecodeError),
+                "utf-16 decode failed: " + (e.message || e));
+            return 0;
+        }
+    },
+
+    PyUnicode_DecodeUTF32__deps: ['$WasthonRT'],
+    PyUnicode_DecodeUTF32: function(sPtr, size, errorsPtr, byteorderPtr) {
+        var rt = WasthonRT;
+        try {
+            var bo = byteorderPtr ? (HEAP32[byteorderPtr >> 2] | 0) : 0;
+            /* TextDecoder doesn't ship UTF-32 natively. Decode manually. */
+            var n = size >> 2;
+            var chars = [];
+            for (var i = 0; i < n; i++) {
+                var b0 = HEAPU8[sPtr + i*4];
+                var b1 = HEAPU8[sPtr + i*4 + 1];
+                var b2 = HEAPU8[sPtr + i*4 + 2];
+                var b3 = HEAPU8[sPtr + i*4 + 3];
+                var cp = bo > 0
+                    ? (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+                    : (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
+                chars.push(String.fromCodePoint(cp));
+            }
+            return rt.wrap(chars.join(''));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
+                "utf-32 decode failed: " + (e.message || e));
+            return 0;
+        }
+    },
+
+    /* Slice protocol. */
+    PySlice_Check__deps: ['$WasthonRT'],
+    PySlice_Check: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        return (obj && obj.__class__ === WasthonRT._b_.slice) ? 1 : 0;
+    },
+
+    PySlice_Unpack__deps: ['$WasthonRT'],
+    PySlice_Unpack: function(sliceH, startPtr, stopPtr, stepPtr) {
+        var rt = WasthonRT;
+        var s = rt.unwrap(sliceH);
+        if (!s) return -1;
+        var start = s.start === rt._b_.None ? null :
+                    (typeof s.start === 'number' ? s.start :
+                     (typeof s.start === 'bigint' ? Number(s.start) : 0));
+        var stop  = s.stop === rt._b_.None ? null :
+                    (typeof s.stop === 'number' ? s.stop :
+                     (typeof s.stop === 'bigint' ? Number(s.stop) : 0));
+        var step  = s.step === rt._b_.None ? 1 :
+                    (typeof s.step === 'number' ? s.step :
+                     (typeof s.step === 'bigint' ? Number(s.step) : 1));
+        var PY_SSIZE_T_MAX = 0x7fffffff;
+        HEAP32[startPtr >> 2] = start === null ? (step < 0 ? PY_SSIZE_T_MAX : 0) : (start | 0);
+        HEAP32[stopPtr  >> 2] = stop  === null ? (step < 0 ? (-PY_SSIZE_T_MAX-1) : PY_SSIZE_T_MAX) : (stop | 0);
+        HEAP32[stepPtr  >> 2] = step | 0;
+        return 0;
+    },
+
+    /* PySlice_AdjustIndices(length, *start, *stop, step) — clamps start/stop
+     * to valid range, returns the slice length. */
+    PySlice_AdjustIndices: function(length, startPtr, stopPtr, step) {
+        var start = HEAP32[startPtr >> 2] | 0;
+        var stop  = HEAP32[stopPtr  >> 2] | 0;
+        if (start < 0) { start += length; if (start < 0) start = (step < 0) ? -1 : 0; }
+        else if (start >= length) start = (step < 0) ? length - 1 : length;
+        if (stop < 0)  { stop += length;  if (stop < 0)  stop  = (step < 0) ? -1 : 0; }
+        else if (stop >= length)  stop  = (step < 0) ? length - 1 : length;
+        HEAP32[startPtr >> 2] = start;
+        HEAP32[stopPtr  >> 2] = stop;
+        var len;
+        if (step < 0) len = (stop < start) ? Math.floor((start - stop - 1) / (-step)) + 1 : 0;
+        else          len = (start < stop) ? Math.floor((stop - start - 1) / step)  + 1 : 0;
+        return len;
+    },
+
+    /* _PyEval_SliceIndexNotNone — clinic helper: convert PyObject to ssize_t,
+     * rejecting None (use 0/PY_SSIZE_T_MAX defaults instead). */
+    _PyEval_SliceIndexNotNone__deps: ['$WasthonRT'],
+    _PyEval_SliceIndexNotNone: function(vH, piPtr) {
+        var rt = WasthonRT;
+        var v = rt.unwrap(vH);
+        if (v === rt._b_.None) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "slice indices must be integers or have an __index__ method");
+            return 0;
+        }
+        var n = (typeof v === 'number') ? v
+              : (typeof v === 'bigint') ? Number(v)
+              : Number(v);
+        HEAP32[piPtr >> 2] = n | 0;
+        return 1;
+    },
+
+    /* _PyLong_FromByteArray(bytes, n, little_endian, is_signed). */
+    _PyLong_FromByteArray__deps: ['$WasthonRT'],
+    _PyLong_FromByteArray: function(bytesPtr, n, littleEndian, isSigned) {
+        var rt = WasthonRT;
+        if (n === 0) return rt.wrap(0);
+        var v = 0n;
+        if (littleEndian) {
+            for (var i = n - 1; i >= 0; i--) {
+                v = (v << 8n) | BigInt(HEAPU8[bytesPtr + i]);
+            }
+        } else {
+            for (var i = 0; i < n; i++) {
+                v = (v << 8n) | BigInt(HEAPU8[bytesPtr + i]);
+            }
+        }
+        if (isSigned) {
+            /* Top bit set? Treat as two's complement negative. */
+            var top = littleEndian ? HEAPU8[bytesPtr + n - 1] : HEAPU8[bytesPtr];
+            if (top & 0x80) v -= (1n << BigInt(n * 8));
+        }
+        if (v >= -2147483648n && v <= 2147483647n) return rt.wrap(Number(v));
+        return rt.wrap(v);
+    },
+
+    /* _PyLong_AsByteArray — reverse of above. */
+    _PyLong_AsByteArray__deps: ['$WasthonRT'],
+    _PyLong_AsByteArray: function(vH, bytesPtr, n, littleEndian, isSigned, withException) {
+        var rt = WasthonRT;
+        var v = rt.unwrap(vH);
+        var big = (typeof v === 'bigint') ? v : BigInt(Math.trunc(Number(v) || 0));
+        var modValue = big;
+        if (big < 0n) {
+            if (!isSigned && withException) {
+                rt.setError(rt.wrap(rt._b_.OverflowError), "can't convert negative int to unsigned");
+                return -1;
+            }
+            modValue = (1n << BigInt(n * 8)) + big;
+        }
+        for (var i = 0; i < n; i++) {
+            var byte = Number(modValue & 0xffn);
+            modValue >>= 8n;
+            var off = littleEndian ? i : (n - 1 - i);
+            HEAPU8[bytesPtr + off] = byte;
+        }
+        return 0;
+    },
+
+    /* PyImport_ImportModule(name) — runtime import. Routes through
+     * Brython's __import__ which handles both standard library modules
+     * and modules we've pre-registered in $B.imported (e.g. wasthon
+     * modules loaded before Brython boots). */
+    PyImport_ImportModule__deps: ['$WasthonRT'],
+    PyImport_ImportModule: function(namePtr) {
+        var rt = WasthonRT;
+        if (namePtr === 0) return 0;
+        var name = UTF8ToString(namePtr);
+        rt.trace('PyImport_ImportModule', name);
+        try {
+            // Brython's __import__ takes (name, globals, locals, fromlist, level).
+            // For dotted names, CPython's PyImport_ImportModule returns the
+            // leaf module — passing `fromlist=[leaf]` forces __import__ to
+            // both load and return the submodule.
+            var imp = rt._b_.__import__;
+            var mod;
+            if (name.indexOf('.') !== -1) {
+                var parts = name.split('.');
+                var leaf = parts[parts.length - 1];
+                mod = imp(name, rt._b_.None, rt._b_.None,
+                          rt._b_.tuple.$factory([leaf]));
+                // imp with fromlist returns the deepest module already.
+                if (mod && mod.__name__ !== name) {
+                    // Some import paths still return top-level; walk manually.
+                    for (var i = 1; i < parts.length; i++) {
+                        var sub = rt.$B.$getattr(mod, parts[i], rt._b_.None);
+                        if (sub && sub !== rt._b_.None) mod = sub;
+                    }
+                }
+            } else {
+                mod = imp(name);
+            }
+            return rt.wrap(mod);
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.ImportError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* PyObject_CallFunction(callable, fmt, ...) — like PyObject_CallMethod
+     * but no method-name step. Same minimal format-string parser.
+     * Returns struct-backed handle if result is a type. */
+    PyObject_CallFunction__deps: ['$WasthonRT'],
+    PyObject_CallFunction: function(callableH, fmtPtr, varargs) {
+        var rt = WasthonRT;
+        var fn = rt.unwrap(callableH);
+        var fmt = fmtPtr === 0 ? "" : UTF8ToString(fmtPtr);
+        rt.trace('PyObject_CallFunction', 'fmt="' + fmt + '"');
+        if (!fn) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyObject_CallFunction: callable handle " + callableH + " did not resolve");
+            return 0;
+        }
+        // Mini Py_BuildValue parser:
+        //   O/s/i/d   scalar
+        //   (...)     tuple of inner values
+        //   [...]     list of inner values
+        //   {}        empty dict (k:v pairs not supported)
+        var p = varargs, i = 0;
+        function takeScalar(c) {
+            if (c === 'O') { var v = rt.unwrap(HEAP32[p >> 2]); p += 4; return v; }
+            if (c === 's') { var sp = HEAP32[p >> 2]; p += 4;
+                             return sp === 0 ? null : UTF8ToString(sp); }
+            if (c === 'i') { var v = HEAP32[p >> 2]; p += 4; return v; }
+            if (c === 'd') { if (p & 7) p = (p + 7) & ~7;
+                             var v = HEAPF64[p >> 3]; p += 8; return v; }
+            return undefined;
+        }
+        function parse(endChar) {
+            var out = [];
+            while (i < fmt.length) {
+                var c = fmt[i];
+                if (c === endChar) { i++; return out; }
+                if (c === ',' || c === ' ' || c === ':') { i++; continue; }
+                if (c === '(') { i++; out.push(rt._b_.tuple.$factory(parse(')'))); continue; }
+                if (c === '[') { i++; out.push(parse(']')); continue; }
+                if (c === '{') {
+                    i++;
+                    while (i < fmt.length && fmt[i] !== '}') i++;
+                    if (fmt[i] === '}') i++;
+                    out.push(rt._b_.dict.$factory());
+                    continue;
+                }
+                i++;
+                var v = takeScalar(c);
+                if (v !== undefined) out.push(v);
+            }
+            return out;
+        }
+        var args = parse(undefined);
+        try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* ---- Built-in type singletons ----
+     * Pre C-side singletons live as struct storage in linear memory
+     * (PyTypeObject PyTuple_Type, etc.). At init, the C side calls
+     * wasthon_bind_builtin_type(tag, &PyXxx_Type) to wire each struct
+     * address to the corresponding Brython class. From then on,
+     * unwrap(&PyTuple_Type) returns _b_.tuple, and member access like
+     * PyTuple_Type.tp_iter works because the struct is real memory. */
+    wasthon_bind_builtin_type__deps: ['$WasthonRT'],
+    wasthon_bind_builtin_type: function(tag, structPtr) {
+        var rt = WasthonRT;
+        var cls;
+        switch (tag) {
+            case 0: cls = rt._b_.type;   break;
+            case 1: cls = rt._b_.tuple;  break;
+            case 2: cls = rt._b_.dict;   break;
+            case 3: cls = rt._b_.list;   break;
+            case 4: cls = rt._b_.int;    break;
+            case 5: cls = rt._b_.float;  break;
+            case 6: cls = rt._b_.str;    break;
+            case 7: cls = rt._b_.bytes;  break;
+            case 8: cls = rt._b_.bool;   break;
+            default: return;
+        }
+        rt.handles.set(structPtr, cls);
+        rt.builtinTypeForClass = rt.builtinTypeForClass || new Map();
+        rt.builtinTypeForClass.set(cls, structPtr);
+    },
+
+    /* Generic tp_iter for built-in type singletons. Called via member
+     * access like PyTuple_Type.tp_iter(t). Dispatches to Brython's iter()
+     * regardless of which built-in type's slot was used — for the basic
+     * sequence/mapping types, that's the right behaviour. */
+    wasthon_builtin_tp_iter__deps: ['$WasthonRT'],
+    wasthon_builtin_tp_iter: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        try { return rt.wrap(rt._b_.iter(obj)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* ----------------------------------------------------------------
+     * Number-protocol slots for built-in PyLong_Type / PyFloat_Type.
+     * _decimal caches these function pointers at init from
+     *   PyLong_Type.tp_as_number->nb_multiply  (and friends)
+     * and calls them in its arithmetic hot path. Each function is a
+     * thin dispatcher to Brython's int.__op__ / float.__op__. They use
+     * the standard CPython binaryfunc / unaryfunc / ternaryfunc ABI.
+     * ---------------------------------------------------------------- */
+    wasthon_long_nb_multiply__deps: ['$WasthonRT'],
+    wasthon_long_nb_multiply: function(aH, bH) {
+        var rt = WasthonRT;
+        try {
+            var a = rt.unwrap(aH), b = rt.unwrap(bH);
+            return rt.wrap(rt.$B.$call(rt._b_.int.__mul__, a, b));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    wasthon_long_nb_floor_divide__deps: ['$WasthonRT'],
+    wasthon_long_nb_floor_divide: function(aH, bH) {
+        var rt = WasthonRT;
+        try {
+            var a = rt.unwrap(aH), b = rt.unwrap(bH);
+            return rt.wrap(rt.$B.$call(rt._b_.int.__floordiv__, a, b));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* ternaryfunc: nb_power(a, b, c). c is None for binary pow. */
+    wasthon_long_nb_power__deps: ['$WasthonRT'],
+    wasthon_long_nb_power: function(aH, bH, cH) {
+        var rt = WasthonRT;
+        try {
+            var a = rt.unwrap(aH), b = rt.unwrap(bH), c = rt.unwrap(cH);
+            if (c === null || c === rt._b_.None) {
+                return rt.wrap(rt.$B.$call(rt._b_.int.__pow__, a, b));
+            }
+            return rt.wrap(rt._b_.pow(a, b, c));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    wasthon_float_nb_absolute__deps: ['$WasthonRT'],
+    wasthon_float_nb_absolute: function(handle) {
+        var rt = WasthonRT;
+        try {
+            var x = rt.unwrap(handle);
+            return rt.wrap(Math.abs(typeof x === 'number' ? x : Number(x)));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* int.bit_length — number of bits required for binary representation
+     * of abs(self), excluding sign and leading zeros. METH_NOARGS so the
+     * second arg is unused. _decimal looks this up via tp_methods. */
+    wasthon_long_bit_length__deps: ['$WasthonRT'],
+    wasthon_long_bit_length: function(selfH, unusedH) {
+        var rt = WasthonRT;
+        var x = rt.unwrap(selfH);
+        var n;
+        if (typeof x === 'bigint') {
+            n = x < 0n ? -x : x;
+        } else if (typeof x === 'number') {
+            n = BigInt(Math.abs(Math.trunc(x)));
+        } else {
+            try { n = BigInt(rt.$B.$call(rt._b_.int, x) | 0); } catch (e) { n = 0n; }
+            if (n < 0n) n = -n;
+        }
+        var bits = 0;
+        while (n > 0n) { bits++; n >>= 1n; }
+        return rt.wrap(bits);
+    },
+
+    /* float.as_integer_ratio — returns (numerator, denominator). */
+    wasthon_float_as_integer_ratio__deps: ['$WasthonRT'],
+    wasthon_float_as_integer_ratio: function(selfH, unusedH) {
+        var rt = WasthonRT;
+        try {
+            var x = rt.unwrap(selfH);
+            var asNum = typeof x === 'number' ? x : Number(x);
+            if (!isFinite(asNum)) {
+                rt.setError(rt.wrap(rt._b_.OverflowError),
+                    "cannot convert " + asNum + " to integer ratio");
+                return 0;
+            }
+            // Brython exposes float.as_integer_ratio via _b_.float
+            var fn = rt.$B.$getattr(rt._b_.float, 'as_integer_ratio');
+            return rt.wrap(rt.$B.$call(fn, asNum));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            return 0;
+        }
+    },
+
+    /* ---- Helper called by _wasthon_Py_TYPE in wasthon.c ----
+     * For wasthon-allocated instances we stashed the type-struct pointer
+     * in __wasthon_type__ at GC_New time; return that directly so C can
+     * dereference tp->tp_dict / tp->tp_free. For other objects we fall
+     * back to wrapping the Brython class as a fresh handle (won't be
+     * dereferenceable, but no caller needs that for non-instances). */
+    wasthon_get_type_of__deps: ['$WasthonRT'],
+    wasthon_get_type_of: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        if (obj.__wasthon_type__) return obj.__wasthon_type__;
+        var cls = obj.__class__ || (rt.$B.get_class && rt.$B.get_class(obj));
+        /* Built-in types: return the singleton struct address so that
+         * Py_TYPE(x) == &PyTuple_Type comparisons work (otherwise wrap()
+         * allocates a fresh handle each call and the comparison fails). */
+        if (rt.builtinTypeForClass && rt.builtinTypeForClass.has(cls)) {
+            return rt.builtinTypeForClass.get(cls);
+        }
+        return rt.wrap(cls);
+    },
+
+    /* ---- PyUnicode introspection: materialize a Py_UCS4 buffer in linear
+     * memory, cache it on the string object. The regex engine's hot loop
+     * indexes PyUnicode_READ(kind, data, i) directly from this buffer, so
+     * the JS↔WASM boundary is crossed once per string, not per character. */
+    PyUnicode_GET_LENGTH__deps: ['$WasthonRT'],
+    PyUnicode_GET_LENGTH: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.asJSStr(rt.unwrap(handle));
+        if (obj === null) return 0;
+        // Count codepoints (not UTF-16 units). For BMP-only strings the
+        // two coincide; astral chars (>U+FFFF) take 2 units but 1 codepoint.
+        var n = 0;
+        for (var i = 0; i < obj.length;) {
+            var c = obj.codePointAt(i);
+            i += c > 0xFFFF ? 2 : 1;
+            n++;
+        }
+        return n;
+    },
+
+    PyUnicode_KIND__deps: ['$WasthonRT'],
+    PyUnicode_KIND: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        /* PyUnicode_New placeholder: return the kind the buffer was
+         * allocated with. */
+        if (obj && obj.__wasthon_unicode_kind__) return obj.__wasthon_unicode_kind__;
+        /* Existing JS string: compute the minimum kind needed (CPython's
+         * PEP 393 contract). This MUST match what PyUnicode_DATA returns
+         * — readers expect (kind, data, i) to satisfy stride consistency
+         * across input/output buffers. */
+        var s = rt.asJSStr(obj);
+        if (s === null) return 1;
+        var max = 0;
+        for (var i = 0; i < s.length;) {
+            var c = s.codePointAt(i);
+            if (c > max) max = c;
+            i += c > 0xFFFF ? 2 : 1;
+            if (max > 0xFFFF) break;
+        }
+        return (max < 0x100) ? 1 : (max < 0x10000 ? 2 : 4);
+    },
+
+    PyUnicode_DATA__deps: ['$WasthonRT'],
+    PyUnicode_DATA: function(handle) {
+        var rt = WasthonRT;
+        var raw = rt.unwrap(handle);
+        /* PyUnicode_New placeholder — return its buffer directly. */
+        if (raw && raw.__wasthon_unicode_buf__) return raw.__wasthon_unicode_buf__;
+
+        var obj = rt.asJSStr(raw);
+        if (obj === null) return 0;
+
+        /* Compute the kind PEP 393 would assign (must match PyUnicode_KIND). */
+        var codepoints = [];
+        var max = 0;
+        for (var i = 0; i < obj.length;) {
+            var c = obj.codePointAt(i);
+            codepoints.push(c);
+            if (c > max) max = c;
+            i += c > 0xFFFF ? 2 : 1;
+        }
+        var kind = (max < 0x100) ? 1 : (max < 0x10000 ? 2 : 4);
+        var len = codepoints.length;
+
+        /* Cache buffer keyed by (string, kind). */
+        if (!rt._ucsCache) rt._ucsCache = new Map();
+        var perStr = rt._ucsCache.get(obj);
+        if (!perStr) { perStr = new Map(); rt._ucsCache.set(obj, perStr); }
+        var cached = perStr.get(kind);
+        if (cached) return cached;
+
+        var ptr = _malloc(Math.max(kind, len * kind));
+        for (var j = 0; j < len; j++) {
+            if (kind === 4)      HEAPU32[(ptr + j * 4) >> 2] = codepoints[j];
+            else if (kind === 2) HEAPU16[(ptr + j * 2) >> 1] = codepoints[j];
+            else                 HEAPU8[ptr + j] = codepoints[j];
+        }
+        perStr.set(kind, ptr);
+        return ptr;
+    },
+
+    PyUnicode_FindChar__deps: ['$WasthonRT'],
+    PyUnicode_FindChar: function(handle, ch, start, end, dir) {
+        var rt = WasthonRT;
+        var obj = rt.asJSStr(rt.unwrap(handle));
+        if (obj === null) return -1;
+        // Iterate codepoints between start and end (exclusive) looking for ch.
+        var cps = [];
+        for (var i = 0; i < obj.length;) {
+            var c = obj.codePointAt(i);
+            cps.push(c);
+            i += c > 0xFFFF ? 2 : 1;
+        }
+        if (end > cps.length) end = cps.length;
+        if (dir > 0) {
+            for (var k = start; k < end; k++) if (cps[k] === ch) return k;
+        } else {
+            for (var k = end - 1; k >= start; k--) if (cps[k] === ch) return k;
+        }
+        return -1;
+    },
+
+    PyUnicode_Substring__deps: ['$WasthonRT'],
+    PyUnicode_Substring: function(handle, start, end) {
+        var rt = WasthonRT;
+        var obj = rt.asJSStr(rt.unwrap(handle));
+        if (obj === null) return 0;
+        // Codepoint-aware slice.
+        var cps = [];
+        for (var i = 0; i < obj.length;) {
+            var c = obj.codePointAt(i);
+            cps.push(c);
+            i += c > 0xFFFF ? 2 : 1;
+        }
+        if (end > cps.length) end = cps.length;
+        if (start < 0) start = 0;
+        var chunk = cps.slice(start, end).map(function(c) {
+            return String.fromCodePoint(c);
+        }).join('');
+        return rt.wrap(chunk);
+    },
+
+    PyUnicode_FromKindAndData__deps: ['$WasthonRT'],
+    PyUnicode_FromKindAndData: function(kind, dataPtr, size) {
+        var rt = WasthonRT;
+        var chars = [];
+        for (var i = 0; i < size; i++) {
+            var c;
+            if (kind === 4) c = HEAPU32[(dataPtr + i * 4) >> 2];
+            else if (kind === 2) c = HEAPU16[(dataPtr + i * 2) >> 1];
+            else c = HEAPU8[dataPtr + i];
+            chars.push(String.fromCodePoint(c));
+        }
+        return rt.wrap(chars.join(''));
+    },
+
+    PyUnicode_FromOrdinal__deps: ['$WasthonRT'],
+    PyUnicode_FromOrdinal: function(ordinal) {
+        return WasthonRT.wrap(String.fromCodePoint(ordinal));
+    },
+
+    /* PyUnicode_FromWideChar(buf, len) — buf is a wchar_t* (32-bit on
+     * wasm32), each element a Unicode codepoint. len < 0 means C-string
+     * (NUL-terminated); _decimal always passes an explicit length. */
+    PyUnicode_FromWideChar__deps: ['$WasthonRT'],
+    PyUnicode_FromWideChar: function(bufPtr, len) {
+        var rt = WasthonRT;
+        if (bufPtr === 0) return rt.wrap("");
+        if (len < 0) {
+            // NUL-terminated.
+            len = 0;
+            while (HEAPU32[(bufPtr + len * 4) >> 2] !== 0) len++;
+        }
+        var chars = [];
+        for (var i = 0; i < len; i++) {
+            chars.push(String.fromCodePoint(HEAPU32[(bufPtr + i * 4) >> 2]));
+        }
+        return rt.wrap(chars.join(''));
+    },
+
+    PyUnicode_AppendAndDel__deps: ['$WasthonRT'],
+    PyUnicode_AppendAndDel: function(leftPtrPtr, rightHandle) {
+        var rt = WasthonRT;
+        var leftH = HEAP32[leftPtrPtr >> 2];
+        var left = rt.unwrap(leftH);
+        var right = rt.unwrap(rightHandle);
+        if (typeof left !== 'string' || typeof right !== 'string') return -1;
+        HEAP32[leftPtrPtr >> 2] = rt.wrap(left + right);
+        return 0;
+    },
+
+    PyUnicode_Concat__deps: ['$WasthonRT'],
+    PyUnicode_Concat: function(leftH, rightH) {
+        var rt = WasthonRT;
+        var l = rt.unwrap(leftH);
+        var r = rt.unwrap(rightH);
+        if (typeof l !== 'string' || typeof r !== 'string') return 0;
+        return rt.wrap(l + r);
+    },
+
+    PyUnicode_Join__deps: ['$WasthonRT'],
+    PyUnicode_Join: function(sepH, seqH) {
+        var rt = WasthonRT;
+        var sep = rt.unwrap(sepH);
+        var seq = rt.unwrap(seqH);
+        if (typeof sep !== 'string' || !Array.isArray(seq)) return 0;
+        try { return rt.wrap(seq.join(sep)); } catch (e) { return 0; }
+    },
+
+    PyUnicode_MAX_CHAR_VALUE__deps: ['$WasthonRT'],
+    PyUnicode_MAX_CHAR_VALUE: function(handle) {
+        var obj = WasthonRT.asJSStr(WasthonRT.unwrap(handle));
+        if (obj === null) return 0x10FFFF;
+        var max = 0;
+        for (var i = 0; i < obj.length;) {
+            var c = obj.codePointAt(i);
+            if (c > max) max = c;
+            i += c > 0xFFFF ? 2 : 1;
+        }
+        return max;
+    },
+
+    /* PyUnicode_New(size, maxchar) — allocate a fresh str of `size` chars.
+     * Two consumption patterns:
+     *  (1) sre uses the writer APIs (PyUnicode_AppendAndDel etc.) and never
+     *      touches the underlying buffer — for it, an empty placeholder is
+     *      fine (writer APIs replace the handle's value).
+     *  (2) _decimal pairs this with PyUnicode_1BYTE_DATA + memcpy to write
+     *      a Latin-1 buffer in linear memory, then returns the result. For
+     *      this path the placeholder must own a linear-memory buffer; the
+     *      string is materialized lazily (asJSStr handles the placeholder
+     *      format) and by the trampoline finalize step. */
+    PyUnicode_New__deps: ['$WasthonRT'],
+    PyUnicode_New: function(size, maxchar) {
+        var rt = WasthonRT;
+        if (size === 0) return rt.wrap("");
+        // Choose kind matching CPython's PEP 393: 1 byte for maxchar < 0x100,
+        // 2 bytes for < 0x10000, 4 bytes otherwise. _decimal always uses 127.
+        var kind = (maxchar < 0x100) ? 1 : (maxchar < 0x10000 ? 2 : 4);
+        var bufPtr = _malloc(size * kind);
+        HEAPU8.fill(0, bufPtr, bufPtr + size * kind);
+        var placeholder = {
+            __wasthon_unicode_buf__:  bufPtr,
+            __wasthon_unicode_size__: size,
+            __wasthon_unicode_kind__: kind,
+        };
+        return rt.wrap(placeholder);
+    },
+
+    /* PyUnicode_1BYTE_DATA(str) — returns the pointer to the Latin-1
+     * data buffer for a 1-byte-kind PEP 393 string. Only valid on
+     * placeholders allocated by PyUnicode_New with maxchar < 0x100. */
+    PyUnicode_1BYTE_DATA__deps: ['$WasthonRT'],
+    PyUnicode_1BYTE_DATA: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (obj && obj.__wasthon_unicode_buf__) return obj.__wasthon_unicode_buf__;
+        return 0;
+    },
+
+    /* PyErr_CheckSignals — no signals in WASM, always returns 0 (no pending). */
+    PyErr_CheckSignals: function() { return 0; },
+
+    /* PyErr_ExceptionMatches — check whether current pending exception is
+     * an instance of the given exception class (or its subclass). */
+    PyErr_ExceptionMatches__deps: ['$WasthonRT'],
+    PyErr_ExceptionMatches: function(excHandle) {
+        var rt = WasthonRT;
+        if (!rt.pendingException) return 0;
+        var current = rt.unwrap(rt.pendingException.exc);
+        var target = rt.unwrap(excHandle);
+        if (!current || !target) return 0;
+        try {
+            return rt.$B.$issubclass(current, target) ? 1 : 0;
+        } catch (e) {
+            return current === target ? 1 : 0;
+        }
+    },
+
+    /* ---- Unicode char predicates — delegate to JS's String prototype.
+     * String.fromCodePoint(ch).toLowerCase() handles Unicode case folding
+     * via the engine's built-in tables (browser's ICU). For regex usage
+     * this is sufficient. CPython's full unicodedb isn't replicated. */
+    wasthon_unicode_tolower: function(ch) {
+        return String.fromCodePoint(ch).toLowerCase().codePointAt(0);
+    },
+    wasthon_unicode_toupper: function(ch) {
+        return String.fromCodePoint(ch).toUpperCase().codePointAt(0);
+    },
+    wasthon_unicode_isalpha: function(ch) {
+        return /\p{L}/u.test(String.fromCodePoint(ch)) ? 1 : 0;
+    },
+    wasthon_unicode_isdigit: function(ch) {
+        return /\p{Nd}/u.test(String.fromCodePoint(ch)) ? 1 : 0;
+    },
+    wasthon_unicode_isalnum: function(ch) {
+        return /[\p{L}\p{N}]/u.test(String.fromCodePoint(ch)) ? 1 : 0;
+    },
+    wasthon_unicode_isspace: function(ch) {
+        return /\s/u.test(String.fromCodePoint(ch)) ? 1 : 0;
+    },
+    wasthon_unicode_isdecimal: function(ch) {
+        return /\p{Nd}/u.test(String.fromCodePoint(ch)) ? 1 : 0;
+    },
+    wasthon_unicode_todecimal: function(ch) {
+        var s = String.fromCodePoint(ch);
+        if (!/\p{Nd}/u.test(s)) return -1;
+        // JS string number parsing for decimal digits
+        return parseInt(s);
+    },
+    wasthon_unicode_todigit: function(ch) {
+        var s = String.fromCodePoint(ch);
+        if (!/\p{Nd}/u.test(s)) return -1;
+        return parseInt(s);
+    },
+    wasthon_unicode_tonumeric: function(ch) {
+        var s = String.fromCodePoint(ch);
+        var n = parseFloat(s);
+        return isNaN(n) ? -1.0 : n;
+    },
+
+    PyUnicode_READ_CHAR__deps: ['$WasthonRT'],
+    PyUnicode_READ_CHAR: function(handle, index) {
+        var obj = WasthonRT.asJSStr(WasthonRT.unwrap(handle));
+        if (obj === null) return 0;
+        // Codepoint-indexed access.
+        var seen = 0;
+        for (var i = 0; i < obj.length;) {
+            var c = obj.codePointAt(i);
+            if (seen === index) return c;
+            seen++;
+            i += c > 0xFFFF ? 2 : 1;
+        }
+        return 0;
+    },
+
+    PyModule_Check__deps: ['$WasthonRT'],
+    PyModule_Check: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        return (obj && obj.__class__ === WasthonRT._b_.module) ? 1 : 0;
+    },
+
+    /* PyCapsule — opaque C-pointer wrapper. unicodedata uses it for its
+     * name-API table. We back it with a JS object holding the raw ptr. */
+    PyCapsule_New__deps: ['$WasthonRT'],
+    PyCapsule_New: function(ptr, namePtr, dtor) {
+        var rt = WasthonRT;
+        var name = namePtr ? UTF8ToString(namePtr) : null;
+        return rt.wrap({ __class__: 'PyCapsule', ptr: ptr, name: name });
+    },
+
+    PyCapsule_GetPointer__deps: ['$WasthonRT'],
+    PyCapsule_GetPointer: function(capsuleHandle, namePtr) {
+        var obj = WasthonRT.unwrap(capsuleHandle);
+        if (!obj || obj.__class__ !== 'PyCapsule') return 0;
+        return obj.ptr;
+    },
+
+    /* PyOS_snprintf — minimal printf-style. unicodedata uses it to format
+     * a name buffer like "U+XXXX". Implement %s/%d/%X/%lx via JS join. */
+    /* PyOS_strnicmp — case-insensitive strncmp (ASCII). */
+    PyOS_strnicmp: function(s1Ptr, s2Ptr, n) {
+        for (var i = 0; i < n; i++) {
+            var a = HEAPU8[s1Ptr + i] | 0;
+            var b = HEAPU8[s2Ptr + i] | 0;
+            // ASCII tolower
+            if (a >= 65 && a <= 90) a += 32;
+            if (b >= 65 && b <= 90) b += 32;
+            if (a !== b) return a - b;
+            if (a === 0) return 0;
+        }
+        return 0;
+    },
+
+    PyOS_snprintf__deps: ['$WasthonRT'],
+    PyOS_snprintf: function(strPtr, size, fmtPtr /*, ...varargs */) {
+        var fmt = fmtPtr ? UTF8ToString(fmtPtr) : "";
+        // Varargs portably unreachable in wasm32. Best-effort: write the
+        // format string verbatim; callers using rich formatting will see
+        // raw '%X' tokens in output. unicodedata only uses this for an
+        // error message, not for correctness of returned data.
+        var bytes = new TextEncoder().encode(fmt);
+        var n = Math.min(bytes.length, size - 1);
+        for (var i = 0; i < n; i++) HEAPU8[strPtr + i] = bytes[i];
+        HEAPU8[strPtr + n] = 0;
+        return n;
+    },
+
+    PyUnicode_Compare__deps: ['$WasthonRT'],
+    PyUnicode_Compare: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.asJSStr(rt.unwrap(aH)); var b = rt.asJSStr(rt.unwrap(bH));
+        if (a === null || b === null) return -1;
+        return a < b ? -1 : (a > b ? 1 : 0);
+    },
+
+    PyUnicode_CompareWithASCIIString__deps: ['$WasthonRT'],
+    PyUnicode_CompareWithASCIIString: function(aH, bPtr) {
+        var rt = WasthonRT;
+        var a = rt.unwrap(aH);
+        var b = bPtr ? UTF8ToString(bPtr) : "";
+        if (typeof a !== 'string') return -1;
+        return a < b ? -1 : (a > b ? 1 : 0);
+    },
+
+    PyUnicode_FromObject__deps: ['$WasthonRT'],
+    PyUnicode_FromObject: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (typeof obj === 'string') return handle;
+        try { return rt.wrap(rt._b_.str.$factory(obj)); }
+        catch (e) { return 0; }
+    },
+
+    PyUnicode_IS_ASCII__deps: ['$WasthonRT'],
+    PyUnicode_IS_ASCII: function(handle) {
+        var obj = WasthonRT.asJSStr(WasthonRT.unwrap(handle));
+        if (obj === null) return 0;
+        for (var i = 0; i < obj.length; i++) {
+            if (obj.charCodeAt(i) > 0x7F) return 0;
+        }
+        return 1;
+    },
+
+    wasthon_unicode_islinebreak: function(ch) {
+        // Python's Py_UNICODE_ISLINEBREAK: \n \r \v \f \x1c-\x1e \x85 U+2028 U+2029
+        return (ch === 0x0a || ch === 0x0b || ch === 0x0c || ch === 0x0d ||
+                ch === 0x1c || ch === 0x1d || ch === 0x1e || ch === 0x85 ||
+                ch === 0x2028 || ch === 0x2029) ? 1 : 0;
+    },
+
+    /* ---- Type-check predicates (called from PyUnicode_Check, etc.) ---- */
+    wasthon_isinstance_of_builtin__deps: ['$WasthonRT'],
+    wasthon_isinstance_of_builtin: function(handle, tag) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        // tag values must match WT_TAG_* in wasthon.c
+        var target;
+        switch (tag) {
+            case 1: target = rt._b_.str;   break;  // UNICODE
+            case 2: target = rt._b_.bytes; break;  // BYTES
+            case 3: target = rt._b_.dict;  break;  // DICT
+            case 4: target = rt._b_.tuple; break;  // TUPLE
+            case 5: target = rt._b_.list;  break;  // LIST
+            case 6: target = rt._b_.int;   break;  // LONG
+            case 7: target = rt._b_.float; break;  // FLOAT
+            default: return 0;
+        }
+        // Direct match plus instanceof for primitives.
+        if (obj.__class__ === target) return 1;
+        if (target === rt._b_.str   && typeof obj === 'string')  return 1;
+        if (target === rt._b_.int   && (typeof obj === 'number' && Number.isInteger(obj))) return 1;
+        if (target === rt._b_.float && typeof obj === 'number')  return 1;
+        if (target === rt._b_.tuple && Array.isArray(obj))       return 1;
+        // Subclass check via Brython's $isinstance.
+        try { return rt.$B.$isinstance(obj, target) ? 1 : 0; }
+        catch (e) { return 0; }
+    },
+
+    /* --------------------------------------------------------------- *
+     * Buffer protocol                                                 *
+     *                                                                 *
+     * Read raw bytes from a Brython bytes/bytearray/memoryview into   *
+     * a fresh WASM linear-memory allocation, returning ptr + length.  *
+     * The C side (PyObject_GetBuffer) wraps these into a Py_buffer.   *
+     * --------------------------------------------------------------- */
+
+    wasthon_get_buffer_data__deps: ['$WasthonRT'],
+    wasthon_get_buffer_data: function(handle, outBufPtrPtr, outLenPtr) {
+        var obj = WasthonRT.unwrap(handle);
+        if (obj === null || obj === undefined) {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+                "a bytes-like object is required, not 'NoneType'");
+            return -1;
+        }
+
+        // Source of bytes: Brython bytes/bytearray store an Array<int> in .source;
+        // memoryview wraps another buffer-protocol object; raw Uint8Array is
+        // accepted for completeness (e.g. when called from JS-side helpers).
+        var src = null;
+        if (obj.source !== undefined && obj.source !== null) {
+            src = obj.source;
+        } else if (obj instanceof Uint8Array) {
+            src = obj;
+        } else if (Array.isArray(obj)) {
+            src = obj;
+        } else {
+            var className = WasthonRT.$B.class_name ? WasthonRT.$B.class_name(obj) : typeof obj;
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+                "a bytes-like object is required, not '" + className + "'");
+            return -1;
+        }
+
+        var len = src.length;
+        var buf = _malloc(len);
+        if (buf === 0 && len !== 0) {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.MemoryError),
+                "buffer allocation failed");
+            return -1;
+        }
+
+        // Copy into linear memory. TypedArray.set accepts both Uint8Array
+        // (intrinsic memcpy) and Array<int> (engine-vectorized bulk copy).
+        // Both vastly outperform a JS-level byte-by-byte loop, which is
+        // the bottleneck for buffer marshalling on large payloads.
+        HEAPU8.set(src, buf);
+
+        // Write back: outBufPtrPtr points to a void*, outLenPtr to Py_ssize_t.
+        // wasm32: pointer = 4 bytes, Py_ssize_t (intptr_t) = 4 bytes.
+        HEAP32[outBufPtrPtr >> 2] = buf;
+        HEAP32[outLenPtr >> 2] = len;
+        return 0;
+    },
+
+    wasthon_object_check_buffer__deps: ['$WasthonRT'],
+    wasthon_object_check_buffer: function(handle) {
+        var obj = WasthonRT.unwrap(handle);
+        if (obj === null) return 0;
+        if (obj.source !== undefined) return 1;          // bytes/bytearray
+        if (obj instanceof Uint8Array) return 1;
+        // Could check for memoryview / array.array via __class__ chain;
+        // sha2module.c only feeds bytes-like, so this is sufficient.
+        return 0;
+    },
+
+    /* --------------------------------------------------------------- *
+     * Module state                                                    *
+     *                                                                 *
+     * Each PyObject* module handle is associated with a state pointer *
+     * (allocated in WASM linear memory by tier-7 module-creation      *
+     * code) and each PyTypeObject* type with the module that owns it. *
+     * Both relations are tracked in JS-side maps keyed by handle.     *
+     * --------------------------------------------------------------- */
+
+    $WasthonRT_module_state__deps: ['$WasthonRT'],
+    $WasthonRT_module_state: {},  // populated at tier-7 module creation
+
+    wasthon_module_set_state__deps: ['$WasthonRT', '$WasthonRT_module_state'],
+    wasthon_module_set_state: function(moduleHandle, statePtr) {
+        WasthonRT_module_state[moduleHandle] = { state: statePtr, types: [] };
+    },
+
+    wasthon_module_get_state__deps: ['$WasthonRT', '$WasthonRT_module_state'],
+    wasthon_module_get_state: function(moduleHandle) {
+        var entry = WasthonRT_module_state[moduleHandle];
+        return entry ? entry.state : 0;
+    },
+
+    wasthon_type_set_module__deps: ['$WasthonRT', '$WasthonRT_module_state'],
+    wasthon_type_set_module: function(typeHandle, moduleHandle) {
+        var entry = WasthonRT_module_state[moduleHandle];
+        if (entry) entry.types.push(typeHandle);
+        // Reverse map: store on the type itself for O(1) lookup.
+        var t = WasthonRT.unwrap(typeHandle);
+        if (t) t.__wasthon_module__ = moduleHandle;
+    },
+
+    wasthon_type_get_module__deps: ['$WasthonRT'],
+    wasthon_type_get_module: function(typeHandle) {
+        var t = WasthonRT.unwrap(typeHandle);
+        if (!t || !t.__wasthon_module__) return 0;
+        return t.__wasthon_module__;
+    },
+
+    /* --------------------------------------------------------------- *
+     * Module and type creation                                        *
+     *                                                                 *
+     * The biggest single piece. Builds Brython modules and classes    *
+     * from C-side `PyModuleDef` and `PyType_Spec` structures, and     *
+     * provides instance allocation (`PyObject_GC_New`) plus the C↔JS  *
+     * method-dispatch trampolines.                                    *
+     *                                                                 *
+     * Layout reminders (must match wasthon.h):                         *
+     *                                                                 *
+     *   PyModuleDef:                                                  *
+     *     +0   PyObject *m_base_unused                                *
+     *     +4   const char *m_name                                     *
+     *     +8   const char *m_doc                                      *
+     *     +12  Py_ssize_t  m_size                                     *
+     *     +16  PyMethodDef *m_methods                                 *
+     *     +20  PyModuleDef_Slot_Entry *m_slots                        *
+     *     +24  void *m_traverse                                       *
+     *     +28  void *m_clear                                          *
+     *     +32  void *m_free                                           *
+     *                                                                 *
+     *   PyMethodDef (24 bytes):                                       *
+     *     +0   const char *ml_name                                    *
+     *     +4   void       *ml_meth                                    *
+     *     +8   int         ml_flags                                   *
+     *     +12  const char *ml_doc                                     *
+     *                                                                 *
+     *   PyType_Spec:                                                  *
+     *     +0   const char *name                                       *
+     *     +4   int basicsize                                          *
+     *     +8   int itemsize                                           *
+     *     +12  unsigned int flags                                     *
+     *     +16  PyType_Slot *slots                                     *
+     *                                                                 *
+     *   PyType_Slot (8 bytes):                                        *
+     *     +0   int slot                                               *
+     *     +4   void *pfunc                                            *
+     *                                                                 *
+     *   PyModuleDef_Slot_Entry (8 bytes):                             *
+     *     +0   int slot                                               *
+     *     +4   void *value                                            *
+     * --------------------------------------------------------------- */
+
+    /* (PyModuleDef_Init is defined in the module-creation section below — registers a module def
+     *  in the runtime registry and returns the def pointer cast to a handle.) */
+
+    /* ---- wasthon_module_create: invoked by the Brython-side loader      *
+     *      after PyInit_<name>() returns a moduleDef handle. Creates the *
+     *      actual Brython module object, allocates state, runs Py_mod_exec*
+     *      slots, and returns the module handle (== a sentinel ID).      */
+    wasthon_module_create__deps: ['$WasthonRT', '$WasthonRT_module_state', '$__wasthon_install_methods'],
+    wasthon_module_create: function(defHandle) {
+        var rt = WasthonRT;
+        var defInfo = rt.moduleDefs.get(defHandle);
+        if (!defInfo) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "wasthon_module_create: unknown module def");
+            return 0;
+        }
+
+        // Create a Brython module via canonical $B.module.tp_new + tp_init.
+        // Using the official path ensures attribute access goes through the
+        // module dict (otherwise getattr returns the raw JS value wrapped as
+        // a JSObj, which breaks Python semantics).
+        var modObj = rt.$B.module.tp_new(rt.$B.module);
+        rt.$B.module.tp_init(modObj, defInfo.name,
+                             defInfo.doc || rt._b_.None);
+        var modHandle = rt.wrap(modObj);
+
+        // Allocate per-module state (m_size bytes) and register it.
+        var statePtr = 0;
+        if (defInfo.size > 0) {
+            statePtr = _malloc(defInfo.size);
+            // Zero-init: callers expect calloc'd state.
+            HEAPU8.fill(0, statePtr, statePtr + defInfo.size);
+        }
+        rt.modules.set(modHandle, {
+            def: defInfo,
+            statePtr: statePtr,
+            name: defInfo.name,
+            obj: modObj,
+            types: [],
+        });
+        // Mirror to the tier-8 module_state map.
+        WasthonRT_module_state[modHandle] = { state: statePtr, types: [] };
+
+        // Register module-level methods (m_methods array).
+        if (defInfo.methods !== 0) {
+            __wasthon_install_methods(modObj, defInfo.methods, modHandle, /*moduleScope=*/true);
+        }
+
+        // Run Py_mod_exec slots in order. Some module init paths recurse
+        // into Brython (PyImport_ImportModule, class registration via
+        // numbers.Number.register, etc.) — Brython expects a current
+        // frame on $B.frame_obj (for globals() etc.) and crashes if it's
+        // null. We push a synthetic frame around the exec call:
+        //   frame = [name, locals_dict, name, globals_dict]
+        // and pop it after, even on error.
+        if (defInfo.slots !== 0) {
+            var modDict = rt.$B.get_dict(modObj);
+            var modName = defInfo.name || '<wasthon>';
+            var frame = [modName, modDict, modName, modDict];
+            rt.$B.enter_frame(frame, '<wasthon>', 0);
+            try {
+                for (var sp = defInfo.slots; ; sp += 8) {
+                    var slot = HEAP32[sp >> 2];
+                    if (slot === 0) break;
+                    var value = HEAP32[(sp + 4) >> 2];
+                    if (slot === 1 /* Py_mod_exec */) {
+                        // Slot value is a function pointer with signature int(PyObject*).
+                        var rc = getWasmTableEntry(value)(modHandle);
+                        if (rc !== 0) {
+                            if (!rt.pendingException) {
+                                rt.setError(rt.wrap(rt._b_.SystemError),
+                                    "module exec slot returned " + rc + " without setting an exception");
+                            }
+                            return 0;
+                        }
+                    }
+                    // Other slots (Py_mod_create, gil flags) are ignored for now.
+                }
+            } finally {
+                rt.$B.leave_frame();
+            }
+        }
+        return modHandle;
+    },
+
+    /* ---- PyType_FromModuleAndSpec ----                                  */
+    PyType_FromModuleAndSpec__deps: ['$WasthonRT', '$WasthonRT_module_state', '$__wasthon_install_methods', '$__wasthon_install_getsets'],
+    PyType_FromModuleAndSpec: function(moduleHandle, specPtr, basesHandle) {
+        var rt = WasthonRT;
+        rt.trace('PyType_FromModuleAndSpec', 'specPtr=' + specPtr);
+        var namePtr   = HEAP32[ specPtr        >> 2];
+        var basicsize = HEAP32[(specPtr +  4)  >> 2];
+        var itemsize  = HEAP32[(specPtr +  8)  >> 2];
+        var flags     = HEAPU32[(specPtr + 12) >> 2];
+        var slotsPtr  = HEAP32[(specPtr + 16)  >> 2];
+
+        var fullName = namePtr ? UTF8ToString(namePtr) : "<wasthon type>";
+        // Strip module prefix for the class name (CPython convention).
+        var dotIdx = fullName.lastIndexOf('.');
+        var shortName = (dotIdx >= 0) ? fullName.slice(dotIdx + 1) : fullName;
+
+        // Walk slots, collecting them into a JS object keyed by slot ID.
+        var slotMap = {};
+        var methodsPtr = 0, getsetPtr = 0;
+        if (slotsPtr !== 0) {
+            for (var sp = slotsPtr; ; sp += 8) {
+                var sid = HEAP32[sp >> 2];
+                if (sid === 0) break;
+                var pfunc = HEAP32[(sp + 4) >> 2];
+                slotMap[sid] = pfunc;
+                if (sid === 64 /* Py_tp_methods */) methodsPtr = pfunc;
+                if (sid === 66 /* Py_tp_getset  */) getsetPtr  = pfunc;
+            }
+        }
+
+        // Create a Brython class. make_builtin_class doesn't init_dict;
+        // we do it explicitly so tp_dict has a real Brython dict that
+        // PyDict_SetItemString (used by blake2module to install class-level
+        // constants like SALT_SIZE) can write to.
+        var cls = rt.$B.make_builtin_class(shortName);
+        rt.$B.init_dict(cls);
+        cls.__module__ = rt.unwrap(moduleHandle) ?
+            rt.unwrap(moduleHandle).__name__ : "";
+        /* make_builtin_class doesn't wire tp_setattro / tp_getattro to
+         * object's defaults; without them, $B.$setattr finds undefined and
+         * calls it as a function — boom. Inherit from object explicitly. */
+        if (!cls.tp_setattro) cls.tp_setattro = rt._b_.object.tp_setattro;
+        if (!cls.tp_getattro) cls.tp_getattro = rt._b_.object.tp_getattro;
+
+        // Allocate the C-side PyTypeObject. Layout (matches wasthon.h):
+        //   +0   tp_free (no-op, NULL)
+        //   +4   tp_dict (handle to the class dict)
+        //   +8   tp_name (pointer to UTF-8 name; same as spec.name)
+        //  +12   tp_alloc (function pointer for instance allocation)
+        //  +16   tp_init (0; populated below if Py_tp_init slot present)
+        //  +20   tp_iter (shared with built-in singletons — calls iter())
+        //  +24   tp_as_number (NULL for custom types; built-in singletons
+        //                       get a populated PyNumberMethods at init)
+        //  +28   tp_methods (PyMethodDef* from spec, for _decimal which
+        //                     reads it directly to enumerate methods)
+        if (!rt._defaultTpAlloc) rt._defaultTpAlloc = _wasthon_get_default_tp_alloc();
+        if (!rt._builtinTpIter)  rt._builtinTpIter  = _wasthon_get_builtin_tp_iter();
+        var typeStructPtr = _malloc(56);
+        HEAPU8.fill(0, typeStructPtr, typeStructPtr + 56);
+        var dictObj = rt.$B.get_dict(cls);
+        var dictHandle = rt.wrap(dictObj);
+        HEAP32[(typeStructPtr +  4) >> 2] = dictHandle;
+        HEAP32[(typeStructPtr +  8) >> 2] = namePtr;
+        HEAP32[(typeStructPtr + 12) >> 2] = rt._defaultTpAlloc;
+        HEAP32[(typeStructPtr + 20) >> 2] = rt._builtinTpIter;
+        HEAP32[(typeStructPtr + 28) >> 2] = methodsPtr;
+        // offsets 32 (tp_traverse), 36 (tp_dealloc) — left NULL (zeroed)
+        var typeHandle = typeStructPtr;
+        rt.bindInstance(typeHandle, cls);
+        cls.__wasthon_type_handle__ = typeHandle;
+        cls.__wasthon_type_token__  = specPtr;
+        rt.types.set(typeHandle, {
+            basicsize: basicsize,
+            itemsize:  itemsize,
+            flags:     flags,
+            slots:     slotMap,
+            methods:   methodsPtr,
+            getset:    getsetPtr,
+            brythonClass: cls,
+            moduleHandle: moduleHandle,
+            shortName: shortName,
+            fullName: fullName,
+        });
+        // Reverse link for PyType_GetModule.
+        cls.__wasthon_module__ = moduleHandle;
+
+        // Install methods listed in PyMethodDef[].
+        if (methodsPtr !== 0) {
+            __wasthon_install_methods(cls, methodsPtr, moduleHandle, /*moduleScope=*/false);
+        }
+
+        // Install getset descriptors (typecode, itemsize, etc.).
+        if (getsetPtr !== 0) {
+            __wasthon_install_getsets(cls, getsetPtr);
+        }
+
+        // Wire Py_tp_new (slot id 65) so Brython can instantiate the type.
+        // Brython's _b_.type.tp_call reads cls.tp_new and, if .$is_slot is
+        // set, calls new_func(cls, args, kw) — exactly the CPython tp_new
+        // ABI. The C function signature is:
+        //   PyObject *tp_new(PyTypeObject *cls, PyObject *args, PyObject *kw);
+        var tpNewPtr = slotMap[65 /* Py_tp_new */];
+        if (tpNewPtr) {
+            cls.tp_new = function(brythonCls, args, kw) {
+                var argsH = rt.wrap(args || []);
+                var kwH   = (kw && rt._b_.dict.mp_length(kw) > 0) ? rt.wrap(kw) : 0;
+                rt.pendingException = null;
+                var resultH = getWasmTableEntry(tpNewPtr)(typeHandle, argsH, kwH);
+                if (rt.pendingException) {
+                    var pe = rt.pendingException;
+                    rt.pendingException = null;
+                    var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
+                    // Brython exception classes don't all expose $factory;
+                    // $B.$call is the generic dispatch that handles both.
+                    throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                }
+                return rt.unwrap(resultH);
+            };
+            cls.tp_new.$is_slot = true;
+        } else {
+            // No Py_tp_new in spec. CPython falls back to object.__new__,
+            // which allocates `type->tp_basicsize` raw bytes. We replicate
+            // that so a C-style tp_init on the result sees a real struct,
+            // not a sentinel. Subclasses created via type(name,bases,dict)
+            // inherit through MRO walk — find the first ancestor with a
+            // known basicsize and allocate that many bytes. Without this,
+            // _decimal's SignalDict() (subclass of SignalDictMixin) ends
+            // up with a sentinel handle that signaldict_init dereferences
+            // as a garbage pointer.
+            cls.tp_new = function(brythonCls /*, args, kw */) {
+                var size = 0;
+                var chain = [brythonCls];
+                // Brython exposes MRO as either tp_mro (built-in classes
+                // created via make_builtin_class) or __mro__ (Python-side).
+                if (brythonCls.tp_mro) chain = chain.concat(brythonCls.tp_mro);
+                else if (brythonCls.__mro__) chain = chain.concat(brythonCls.__mro__);
+                for (var i = 0; i < chain.length; i++) {
+                    var c = chain[i];
+                    if (c && c.__wasthon_basicsize__ > 0) {
+                        size = c.__wasthon_basicsize__;
+                        break;
+                    }
+                }
+                if (size === 0) {
+                    // No Wasthon ancestor — fall through to Brython default.
+                    return rt._b_.object.tp_new(brythonCls);
+                }
+                var instancePtr = _malloc(size);
+                HEAPU8.fill(0, instancePtr, instancePtr + size);
+                var inst = {
+                    __class__: brythonCls,
+                    ob_type: brythonCls,
+                    __wasthon_ptr__: instancePtr,
+                };
+                rt.bindInstance(instancePtr, inst);
+                return inst;
+            };
+            cls.tp_new.$is_slot = true;
+        }
+        // Record basicsize on the class so the MRO walk in subclass tp_new
+        // can find it. Type creations via type(name, bases, dict) don't
+        // call our PyType_FromModuleAndSpec — they go through Brython's
+        // make_class, which doesn't copy __wasthon_basicsize__. That's OK:
+        // we look it up via __mro__.
+        cls.__wasthon_basicsize__ = basicsize;
+
+        // Wire number/repr/hash slots to Brython __dunder__ methods so
+        // class-level ops resolve to the C slot. Maps slot ID → Brython
+        // method name + dispatch shape (b=binary, t=ternary, u=unary,
+        // i=inquiry returning int, r=unary returning PyObject*).
+        // Brython uses C-slot-named methods on the class (nb_add, tp_repr, ...)
+        // but Python user code accesses via __dunder__. We install BOTH names
+        // pointing to the same dispatch function so either lookup path works.
+        // Format: slotID → [brythonSlotName, [dunderNames], shape]
+        // (b=binary, t=ternary, r=unary->obj, i=inquiry->int).
+        var slotDispatch = {
+            7:  ['nb_add',                    ['__add__'],           'b'],
+            36: ['nb_subtract',               ['__sub__'],           'b'],
+            29: ['nb_multiply',               ['__mul__'],           'b'],
+            34: ['nb_remainder',              ['__mod__'],           'b'],
+            10: ['nb_divmod',                 ['__divmod__'],        'b'],
+            12: ['nb_floor_divide',           ['__floordiv__'],      'b'],
+            37: ['nb_true_divide',            ['__truediv__'],       'b'],
+            28: ['nb_lshift',                 ['__lshift__'],        'b'],
+            35: ['nb_rshift',                 ['__rshift__'],        'b'],
+            8:  ['nb_and',                    ['__and__'],           'b'],
+            38: ['nb_xor',                    ['__xor__'],           'b'],
+            31: ['nb_or',                     ['__or__'],            'b'],
+            14: ['nb_inplace_add',            ['__iadd__'],          'b'],
+            23: ['nb_inplace_subtract',       ['__isub__'],          'b'],
+            18: ['nb_inplace_multiply',       ['__imul__'],          'b'],
+            21: ['nb_inplace_remainder',      ['__imod__'],          'b'],
+            16: ['nb_inplace_floor_divide',   ['__ifloordiv__'],     'b'],
+            24: ['nb_inplace_true_divide',    ['__itruediv__'],      'b'],
+            33: ['nb_power',                  ['__pow__'],           't'],
+            30: ['nb_negative',               ['__neg__'],           'r'],
+            32: ['nb_positive',               ['__pos__'],           'r'],
+            6:  ['nb_absolute',               ['__abs__'],           'r'],
+            27: ['nb_invert',                 ['__invert__'],        'r'],
+            11: ['nb_float',                  ['__float__'],         'r'],
+            26: ['nb_int',                    ['__int__'],           'r'],
+            13: ['nb_index',                  ['__index__'],         'r'],
+            /* tp_str / tp_repr / tp_hash — use OUR header's slot IDs
+             * (wasthon.h), which differ from CPython canonical values. */
+            51: ['tp_repr',                   ['__repr__'],          'r'],
+            50: ['tp_str',                    ['__str__'],           'r'],
+            58: ['tp_hash',                   ['__hash__'],          'i'],
+            9:  ['nb_bool',                   ['__bool__'],          'i'],
+            /* Iterator protocol — tp_iter returns iterator, tp_iternext
+             * advances. NULL return from tp_iternext == StopIteration. */
+            62: ['tp_iter',                   ['__iter__'],          'r'],
+            63: ['tp_iternext',               ['__next__'],          'n'],
+            /* richcompare: single C slot, 6 Python dunders. The 'c' shape
+             * is handled specially below — one slotPtr → 6 dispatch funcs
+             * each calling slot(self, other, op) with a different op. */
+            60: ['tp_richcompare',            null,                  'c'],
+            /* sequence protocol — slot IDs per Include/typeslots.h */
+            45: ['sq_length',                 ['__len__'],           'i'],
+            44: ['sq_item',                   ['__getitem__'],       'si'],
+            39: ['sq_ass_item',               ['__setitem__'],       'sis'],
+            40: ['sq_concat',                 ['__add__'],           'b'],
+            41: ['sq_contains',               ['__contains__'],      'b'],
+            46: ['sq_repeat',                 ['__mul__','__rmul__'], 'si'],
+            42: ['sq_inplace_concat',         ['__iadd__'],          'b'],
+            43: ['sq_inplace_repeat',         ['__imul__'],          'si'],
+        };
+        Object.keys(slotDispatch).forEach(function(sidStr) {
+            var sid = sidStr | 0;
+            var slotPtr = slotMap[sid];
+            if (!slotPtr) return;
+            var info = slotDispatch[sid];
+            var brythonName = info[0], dunders = info[1], shape = info[2];
+            var dispatch;
+            if (shape === 'b') {
+                dispatch = function(self, other) {
+                    var selfH  = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    var otherH = other && other.__wasthon_ptr__ ? other.__wasthon_ptr__ : rt.wrap(other);
+                    rt.pendingException = null;
+                    var resH = getWasmTableEntry(slotPtr)(selfH, otherH);
+                    if (resH === 0 || rt.pendingException) {
+                        if (rt.pendingException) {
+                            var pe = rt.pendingException; rt.pendingException = null;
+                            throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
+                                              typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                        }
+                        return rt._b_.NotImplemented;
+                    }
+                    return rt.unwrap(resH);
+                };
+            } else if (shape === 't') {
+                dispatch = function(self, other, modulo) {
+                    var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    var otherH = other && other.__wasthon_ptr__ ? other.__wasthon_ptr__ : rt.wrap(other);
+                    var modH = (modulo === undefined || modulo === rt._b_.None) ?
+                               rt.SLOT_NONE :
+                               (modulo && modulo.__wasthon_ptr__ ? modulo.__wasthon_ptr__ : rt.wrap(modulo));
+                    rt.pendingException = null;
+                    var resH = getWasmTableEntry(slotPtr)(selfH, otherH, modH);
+                    if (resH === 0 || rt.pendingException) {
+                        if (rt.pendingException) {
+                            var pe = rt.pendingException; rt.pendingException = null;
+                            throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
+                                              typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                        }
+                        return rt._b_.NotImplemented;
+                    }
+                    return rt.unwrap(resH);
+                };
+            } else if (shape === 'r') {
+                var isStringy = (brythonName === 'tp_str' || brythonName === 'tp_repr');
+                dispatch = function(self) {
+                    var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    rt.pendingException = null;
+                    var resH = getWasmTableEntry(slotPtr)(selfH);
+                    if (resH === 0 || rt.pendingException) {
+                        if (rt.pendingException) {
+                            var pe = rt.pendingException; rt.pendingException = null;
+                            throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
+                                              typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                        }
+                        return rt._b_.None;
+                    }
+                    var obj = rt.unwrap(resH);
+                    if (isStringy) {
+                        // C side returns a PyUnicode_New placeholder; materialize.
+                        var s = rt.asJSStr(obj);
+                        if (s !== null) return s;
+                    }
+                    return obj;
+                };
+            } else if (shape === 'i') {
+                dispatch = function(self) {
+                    var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    rt.pendingException = null;
+                    var rc = getWasmTableEntry(slotPtr)(selfH);
+                    if (rc < 0 && rt.pendingException) {
+                        var pe = rt.pendingException; rt.pendingException = null;
+                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
+                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                    }
+                    /* Length-style slots (sq_length, mp_length) return the
+                     * count directly; tp_hash and nb_bool return rc to be
+                     * coerced. We can't distinguish here; if rc looks like
+                     * a count (any value not -1), return it directly. */
+                    if (brythonName === 'sq_length' || brythonName === 'mp_length' ||
+                        brythonName === 'tp_hash') return rc | 0;
+                    return rc ? true : false;
+                };
+            } else if (shape === 'si') {
+                /* sq_item / sq_repeat: takes self + ssize_t. Returns PyObject*.
+                 * Brython will call this as `instance[i]` or `instance * n`. */
+                dispatch = function(self, idx) {
+                    var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    var i = (typeof idx === 'number') ? (idx | 0) :
+                            (typeof idx === 'bigint') ? Number(idx) :
+                            Number(idx) | 0;
+                    rt.pendingException = null;
+                    var resH = getWasmTableEntry(slotPtr)(selfH, i);
+                    if (rt.pendingException) {
+                        var pe = rt.pendingException; rt.pendingException = null;
+                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
+                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                    }
+                    if (resH === 0) {
+                        throw rt.$B.$call(rt._b_.IndexError, "index out of range");
+                    }
+                    return rt.unwrap(resH);
+                };
+            } else if (shape === 'sis') {
+                /* sq_ass_item: self + ssize_t + value. Returns int rc. */
+                dispatch = function(self, idx, value) {
+                    var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    var i = (typeof idx === 'number') ? (idx | 0) :
+                            (typeof idx === 'bigint') ? Number(idx) :
+                            Number(idx) | 0;
+                    var valH = (value === undefined || value === null) ? 0 :
+                               (value && value.__wasthon_ptr__ ? value.__wasthon_ptr__ : rt.wrap(value));
+                    rt.pendingException = null;
+                    var rc = getWasmTableEntry(slotPtr)(selfH, i, valH);
+                    if (rt.pendingException) {
+                        var pe = rt.pendingException; rt.pendingException = null;
+                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
+                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                    }
+                    return rc;
+                };
+            } else if (shape === 'n') {
+                // tp_iternext: returns next value, or NULL (no exception)
+                // for StopIteration. Translate NULL → StopIteration throw
+                // so Brython's iterator protocol sees it.
+                dispatch = function(self) {
+                    var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    rt.pendingException = null;
+                    var resH = getWasmTableEntry(slotPtr)(selfH);
+                    if (rt.pendingException) {
+                        var pe = rt.pendingException; rt.pendingException = null;
+                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
+                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                    }
+                    if (resH === 0) throw rt.$B.$call(rt._b_.StopIteration);
+                    return rt.unwrap(resH);
+                };
+            } else if (shape === 'c') {
+                // richcompare: install 6 dunder methods sharing one C slot.
+                var compares = [
+                    ['__lt__', 0], ['__le__', 1], ['__eq__', 2],
+                    ['__ne__', 3], ['__gt__', 4], ['__ge__', 5],
+                ];
+                var makeCmp = function(op) {
+                    return function(self, other) {
+                        var selfH  = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                        var otherH = other && other.__wasthon_ptr__ ? other.__wasthon_ptr__ : rt.wrap(other);
+                        rt.pendingException = null;
+                        var resH = getWasmTableEntry(slotPtr)(selfH, otherH, op);
+                        if (resH === 0 || rt.pendingException) {
+                            if (rt.pendingException) {
+                                var pe = rt.pendingException; rt.pendingException = null;
+                                throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
+                                                  typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                            }
+                            return rt._b_.NotImplemented;
+                        }
+                        return rt.unwrap(resH);
+                    };
+                };
+                cls.tp_funcs = cls.tp_funcs || {};
+                for (var ci = 0; ci < compares.length; ci++) {
+                    var name = compares[ci][0], op = compares[ci][1];
+                    var fn = makeCmp(op);
+                    cls[name] = fn;
+                    cls.tp_funcs[name] = fn;
+                    try { rt.$B.set_to_dict(cls, name, fn); } catch (_) {}
+                }
+                return;  // skip the generic install below
+            }
+            cls[brythonName] = dispatch;
+            cls.tp_funcs = cls.tp_funcs || {};
+            cls.tp_funcs[brythonName] = dispatch;
+            for (var di = 0; di < dunders.length; di++) {
+                cls[dunders[di]] = dispatch;
+                cls.tp_funcs[dunders[di]] = dispatch;
+                // Also install in the class's __dict__ so search_in_mro
+                // (which Brython's rich_op1 uses via $getattr) finds it.
+                try { rt.$B.set_to_dict(cls, dunders[di], dispatch); }
+                catch (_) {}
+            }
+        });
+
+        // Wire Py_tp_init (slot id 61) if the type defines one. The C
+        // init slot has signature `int (*)(PyObject *self, PyObject *args,
+        // PyObject *kw)` and returns 0 on success, -1 on error. Some
+        // modules (_struct: Struct) put state initialization in tp_init,
+        // not tp_new, so skipping it leaves the instance unusable.
+        //
+        // If the type does NOT define tp_init, we alias to object's default
+        // so Brython's type.tp_call (which checks `init_func !== _b_.object.tp_init`)
+        // skips the init step.
+        var tpInitPtr = slotMap[61 /* Py_tp_init */];
+        if (tpInitPtr) {
+            cls.tp_init = function(self) {
+                // Brython call sig: tp_init(self, ...args, kwarg)
+                // CPython sig:      tp_init(self, args_tuple, kwargs_dict)
+                var jsArgs = Array.from(arguments).slice(1);
+                var kw = null;
+                if (jsArgs.length > 0 && jsArgs[jsArgs.length - 1] &&
+                        jsArgs[jsArgs.length - 1].$nat === 'kw') {
+                    kw = jsArgs.pop();
+                }
+                var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                var argsH = rt.wrap(jsArgs);
+                var kwH   = kw ? rt.wrap(kw) : 0;
+                rt.pendingException = null;
+                var rc = getWasmTableEntry(tpInitPtr)(selfH, argsH, kwH);
+                if (rc !== 0 || rt.pendingException) {
+                    var pe = rt.pendingException;
+                    rt.pendingException = null;
+                    var exc = (pe && rt.unwrap(pe.exc)) || rt._b_.Exception;
+                    var msg = pe ? pe.msg : "tp_init failed";
+                    throw rt.$B.$call(exc, typeof msg === 'string' ? msg : String(msg));
+                }
+            };
+        } else if (tpNewPtr) {
+            // tp_new fully initialised; alias to object so Brython skips init.
+            cls.tp_init = rt._b_.object.tp_init;
+        }
+
+        // Install dealloc hook so that when Brython GCs an instance we
+        // free the WASM-side struct. We attach a finalizer registry to
+        // each instance at GC_New time; see __wasthon_object_gc_new.
+
+        return typeHandle;
+    },
+
+    /* ---- PyModule_AddType: sets module.<short_name> = type ----         */
+    PyModule_AddType__deps: ['$WasthonRT'],
+    PyModule_AddType: function(moduleHandle, typeHandle) {
+        var rt = WasthonRT;
+        rt.trace('PyModule_AddType', 'typeHandle=' + typeHandle);
+        var modObj = rt.unwrap(moduleHandle);
+        var typeInfo = rt.types.get(typeHandle);
+        if (!modObj) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyModule_AddType: module handle " + moduleHandle + " did not resolve");
+            return -1;
+        }
+        if (!typeInfo) {
+            /* Fallback: handle points to a built-in type struct registered
+             * via wasthon_bind_builtin_type (in rt.handles but not rt.types).
+             * Unwrap, use the Brython class's __name__ as attribute. */
+            var cls = rt.handles.get(typeHandle);
+            if (cls) {
+                var nm = (cls.$infos && cls.$infos.__name__) || cls.tp_name || '<type>';
+                try {
+                    rt.$B.module_setattr(modObj, nm, cls);
+                    return 0;
+                } catch (e) {
+                    rt.setError(rt.wrap(rt._b_.SystemError),
+                        "PyModule_AddType: setattr failed for builtin: " + (e.message || e));
+                    return -1;
+                }
+            }
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyModule_AddType: type handle " + typeHandle + " not in types map");
+            return -1;
+        }
+        try {
+            rt.$B.module_setattr(modObj, typeInfo.shortName, typeInfo.brythonClass);
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyModule_AddType: module_setattr threw: " + (e.message || e));
+            return -1;
+        }
+        var modEntry = rt.modules.get(moduleHandle);
+        if (modEntry) modEntry.types.push(typeHandle);
+        return 0;
+    },
+
+    PyModule_AddIntConstant__deps: ['$WasthonRT'],
+    PyModule_AddIntConstant: function(moduleHandle, namePtr, value) {
+        var rt = WasthonRT;
+        var modObj = rt.unwrap(moduleHandle);
+        if (!modObj || namePtr === 0) return -1;
+        rt.$B.module_setattr(modObj, UTF8ToString(namePtr), value | 0);
+        return 0;
+    },
+
+    PyModule_AddStringConstant__deps: ['$WasthonRT'],
+    PyModule_AddStringConstant: function(moduleHandle, namePtr, valuePtr) {
+        var rt = WasthonRT;
+        var modObj = rt.unwrap(moduleHandle);
+        if (!modObj || namePtr === 0) return -1;
+        var s = valuePtr === 0 ? "" : UTF8ToString(valuePtr);
+        rt.$B.module_setattr(modObj, UTF8ToString(namePtr), s);
+        return 0;
+    },
+
+    PyModule_Add__deps: ['$WasthonRT'],
+    PyModule_Add: function(moduleHandle, namePtr, valueHandle) {
+        var rt = WasthonRT;
+        var modObj = rt.unwrap(moduleHandle);
+        if (!modObj || namePtr === 0) return -1;
+        rt.$B.module_setattr(modObj, UTF8ToString(namePtr), rt.unwrap(valueHandle));
+        return 0;
+    },
+
+    /* PyModule_AddObjectRef: same semantics as PyModule_Add for our purposes
+     * (refcounting is JS-side). Inlined to avoid the JS-library indirection. */
+    PyModule_AddObjectRef__deps: ['$WasthonRT'],
+    PyModule_AddObjectRef: function(moduleHandle, namePtr, valueHandle) {
+        var rt = WasthonRT;
+        var modObj = rt.unwrap(moduleHandle);
+        if (!modObj || namePtr === 0) return -1;
+        var name = UTF8ToString(namePtr);
+        rt.trace('PyModule_AddObjectRef', name);
+        try {
+            rt.$B.module_setattr(modObj, name, rt.unwrap(valueHandle));
+            return 0;
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError),
+                "PyModule_AddObjectRef: '" + name + "' failed: " + (e.message || String(e)));
+            return -1;
+        }
+    },
+
+    /* PyModuleDef_Init: registers the PyModuleDef* in the runtime and
+     * returns the same pointer cast to a PyObject* handle. Called by
+     * a module's PyInit_<name>() at the start of multi-phase init. */
+    PyModuleDef_Init__deps: ['$WasthonRT'],
+    PyModuleDef_Init: function(defPtr) {
+        var rt = WasthonRT;
+        if (rt.moduleDefs.has(defPtr)) return defPtr;  // idempotent
+        var namePtr = HEAP32[(defPtr +  4) >> 2];
+        var docPtr  = HEAP32[(defPtr +  8) >> 2];
+        var size    = HEAP32[(defPtr + 12) >> 2];
+        var methods = HEAP32[(defPtr + 16) >> 2];
+        var slots   = HEAP32[(defPtr + 20) >> 2];
+        rt.moduleDefs.set(defPtr, {
+            defPtr: defPtr,
+            name:    namePtr ? UTF8ToString(namePtr) : "",
+            doc:     docPtr  ? UTF8ToString(docPtr)  : "",
+            size:    size,
+            methods: methods,
+            slots:   slots,
+        });
+        return defPtr;
+    },
+
+    /* ---- wasthon_object_gc_new: allocate a new C-side instance.         *
+     * Called from C through the PyObject_GC_New(type, typeobj) macro      *
+     * defined in wasthon.h (which expands to wasthon_object_gc_new(typeobj)). *
+     * The size comes from the type's basicsize. The result handle == ptr  *
+     * (so C can dereference its own struct fields) and is bound to a      *
+     * Brython instance side-by-side in the runtime handle table.          */
+    wasthon_object_gc_new__deps: ['$WasthonRT'],
+    wasthon_object_gc_new: function(typeHandle) {
+        var rt = WasthonRT;
+        var typeInfo = rt.types.get(typeHandle);
+        if (!typeInfo) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyObject_GC_New: unknown type");
+            return 0;
+        }
+        var size = typeInfo.basicsize;
+        var ptr = _malloc(size);
+        if (ptr === 0) {
+            rt.setError(rt.wrap(rt._b_.MemoryError), "PyObject_GC_New");
+            return 0;
+        }
+        HEAPU8.fill(0, ptr, ptr + size);
+        var instance = {
+            ob_type: typeInfo.brythonClass,
+            __class__: typeInfo.brythonClass,
+            __wasthon_ptr__: ptr,
+            __wasthon_type__: typeHandle,
+        };
+        rt.bindInstance(ptr, instance);
+        return ptr;
+    },
+
+    wasthon_object_gc_new_var__deps: ['$WasthonRT'],
+    wasthon_object_gc_new_var: function(typeHandle, n) {
+        var rt = WasthonRT;
+        var typeInfo = rt.types.get(typeHandle);
+        if (!typeInfo) return 0;
+        var size = typeInfo.basicsize + n * typeInfo.itemsize;
+        var ptr = _malloc(size);
+        if (ptr === 0) {
+            rt.setError(rt.wrap(rt._b_.MemoryError), "PyObject_GC_NewVar");
+            return 0;
+        }
+        HEAPU8.fill(0, ptr, ptr + size);
+        var instance = {
+            ob_type: typeInfo.brythonClass,
+            __class__: typeInfo.brythonClass,
+            __wasthon_ptr__: ptr,
+            __wasthon_type__: typeHandle,
+        };
+        rt.bindInstance(ptr, instance);
+        return ptr;
+    },
+
+    PyObject_GC_Del__deps: ['$WasthonRT'],
+    PyObject_GC_Del: function(ptr) {
+        if (ptr === 0) return;
+        WasthonRT.handles.delete(ptr);
+        _free(ptr);
+    },
+
+    /* ---- $WasthonInstall: install C methods onto a JS object as Python  *
+     *      methods that, when called from Brython, marshal arguments and  *
+     *      invoke the corresponding C function via dynCall.              */
+    /* Install PyGetSetDef entries as Brython properties on the class.
+     * Each entry is 20 bytes: name(4) + get(4) + set(4) + doc(4) + closure(4).
+     * For each entry with a getter, we register a property on the class
+     * whose __get__ calls the C function with (self_handle, closure_ptr). */
+    $__wasthon_install_getsets__deps: ['$WasthonRT'],
+    $__wasthon_install_getsets: function(cls, getsetPtr) {
+        if (!getsetPtr) return;
+        var rt = WasthonRT;
+        for (var gp = getsetPtr; ; gp += 20) {
+            var namePtr   = HEAP32[ gp        >> 2];
+            if (namePtr === 0) break;
+            var getPtr    = HEAP32[(gp +  4)  >> 2];
+            var setPtr    = HEAP32[(gp +  8)  >> 2];
+            var closurePtr = HEAP32[(gp + 16) >> 2];
+            var name      = UTF8ToString(namePtr);
+
+            var capGet = getPtr, capSet = setPtr, capClosure = closurePtr;
+
+            var fget = capGet ? (function(getP, closP) {
+                return function(self) {
+                    var selfH = (self && self.__wasthon_ptr__) ? self.__wasthon_ptr__ : rt.wrap(self);
+                    rt.pendingException = null;
+                    var resH = getWasmTableEntry(getP)(selfH, closP);
+                    if (rt.pendingException) {
+                        var pe = rt.pendingException;
+                        rt.pendingException = null;
+                        var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
+                        throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                    }
+                    return rt.unwrap(resH);
+                };
+            })(capGet, capClosure) : rt._b_.None;
+
+            var fset = capSet ? (function(setP, closP) {
+                return function(self, value) {
+                    var selfH = (self && self.__wasthon_ptr__) ? self.__wasthon_ptr__ : rt.wrap(self);
+                    var valH = rt.wrap(value);
+                    rt.pendingException = null;
+                    var rc = getWasmTableEntry(setP)(selfH, valH, closP);
+                    if (rt.pendingException) {
+                        var pe = rt.pendingException;
+                        rt.pendingException = null;
+                        var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
+                        throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                    }
+                    return rc;
+                };
+            })(capSet, capClosure) : rt._b_.None;
+
+            try {
+                /* Create a Brython property descriptor. Brython's MRO walk
+                 * for `instance.<name>` finds the property on the class and
+                 * calls its __get__ to invoke our wrapped C getter. */
+                var prop = rt._b_.property.$factory(fget, fset);
+                /* Set as JS attribute on the class so MRO lookup sees it. */
+                cls[name] = prop;
+                /* Also set in the class's tp_dict (Brython exposes class
+                 * attrs there for __dict__ inspection and some lookups). */
+                try {
+                    var dictObj = rt.$B.get_dict(cls);
+                    if (dictObj) rt.$B.str_dict_set(dictObj, name, prop);
+                } catch (_) {}
+            } catch (e) {
+                /* Fall back to a plain getter function on the class. */
+                if (capGet) cls[name] = fget;
+            }
+        }
+    },
+
+    $__wasthon_install_methods__deps: ['$WasthonRT', '$__wasthon_make_trampoline'],
+    $__wasthon_install_methods: function(target, methodsPtr, moduleHandle, moduleScope) {
+        var rt = WasthonRT;
+        /* For class methods, capture the class handle so trampoline can
+         * pass it as the `cls` arg when METH_METHOD is set. */
+        var classHandle = (!moduleScope && target.__wasthon_type_handle__)
+            ? target.__wasthon_type_handle__ : 0;
+        // Each entry is 16 bytes: name(4) + meth(4) + flags(4) + doc(4)
+        for (var mp = methodsPtr; ; mp += 16) {
+            var namePtr = HEAP32[ mp        >> 2];
+            if (namePtr === 0) break;
+            var fnPtr   = HEAP32[(mp +  4)  >> 2];
+            var flags   = HEAP32[(mp +  8)  >> 2];
+            var name    = UTF8ToString(namePtr);
+
+            var trampoline = __wasthon_make_trampoline(fnPtr, flags, moduleHandle, name, moduleScope, classHandle);
+            if (moduleScope) {
+                rt.$B.module_setattr(target, name, trampoline);
+            } else {
+                target.tp_funcs = target.tp_funcs || {};
+                target.tp_funcs[name] = trampoline;
+                trampoline.ob_type = rt.$B.builtin_method;
+            }
+        }
+    },
+
+    /* ---- $__wasthon_make_trampoline: build a JS function that, when     *
+     *      called from Brython with positional+kwargs, marshals the args  *
+     *      into a C `args[]` array (PyObject* handles), packs kwnames,    *
+     *      invokes the C function via getWasmTableEntry, returns result. */
+    $__wasthon_make_trampoline__deps: ['$WasthonRT'],
+    $__wasthon_make_trampoline: function(fnPtr, flags, moduleHandle, methName, moduleScope, classHandle) {
+        var rt = WasthonRT;
+        var FASTCALL = 0x0080, KEYWORDS = 0x0002, NOARGS = 0x0004, METH_O_ = 0x0008, METH_METHOD = 0x0200;
+
+        return function() {
+            // Collect args + kw the way Brython conveys them. Brython
+            // method calls pass `self` as args[0] for instance methods,
+            // and positional args follow. Module-scope functions don't
+            // have a self.
+            var jsArgs = Array.from(arguments);
+            // Brython kwargs convention: last arg is sometimes a $kw object.
+            var kw = null;
+            if (jsArgs.length > 0) {
+                var last = jsArgs[jsArgs.length - 1];
+                if (last && (last.$kw || last.$nat === 'kw')) {
+                    kw = last.$kw || last;
+                    jsArgs = jsArgs.slice(0, -1);
+                }
+            }
+
+            // selfHandle is moduleHandle for module-scope, or the instance
+            // pointer for instance methods (first arg is self).
+            var selfHandle, posArgs;
+            if (moduleScope) {
+                selfHandle = moduleHandle;
+                posArgs = jsArgs;
+            } else {
+                var self = jsArgs[0];
+                if (self && self.__wasthon_ptr__) {
+                    selfHandle = self.__wasthon_ptr__;
+                } else {
+                    selfHandle = rt.wrap(self);
+                }
+                posArgs = jsArgs.slice(1);
+            }
+
+            // Marshal positional + kw values into a flat args[] array of
+            // PyObject* handles (per FASTCALL convention).
+            var nargs = posArgs.length;
+            var kwNames = kw ? Object.keys(kw).filter(function(k) { return k !== '$kw' && k !== '$nat'; }) : [];
+            var totalArgs = nargs + kwNames.length;
+            var argsBufPtr = totalArgs > 0 ? _malloc(totalArgs * 4) : 0;
+            for (var i = 0; i < nargs; i++) {
+                HEAP32[(argsBufPtr + i*4) >> 2] = rt.wrap(posArgs[i]);
+            }
+            for (var i = 0; i < kwNames.length; i++) {
+                HEAP32[(argsBufPtr + (nargs + i)*4) >> 2] = rt.wrap(kw[kwNames[i]]);
+            }
+            // kwnames is a Python tuple of strings. We just expose the JS
+            // array, marked as a tuple so unpacker reads its length.
+            var kwnamesHandle = kwNames.length > 0 ? rt.wrap(kwNames) : 0;
+
+            rt.pendingException = null;
+            var resultHandle = 0;
+            try {
+                var fn = getWasmTableEntry(fnPtr);
+                if ((flags & METH_METHOD) && (flags & FASTCALL) && (flags & KEYWORDS)) {
+                    /* METH_METHOD: signature is (self, cls, args, nargs, kwnames).
+                     * classHandle is the type's struct pointer captured at
+                     * install time. */
+                    resultHandle = fn(selfHandle, classHandle || 0, argsBufPtr, nargs, kwnamesHandle);
+                } else if ((flags & FASTCALL) && (flags & KEYWORDS)) {
+                    resultHandle = fn(selfHandle, argsBufPtr, nargs, kwnamesHandle);
+                } else if (flags & FASTCALL) {
+                    resultHandle = fn(selfHandle, argsBufPtr, nargs);
+                } else if (flags & NOARGS) {
+                    resultHandle = fn(selfHandle, 0);
+                } else if (flags & METH_O_) {
+                    resultHandle = fn(selfHandle, nargs > 0 ? rt.wrap(posArgs[0]) : 0);
+                } else if (flags & KEYWORDS) {
+                    // METH_VARARGS | METH_KEYWORDS (legacy):
+                    //   fn(self, args_tuple, kwargs_dict)
+                    var argsTuple = rt._b_.tuple.$factory(posArgs);
+                    var kwDict = null;
+                    if (kwNames.length > 0) {
+                        kwDict = rt._b_.dict.$factory();
+                        for (var i = 0; i < kwNames.length; i++) {
+                            rt._b_.dict.str_dict_set
+                                ? rt.$B.str_dict_set(kwDict, kwNames[i], kw[kwNames[i]])
+                                : (kwDict[kwNames[i]] = kw[kwNames[i]]);
+                        }
+                    }
+                    resultHandle = fn(selfHandle, rt.wrap(argsTuple),
+                                      kwDict ? rt.wrap(kwDict) : 0);
+                } else {
+                    // METH_VARARGS plain — fn(self, args_tuple)
+                    resultHandle = fn(selfHandle, rt.wrap(posArgs));
+                }
+            } finally {
+                if (argsBufPtr !== 0) _free(argsBufPtr);
+            }
+
+            // Check exception flag; raise into Brython.
+            if (rt.pendingException) {
+                var pe = rt.pendingException;
+                rt.pendingException = null;
+                var excClass = rt.unwrap(pe.exc) || rt._b_.RuntimeError;
+                var msg = typeof pe.msg === 'string' ? pe.msg : String(pe.msg);
+                throw rt.$B.$call(excClass, msg);
+            }
+            if (resultHandle === 0) {
+                // No exception set but NULL returned — generic error.
+                throw rt.$B.$call(rt._b_.RuntimeError, methName + ": call returned NULL");
+            }
+            var result = rt.unwrap(resultHandle);
+            // Sync bytes-like objects whose backing was a C-side linear-
+            // memory buffer (e.g. zlib.compress output). C may have written
+            // into __wasthon_cstr__ without ever updating .source. The
+            // presence of both .source and a cached cstr is sufficient to
+            // identify the case.
+            if (result && result.__wasthon_cstr__ && result.source &&
+                    typeof result.source.length === 'number') {
+                var src = result.source;
+                var ptr = result.__wasthon_cstr__;
+                for (var i = 0, len = src.length; i < len; i++) {
+                    src[i] = HEAPU8[ptr + i];
+                }
+            }
+            // Materialize PyUnicode_New placeholders into actual JS strings
+            // and replace the handle's value so callers see a real str.
+            if (result && result.__wasthon_unicode_buf__) {
+                var s = rt.asJSStr(result);
+                rt.handles.set(resultHandle, s);
+                result = s;
+            }
+            return result;
+        };
+    },
+
+    /* --------------------------------------------------------------- *
+     * _PyArg_UnpackKeywords                                           *
+     *                                                                 *
+     * Dispatcher for METH_FASTCALL|METH_KEYWORDS calls.               *
+     *                                                                 *
+     * Layout of `_PyArg_Parser` (must match wasthon.h):                *
+     *   offset  0  const char * const *keywords                       *
+     *   offset  4  const char *fname                                  *
+     *   offset  8  const char *custom_msg                             *
+     *   offset 12  int initialized                                    *
+     *   offset 16  int pos                                            *
+     *   offset 20  int min                                            *
+     *   offset 24  int max                                            *
+     *   offset 28  PyObject *kwtuple                                  *
+     *   offset 32  void *next                                         *
+     *                                                                 *
+     * args[0..nargs-1]                  positional values             *
+     * args[nargs..nargs+|kwnames|-1]    values for kwnames entries    *
+     * kwnames                           Python tuple of str names     *
+     *                                                                 *
+     * Returns buf (non-zero) on success, 0 on error.                  *
+     * --------------------------------------------------------------- */
+
+    wasthon_unpack_keywords__deps: ['$WasthonRT'],
+    wasthon_unpack_keywords: function(argsPtr, nargs, kwargs, kwnames,
+                                       parserPtr, minpos, maxpos,
+                                       minkw, varpos, bufPtr) {
+        // ---- Read parser fields ----
+        var keywordsArrPtr = HEAP32[ parserPtr        >> 2];
+        var fnamePtr       = HEAP32[(parserPtr +  4)  >> 2];
+        var fname          = fnamePtr ? UTF8ToString(fnamePtr) : "function";
+
+        // ---- Read keyword names from the NULL-terminated C array ----
+        var keywords = [];
+        for (var kp = keywordsArrPtr; ; kp += 4) {
+            var sptr = HEAP32[kp >> 2];
+            if (sptr === 0) break;
+            keywords.push(UTF8ToString(sptr));
+        }
+        var totalKw = keywords.length;
+
+        // ---- Validate positional count ----
+        if (nargs < minpos) {
+            WasthonRT.setError(
+                WasthonRT.wrap(WasthonRT._b_.TypeError),
+                fname + "() takes at least " + minpos +
+                    " positional argument" + (minpos === 1 ? "" : "s") +
+                    " (" + nargs + " given)");
+            return 0;
+        }
+        if (nargs > maxpos && !varpos) {
+            WasthonRT.setError(
+                WasthonRT.wrap(WasthonRT._b_.TypeError),
+                fname + "() takes at most " + maxpos +
+                    " positional argument" + (maxpos === 1 ? "" : "s") +
+                    " (" + nargs + " given)");
+            return 0;
+        }
+
+        // ---- Initialize buf to NULL for every slot ----
+        for (var i = 0; i < totalKw; i++) {
+            HEAP32[(bufPtr + i*4) >> 2] = 0;
+        }
+
+        // ---- Place positional args into buf ----
+        var nposCopy = Math.min(nargs, maxpos);
+        for (var i = 0; i < nposCopy; i++) {
+            HEAP32[(bufPtr + i*4) >> 2] = HEAP32[(argsPtr + i*4) >> 2];
+        }
+
+        // ---- Process keyword args (FASTCALL pattern: kwnames is a tuple,
+        // values appended to args[]) ----
+        if (kwnames !== 0) {
+            var kwnamesObj = WasthonRT.unwrap(kwnames);
+            var nkw = kwnamesObj ? (kwnamesObj.length || 0) : 0;
+            for (var i = 0; i < nkw; i++) {
+                var nameObj = kwnamesObj[i];
+                // Brython str values are typically JS strings.
+                var name = (typeof nameObj === 'string') ? nameObj : String(nameObj);
+
+                // Find name in the keyword list (linear scan; the lists are
+                // tiny — sha2 has 3 entries — so a hash table would be overkill).
+                var foundIdx = -1;
+                for (var k = 0; k < totalKw; k++) {
+                    if (keywords[k] === name) { foundIdx = k; break; }
+                }
+                if (foundIdx < 0) {
+                    WasthonRT.setError(
+                        WasthonRT.wrap(WasthonRT._b_.TypeError),
+                        fname + "() got an unexpected keyword argument '" + name + "'");
+                    return 0;
+                }
+
+                // Refuse if a positional already supplied this slot.
+                if (HEAP32[(bufPtr + foundIdx*4) >> 2] !== 0) {
+                    WasthonRT.setError(
+                        WasthonRT.wrap(WasthonRT._b_.TypeError),
+                        fname + "() got multiple values for argument '" + name + "'");
+                    return 0;
+                }
+
+                // Value lives at args[nargs + i].
+                var valuePtr = HEAP32[(argsPtr + (nargs + i)*4) >> 2];
+                HEAP32[(bufPtr + foundIdx*4) >> 2] = valuePtr;
+            }
+        }
+
+        // ---- Process keyword args (legacy dict-style: kwargs is a dict) ----
+        // Some clinic callers (e.g. _lzma's LZMADecompressor) still pass a
+        // kwargs dict to _PyArg_UnpackKeywords. We can't iterate Brython
+        // dicts directly (no `.items()` / `.keys()` on the class), but we
+        // already know every legal keyword name from the parser's keywords
+        // array — just probe each by string lookup.
+        if (kwargs !== 0) {
+            var rt = WasthonRT;
+            var kw = rt.unwrap(kwargs);
+            if (kw && kw !== rt._b_.None) {
+                for (var k = 0; k < totalKw; k++) {
+                    var kname = keywords[k];
+                    var found = false;
+                    try { found = rt._b_.dict.$contains_string(kw, kname); }
+                    catch (_) { found = false; }
+                    if (!found) continue;
+                    if (HEAP32[(bufPtr + k*4) >> 2] !== 0) {
+                        rt.setError(rt.wrap(rt._b_.TypeError),
+                            fname + "() got multiple values for argument '" + kname + "'");
+                        return 0;
+                    }
+                    var value;
+                    try { value = rt._b_.dict.$getitem(kw, kname); }
+                    catch (_) { continue; }
+                    HEAP32[(bufPtr + k*4) >> 2] = rt.wrap(value);
+                }
+            }
+        }
+
+        // ---- Check that minkw kw-only args were supplied ----
+        // kw-only slots are at indices [maxpos .. totalKw-1]; the first minkw
+        // of them are required.
+        if (minkw > 0) {
+            var kwSuppliedRequired = 0;
+            for (var k = maxpos; k < maxpos + minkw && k < totalKw; k++) {
+                if (HEAP32[(bufPtr + k*4) >> 2] !== 0) {
+                    kwSuppliedRequired++;
+                }
+            }
+            if (kwSuppliedRequired < minkw) {
+                // Find the first missing required kw-only arg for a clear msg.
+                for (var k = maxpos; k < maxpos + minkw && k < totalKw; k++) {
+                    if (HEAP32[(bufPtr + k*4) >> 2] === 0) {
+                        WasthonRT.setError(
+                            WasthonRT.wrap(WasthonRT._b_.TypeError),
+                            fname + "() missing required keyword-only argument: '" +
+                                keywords[k] + "'");
+                        return 0;
+                    }
+                }
+            }
+        }
+
+        return bufPtr;
+    },
+});

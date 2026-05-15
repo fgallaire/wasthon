@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — loader index</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.6rem; }
+  h2 { font-size: 1.1rem; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; margin-top: 1.8em; }
+  ul.grid { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.3em 1em; }
+  ul.grid li a { text-decoration: none; color: #04a; }
+  ul.grid li a:hover { text-decoration: underline; }
+  .note { color: #666; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>Wasthon — tests &amp; benches</h1>
+
+<p class="note">
+  Each of Wasthon's 22 ported modules has a <code>test-*.html</code> (smoke
+  correctness) and a <code>bench-*.html</code> (perf vs Brython equivalent),
+  with two grouped exceptions: <strong>hashlib</strong> bundles md5/sha1/sha2/sha3/blake2/hmac,
+  <strong>cluster</strong> bundles _random/_struct/unicodedata.
+</p>
+
+<h2>Tests <span class="note">(smoke correctness)</span></h2>
+<ul class="grid">
+  <li><a href="test-array.html">array</a></li>
+  <li><a href="test-bz2.html">_bz2</a></li>
+  <li><a href="test-cluster.html">cluster</a> <span class="note">(_random/_struct/unicodedata)</span></li>
+  <li><a href="test-cmath.html">cmath</a></li>
+  <li><a href="test-csv.html">_csv</a></li>
+  <li><a href="test-decimal.html">_decimal</a></li>
+  <li><a href="test-hashlib.html">hashlib</a> <span class="note">(md5/sha1/sha2/sha3/blake2/hmac)</span></li>
+  <li><a href="test-json.html">_json</a></li>
+  <li><a href="test-lzma.html">_lzma</a></li>
+  <li><a href="test-math.html">math</a></li>
+  <li><a href="test-pyexpat.html">pyexpat</a></li>
+  <li><a href="test-statistics.html">_statistics</a></li>
+  <li><a href="test-zlib.html">_zlib</a></li>
+  <li><a href="test-zstd.html">_zstd</a></li>
+  <li><a href="test-sre.html">_sre</a> <span class="note">(no bench yet)</span></li>
+</ul>
+
+<h2>Benches <span class="note">(Wasthon vs Brython)</span></h2>
+<ul class="grid">
+  <li><a href="bench-array.html">array</a></li>
+  <li><a href="bench-bz2.html">_bz2</a></li>
+  <li><a href="bench-cluster.html">cluster</a> <span class="note">(_random/_struct/unicodedata)</span></li>
+  <li><a href="bench-cmath.html">cmath</a></li>
+  <li><a href="bench-csv.html">_csv</a></li>
+  <li><a href="bench-decimal.html">_decimal</a></li>
+  <li><a href="bench-hashlib.html">hashlib</a> <span class="note">(md5/sha1/sha2/sha3/blake2/hmac)</span></li>
+  <li><a href="bench-json.html">_json</a></li>
+  <li><a href="bench-lzma.html">_lzma</a></li>
+  <li><a href="bench-math.html">math</a></li>
+  <li><a href="bench-pyexpat.html">pyexpat</a></li>
+  <li><a href="bench-statistics.html">_statistics</a></li>
+  <li><a href="bench-zlib.html">_zlib</a></li>
+  <li><a href="bench-zstd.html">_zstd</a></li>
+</ul>
+
+</body>
+</html>
