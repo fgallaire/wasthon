@@ -1,5 +1,9 @@
 # Wasthon
 
+<div align="center">
+    <img src="Wasthon.png" alt="Wasthon Logo" width="200"/>
+</div>
+
 **Run real CPython C extension modules inside Brython, compiled to WebAssembly.**
 
 > Brython is Holmes — the genius detective doing Python→JS magic.
