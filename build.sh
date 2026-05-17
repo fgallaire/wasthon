@@ -7,10 +7,10 @@
 # Build a wasthon module to .mjs/.wasm
 #
 # Usage: ./build.sh <command>
-#   <module>    build a single module (e.g. _sha2, _zlib, pyexpat)
-#   all         build every supported module (~45 s once libs are cached)
-#   unified     build all modules into a single wasthon-unified.{mjs,wasm}
-#   list        show the known module names
+#   <module>...  build one or several modules (e.g. _sha2, or _sha2 _decimal)
+#   all          build every supported module (~45 s once libs are cached)
+#   unified      build all modules into a single wasthon-unified.{mjs,wasm}
+#   list         show the known module names
 #
 # emcc is installed automatically into ./external/emsdk/ on first run.
 # Requires: curl or wget (to download sources) and make (used by emmake for xz/zstd).
@@ -31,10 +31,10 @@ export NO_COLOR=1
 usage() {
     cat >&2 <<EOF
 Usage: $0 <command>
-  <module>    build a single module (e.g. _sha2, _zlib, pyexpat)
-  all         build every supported module
-  unified     build all modules into a single wasthon-unified.{mjs,wasm}
-  list        show the known module names
+  <module>...  build one or several modules (e.g. _sha2, or _sha2 _decimal)
+  all          build every supported module
+  unified      build all modules into a single wasthon-unified.{mjs,wasm}
+  list         show the known module names
 EOF
 }
 
@@ -65,16 +65,22 @@ EOF
 fi
 
 # Validate up front so a typo doesn't trigger the heavy emsdk install.
-if [[ "${MODULE}" != "all" && "${MODULE}" != "unified" ]]; then
-    known=0
-    for m in "${KNOWN_MODULES[@]}"; do
-        [[ "$m" == "${MODULE}" ]] && known=1 && break
+# `all`/`unified` are whole-build commands — valid only as the sole argument.
+# Otherwise every argument must be a known module (one or several).
+if [[ $# -eq 1 && ( "${MODULE}" == "all" || "${MODULE}" == "unified" ) ]]; then
+    :
+else
+    for arg in "$@"; do
+        known=0
+        for m in "${KNOWN_MODULES[@]}"; do
+            [[ "$m" == "$arg" ]] && known=1 && break
+        done
+        if [[ $known -eq 0 ]]; then
+            echo "Unknown module: $arg" >&2
+            echo "Run \`$0 list\` for the known module names." >&2
+            exit 1
+        fi
     done
-    if [[ $known -eq 0 ]]; then
-        echo "Unknown module: ${MODULE}" >&2
-        echo "Run \`$0 list\` for the known module names." >&2
-        exit 1
-    fi
 fi
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
@@ -334,6 +340,17 @@ copy_module_and_clinic() {
         mkdir -p clinic && cp "$clinic" clinic/
     fi
 }
+
+# Several explicit modules in one go: ./build.sh _sha2 _decimal pyexpat
+# Re-invoke ourselves once per module (each is a normal single-module build).
+if [[ $# -gt 1 ]]; then
+    SELF="${REPO}/build.sh"
+    for m in "$@"; do
+        echo "=== build ${m} ==="
+        "${SELF}" "$m"
+    done
+    exit 0
+fi
 
 # Build every supported module. Re-runs are cheap because each per-module
 # case re-uses already-built objects (HACL/libmpdec/bzip2 once cached).

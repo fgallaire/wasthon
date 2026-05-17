@@ -370,6 +370,7 @@ Build any module via the wrapper script (after activating emsdk):
 ```bash
 cd wasthon
 ./build.sh _sha2          # any of the 22 known modules → build/_sha2.{mjs,wasm}
+./build.sh _sha2 _decimal # several specific modules in one go
 ./build.sh all            # everything as per-module .mjs/.wasm
                           # (~45 s once libs are cached; first run downloads + builds the libs too)
 ./build.sh unified        # all 22 modules bundled into build/wasthon-unified.{mjs,wasm}
