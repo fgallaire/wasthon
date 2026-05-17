@@ -268,8 +268,7 @@ module exposing `PyInit_<x>()`. A small Brython-side loader
                 ┌──────────────────────────────────────────────┐
    <x>module.c  │  emcc  →  PyInit_<x>() exported via WASM     │
    (CPython,    │     ↑                                        │
-   unmodified)  │     │                                        │
-                │  wasthon.h + wasthon.c + wasthon.js          │
+   unmodified)  │  wasthon.h + wasthon.c + wasthon.js          │
                 │  (CPython C-API replicated atop Brython)     │
                 └──────────────────────────────────────────────┘
                                   ↑
@@ -370,10 +369,18 @@ Build any module via the wrapper script (after activating emsdk):
 
 ```bash
 cd wasthon
-./build.sh _sha2          # any of the 23 known modules
-./build.sh all            # everything (~45 s once libs are cached;
-                          # first run downloads + builds the libs too)
+./build.sh _sha2          # any of the 22 known modules → build/_sha2.{mjs,wasm}
+./build.sh all            # everything as per-module .mjs/.wasm
+                          # (~45 s once libs are cached; first run downloads + builds the libs too)
+./build.sh unified        # all 22 modules bundled into build/wasthon-unified.{mjs,wasm}
+                          # — single fetch, single WASM instance, shared bridge runtime
 ```
+
+The per-module target is best for dev, bench, and incremental work — each
+module is fetched only if imported, and rebuilds are cheap. The unified
+target is the "drop one script tag into your HTML" deliverable: one fetch,
+one instance, but you pay for the full bundle even if you only use one
+module. See `loader/test-unified.html` for a working unified-bundle page.
 
 The script handles all the per-module quirks: downloading missing source
 trees, compiling external libraries (libexpat, liblzma, libzstd, bzip2,

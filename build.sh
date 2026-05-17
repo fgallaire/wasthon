@@ -9,6 +9,7 @@
 # Usage: ./build.sh <command>
 #   <module>    build a single module (e.g. _sha2, _zlib, pyexpat)
 #   all         build every supported module (~45 s once libs are cached)
+#   unified     build all modules into a single wasthon-unified.{mjs,wasm}
 #   list        show the known module names
 #
 # emcc is installed automatically into ./external/emsdk/ on first run.
@@ -32,6 +33,7 @@ usage() {
 Usage: $0 <command>
   <module>    build a single module (e.g. _sha2, _zlib, pyexpat)
   all         build every supported module
+  unified     build all modules into a single wasthon-unified.{mjs,wasm}
   list        show the known module names
 EOF
 }
@@ -63,7 +65,7 @@ EOF
 fi
 
 # Validate up front so a typo doesn't trigger the heavy emsdk install.
-if [[ "${MODULE}" != "all" ]]; then
+if [[ "${MODULE}" != "all" && "${MODULE}" != "unified" ]]; then
     known=0
     for m in "${KNOWN_MODULES[@]}"; do
         [[ "$m" == "${MODULE}" ]] && known=1 && break
@@ -230,7 +232,12 @@ compile_module_src() {
 
 # Link a module: emcc -O2 <objects> --js-library wasthon.js + standard flags.
 # Args: <output_name_without_ext> <PyInit_symbol> <export_js_name> <objects...>
+#
+# When SKIP_LINK=1 (set by the `unified` target), this is a no-op — the
+# per-module case has already produced the .o files we need, and the unified
+# target links them all together itself.
 link_module() {
+    [[ "${SKIP_LINK:-0}" -eq 1 ]] && return 0
     local out="$1" init="$2" export_name="$3"; shift 3
     emcc -O2 "$@" wasthon.o \
         --js-library "${SRC}/wasthon.js" \
@@ -343,6 +350,107 @@ if [[ "${MODULE}" == "all" ]]; then
     exit 0
 fi
 
+# Unified build — every module bundled into a single wasthon-unified.{mjs,wasm}.
+# Compiles each module's .o by re-invoking ourselves with SKIP_LINK=1, then
+# links the lot in one emcc call exporting every PyInit_* symbol.
+#
+# Trade-off vs. per-module .mjs files:
+#   + one HTTP fetch, one WASM instance, shared bridge runtime
+#   - users pay the combined download even if they import only one module
+# Both targets coexist on purpose — per-module is great for dev/bench, unified
+# is the "drop one script tag into HTML and you're done" deliverable.
+if [[ "${MODULE}" == "unified" ]]; then
+    SELF="${REPO}/build.sh"
+    UNIFIED_MODULES=(
+        _md5 _sha1 _sha2 _sha3 _blake2 _hmac
+        _zlib _bz2 _lzma _zstd
+        pyexpat _decimal _sre
+        array _csv _json _struct _random _statistics
+        math cmath unicodedata
+    )
+    for m in "${UNIFIED_MODULES[@]}"; do
+        echo "=== compile ${m} (no link) ==="
+        SKIP_LINK=1 "${SELF}" "$m"
+    done
+
+    # All .o files are now in build/. Time for the single big link.
+    echo "=== link wasthon-unified.{mjs,wasm} ==="
+
+    # Mapping module → PyInit suffix. CPython convention: the underscore
+    # module `_zlib` actually exposes `PyInit_zlib` (no underscore prefix).
+    # Everything else matches its filename.
+    pyinit_symbol() {
+        case "$1" in
+            _zlib) echo "zlib" ;;
+            *)     echo "$1"   ;;
+        esac
+    }
+
+    EXPORTS='"_wasthon_init","_wasthon_module_create","_malloc","_free"'
+    for m in "${UNIFIED_MODULES[@]}"; do
+        EXPORTS+=",\"_PyInit_$(pyinit_symbol "$m")\""
+    done
+
+    # Object files, grouped by module family. Note: HACL_SHA2.o is shared by
+    # _sha2 and _hmac — emcc/wasm-ld dedupes identical objects, so listing
+    # each only once is fine (it would also be fine to list both — wasm-ld
+    # would just resolve from the first).
+    OBJS=(
+        wasthon.o
+
+        md5module.o     Hacl_Hash_MD5.o
+        sha1module.o    Hacl_Hash_SHA1.o
+        sha2module.o    Hacl_Hash_SHA2.o
+        sha3module.o    Hacl_Hash_SHA3.o
+        blake2module.o  Hacl_Hash_Blake2b.o Hacl_Hash_Blake2s.o Lib_Memzero0.o
+        hmacmodule.o    Hacl_HMAC.o Hacl_Streaming_HMAC.o
+
+        zlibmodule.o
+        _bz2module.o    bzip2/blocksort.o bzip2/bzlib.o bzip2/compress.o
+                        bzip2/crctable.o bzip2/decompress.o bzip2/huffman.o
+                        bzip2/randtable.o
+        _lzmamodule.o   "${XZ_DIR}/src/liblzma/.libs/liblzma.a"
+        _zstdmodule.o   compressor.o decompressor.o zstddict.o
+                        "${ZSTD_DIR}/lib/libzstd.a"
+
+        pyexpat.o       "${EXPAT_DIR}/lib/xmlparse.o"
+                        "${EXPAT_DIR}/lib/xmlrole.o"
+                        "${EXPAT_DIR}/lib/xmltok.o"
+
+        _decimal.o      libmpdec/basearith.o libmpdec/constants.o
+                        libmpdec/context.o   libmpdec/convolute.o
+                        libmpdec/crt.o       libmpdec/difradix2.o
+                        libmpdec/fnt.o       libmpdec/fourstep.o
+                        libmpdec/io.o        libmpdec/mpalloc.o
+                        libmpdec/mpdecimal.o libmpdec/mpsignal.o
+                        libmpdec/numbertheory.o libmpdec/sixstep.o
+                        libmpdec/transpose.o
+
+        sre.o
+        arraymodule.o
+        _csv.o
+        _json.o
+        _struct.o
+        _randommodule.o
+        _statisticsmodule.o
+        mathmodule.o
+        cmathmodule.o
+        unicodedata.o   unicodectype.o
+    )
+
+    emcc -O2 "${OBJS[@]}" \
+        --js-library "${SRC}/wasthon.js" \
+        -sUSE_ZLIB=1 \
+        -s ALLOW_MEMORY_GROWTH=1 -s ALLOW_TABLE_GROWTH=1 \
+        -s EXPORTED_FUNCTIONS="[${EXPORTS}]" \
+        -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' \
+        -s MODULARIZE=1 -s EXPORT_ES6=1 -s EXPORT_NAME='wasthon_unified_init' \
+        -o wasthon-unified.mjs
+
+    echo "Built: wasthon-unified.mjs + wasthon-unified.wasm"
+    exit 0
+fi
+
 ensure_cpython   # every module needs CPython sources
 
 case "${MODULE}" in
@@ -386,6 +494,8 @@ _zlib)
     # both the header (zlib.h) at compile and the linked .a at link. On a
     # fresh emsdk the port is materialized on first use, then cached.
     emcc -O3 -c -sUSE_ZLIB=1 -I . -I "${SRC}" zlibmodule.c -o zlibmodule.o
+    # Unified build skips the per-module link — the .o is enough.
+    [[ "${SKIP_LINK:-0}" -eq 1 ]] && exit 0
     emcc -O2 zlibmodule.o wasthon.o \
         --js-library "${SRC}/wasthon.js" -sUSE_ZLIB=1 \
         -s ALLOW_MEMORY_GROWTH=1 -s ALLOW_TABLE_GROWTH=1 \

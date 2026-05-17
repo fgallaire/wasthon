@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — unified bundle test (all 22 modules)</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>wasthon — unified bundle test (all 22 modules)</h1>
+<p style="color:#666;font-size:0.9em;">
+  Loads <code>build/wasthon-unified.{mjs,wasm}</code> exactly once and installs
+  all 22 wasthon modules. Runs at least one smoke check per module to verify
+  they cohabit in a single WASM instance — no symbol collisions, no shared
+  state leakage across upstream libraries (HACL crypto, zlib, bzip2, xz,
+  zstd, libexpat, libmpdec, plus pure-CPython numerics, parsing, regex,
+  containers).
+</p>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[unified-test]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading wasthon-unified.mjs…');
+    const bundle = await wasthonLoadUnified('../build/wasthon-unified.mjs');
+    log('Bundle loaded. Installing 22 modules…');
+    // Hash family
+    bundle.installModule('_md5');
+    bundle.installModule('_sha1');
+    bundle.installModule('_sha2');
+    bundle.installModule('_sha3');
+    bundle.installModule('_blake2');
+    bundle.installModule('_hmac');
+    // Compression family — note `zlib` registers under its canonical name
+    // (CPython convention: PyInit_zlib, not PyInit__zlib).
+    bundle.installModule('zlib');
+    bundle.installModule('_bz2');
+    bundle.installModule('_lzma');
+    bundle.installModule('_zstd');
+    // Parse / text
+    bundle.installModule('pyexpat');
+    bundle.installModule('_csv');
+    bundle.installModule('_json');
+    bundle.installModule('_struct');
+    bundle.installModule('_sre');
+    bundle.installModule('unicodedata');
+    // Numerics
+    bundle.installModule('_decimal');
+    bundle.installModule('_random');
+    bundle.installModule('_statistics');
+    bundle.installModule('math');
+    bundle.installModule('cmath');
+    // Container
+    bundle.installModule('array');
+    log('All 22 installed. Running smoke checks…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+# Importing each of the 22 modules — proves __BRYTHON__.imported wiring is
+# correct for every PyInit_*. Failure here means the loader misregistered.
+import _md5, _sha1, _sha2, _sha3, _blake2, _hmac
+import zlib, _bz2, _lzma, _zstd
+import pyexpat, _csv, _json, _struct, _sre, unicodedata
+import _decimal, _random, _statistics, math, cmath
+import array
+
+ok_all = True
+def check(name, fn):
+    global ok_all
+    try:
+        cond, detail = fn()
+    except Exception as e:
+        cond = False
+        detail = f'{type(e).__name__}: {e}'
+    mark = '✓' if cond else '✗'
+    log(f'  {mark}  {name}{("  -- " + detail) if detail and not cond else ""}')
+    if not cond: ok_all = False
+
+# ===========================================================================
+# Hash family (HACL crypto). Reference vectors from FIPS 180-4 / FIPS 202.
+# ===========================================================================
+log('=== hash family (HACL) ===')
+M = b'abc'
+check("_md5.md5(b'abc')",
+      lambda: (_md5.md5(M).hexdigest() == '900150983cd24fb0d6963f7d28e17f72', ''))
+check("_sha1.sha1(b'abc')",
+      lambda: (_sha1.sha1(M).hexdigest() == 'a9993e364706816aba3e25717850c26c9cd0d89d', ''))
+check("_sha2.sha256(b'abc')",
+      lambda: (_sha2.sha256(M).hexdigest() == 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', ''))
+check("_sha3.sha3_256(b'abc')",
+      lambda: (_sha3.sha3_256(M).hexdigest() == '3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532', ''))
+check("_blake2.blake2b(b'abc')",
+      lambda: (_blake2.blake2b(M).hexdigest() == 'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923', ''))
+# _hmac: RFC 4231 Test Case 1. CPython exposes the SHA-2 variants as
+# compute_sha256 / compute_sha384 / compute_sha512 (no "2" in the Python
+# name, even though the C impl is _hmac_compute_sha2_256 — Argument Clinic
+# renames via 'as').
+def _t_hmac():
+    got = _hmac.compute_sha256(b'\\x0b' * 20, b'Hi There').hex()
+    return (got == 'b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7', '')
+check("_hmac.compute_sha256 (RFC 4231 #1)", _t_hmac)
+
+# ===========================================================================
+# Compression family.
+# ===========================================================================
+log('\\n=== compression ===')
+def _t_zlib():
+    raw = b'wasthon ' * 1000
+    return (zlib.decompress(zlib.compress(raw)) == raw, '')
+check("zlib compress/decompress round-trip", _t_zlib)
+
+def _t_bz2():
+    raw = b'wasthon ' * 1000
+    c = _bz2.BZ2Compressor()
+    blob = c.compress(raw) + c.flush()
+    d = _bz2.BZ2Decompressor()
+    return (d.decompress(blob) == raw, '')
+check("_bz2 compress/decompress round-trip", _t_bz2)
+
+def _t_lzma():
+    raw = b'wasthon ' * 1000
+    c = _lzma.LZMACompressor()
+    blob = c.compress(raw) + c.flush()
+    d = _lzma.LZMADecompressor()
+    return (d.decompress(blob) == raw, '')
+check("_lzma compress/decompress round-trip", _t_lzma)
+
+def _t_zstd():
+    raw = b'wasthon ' * 1000
+    c = _zstd.ZstdCompressor()
+    blob = c.compress(raw) + c.flush()
+    d = _zstd.ZstdDecompressor()
+    return (d.decompress(blob) == raw, '')
+check("_zstd compress/decompress round-trip", _t_zstd)
+
+# ===========================================================================
+# Parse / text.
+# ===========================================================================
+log('\\n=== parse/text ===')
+def _t_pyexpat():
+    parser = pyexpat.ParserCreate()
+    elems = []
+    parser.StartElementHandler = lambda name, attrs: elems.append(name)
+    parser.Parse('<root><a/><b/><c/></root>', True)
+    return (elems == ['root', 'a', 'b', 'c'], f'got {elems}')
+check("pyexpat StartElementHandler", _t_pyexpat)
+
+def _t_csv():
+    rows = list(_csv.reader(['a,b,c', '1,2,3', '"x,y",z,w']))
+    return (rows == [['a','b','c'], ['1','2','3'], ['x,y','z','w']], f'got {rows}')
+check("_csv.reader basic + quoted comma", _t_csv)
+
+check("_json.encode_basestring",
+      lambda: (_json.encode_basestring('hello') == '"hello"', ''))
+
+def _t_struct():
+    return (_struct.pack('>I', 0x12345678) == b'\\x12\\x34\\x56\\x78', '')
+check("_struct.pack('>I', 0x12345678)", _t_struct)
+
+# _sre: low-level regex engine. Public API is via 're', but here we exercise
+# the C-level entry points it exposes. Avoids the 're' wrapper.
+check("_sre.MAGIC exists", lambda: (isinstance(_sre.MAGIC, int) and _sre.MAGIC > 0, ''))
+check("_sre.ascii_tolower(ord('A')) == 97",
+      lambda: (_sre.ascii_tolower(ord('A')) == 97, ''))
+
+check("unicodedata.name('A')",
+      lambda: (unicodedata.name('A') == 'LATIN CAPITAL LETTER A', ''))
+check("unicodedata.numeric('½') == 0.5",
+      lambda: (unicodedata.numeric('½') == 0.5, ''))
+
+# ===========================================================================
+# Numerics.
+# ===========================================================================
+log('\\n=== numerics ===')
+check("_decimal Decimal('1.1') * Decimal('2.2') == 2.42",
+      lambda: (_decimal.Decimal('1.1') * _decimal.Decimal('2.2') == _decimal.Decimal('2.42'), ''))
+
+def _t_decimal_prec():
+    _decimal.getcontext().prec = 50
+    s = str(_decimal.Decimal(22) / _decimal.Decimal(7))
+    return (s == '3.1428571428571428571428571428571428571428571428571', f'got {s}')
+check("_decimal 22/7 @ prec=50", _t_decimal_prec)
+
+def _t_random():
+    r = _random.Random(42)
+    v1, v2 = r.random(), r.random()
+    return (0.0 <= v1 < 1.0 and 0.0 <= v2 < 1.0 and v1 != v2, f'{v1}, {v2}')
+check("_random.Random(42).random() in [0, 1)", _t_random)
+
+def _t_random_repro():
+    a, b = _random.Random(42), _random.Random(42)
+    return (a.random() == b.random(), '')
+check("_random same seed → same value", _t_random_repro)
+
+def _t_stats():
+    r = _statistics._normal_dist_inv_cdf(0.5, 0.0, 1.0)
+    return (abs(r) < 1e-12, f'got {r}')
+check("_statistics._normal_dist_inv_cdf(0.5, 0, 1) ≈ 0", _t_stats)
+
+def _t_stats_q():
+    # inv_cdf(0.975) is the famous z = 1.959963984540054
+    r = _statistics._normal_dist_inv_cdf(0.975, 0.0, 1.0)
+    return (abs(r - 1.959963984540054) < 1e-10, f'got {r}')
+check("_statistics inv_cdf(0.975) ≈ 1.96", _t_stats_q)
+
+check("math.pi ≈ 3.14159…",
+      lambda: (abs(math.pi - 3.141592653589793) < 1e-15, ''))
+check("math.factorial(10) == 3628800",
+      lambda: (math.factorial(10) == 3628800, ''))
+check("math.sqrt(2) ≈ 1.41421…",
+      lambda: (abs(math.sqrt(2) - 1.4142135623730951) < 1e-15, ''))
+
+def _t_cmath():
+    z = cmath.sqrt(-1)
+    return (abs(z.real) < 1e-15 and abs(z.imag - 1.0) < 1e-15, f'got {z}')
+check("cmath.sqrt(-1) ≈ 1j", _t_cmath)
+
+check("cmath.pi ≈ 3.14159…",
+      lambda: (abs(cmath.pi - 3.141592653589793) < 1e-15, ''))
+
+# ===========================================================================
+# Container.
+# ===========================================================================
+log('\\n=== container ===')
+def _t_array():
+    a = array.array('i', [1, 2, 3, 4, 5])
+    return (a.itemsize == 4 and list(a) == [1,2,3,4,5] and a.typecode == 'i',
+            f'itemsize={a.itemsize}, list={list(a)}')
+check("array.array('i', [...]) — itemsize, list, typecode", _t_array)
+
+# ===========================================================================
+# Cross-module integration: compress → hash. Two libs in one call chain
+# inside the same WASM instance with shared bridge runtime.
+# ===========================================================================
+log('\\n=== cross-module (compress → hash) ===')
+def _t_chain_bz2_sha():
+    raw = b'hello wasthon ' * 100
+    c = _bz2.BZ2Compressor()
+    blob = c.compress(raw) + c.flush()
+    h = _sha2.sha256(); h.update(blob)
+    return (len(h.hexdigest()) == 64, f'digest len {len(h.hexdigest())}')
+check("bz2-compress then sha256", _t_chain_bz2_sha)
+
+def _t_chain_zlib_md5():
+    raw = b'wasthon all the way down\\n' * 200
+    blob = zlib.compress(raw)
+    h = _md5.md5(); h.update(blob)
+    # also verify round-trip is correct
+    return (zlib.decompress(blob) == raw and len(h.hexdigest()) == 32, '')
+check("zlib-compress then md5", _t_chain_zlib_md5)
+
+log('\\n=== ALL OK ===' if ok_all else '\\n=== SOME FAILED ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

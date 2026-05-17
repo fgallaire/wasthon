@@ -108,4 +108,80 @@
     }
 
     global.wasthonLoad = wasthonLoad;
+
+    // CPython convention: `_zlib` (file: zlibmodule.c) exposes `PyInit_zlib`,
+    // not `PyInit__zlib`. Every other wasthon module's init symbol matches
+    // its registered name. Callers can still override per-module via
+    // opts.initName.
+    const PYINIT_OVERRIDES = { '_zlib': 'zlib' };
+
+    /**
+     * Load the unified Wasthon bundle (one .mjs/.wasm for all 22 modules).
+     *
+     * Loads and instantiates the WASM exactly once, runs the bridge bootstrap
+     * (_wasthon_init), and returns a handle whose `.installModule()` method
+     * registers individual modules into __BRYTHON__.imported without
+     * re-instantiating anything.
+     *
+     *   mjsUrl — URL of build/wasthon-unified.mjs (emitted by `build.sh unified`).
+     *
+     * Returns: { installModule(name, opts?), module, runtime }
+     *   - installModule(name): runs _PyInit_<symbol>() + wasthon_module_create()
+     *     for the named module and inserts it into __BRYTHON__.imported.
+     *     opts.initName overrides the C-side symbol suffix.
+     *   - module: the raw Emscripten Module object (HEAP views, etc.)
+     *   - runtime: the M.wasthon bridge runtime (handle map, etc.)
+     */
+    async function wasthonLoadUnified(mjsUrl) {
+        const factoryModule = await import(mjsUrl);
+        const factory = factoryModule.default;
+        if (typeof factory !== 'function') {
+            throw new Error(
+                `wasthon: '${mjsUrl}' must export a default factory ` +
+                `(emcc -s MODULARIZE=1 -s EXPORT_ES6=1).`
+            );
+        }
+        const M = await factory();
+
+        M._wasthon_init();
+        const rt = M.wasthon;
+
+        function installModule(name, opts) {
+            opts = opts || {};
+            const cInitName = opts.initName || PYINIT_OVERRIDES[name] || name;
+            const initFn = M['_PyInit_' + cInitName];
+            if (typeof initFn !== 'function') {
+                throw new Error(
+                    `wasthon: _PyInit_${cInitName} not found in unified bundle. ` +
+                    `Was '${name}' included in the build?`
+                );
+            }
+            const defHandle = initFn();
+            if (defHandle === 0) {
+                throw new Error(`wasthon: _PyInit_${cInitName}() returned 0`);
+            }
+            const modHandle = M._wasthon_module_create(defHandle);
+            if (modHandle === 0) {
+                const exc = rt && rt.pendingException;
+                throw new Error(
+                    `wasthon: wasthon_module_create() returned 0` +
+                    (exc ? ` — ${exc.msg}` : '')
+                );
+            }
+            const modObj = rt.handles.get(modHandle);
+            if (!modObj) {
+                throw new Error(
+                    `wasthon: module handle ${modHandle} did not resolve.`
+                );
+            }
+            global.__BRYTHON__.imported[name] = modObj;
+            global.__BRYTHON__.wasthon_modules = global.__BRYTHON__.wasthon_modules || {};
+            global.__BRYTHON__.wasthon_modules[name] = { module: M, runtime: rt, obj: modObj };
+            return modObj;
+        }
+
+        return { installModule, module: M, runtime: rt };
+    }
+
+    global.wasthonLoadUnified = wasthonLoadUnified;
 })(window);
