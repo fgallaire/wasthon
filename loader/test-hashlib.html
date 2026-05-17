@@ -81,7 +81,7 @@ ok &= chk('blake2s',  _blake2.blake2s(msg))
 hmac_key  = b'\\x0b' * 20
 hmac_data = b'Hi There'
 hmac_expected = 'b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7'
-hmac_got = _hmac.compute_sha2_256(hmac_key, hmac_data).hex()
+hmac_got = _hmac.compute_sha256(hmac_key, hmac_data).hex()
 hmac_ok = hmac_got == hmac_expected
 log(f'  {"hmac/sha256":10}  {hmac_got}  {"✓" if hmac_ok else "✗ FAIL ("+hmac_expected+")"}')
 ok &= hmac_ok

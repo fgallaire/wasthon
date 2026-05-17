@@ -123,7 +123,7 @@ ALGOS = [
     ('sha3_512',    lambda d: _sha3.sha3_512(d),                                            lambda d: hashlib.sha3_512(d)),
     ('blake2b',     lambda d: _blake2.blake2b(d),                                           lambda d: hashlib.blake2b(d)),
     ('blake2s',     lambda d: _blake2.blake2s(d),                                           lambda d: hashlib.blake2s(d)),
-    ('hmac/sha256', lambda d: _BytesDigest(_hmac.compute_sha2_256(HMAC_KEY, d)),            lambda d: hmac.new(HMAC_KEY, d, 'sha256')),
+    ('hmac/sha256', lambda d: _BytesDigest(_hmac.compute_sha256(HMAC_KEY, d)),              lambda d: hmac.new(HMAC_KEY, d, 'sha256')),
 ]
 
 def make_payload(size):
