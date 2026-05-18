@@ -373,15 +373,20 @@ cd wasthon
 ./build.sh _sha2 _decimal # several specific modules in one go
 ./build.sh all            # everything as per-module .mjs/.wasm
                           # (~45 s once libs are cached; first run downloads + builds the libs too)
-./build.sh unified        # all 22 modules bundled into build/wasthon-unified.{mjs,wasm}
-                          # — single fetch, single WASM instance, shared bridge runtime
+./build.sh wasthon        # light bundle: 20 modules in build/wasthon.{mjs,wasm} (~1 MB)
+                          # — drops the two specialists (unicodedata, _zstd)
+./build.sh wasthon-full   # full bundle: 22 modules in build/wasthon-full.{mjs,wasm} (~2 MB)
 ```
 
 The per-module target is best for dev, bench, and incremental work — each
-module is fetched only if imported, and rebuilds are cheap. The unified
-target is the "drop one script tag into your HTML" deliverable: one fetch,
-one instance, but you pay for the full bundle even if you only use one
-module. See `loader/test-unified.html` for a working unified-bundle page.
+module is fetched only if imported, and rebuilds are cheap. The bundled
+targets are the "drop one script tag into your HTML" deliverable: one
+fetch, one WASM instance, shared bridge runtime. `wasthon` is the default
+(~1 MB / 348 KB gzip); `wasthon-full` adds the two specialists
+`unicodedata` (full Unicode DB) and `_zstd` (libzstd) which together
+account for ~57% of the full bundle size. Users who need either load the
+per-module .wasm add-on alongside `wasthon`. See `loader/test-wasthon.html`
+and `loader/test-wasthon-full.html` for working bundle pages.
 
 The script handles all the per-module quirks: downloading missing source
 trees, compiling external libraries (libexpat, liblzma, libzstd, bzip2,
@@ -471,7 +476,7 @@ Recent ports:
       throughput on `_lzma` and `_zstd` (e.g. 100 KB text: _lzma 3.0 →
       5.74 MB/s, _zstd 2.4 → 5.43 MB/s; _zstd 100 KB compress 5.1 →
       10.85 MB/s).
-- [x] Top-level `build.sh <module>|all|list` script. Bootstraps emsdk into
+- [x] Top-level `build.sh <module>|all|wasthon|wasthon-full|list` script. Bootstraps emsdk into
       `external/emsdk/` if missing, downloads CPython + libexpat + libxz +
       libzstd + bzip2 sources via `curl`/`wget` on first run, compiles all
       the per-module quirks (which CPython sources, which external library

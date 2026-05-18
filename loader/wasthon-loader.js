@@ -123,7 +123,12 @@
      * registers individual modules into __BRYTHON__.imported without
      * re-instantiating anything.
      *
-     *   mjsUrl — URL of build/wasthon-unified.mjs (emitted by `build.sh unified`).
+     *   mjsUrl — URL of a bundled wasthon .mjs. Today that's either
+     *            build/wasthon.mjs (light, 20 modules) emitted by
+     *            `build.sh wasthon`, or build/wasthon-full.mjs (22 modules)
+     *            emitted by `build.sh wasthon-full`. The loader treats both
+     *            identically — only the set of modules .installModule()
+     *            can find inside differs.
      *
      * Returns: { installModule(name, opts?), module, runtime }
      *   - installModule(name): runs _PyInit_<symbol>() + wasthon_module_create()
@@ -132,7 +137,7 @@
      *   - module: the raw Emscripten Module object (HEAP views, etc.)
      *   - runtime: the M.wasthon bridge runtime (handle map, etc.)
      */
-    async function wasthonLoadUnified(mjsUrl) {
+    async function wasthonLoadBundle(mjsUrl) {
         const factoryModule = await import(mjsUrl);
         const factory = factoryModule.default;
         if (typeof factory !== 'function') {
@@ -152,7 +157,7 @@
             const initFn = M['_PyInit_' + cInitName];
             if (typeof initFn !== 'function') {
                 throw new Error(
-                    `wasthon: _PyInit_${cInitName} not found in unified bundle. ` +
+                    `wasthon: _PyInit_${cInitName} not found in bundle. ` +
                     `Was '${name}' included in the build?`
                 );
             }
@@ -183,5 +188,5 @@
         return { installModule, module: M, runtime: rt };
     }
 
-    global.wasthonLoadUnified = wasthonLoadUnified;
+    global.wasthonLoadBundle = wasthonLoadBundle;
 })(window);

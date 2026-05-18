@@ -7,10 +7,14 @@
 # Build a wasthon module to .mjs/.wasm
 #
 # Usage: ./build.sh <command>
-#   <module>...  build one or several modules (e.g. _sha2, or _sha2 _decimal)
-#   all          build every supported module (~45 s once libs are cached)
-#   unified      build all modules into a single wasthon-unified.{mjs,wasm}
-#   list         show the known module names
+#   <module>...   build one or several modules (e.g. _sha2, or _sha2 _decimal)
+#   all           build every supported module (~45 s once libs are cached)
+#   wasthon       build the light bundle (20 modules, ~1 MB) — the default
+#                 drop-in: covers crypto, compression (zlib/bz2/lzma),
+#                 decimal, json/csv/struct/sre/pyexpat, math, array
+#   wasthon-full  build the full bundle (22 modules, ~2 MB), adding the two
+#                 heavy specialists: unicodedata (full Unicode DB) and _zstd
+#   list          show the known module names
 #
 # emcc is installed automatically into ./external/emsdk/ on first run.
 # Requires: curl or wget (to download sources) and make (used by emmake for xz/zstd).
@@ -31,10 +35,11 @@ export NO_COLOR=1
 usage() {
     cat >&2 <<EOF
 Usage: $0 <command>
-  <module>...  build one or several modules (e.g. _sha2, or _sha2 _decimal)
-  all          build every supported module
-  unified      build all modules into a single wasthon-unified.{mjs,wasm}
-  list         show the known module names
+  <module>...   build one or several modules (e.g. _sha2, or _sha2 _decimal)
+  all           build every supported module
+  wasthon       light bundle (20 modules, ~1 MB) — the default deliverable
+  wasthon-full  full bundle (22 modules, ~2 MB) — adds unicodedata + _zstd
+  list          show the known module names
 EOF
 }
 
@@ -65,9 +70,11 @@ EOF
 fi
 
 # Validate up front so a typo doesn't trigger the heavy emsdk install.
-# `all`/`unified` are whole-build commands — valid only as the sole argument.
-# Otherwise every argument must be a known module (one or several).
-if [[ $# -eq 1 && ( "${MODULE}" == "all" || "${MODULE}" == "unified" ) ]]; then
+# Whole-build commands (all / wasthon / wasthon-full) — valid only as the
+# sole argument. Otherwise every argument must be a known module.
+if [[ $# -eq 1 && ( "${MODULE}" == "all" ||
+                    "${MODULE}" == "wasthon" ||
+                    "${MODULE}" == "wasthon-full" ) ]]; then
     :
 else
     for arg in "$@"; do
@@ -239,9 +246,9 @@ compile_module_src() {
 # Link a module: emcc -O2 <objects> --js-library wasthon.js + standard flags.
 # Args: <output_name_without_ext> <PyInit_symbol> <export_js_name> <objects...>
 #
-# When SKIP_LINK=1 (set by the `unified` target), this is a no-op — the
-# per-module case has already produced the .o files we need, and the unified
-# target links them all together itself.
+# When SKIP_LINK=1 (set by the bundled targets `wasthon` / `wasthon-full`),
+# this is a no-op — the per-module case has already produced the .o files we
+# need, and the bundled target links them all together itself.
 link_module() {
     [[ "${SKIP_LINK:-0}" -eq 1 ]] && return 0
     local out="$1" init="$2" export_name="$3"; shift 3
@@ -367,31 +374,53 @@ if [[ "${MODULE}" == "all" ]]; then
     exit 0
 fi
 
-# Unified build — every module bundled into a single wasthon-unified.{mjs,wasm}.
+# Bundled builds — every selected module linked into a single .mjs/.wasm.
 # Compiles each module's .o by re-invoking ourselves with SKIP_LINK=1, then
 # links the lot in one emcc call exporting every PyInit_* symbol.
 #
-# Trade-off vs. per-module .mjs files:
-#   + one HTTP fetch, one WASM instance, shared bridge runtime
-#   - users pay the combined download even if they import only one module
-# Both targets coexist on purpose — per-module is great for dev/bench, unified
-# is the "drop one script tag into HTML and you're done" deliverable.
-if [[ "${MODULE}" == "unified" ]]; then
-    SELF="${REPO}/build.sh"
-    UNIFIED_MODULES=(
+# Two targets:
+#   wasthon      — light (20 modules, ~1 MB). The default deliverable.
+#                  Drops the two heavy specialists (unicodedata, _zstd) that
+#                  together account for ~57% of the full bundle. Users who
+#                  need them load the per-module .wasm add-on alongside.
+#   wasthon-full — everything (22 modules, ~2 MB). Kitchen-sink, opt-in.
+#                  This is where future heavy ports (e.g. _sqlite3) land
+#                  without bloating the default download.
+#
+# Per-module .mjs files coexist for dev/bench and on-demand use.
+if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
+    if [[ "${MODULE}" == "wasthon" ]]; then
+        BUNDLE_NAME="wasthon"
+        BUNDLE_EXPORT_NAME="wasthon_init"
+        INCLUDE_ZSTD=0
+        INCLUDE_UNICODEDATA=0
+    else
+        BUNDLE_NAME="wasthon-full"
+        BUNDLE_EXPORT_NAME="wasthon_full_init"
+        INCLUDE_ZSTD=1
+        INCLUDE_UNICODEDATA=1
+    fi
+
+    # Module list — full set minus opt-outs (build order matters only to
+    # group like with like in the log; emcc takes the .o list at link).
+    BUNDLED_MODULES=(
         _md5 _sha1 _sha2 _sha3 _blake2 _hmac
-        _zlib _bz2 _lzma _zstd
+        _zlib _bz2 _lzma
         pyexpat _decimal _sre
         array _csv _json _struct _random _statistics
-        math cmath unicodedata
+        math cmath
     )
-    for m in "${UNIFIED_MODULES[@]}"; do
+    [[ $INCLUDE_ZSTD -eq 1 ]]        && BUNDLED_MODULES+=( _zstd )
+    [[ $INCLUDE_UNICODEDATA -eq 1 ]] && BUNDLED_MODULES+=( unicodedata )
+
+    SELF="${REPO}/build.sh"
+    for m in "${BUNDLED_MODULES[@]}"; do
         echo "=== compile ${m} (no link) ==="
         SKIP_LINK=1 "${SELF}" "$m"
     done
 
     # All .o files are now in build/. Time for the single big link.
-    echo "=== link wasthon-unified.{mjs,wasm} ==="
+    echo "=== link ${BUNDLE_NAME}.{mjs,wasm} ==="
 
     # Mapping module → PyInit suffix. CPython convention: the underscore
     # module `_zlib` actually exposes `PyInit_zlib` (no underscore prefix).
@@ -404,7 +433,7 @@ if [[ "${MODULE}" == "unified" ]]; then
     }
 
     EXPORTS='"_wasthon_init","_wasthon_module_create","_malloc","_free"'
-    for m in "${UNIFIED_MODULES[@]}"; do
+    for m in "${BUNDLED_MODULES[@]}"; do
         EXPORTS+=",\"_PyInit_$(pyinit_symbol "$m")\""
     done
 
@@ -427,8 +456,6 @@ if [[ "${MODULE}" == "unified" ]]; then
                         bzip2/crctable.o bzip2/decompress.o bzip2/huffman.o
                         bzip2/randtable.o
         _lzmamodule.o   "${XZ_DIR}/src/liblzma/.libs/liblzma.a"
-        _zstdmodule.o   compressor.o decompressor.o zstddict.o
-                        "${ZSTD_DIR}/lib/libzstd.a"
 
         pyexpat.o       "${EXPAT_DIR}/lib/xmlparse.o"
                         "${EXPAT_DIR}/lib/xmlrole.o"
@@ -452,8 +479,14 @@ if [[ "${MODULE}" == "unified" ]]; then
         _statisticsmodule.o
         mathmodule.o
         cmathmodule.o
-        unicodedata.o   unicodectype.o
     )
+    if [[ $INCLUDE_ZSTD -eq 1 ]]; then
+        OBJS+=( _zstdmodule.o compressor.o decompressor.o zstddict.o
+                "${ZSTD_DIR}/lib/libzstd.a" )
+    fi
+    if [[ $INCLUDE_UNICODEDATA -eq 1 ]]; then
+        OBJS+=( unicodedata.o unicodectype.o )
+    fi
 
     emcc -O2 "${OBJS[@]}" \
         --js-library "${SRC}/wasthon.js" \
@@ -461,10 +494,10 @@ if [[ "${MODULE}" == "unified" ]]; then
         -s ALLOW_MEMORY_GROWTH=1 -s ALLOW_TABLE_GROWTH=1 \
         -s EXPORTED_FUNCTIONS="[${EXPORTS}]" \
         -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' \
-        -s MODULARIZE=1 -s EXPORT_ES6=1 -s EXPORT_NAME='wasthon_unified_init' \
-        -o wasthon-unified.mjs
+        -s MODULARIZE=1 -s EXPORT_ES6=1 -s EXPORT_NAME="${BUNDLE_EXPORT_NAME}" \
+        -o "${BUNDLE_NAME}.mjs"
 
-    echo "Built: wasthon-unified.mjs + wasthon-unified.wasm"
+    echo "Built: ${BUNDLE_NAME}.mjs + ${BUNDLE_NAME}.wasm (${#BUNDLED_MODULES[@]} modules)"
     exit 0
 fi
 

@@ -2,16 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>wasthon — unified bundle test (all 22 modules)</title>
+<title>wasthon-full — full bundle test (22 modules)</title>
 <script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
 <script src="./wasthon-loader.js"></script>
 </head>
 <body>
 <p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
-<h1>wasthon — unified bundle test (all 22 modules)</h1>
+<h1>wasthon-full — full bundle test (22 modules)</h1>
 <p style="color:#666;font-size:0.9em;">
-  Loads <code>build/wasthon-unified.{mjs,wasm}</code> exactly once and installs
+  Loads <code>build/wasthon-full.{mjs,wasm}</code> exactly once and installs
   all 22 wasthon modules. Runs at least one smoke check per module to verify
   they cohabit in a single WASM instance — no symbol collisions, no shared
   state leakage across upstream libraries (HACL crypto, zlib, bzip2, xz,
@@ -24,13 +24,13 @@
 const log = (...args) => {
     document.getElementById('log').textContent += args.map(a =>
         typeof a === 'string' ? a : String(a)).join(' ') + '\n';
-    console.log('[unified-test]', ...args);
+    console.log('[wasthon-full]', ...args);
 };
 window.__wasthon_log = log;
 
 try {
-    log('Loading wasthon-unified.mjs…');
-    const bundle = await wasthonLoadUnified('../build/wasthon-unified.mjs');
+    log('Loading wasthon-full.mjs…');
+    const bundle = await wasthonLoadBundle('../build/wasthon-full.mjs');
     log('Bundle loaded. Installing 22 modules…');
     // Hash family
     bundle.installModule('_md5');
