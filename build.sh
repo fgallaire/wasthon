@@ -52,17 +52,18 @@ MODULE="$1"
 KNOWN_MODULES=(
     _md5 _sha1 _sha2 _sha3 _blake2 _hmac
     _zlib _bz2 _lzma _zstd
-    _csv _json _struct _sre unicodedata pyexpat
+    _csv _json _struct _sre unicodedata pyexpat _pickle
     _decimal _random _statistics math cmath
     array
 )
 
 if [[ "${MODULE}" == "list" ]]; then
     cat <<'EOF'
-Known wasthon modules (22):
+Known wasthon modules (23):
   hashlib:     _md5  _sha1  _sha2  _sha3  _blake2  _hmac
   compression: _zlib  _bz2  _lzma  _zstd
   text/parse:  _csv  _json  _struct  _sre  unicodedata  pyexpat
+  serialization: _pickle
   numerics:   _decimal  _random  _statistics  math  cmath
   containers: array
 EOF
@@ -406,7 +407,7 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
     BUNDLED_MODULES=(
         _md5 _sha1 _sha2 _sha3 _blake2 _hmac
         _zlib _bz2 _lzma
-        pyexpat _decimal _sre
+        pyexpat _decimal _sre _pickle
         array _csv _json _struct _random _statistics
         math cmath
     )
@@ -471,6 +472,7 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
                         libmpdec/transpose.o
 
         sre.o
+        _pickle.o
         arraymodule.o
         _csv.o
         _json.o
@@ -648,6 +650,12 @@ _json)
     cp "${CPYTHON_SRC}/Modules/_json.c" .
     emcc -O3 -c -I . -I "${SRC}" _json.c -o _json.o
     link_module "_json" "PyInit__json" "_json_init" _json.o
+    ;;
+
+_pickle)
+    copy_module_and_clinic "${CPYTHON_SRC}/Modules/_pickle.c"
+    emcc -O3 -c -I . -I "${SRC}" _pickle.c -o _pickle.o
+    link_module "_pickle" "PyInit__pickle" "_pickle_init" _pickle.o
     ;;
 
 _struct)

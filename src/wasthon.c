@@ -52,6 +52,15 @@ PyTypeObject PyLong_Type    = {0};
 PyTypeObject PyFloat_Type   = {0};
 PyTypeObject PyUnicode_Type = {0};
 PyTypeObject PyBytes_Type   = {0};
+PyTypeObject PyByteArray_Type   = {0};
+PyTypeObject PySet_Type         = {0};
+PyTypeObject PyFrozenSet_Type   = {0};
+PyTypeObject PyFunction_Type    = {0};
+PyTypeObject PyPickleBuffer_Type = {0};
+PyTypeObject _PyNone_Type        = {0};
+PyTypeObject PyEllipsis_Type     = {0};
+PyTypeObject _PyNotImplemented_Type = {0};
+PyObject *Py_Ellipsis = (PyObject *)0;
 PyTypeObject PyBool_Type    = {0};
 
 /* ---- Exception class references ---- */
@@ -116,6 +125,7 @@ extern PyObject *wasthon_get_Py_None(void);
 extern PyObject *wasthon_get_Py_True(void);
 extern PyObject *wasthon_get_Py_False(void);
 extern PyObject *wasthon_get_Py_NotImplemented(void);
+extern PyObject *wasthon_get_Py_Ellipsis(void);
 
 /* JS-side helper: binds the struct address of each built-in type singleton
  * to the corresponding Brython class so unwrap(&PyTuple_Type) == _b_.tuple,
@@ -132,6 +142,11 @@ extern PyObject *wasthon_builtin_tp_iter(PyObject *self);
 #define BT_UNICODE  6
 #define BT_BYTES    7
 #define BT_BOOL     8
+#define BT_BYTEARRAY 9
+#define BT_SET      10
+#define BT_FROZENSET 11
+#define BT_FUNCTION 12
+#define BT_PICKLEBUFFER 13
 
 /*
  * Called once after the WASM module is instantiated and before any
@@ -146,6 +161,7 @@ void wasthon_init(void) {
     Py_True  = wasthon_get_Py_True();
     Py_False = wasthon_get_Py_False();
     Py_NotImplemented = wasthon_get_Py_NotImplemented();
+    Py_Ellipsis = wasthon_get_Py_Ellipsis();
 
     PyExc_TypeError      = wasthon_get_PyExc_TypeError();
     PyExc_ValueError     = wasthon_get_PyExc_ValueError();
@@ -184,20 +200,33 @@ void wasthon_init(void) {
     PyFloat_Type.tp_iter   = wasthon_builtin_tp_iter;
     PyUnicode_Type.tp_iter = wasthon_builtin_tp_iter;
     PyBytes_Type.tp_iter   = wasthon_builtin_tp_iter;
+    PyByteArray_Type.tp_iter = wasthon_builtin_tp_iter;
+    PySet_Type.tp_iter       = wasthon_builtin_tp_iter;
+    PyFrozenSet_Type.tp_iter = wasthon_builtin_tp_iter;
     PyBool_Type.tp_iter    = wasthon_builtin_tp_iter;
 
     wasthon_bind_builtin_type(BT_TYPE,    &PyType_Type);
     wasthon_bind_builtin_type(BT_TUPLE,   &PyTuple_Type);
-    wasthon_bind_builtin_type(BT_DICT,    &PyDict_Type);
     /* PyODict_Type — Brython has no separate OrderedDict at C-type level;
-     * alias to dict so PyModule_AddType(&PyODict_Type) finds something. */
+     * alias to dict so PyModule_AddType(&PyODict_Type) finds something.
+     * MUST be bound BEFORE PyDict_Type: the JS bind keys
+     * builtinTypeForClass on the Brython class, so a later bind for the
+     * same class overwrites the earlier struct-pointer. PyDict_Type must
+     * win because pickle's `type == &PyDict_Type` dispatch is what makes
+     * Py_TYPE(dict_instance) reach save_dict. */
     wasthon_bind_builtin_type(BT_DICT,    &PyODict_Type);
+    wasthon_bind_builtin_type(BT_DICT,    &PyDict_Type);
     wasthon_bind_builtin_type(BT_LIST,    &PyList_Type);
     wasthon_bind_builtin_type(BT_LONG,    &PyLong_Type);
     wasthon_bind_builtin_type(BT_FLOAT,   &PyFloat_Type);
     wasthon_bind_builtin_type(BT_UNICODE, &PyUnicode_Type);
-    wasthon_bind_builtin_type(BT_BYTES,   &PyBytes_Type);
-    wasthon_bind_builtin_type(BT_BOOL,    &PyBool_Type);
+    wasthon_bind_builtin_type(BT_BYTES,       &PyBytes_Type);
+    wasthon_bind_builtin_type(BT_BYTEARRAY,   &PyByteArray_Type);
+    wasthon_bind_builtin_type(BT_SET,         &PySet_Type);
+    wasthon_bind_builtin_type(BT_FROZENSET,   &PyFrozenSet_Type);
+    wasthon_bind_builtin_type(BT_FUNCTION,    &PyFunction_Type);
+    wasthon_bind_builtin_type(BT_PICKLEBUFFER, &PyPickleBuffer_Type);
+    wasthon_bind_builtin_type(BT_BOOL,        &PyBool_Type);
 
     /* Populate tp_as_number for PyLong_Type / PyFloat_Type so _decimal
      * (and other modules that cache nb_* pointers) can read them. */

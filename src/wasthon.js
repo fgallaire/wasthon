@@ -165,8 +165,8 @@ mergeInto(LibraryManager.library, {
             if (cls.__wasthon_type_handle__) return cls.__wasthon_type_handle__;
             if (!this._defaultTpAlloc) this._defaultTpAlloc = _wasthon_get_default_tp_alloc();
             if (!this._builtinTpIter)  this._builtinTpIter  = _wasthon_get_builtin_tp_iter();
-            var typeStructPtr = _malloc(56);
-            HEAPU8.fill(0, typeStructPtr, typeStructPtr + 56);
+            var typeStructPtr = _malloc(60);
+            HEAPU8.fill(0, typeStructPtr, typeStructPtr + 60);
             // tp_dict at offset 4: ensure the class has a dict, then wrap.
             var dictObj = this.$B.get_dict(cls);
             if (!dictObj) {
@@ -348,6 +348,163 @@ mergeInto(LibraryManager.library, {
         var s = "";
         for (var i = 0; i < size; i++) s += String.fromCharCode(HEAPU8[strPtr + i]);
         return WasthonRT.wrap(s);
+    },
+
+    /* PyUnicode_DecodeLatin1 — each byte maps to its codepoint 1:1. Same
+     * shape as DecodeASCII but no 0x7F upper bound — bytes 0x80-0xFF
+     * become U+0080..U+00FF, exactly Latin-1. pickle protocol 0 uses
+     * this when the Unpickler's `encoding` is 'latin-1'. */
+    PyUnicode_DecodeLatin1__deps: ['$WasthonRT'],
+    PyUnicode_DecodeLatin1: function(strPtr, size, errorsPtr) {
+        if (strPtr === 0) return WasthonRT.wrap("");
+        var s = "";
+        for (var i = 0; i < size; i++) s += String.fromCharCode(HEAPU8[strPtr + i]);
+        return WasthonRT.wrap(s);
+    },
+
+    /* PyUnicode_AsEncodedString(s, encoding, errors) — encode str via the
+     * named codec (utf-8, ascii, latin-1, ...). Delegates to Brython's
+     * str.encode which routes through its codec registry. NULL encoding
+     * defaults to utf-8 (CPython convention). */
+    PyUnicode_AsEncodedString__deps: ['$WasthonRT', 'PyUnicode_AsUTF8String'],
+    PyUnicode_AsEncodedString: function(sH, encPtr, errPtr) {
+        var rt = WasthonRT;
+        var s = rt.asJSStr(rt.unwrap(sH));
+        if (s === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "PyUnicode_AsEncodedString: not a str");
+            return 0;
+        }
+        var enc = encPtr === 0 ? "utf-8" : UTF8ToString(encPtr);
+        var errors = errPtr === 0 ? "strict" : UTF8ToString(errPtr);
+        var encNorm = enc.toLowerCase().replace(/_/g, '-');
+        if (encNorm === 'utf-8' || encNorm === 'utf8') {
+            return _PyUnicode_AsUTF8String(sH);
+        }
+        try {
+            return rt.wrap(rt.$B.$call(rt.$B.$getattr(s, 'encode'),
+                                       enc, errors));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.UnicodeEncodeError),
+                "encode " + enc + " failed: " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    /* PyUnicode_DecodeRawUnicodeEscape(s, size, errors) — decode raw-unicode-
+     * escape (CPython 'raw_unicode_escape' codec): only \uXXXX and \UXXXXXXXX
+     * sequences are recognised, everything else passes through as Latin-1.
+     * pickle protocol 0 uses it for STRING / UNICODE opcodes. */
+    PyUnicode_DecodeRawUnicodeEscape__deps: ['$WasthonRT'],
+    PyUnicode_DecodeRawUnicodeEscape: function(strPtr, size, errorsPtr) {
+        var rt = WasthonRT;
+        if (strPtr === 0) return rt.wrap("");
+        var n = size | 0, out = "";
+        for (var i = 0; i < n; i++) {
+            var c = HEAPU8[strPtr + i];
+            if (c === 0x5C /* '\' */ && i + 1 < n) {
+                var d = HEAPU8[strPtr + i + 1];
+                if (d === 0x75 /* 'u' */ && i + 5 < n) {
+                    var hex = "";
+                    for (var k = 0; k < 4; k++) hex += String.fromCharCode(HEAPU8[strPtr + i + 2 + k]);
+                    var cp = parseInt(hex, 16);
+                    if (!isNaN(cp)) { out += String.fromCodePoint(cp); i += 5; continue; }
+                } else if (d === 0x55 /* 'U' */ && i + 9 < n) {
+                    var hex2 = "";
+                    for (var k = 0; k < 8; k++) hex2 += String.fromCharCode(HEAPU8[strPtr + i + 2 + k]);
+                    var cp2 = parseInt(hex2, 16);
+                    if (!isNaN(cp2) && cp2 <= 0x10FFFF) {
+                        out += String.fromCodePoint(cp2); i += 9; continue;
+                    }
+                }
+            }
+            // Latin-1 pass-through (including any unmatched backslash).
+            out += String.fromCharCode(c);
+        }
+        return rt.wrap(out);
+    },
+
+    /* PyUnicode_FromEncodedObject(obj, encoding, errors) — decode bytes via
+     * the named codec. pickle protocol 0 uses utf-8 by default but the
+     * Unpickler accepts custom encoding/errors. Routes through Brython's
+     * bytes.decode for codec support beyond utf-8 / ascii / latin-1. */
+    PyUnicode_FromEncodedObject__deps: ['$WasthonRT'],
+    PyUnicode_FromEncodedObject: function(objH, encPtr, errPtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (obj === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "PyUnicode_FromEncodedObject: NULL");
+            return 0;
+        }
+        var enc = encPtr === 0 ? "utf-8" : UTF8ToString(encPtr);
+        var errors = errPtr === 0 ? "strict" : UTF8ToString(errPtr);
+        try {
+            return rt.wrap(rt.$B.$call(rt.$B.$getattr(obj, 'decode'),
+                                       enc, errors));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
+                "decode " + enc + " failed: " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    /* PyBytes_DecodeEscape(s, len, errors, unicode, recode_enc) — decode
+     * Python bytes string-escape sequences (\xNN, \n, \t, \\, \", \', \r,
+     * \a, \b, \f, \v, \0-9 octals). pickle protocol 0 uses this for
+     * SHORT_BINSTRING / SHORT_BINBYTES. `errors`/`unicode`/`recode_enc`
+     * are CPython-API legacy slots we don't need here — strict mode,
+     * bytes output. */
+    PyBytes_DecodeEscape__deps: ['$WasthonRT'],
+    PyBytes_DecodeEscape: function(strPtr, size, errorsPtr, unicodeFlag, recodePtr) {
+        var rt = WasthonRT;
+        var n = size | 0;
+        var out = [];
+        for (var i = 0; i < n; i++) {
+            var c = HEAPU8[strPtr + i];
+            if (c !== 0x5C /* '\' */) { out.push(c); continue; }
+            if (++i >= n) { out.push(0x5C); break; }   // trailing backslash
+            var d = HEAPU8[strPtr + i];
+            switch (d) {
+                case 0x6E: out.push(0x0A); break;       // \n
+                case 0x74: out.push(0x09); break;       // \t
+                case 0x72: out.push(0x0D); break;       // \r
+                case 0x62: out.push(0x08); break;       // \b
+                case 0x66: out.push(0x0C); break;       // \f
+                case 0x61: out.push(0x07); break;       // \a
+                case 0x76: out.push(0x0B); break;       // \v
+                case 0x30: case 0x31: case 0x32: case 0x33:
+                case 0x34: case 0x35: case 0x36: case 0x37: {
+                    // octal: up to 3 digits
+                    var v = d - 0x30;
+                    for (var k = 0; k < 2 && i + 1 < n; k++) {
+                        var nx = HEAPU8[strPtr + i + 1];
+                        if (nx >= 0x30 && nx <= 0x37) { v = v * 8 + (nx - 0x30); i++; }
+                        else break;
+                    }
+                    out.push(v & 0xFF);
+                    break;
+                }
+                case 0x78: {                           // \xNN
+                    if (i + 2 < n) {
+                        var h = String.fromCharCode(HEAPU8[strPtr + i + 1],
+                                                    HEAPU8[strPtr + i + 2]);
+                        var v2 = parseInt(h, 16);
+                        if (!isNaN(v2)) { out.push(v2 & 0xFF); i += 2; break; }
+                    }
+                    rt.setError(rt.wrap(rt._b_.ValueError),
+                        "invalid \\x escape at position " + i);
+                    return 0;
+                }
+                case 0x5C: case 0x27: case 0x22:        // \\ \' \"
+                    out.push(d); break;
+                default:
+                    /* Unknown escape: per CPython, keep the backslash
+                     * and the char (`\X` → `\\X`). */
+                    out.push(0x5C); out.push(d); break;
+            }
+        }
+        return rt.wrap(rt._b_.bytes.$factory(out));
     },
 
     /* PyObject_GetIter(o) — iter(o). */
@@ -685,25 +842,39 @@ mergeInto(LibraryManager.library, {
     /* Tuple — Brython tuple is a JS array with __class__ = _b_.tuple. */
     PyTuple_New__deps: ['$WasthonRT'],
     PyTuple_New: function(size) {
+        /* Brython tuples aren't bare tagged JS Arrays — they go through
+         * tuple.$factory which sets up the right repr / equality / hash
+         * machinery. Pre-fill with None placeholders that PyTuple_SetItem
+         * will overwrite while the C-side builder populates the slots. */
+        var rt = WasthonRT;
         var arr = new Array(size | 0);
-        for (var i = 0; i < size; i++) arr[i] = null;
-        arr.__class__ = WasthonRT._b_.tuple;
-        return WasthonRT.wrap(arr);
+        for (var i = 0; i < (size | 0); i++) arr[i] = rt._b_.None;
+        return rt.wrap(rt._b_.tuple.$factory(arr));
     },
 
     PyTuple_SetItem__deps: ['$WasthonRT'],
     PyTuple_SetItem: function(tupH, i, itemH) {
-        var arr = WasthonRT.unwrap(tupH);
-        if (!Array.isArray(arr)) return -1;
-        arr[i] = WasthonRT.unwrap(itemH);
-        return 0;
+        var rt = WasthonRT;
+        var t = rt.unwrap(tupH);
+        if (!t) return -1;
+        /* Brython tuples store items either directly as JS Array elements
+         * (Array.isArray true with .__class__ === tuple) or via an
+         * internal field — handle both. */
+        var item = rt.unwrap(itemH);
+        if (Array.isArray(t)) { t[i] = item; return 0; }
+        if (t[i] !== undefined) { t[i] = item; return 0; }
+        return -1;
     },
 
     PyTuple_GetItem__deps: ['$WasthonRT'],
     PyTuple_GetItem: function(tupH, i) {
-        var arr = WasthonRT.unwrap(tupH);
-        if (!Array.isArray(arr) || i < 0 || i >= arr.length) return 0;
-        return WasthonRT.wrap(arr[i]);
+        var rt = WasthonRT;
+        var t = rt.unwrap(tupH);
+        if (!t) return 0;
+        try {
+            var v = rt.$B.$getitem(t, i);
+            return rt.wrap(v);
+        } catch (e) { return 0; }
     },
 
     PyTuple_Size__deps: ['$WasthonRT'],
@@ -1480,28 +1651,42 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var d = rt.unwrap(dictH);
         if (d === null) return 0;
-        // Get a snapshot of keys/values. For dict iteration `pos` advances
-        // through indices. Cache the snapshot per call site so repeated
-        // calls iterate consistently — keyed by dict identity + start pos.
-        if (!rt._dictIterCache) rt._dictIterCache = new WeakMap();
-        var snap = rt._dictIterCache.get(d);
+        /* Cache a snapshot of (key, value) pairs on the dict itself so
+         * repeated calls iterate consistently. Built via keys+getitem
+         * rather than items()-view of-iteration — the view format isn't
+         * portable across Brython internals, and pickle's save_dict
+         * uses PyDict_Next to walk every item: a bad snapshot means
+         * dump-then-load of `{'a':1}` round-trips as `{}`. */
+        /* Snapshot cache held in a WeakMap rather than as a property on
+         * the dict — keeps the dict's own __dict__ clean so equality
+         * comparisons (e.g. round-tripped pickle output) aren't perturbed
+         * by leftover iteration state. */
+        if (!rt._dictNextSnap) rt._dictNextSnap = new WeakMap();
+        var snap = rt._dictNextSnap.get(d);
         if (!snap) {
             snap = [];
             try {
-                var items = rt._b_.dict.items(d);
-                for (var entry of rt.$B.make_js_iterator ?
-                                  rt.$B.make_js_iterator(items) : items) {
-                    snap.push([entry[0], entry[1]]);
+                var items_view = rt.$B.$call(rt.$B.$getattr(d, 'items'));
+                var items_list = rt.$B.$call(rt._b_.list, items_view);
+                var n = rt._b_.len(items_list);
+                for (var i = 0; i < n; i++) {
+                    var pair = rt.$B.$getitem(items_list, i);
+                    var k = rt.$B.$getitem(pair, 0);
+                    var v = rt.$B.$getitem(pair, 1);
+                    snap.push([k, v]);
                 }
             } catch (e) { return 0; }
-            rt._dictIterCache.set(d, snap);
+            rt._dictNextSnap.set(d, snap);
         }
         var pos = HEAP32[pposPtr >> 2];
-        if (pos < 0 || pos >= snap.length) return 0;
+        if (pos < 0 || pos >= snap.length) {
+            rt._dictNextSnap.delete(d);
+            return 0;
+        }
         var pair = snap[pos];
         if (pkeyPtr)   HEAP32[pkeyPtr   >> 2] = rt.wrap(pair[0]);
         if (pvaluePtr) HEAP32[pvaluePtr >> 2] = rt.wrap(pair[1]);
-        if (phashPtr)  HEAP32[phashPtr  >> 2] = 0;  // not used by sre's call
+        if (phashPtr)  HEAP32[phashPtr  >> 2] = 0;
         HEAP32[pposPtr >> 2] = pos + 1;
         return 1;
     },
@@ -2354,6 +2539,121 @@ mergeInto(LibraryManager.library, {
         return 0;
     },
 
+    /* PyByteArray_FromStringAndSize(buf, len) — new bytearray from C buffer.
+     * NULL buf allocates a zero-filled bytearray of `len` bytes. */
+    PyByteArray_FromStringAndSize__deps: ['$WasthonRT'],
+    PyByteArray_FromStringAndSize: function(strPtr, size) {
+        var rt = WasthonRT;
+        var n = size | 0;
+        var arr = new Array(n);
+        if (strPtr === 0) { for (var i = 0; i < n; i++) arr[i] = 0; }
+        else { for (var i = 0; i < n; i++) arr[i] = HEAPU8[strPtr + i]; }
+        return rt.wrap(rt._b_.bytearray.$factory(arr));
+    },
+
+    /* PySet_New(iterable) / PyFrozenSet_New(iterable) — NULL means empty. */
+    PySet_New__deps: ['$WasthonRT'],
+    PySet_New: function(iterableH) {
+        var rt = WasthonRT;
+        var it = iterableH === 0 ? [] : rt.unwrap(iterableH);
+        try { return rt.wrap(rt._b_.set.$factory(it === null ? [] : it)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "PySet_New: " + (e.message || String(e)));
+            return 0;
+        }
+    },
+    PyFrozenSet_New__deps: ['$WasthonRT'],
+    PyFrozenSet_New: function(iterableH) {
+        var rt = WasthonRT;
+        var it = iterableH === 0 ? [] : rt.unwrap(iterableH);
+        try { return rt.wrap(rt._b_.frozenset.$factory(it === null ? [] : it)); }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "PyFrozenSet_New: " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    /* PySet_Check(o) — isinstance(o, (set, frozenset)). */
+    PySet_Check__deps: ['$WasthonRT'],
+    PySet_Check: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (obj === null) return 0;
+        try {
+            return rt.$B.$isinstance(obj, [rt._b_.set, rt._b_.frozenset]) ? 1 : 0;
+        } catch (e) { return 0; }
+    },
+
+    /* PySet_GET_SIZE(s) — count of elements. In CPython this is a macro
+     * reading a struct field; here we delegate to len(). */
+    PySet_GET_SIZE__deps: ['$WasthonRT'],
+    PySet_GET_SIZE: function(setH) {
+        var rt = WasthonRT;
+        var s = rt.unwrap(setH);
+        if (s === null) return 0;
+        try { return rt._b_.len(s) | 0; }
+        catch (e) { return 0; }
+    },
+
+    /* _PySet_NextEntryRef(set, *pos, *key, *hash) — iterate `set` lazily.
+     * On entry *pos must be 0; we materialize an iterator cached on the
+     * set under __wasthon_iter__ and advance one step per call. Writes
+     * the current key handle to *key and a placeholder hash to *hash.
+     * Returns 1 if a value was emitted, 0 when exhausted, -1 on error.
+     * Used by pickle to serialize set elements deterministically. */
+    _PySet_NextEntryRef__deps: ['$WasthonRT'],
+    _PySet_NextEntryRef: function(setH, posPtr, keyPtr, hashPtr) {
+        var rt = WasthonRT;
+        var s = rt.unwrap(setH);
+        if (s === null) return -1;
+        try {
+            /* Brython sets aren't directly index-iterable, so we cache a
+             * materialized list of items on the set keyed on the C
+             * iteration "session" (any pos == 0 starts fresh). */
+            var pos = HEAP32[posPtr >> 2] | 0;
+            if (pos === 0) {
+                s.__wasthon_iter_items__ = Array.from(s);
+            }
+            var items = s.__wasthon_iter_items__ || [];
+            if (pos >= items.length) {
+                s.__wasthon_iter_items__ = null;
+                return 0;
+            }
+            var v = items[pos];
+            HEAP32[keyPtr >> 2] = rt.wrap(v);
+            /* Hash: pickle uses it only as an opaque ordering token. */
+            if (hashPtr !== 0) HEAP32[hashPtr >> 2] = pos;
+            HEAP32[posPtr >> 2] = pos + 1;
+            return 1;
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "_PySet_NextEntryRef: " + (e.message || String(e)));
+            return -1;
+        }
+    },
+
+    /* _PySet_Update(set, iterable) — set.update(iterable). Returns 0/-1. */
+    _PySet_Update__deps: ['$WasthonRT'],
+    _PySet_Update: function(setH, iterableH) {
+        var rt = WasthonRT;
+        var s = rt.unwrap(setH);
+        var it = rt.unwrap(iterableH);
+        if (s === null) {
+            rt.setError(rt.wrap(rt._b_.SystemError), "_PySet_Update: NULL set");
+            return -1;
+        }
+        try {
+            rt.$B.$call(rt.$B.$getattr(s, 'update'), it);
+            return 0;
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "_PySet_Update: " + (e.message || String(e)));
+            return -1;
+        }
+    },
+
     /* PyType_GenericAlloc / PyObject_GenericGetAttr / PyObject_SelfIter —
      * default slot implementations. We expose C function pointers so they
      * can be installed into PyType_Slot[] arrays at compile time. */
@@ -2582,7 +2882,73 @@ mergeInto(LibraryManager.library, {
             bases = [base];
         }
         var cls = rt.$B.make_builtin_class(shortName, bases);
-        cls.tp_name = name;
+        /* CPython: type(e).__name__ is the SHORT name; the module prefix
+         * lives in __module__. make_builtin_class already set tp_name =
+         * shortName — don't overwrite with the dotted name. */
+        if (dotIdx >= 0) cls.__module__ = name.slice(0, dotIdx);
+
+        /* Rebuild a full MRO from the primary base's tp_mro. make_builtin_class
+         * builds a naive 3-element MRO [cls, base, object] that drops the
+         * base's own ancestors — `except Exception` then misses leaf
+         * exceptions in a deep hierarchy like
+         * PicklingError <- PickleError <- Exception. */
+        (function() {
+            var primary = bases[0];
+            if (!primary) return;
+            var baseMro = primary.tp_mro ||
+                (primary.__mro__ ? [primary].concat(primary.__mro__)
+                                 : [primary, rt._b_.object]);
+            var mro = [cls];
+            for (var k = 0; k < baseMro.length; k++) {
+                if (mro.indexOf(baseMro[k]) === -1) mro.push(baseMro[k]);
+            }
+            if (mro.indexOf(rt._b_.object) === -1) mro.push(rt._b_.object);
+            cls.tp_mro = mro;
+            cls.tp_bases = bases;
+            cls.tp_base = primary;
+        })();
+
+        /* Attribute machinery: make_builtin_class skips it, so PyObject_
+         * SetAttr / GetAttr / hasattr would all fail on the exception
+         * (e.g. when sqlite/pickle attach metadata to the raised one). */
+        if (!cls.tp_setattro) cls.tp_setattro = rt._b_.object.tp_setattro;
+        if (!cls.tp_getattro) cls.tp_getattro = rt._b_.object.tp_getattro;
+        if (!cls.$getattribute) cls.$getattribute = rt._b_.object.tp_getattro;
+
+        /* Brython's type instantiation reads cls.tp_new and then
+         * unconditionally touches new_func.$is_slot — so an `undefined`
+         * tp_new throws "$is_slot of undefined" before even reaching the
+         * intended exception. Inherit tp_new from the MRO (ends at
+         * BaseException). Same for tp_init: Brython does
+         *   if (init_func !== NULL && init_func !== object.tp_init)
+         *       init_func.call(...);
+         * so an undefined tp_init crashes on `.call`. */
+        if (cls.tp_new === undefined) {
+            var mro = cls.tp_mro || bases || [];
+            for (var bi = 0; bi < mro.length; bi++) {
+                if (mro[bi] && mro[bi].tp_new !== undefined) {
+                    cls.tp_new = mro[bi].tp_new; break;
+                }
+            }
+            if (cls.tp_new === undefined) {
+                cls.tp_new = (rt._b_.BaseException &&
+                              rt._b_.BaseException.tp_new) ||
+                             rt._b_.object.tp_new;
+            }
+        }
+        if (cls.tp_init === undefined) {
+            var mroI = cls.tp_mro || bases || [];
+            for (var bj = 0; bj < mroI.length; bj++) {
+                if (mroI[bj] && mroI[bj].tp_init !== undefined) {
+                    cls.tp_init = mroI[bj].tp_init; break;
+                }
+            }
+            if (cls.tp_init === undefined) {
+                cls.tp_init = (rt._b_.BaseException &&
+                               rt._b_.BaseException.tp_init) ||
+                              rt._b_.object.tp_init;
+            }
+        }
         // The result may be used both as PyObject* (PyErr_SetString etc.) and
         // as a PyTypeObject* (PyModule_AddType). Back it with a struct so
         // both consumers work.
@@ -3118,6 +3484,38 @@ mergeInto(LibraryManager.library, {
         }
     },
 
+    /* PyMapping_GetOptionalItem(obj, key, *result) — like obj[key] but
+     * returns 0 (and *result=NULL) if key is missing rather than raising.
+     * Returns 1 on success, 0 if missing, -1 on error. Difference from
+     * the *String variant: key is a PyObject*, not a C string. */
+    PyMapping_GetOptionalItem__deps: ['$WasthonRT'],
+    PyMapping_GetOptionalItem: function(objH, keyH, outPtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var key = rt.unwrap(keyH);
+        if (obj === null) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyMapping_GetOptionalItem: NULL obj");
+            return -1;
+        }
+        try {
+            var val = rt.$B.$getitem(obj, key);
+            HEAP32[outPtr >> 2] = rt.wrap(val);
+            return 1;
+        } catch (e) {
+            try {
+                if (rt.$B.is_exc(e, rt._b_.KeyError) ||
+                    rt.$B.is_exc(e, rt._b_.IndexError)) {
+                    HEAP32[outPtr >> 2] = 0;
+                    return 0;
+                }
+            } catch (_) {}
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                e.args ? String(e.args[0]) : (e.message || String(e)));
+            return -1;
+        }
+    },
+
     /* _Py_convert_optional_to_ssize_t — clinic converter for ssize_t|None.
      * Returns 1 on success (sets *result), 0 on type error. None leaves
      * *result untouched, preserving the caller-provided default. */
@@ -3635,6 +4033,33 @@ mergeInto(LibraryManager.library, {
         return (obj && obj.__class__ === rt._b_.tuple) ? 1 : 0;
     },
 
+    /* PyDict_Check / PyDict_CheckExact — declared in wasthon.h but had no
+     * JS impl, so emcc left the symbols undefined and pickle's runtime
+     * checks (PyDict_CheckExact in save_dict's fast-path gate) silently
+     * returned 0 → falling through to the reduce path that expects an
+     * iterator at __reduce__()[4]. Adding them as proper predicates makes
+     * pickle take the dict-specialised path. */
+    PyDict_Check__deps: ['$WasthonRT'],
+    PyDict_Check: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (!obj) return 0;
+        try { return rt.$B.$isinstance(obj, rt._b_.dict) ? 1 : 0; }
+        catch (e) { return 0; }
+    },
+    PyDict_CheckExact__deps: ['$WasthonRT'],
+    PyDict_CheckExact: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (!obj) return 0;
+        if (obj.__class__ === rt._b_.dict) return 1;
+        try {
+            if (rt.$B.$isinstance(obj, rt._b_.dict) &&
+                rt.$B.get_class(obj) === rt._b_.dict) return 1;
+        } catch (_) {}
+        return 0;
+    },
+
     /* PyType_Freeze — new in 3.14. Single-threaded WASM has no benefit; no-op. */
     PyType_Freeze: function(typeH) { return 0; },
 
@@ -3767,6 +4192,40 @@ mergeInto(LibraryManager.library, {
     },
 
     PyObject_HasAttrString__deps: ['$WasthonRT'],
+    /* PyObject_HasAttrWithError — like PyObject_HasAttr but returns -1 on
+     * genuine getattr error (any non-AttributeError exception). Returns 1
+     * if present, 0 if absent. New in CPython 3.13. */
+    PyObject_HasAttrWithError__deps: ['$WasthonRT'],
+    PyObject_HasAttrWithError: function(objH, nameH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var name = rt.unwrap(nameH);
+        if (!obj || name === null || name === undefined) return 0;
+        try { rt.$B.$getattr(obj, name); return 1; }
+        catch (e) {
+            /* The bridge's $getattr raises Brython exception instances on
+             * miss. AttributeError → absent (return 0); anything else →
+             * propagate as -1. Several detection strategies because the
+             * incoming `e` can be a Brython exc instance, a JS Error, or a
+             * builtin AttributeError with $factory. */
+            var ae = rt._b_.AttributeError;
+            var isAttr = false;
+            try {
+                if (e && (e.__class__ === ae ||
+                          (e.ob_type && e.ob_type === ae) ||
+                          (rt.$B.$isinstance && rt.$B.$isinstance(e, ae)))) {
+                    isAttr = true;
+                }
+            } catch (_) {}
+            if (isAttr) return 0;
+            var excCls = (e && e.__class__) ? e.__class__ : rt._b_.RuntimeError;
+            var msg = (e && e.args && e.args.length) ? String(e.args[0])
+                    : (e && e.message) || String(e);
+            rt.setError(rt.wrap(excCls), msg);
+            return -1;
+        }
+    },
+
     PyObject_HasAttrString: function(objHandle, namePtr) {
         var rt = WasthonRT;
         var obj = rt.unwrap(objHandle);
@@ -4233,6 +4692,8 @@ mergeInto(LibraryManager.library, {
     wasthon_get_Py_False:       function() { return WasthonRT.SLOT_FALSE; },
     wasthon_get_Py_NotImplemented__deps: ['$WasthonRT'],
     wasthon_get_Py_NotImplemented: function() { return WasthonRT.SLOT_NOTIMPLEMENTED; },
+    wasthon_get_Py_Ellipsis__deps: ['$WasthonRT'],
+    wasthon_get_Py_Ellipsis: function() { return WasthonRT.wrap(WasthonRT._b_.Ellipsis); },
 
     /* ---- Exception classes ---- */
     wasthon_get_PyExc_TypeError__deps:      ['$WasthonRT'],
@@ -4382,7 +4843,12 @@ mergeInto(LibraryManager.library, {
         }
     },
 
-    /* PyObject_GetAttr(o, name) — getattr by str-PyObject name. */
+    /* PyObject_GetAttr(o, name) — getattr by str-PyObject name. Falls back
+     * to walking cls.tp_funcs (where __wasthon_install_methods registers
+     * C-installed methods) so PyObject_GetAttr can see them — Brython's
+     * own $getattr only consults the class dict via object_getattribute
+     * and never sees tp_funcs, which would otherwise make pickle's
+     * `PyObject_GetAttr(self, "persistent_id")` fail. */
     PyObject_GetAttr__deps: ['$WasthonRT'],
     PyObject_GetAttr: function(objH, nameH) {
         var rt = WasthonRT;
@@ -4391,6 +4857,27 @@ mergeInto(LibraryManager.library, {
         if (!obj || name === null) return 0;
         try { return rt.wrapMaybeType(rt.$B.$getattr(obj, name)); }
         catch (e) {
+            /* tp_funcs fallback: look up the method in the class chain
+             * and synthesize a bound-method-like callable. */
+            try {
+                var cls = obj.__class__ || rt.$B.get_class(obj);
+                var chain = cls && cls.tp_mro ? cls.tp_mro
+                          : cls && cls.__mro__ ? [cls].concat(cls.__mro__)
+                          : (cls ? [cls] : []);
+                for (var i = 0; i < chain.length; i++) {
+                    var c = chain[i];
+                    if (c && c.tp_funcs && Object.prototype.hasOwnProperty.call(c.tp_funcs, name)) {
+                        var fn = c.tp_funcs[name];
+                        /* Return a bound callable: pre-applies obj as self. */
+                        var bound = function() {
+                            return fn.apply(null, [obj].concat(Array.from(arguments)));
+                        };
+                        bound.ob_type = rt.$B.builtin_method;
+                        bound.__self__ = obj;
+                        return rt.wrap(bound);
+                    }
+                }
+            } catch (_) {}
             rt.setError(rt.wrap(rt._b_.AttributeError), "no attribute '" + name + "'");
             return 0;
         }
@@ -5366,6 +5853,14 @@ mergeInto(LibraryManager.library, {
             case 6: cls = rt._b_.str;    break;
             case 7: cls = rt._b_.bytes;  break;
             case 8: cls = rt._b_.bool;   break;
+            case 9: cls = rt._b_.bytearray; break;
+            case 10: cls = rt._b_.set;       break;
+            case 11: cls = rt._b_.frozenset; break;
+            case 12: cls = rt._b_.function;  break;
+            /* PickleBuffer has no Brython equivalent (protocol 5 only,
+             * unsupported here). Bind to a sentinel object so the type
+             * pointer is non-NULL but no instance ever matches. */
+            case 13: cls = { __wasthon_picklebuffer__: true }; break;
             default: return;
         }
         rt.handles.set(structPtr, cls);
@@ -5851,6 +6346,277 @@ mergeInto(LibraryManager.library, {
         return obj.ptr;
     },
 
+    /* PyOS_string_to_double(s, *endptr, overflow_exc) — parse a C string
+     * as a double. *endptr (if non-NULL) gets the address right after the
+     * parsed prefix; on overflow we set overflow_exc and return -1.0.
+     * pickle protocol 0 uses this for the FLOAT opcode. */
+    PyOS_string_to_double__deps: ['$WasthonRT'],
+    PyOS_string_to_double: function(strPtr, endptrPtr, overflowExcH) {
+        var rt = WasthonRT;
+        if (strPtr === 0) {
+            rt.setError(rt.wrap(rt._b_.ValueError), "NULL string");
+            return -1.0;
+        }
+        var s = UTF8ToString(strPtr);
+        /* Find the longest numeric prefix JS can parse. parseFloat handles
+         * leading whitespace, +/-, exponent. */
+        var m = s.match(/^\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/);
+        if (!m) {
+            rt.setError(rt.wrap(rt._b_.ValueError),
+                "could not convert string to float");
+            return -1.0;
+        }
+        var v = parseFloat(m[0]);
+        if (!isFinite(v)) {
+            var exc = overflowExcH !== 0 ? rt.unwrap(overflowExcH)
+                                         : rt._b_.OverflowError;
+            rt.setError(rt.wrap(exc || rt._b_.OverflowError),
+                "float overflow");
+            return -1.0;
+        }
+        if (endptrPtr !== 0) {
+            /* Compute char-offset in s, then translate back to a pointer
+             * within the linear-memory buffer. UTF-8 here is ASCII so
+             * char count == byte count. */
+            HEAP32[endptrPtr >> 2] = strPtr + m[0].length;
+        }
+        return v;
+    },
+
+    /* _PySys_GetSizeOf(obj) — stub. The bridge has no per-object size
+     * tracking. pickle uses this only as an output-buffer preallocation
+     * hint; returning 0 just skips the optimization. */
+    _PySys_GetSizeOf: function(_obj) { return 0; },
+
+    /* PyBuffer_IsContiguous — minimal buffer impl is always contiguous. */
+    PyBuffer_IsContiguous: function(_view, _order) { return 1; },
+
+    /* PyCFunction_GET_SELF / PyCFunction_GET_FUNCTION — pickle inspects
+     * C-method objects to pickle bound methods. The bridge wraps C
+     * methods as JS trampolines tagged with `ob_type = builtin_method`
+     * (see __wasthon_install_methods). For pickle's purposes we expose
+     * `__self__` / `__func__` analogues if present, NULL otherwise. */
+    PyCFunction_GET_SELF__deps: ['$WasthonRT'],
+    PyCFunction_GET_SELF: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (!obj) return 0;
+        var self = obj.__self__ !== undefined ? obj.__self__ : null;
+        return self === null ? 0 : rt.wrap(self);
+    },
+    PyCFunction_GET_FUNCTION__deps: ['$WasthonRT'],
+    PyCFunction_GET_FUNCTION: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (!obj) return 0;
+        /* Return the C function pointer if available, else 0 — pickle
+         * uses this only as an opaque identity comparison key. */
+        return obj.__wasthon_fnptr__ || 0;
+    },
+
+    /* PyLong_GetSign(v, *sign) — write -1/0/+1 into *sign, return 0/-1. */
+    PyLong_GetSign__deps: ['$WasthonRT'],
+    PyLong_GetSign: function(vH, signPtr) {
+        var rt = WasthonRT;
+        var v = rt.unwrap(vH);
+        if (v === null || v === undefined) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "PyLong_GetSign: NULL");
+            return -1;
+        }
+        var n = (typeof v === 'bigint') ? Number(v > 0n ? 1n : v < 0n ? -1n : 0n)
+              : (typeof v === 'number') ? (v > 0 ? 1 : v < 0 ? -1 : 0)
+              : 0;
+        HEAP32[signPtr >> 2] = n;
+        return 0;
+    },
+
+    /* PyObject_GetItem(o, key) — o[key], raises KeyError/IndexError. */
+    PyObject_GetItem__deps: ['$WasthonRT'],
+    PyObject_GetItem: function(objH, keyH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        var key = rt.unwrap(keyH);
+        try { return rt.wrap(rt.$B.$getitem(obj, key)); }
+        catch (e) {
+            var excCls = (e && e.__class__) ? e.__class__ : rt._b_.KeyError;
+            rt.setError(rt.wrap(excCls),
+                (e && e.args && e.args.length) ? String(e.args[0])
+                                               : (e && e.message) || String(e));
+            return 0;
+        }
+    },
+
+    /* _PyErr_ChainExceptions1(exc) — chain as __context__. The bridge
+     * keeps a single pending exception (no chaining machinery), so the
+     * passed-in `exc` is effectively dropped and the current pending
+     * exception (if any) is kept. */
+    _PyErr_ChainExceptions1: function(_excH) {},
+
+    /* PyIter_Check(o) — has __next__? */
+    PyIter_Check__deps: ['$WasthonRT'],
+    PyIter_Check: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (obj === null || obj === undefined) return 0;
+        try {
+            var cls = obj.__class__ || rt.$B.get_class(obj);
+            return (cls && rt.$B.$getattr(cls, '__next__', null)) ? 1 : 0;
+        } catch (e) { return 0; }
+    },
+
+    /* _PyUnicode_Equal(a, b) — string equality between two PyObject*. */
+    _PyUnicode_Equal__deps: ['$WasthonRT'],
+    _PyUnicode_Equal: function(aH, bH) {
+        var rt = WasthonRT;
+        var a = rt.asJSStr(rt.unwrap(aH));
+        var b = rt.asJSStr(rt.unwrap(bH));
+        if (a === null || b === null) return 0;
+        return a === b ? 1 : 0;
+    },
+
+    /* PyTuple_GetSlice(t, low, high) — t[low:high] for a tuple. */
+    PyTuple_GetSlice__deps: ['$WasthonRT'],
+    PyTuple_GetSlice: function(tH, low, high) {
+        var rt = WasthonRT;
+        var t = rt.unwrap(tH);
+        if (t === null) return 0;
+        try {
+            var sliced = rt._b_.tuple.$factory(Array.from(t).slice(low, high));
+            return rt.wrap(sliced);
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "PyTuple_GetSlice: " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    /* PyMemoryView_FromMemory(mem, size, flags) — stub. Wraps a linear-
+     * memory range as a memoryview. Bridge has no real memoryview impl;
+     * returning NULL with NotImplementedError keeps the link satisfied
+     * while signalling unsupported when actually called. */
+    PyMemoryView_FromMemory__deps: ['$WasthonRT'],
+    PyMemoryView_FromMemory: function(_memPtr, _size, _flags) {
+        var rt = WasthonRT;
+        rt.setError(rt.wrap(rt._b_.NotImplementedError),
+            "PyMemoryView_FromMemory: memoryview not supported in bridge");
+        return 0;
+    },
+
+    /* PyUnicode_EqualToUTF8(u, c_str) — like _PyUnicode_EqualToASCIIString
+     * but caller passes UTF-8 (not necessarily ASCII). Same semantics
+     * here since asJSStr already returns a proper JS string and
+     * UTF8ToString decodes the c_str. */
+    PyUnicode_EqualToUTF8__deps: ['$WasthonRT'],
+    PyUnicode_EqualToUTF8: function(uH, cstrPtr) {
+        var rt = WasthonRT;
+        var u = rt.asJSStr(rt.unwrap(uH));
+        if (u === null || cstrPtr === 0) return 0;
+        return (u === UTF8ToString(cstrPtr)) ? 1 : 0;
+    },
+
+    /* _Py_LATIN1_CHR(ch) — return the 1-char str for codepoint `ch`. */
+    _Py_LATIN1_CHR__deps: ['$WasthonRT'],
+    _Py_LATIN1_CHR: function(ch) {
+        return WasthonRT.wrap(String.fromCharCode(ch & 0xFF));
+    },
+
+    /* PyUnicode_Split(s, sep, maxsplit) — s.split(sep, maxsplit). NULL sep
+     * means whitespace split. Returns a Python list. */
+    PyUnicode_Split__deps: ['$WasthonRT'],
+    PyUnicode_Split: function(sH, sepH, maxsplit) {
+        var rt = WasthonRT;
+        var s = rt.asJSStr(rt.unwrap(sH));
+        if (s === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "PyUnicode_Split: not a str");
+            return 0;
+        }
+        var sep = sepH === 0 ? null : rt.asJSStr(rt.unwrap(sepH));
+        try {
+            var parts = sep === null
+                ? rt.$B.$call(rt.$B.$getattr(s, 'split'))
+                : (maxsplit < 0
+                    ? rt.$B.$call(rt.$B.$getattr(s, 'split'), sep)
+                    : rt.$B.$call(rt.$B.$getattr(s, 'split'), sep, maxsplit));
+            return rt.wrap(parts);
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "PyUnicode_Split: " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    /* _PyUnicode_EqualToASCIIString(u, c_str) — u == c_str, byte-wise. */
+    _PyUnicode_EqualToASCIIString__deps: ['$WasthonRT'],
+    _PyUnicode_EqualToASCIIString: function(uH, cstrPtr) {
+        var rt = WasthonRT;
+        var u = rt.asJSStr(rt.unwrap(uH));
+        if (u === null || cstrPtr === 0) return 0;
+        return (u === UTF8ToString(cstrPtr)) ? 1 : 0;
+    },
+
+    /* _PySys_GetRequiredAttr(name) — sys.<name>, or NULL + error on absence.
+     * The bridge has no real sys module; route via Brython's sys. */
+    _PySys_GetRequiredAttr__deps: ['$WasthonRT'],
+    _PySys_GetRequiredAttr: function(nameH) {
+        var rt = WasthonRT;
+        var name = rt.asJSStr(rt.unwrap(nameH));
+        if (name === null) return 0;
+        try {
+            var sys = rt.$B.imported.sys;
+            if (!sys) {
+                rt.setError(rt.wrap(rt._b_.RuntimeError),
+                    "sys module not loaded");
+                return 0;
+            }
+            return rt.wrap(rt.$B.$getattr(sys, name));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.AttributeError),
+                "sys." + name + ": " + (e.message || String(e)));
+            return 0;
+        }
+    },
+
+    /* _PyMem_Strdup — strdup via malloc; caller frees. */
+    _PyMem_Strdup: function(strPtr) {
+        if (strPtr === 0) return 0;
+        var len = 0;
+        while (HEAPU8[strPtr + len] !== 0) len++;
+        var p = _malloc(len + 1);
+        if (p === 0) return 0;
+        for (var i = 0; i <= len; i++) HEAPU8[p + i] = HEAPU8[strPtr + i];
+        return p;
+    },
+
+    /* PyMemoryView_FromObject — stub. Pickle protocol 5's
+     * load_readonly_buffer is the sole bridge consumer; basic
+     * pickle/unpickle of int/str/list/dict/tuple/bytes never reaches
+     * it, so failing this path is safe for the common case. */
+    PyMemoryView_FromObject__deps: ['$WasthonRT'],
+    PyMemoryView_FromObject: function(_objH) {
+        var rt = WasthonRT;
+        rt.setError(rt.wrap(rt._b_.NotImplementedError),
+            "PyMemoryView_FromObject: memoryview not supported in bridge");
+        return 0;
+    },
+
+    /* PyMemoryView_GET_BUFFER — returns a pointer to a Py_buffer struct.
+     * In CPython it's a macro into the memoryview's internal storage; here
+     * we keep a tiny static buffer reused per call. The only caller
+     * (pickle's load_readonly_buffer) never reaches us because
+     * PyMemoryView_FromObject above returns NULL first, so the contents
+     * never matter — we just need a valid non-NULL pointer for the link
+     * not to dangle. */
+    PyMemoryView_GET_BUFFER__deps: ['$WasthonRT'],
+    PyMemoryView_GET_BUFFER: function(_mvH) {
+        var rt = WasthonRT;
+        if (!rt._dummyPyBuffer) {
+            /* sizeof(Py_buffer) = 12 fields * 4 bytes on wasm32. */
+            rt._dummyPyBuffer = _malloc(48);
+            HEAPU8.fill(0, rt._dummyPyBuffer, rt._dummyPyBuffer + 48);
+        }
+        return rt._dummyPyBuffer;
+    },
+
     /* PyOS_snprintf — minimal printf-style. unicodedata uses it to format
      * a name buffer like "U+XXXX". Implement %s/%d/%X/%lx via JS join. */
     /* PyOS_strnicmp — case-insensitive strncmp (ASCII). */
@@ -5868,13 +6634,46 @@ mergeInto(LibraryManager.library, {
     },
 
     PyOS_snprintf__deps: ['$WasthonRT'],
-    PyOS_snprintf: function(strPtr, size, fmtPtr /*, ...varargs */) {
+    PyOS_snprintf: function(strPtr, size, fmtPtr, varargs) {
+        // Variadic args arrive via emcc's va_list ABI (same pattern as
+        // PyErr_Format / PyUnicode_FromFormat): `varargs` points into
+        // linear memory where each value is laid out in order. Supported
+        // codes mirror the subset needed by stdlib callers: %s %d/%i %u
+        // %x/%X %p %c %% with l/ll/z/h/j length qualifiers (all 32-bit
+        // on wasm32 except %lld/%llu/%zd-where-Py_ssize_t is 64-bit;
+        // currently Py_ssize_t == int on wasm32 so %zd reads 32-bit).
+        // Pickle protocol 0 emits ints via `%zd\n` here — leaving the
+        // token unsubstituted produced `'%zd'` in the pickle stream.
         var fmt = fmtPtr ? UTF8ToString(fmtPtr) : "";
-        // Varargs portably unreachable in wasm32. Best-effort: write the
-        // format string verbatim; callers using rich formatting will see
-        // raw '%X' tokens in output. unicodedata only uses this for an
-        // error message, not for correctness of returned data.
-        var bytes = new TextEncoder().encode(fmt);
+        var p = varargs | 0;
+        var out = "";
+        for (var i = 0; i < fmt.length; i++) {
+            if (fmt[i] !== '%') { out += fmt[i]; continue; }
+            var spec = "";
+            while (i + 1 < fmt.length && "lhzj".indexOf(fmt[i+1]) !== -1) { spec += fmt[++i]; }
+            var c = fmt[++i];
+            if (c === 's') {
+                var sp = HEAP32[p >> 2]; p += 4;
+                out += (sp === 0) ? "(null)" : UTF8ToString(sp);
+            } else if (c === 'd' || c === 'i') {
+                out += String(HEAP32[p >> 2] | 0); p += 4;
+            } else if (c === 'u') {
+                out += String(HEAPU32[p >> 2] >>> 0); p += 4;
+            } else if (c === 'x') {
+                out += (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
+            } else if (c === 'X') {
+                out += (HEAPU32[p >> 2] >>> 0).toString(16).toUpperCase(); p += 4;
+            } else if (c === 'p') {
+                out += "0x" + (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
+            } else if (c === 'c') {
+                out += String.fromCharCode(HEAP32[p >> 2] & 0xff); p += 4;
+            } else if (c === '%') {
+                out += '%';
+            } else {
+                out += '%' + spec + c;  // unknown — leave as-is
+            }
+        }
+        var bytes = new TextEncoder().encode(out);
         var n = Math.min(bytes.length, size - 1);
         for (var i = 0; i < n; i++) HEAPU8[strPtr + i] = bytes[i];
         HEAPU8[strPtr + n] = 0;
@@ -6229,6 +7028,12 @@ mergeInto(LibraryManager.library, {
          * calls it as a function — boom. Inherit from object explicitly. */
         if (!cls.tp_setattro) cls.tp_setattro = rt._b_.object.tp_setattro;
         if (!cls.tp_getattro) cls.tp_getattro = rt._b_.object.tp_getattro;
+        /* Brython 3.14's object_getattribute only engages the tp_funcs
+         * fast path when `cls.$getattribute === object.tp_getattro`.
+         * Without this, getattr() on instances misses C-installed methods
+         * (e.g. pickle's `persistent_id` lookup on Pickler) and pickle
+         * fails at dump-time with `AttributeError: persistent_id`. */
+        if (!cls.$getattribute) cls.$getattribute = rt._b_.object.tp_getattro;
 
         // Allocate the C-side PyTypeObject. Layout (matches wasthon.h):
         //   +0   tp_free (no-op, NULL)
@@ -6243,8 +7048,8 @@ mergeInto(LibraryManager.library, {
         //                     reads it directly to enumerate methods)
         if (!rt._defaultTpAlloc) rt._defaultTpAlloc = _wasthon_get_default_tp_alloc();
         if (!rt._builtinTpIter)  rt._builtinTpIter  = _wasthon_get_builtin_tp_iter();
-        var typeStructPtr = _malloc(56);
-        HEAPU8.fill(0, typeStructPtr, typeStructPtr + 56);
+        var typeStructPtr = _malloc(60);
+        HEAPU8.fill(0, typeStructPtr, typeStructPtr + 60);
         var dictObj = rt.$B.get_dict(cls);
         var dictHandle = rt.wrap(dictObj);
         HEAP32[(typeStructPtr +  4) >> 2] = dictHandle;
@@ -7022,19 +7827,46 @@ mergeInto(LibraryManager.library, {
                 throw rt.$B.$call(rt._b_.RuntimeError, methName + ": call returned NULL");
             }
             var result = rt.unwrap(resultHandle);
-            // Sync bytes-like objects whose backing was a C-side linear-
-            // memory buffer (e.g. zlib.compress output). C may have written
-            // into __wasthon_cstr__ without ever updating .source. The
-            // presence of both .source and a cached cstr is sufficient to
-            // identify the case.
-            if (result && result.__wasthon_cstr__ && result.source &&
-                    typeof result.source.length === 'number') {
-                var src = result.source;
-                var ptr = result.__wasthon_cstr__;
-                for (var i = 0, len = src.length; i < len; i++) {
-                    src[i] = HEAPU8[ptr + i];
+            /* Sync bytes-like objects whose backing was a C-side linear-
+             * memory buffer (e.g. zlib.compress output, pickle.loads bytes
+             * written into __wasthon_cstr__). Walks recursively into
+             * containers (tuple/list/dict) so bytes nested inside also
+             * sync — pickle returns tuples that hold bytes written via
+             * PyBytes_FromStringAndSize(NULL,n) + _Unpickler_ReadInto,
+             * and without this descent the bytes still read as the
+             * initial zero fill from .source. */
+            (function syncBytes(v, seen) {
+                if (!v || typeof v !== 'object') return;
+                if (seen.has(v)) return;
+                seen.add(v);
+                if (v.__wasthon_cstr__ && v.source &&
+                        typeof v.source.length === 'number') {
+                    var src = v.source, ptr = v.__wasthon_cstr__;
+                    for (var i = 0, len = src.length; i < len; i++) {
+                        src[i] = HEAPU8[ptr + i];
+                    }
                 }
-            }
+                /* tuple / list — iterable JS array-shaped object with
+                 * .length, and Brython tuple/list expose elements at
+                 * numeric indices. */
+                if (typeof v.length === 'number') {
+                    for (var j = 0; j < v.length; j++) syncBytes(v[j], seen);
+                }
+                /* dict — walk values (keys are rarely bytes; if needed
+                 * users hit a separate fix). Brython dicts store entries
+                 * in a $version-keyed structure; len()+items() is the
+                 * portable read. */
+                try {
+                    if (v.__class__ === rt._b_.dict ||
+                        (rt.$B.$isinstance && rt.$B.$isinstance(v, rt._b_.dict))) {
+                        var items = rt.$B.$call(rt._b_.list,
+                            rt.$B.$call(rt.$B.$getattr(v, 'values')));
+                        for (var k = 0, n = rt._b_.len(items); k < n; k++) {
+                            syncBytes(rt.$B.$getitem(items, k), seen);
+                        }
+                    }
+                } catch (_) {}
+            })(result, new WeakSet());
             // Materialize PyUnicode_New placeholders into actual JS strings
             // and replace the handle's value so callers see a real str.
             if (result && result.__wasthon_unicode_buf__) {

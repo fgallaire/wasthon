@@ -143,6 +143,14 @@ struct _typeobject {
     unsigned int tp_version_tag;                                  /* offset 44 */
     PyObject *(*tp_repr)(PyObject *self);                         /* offset 48 */
     PyObject *(*tp_iternext)(PyObject *self);                     /* offset 52 */
+    /* tp_new appended at the end so no existing offset shifts. Never
+     * populated by the bridge (we don't support Python-subclassing C
+     * types), so it stays NULL. Some clinic-generated __init__ guards
+     * compare `Py_TYPE(self)->tp_new == base_tp->tp_new` to detect a
+     * non-overriding subclass; NULL == NULL reads as "same", which is
+     * the correct answer in our no-subclass model. */
+    PyObject *(*tp_new)(struct _typeobject *type, PyObject *args,
+                        PyObject *kw);                            /* offset 56 */
 };
 typedef struct _typeobject PyTypeObject;
 
@@ -560,8 +568,44 @@ PyObject *PyObject_SelfIter(PyObject *o);
 int        PyByteArray_Check(PyObject *o);
 char      *PyByteArray_AsString(PyObject *o);
 Py_ssize_t PyByteArray_Size(PyObject *o);
+PyObject  *PyByteArray_FromStringAndSize(const char *s, Py_ssize_t len);
 #define PyByteArray_AS_STRING(o)  PyByteArray_AsString((PyObject *)(o))
 #define PyByteArray_GET_SIZE(o)   PyByteArray_Size((PyObject *)(o))
+
+/* Set / frozenset constructors. NULL iterable means empty. */
+PyObject *PySet_New(PyObject *iterable);
+PyObject *PyFrozenSet_New(PyObject *iterable);
+int       PySet_Check(PyObject *o);
+/* _PySet_Update(set, iterable) — add every element of `iterable` into
+ * `set`. Returns 0 on success, -1 on error. Used by pickle to restore
+ * set values via the SET opcodes. */
+int       _PySet_Update(PyObject *set, PyObject *iterable);
+/* Py_CHARMASK — mask a value to 8 bits (treat as unsigned char). */
+#define Py_CHARMASK(c)  ((unsigned char)((c) & 0xff))
+
+/* Bytes literal escape decode (`\xNN`, `\n`, `\t`, …). pickle protocol 0
+ * uses this for the SHORT_BINSTRING / SHORT_BINBYTES paths. `errors`,
+ * `unicode`, `recode_encoding` are CPython-API legacy args; the bridge
+ * ignores them and decodes in strict bytes mode (what pickle needs). */
+PyObject *PyBytes_DecodeEscape(const char *s, Py_ssize_t len,
+                               const char *errors, Py_ssize_t unicode,
+                               const char *recode_encoding);
+
+/* String → double parser with explicit overflow exception class. Used by
+ * pickle protocol 0 float opcode. `*endptr` (if non-NULL) gets the parse-
+ * end pointer; on overflow PyErr is set with `overflow_exc`. */
+double PyOS_string_to_double(const char *s, char **endptr, PyObject *overflow_exc);
+
+/* Unicode decoders used by pickle protocol 0. */
+PyObject *PyUnicode_DecodeRawUnicodeEscape(const char *s, Py_ssize_t size,
+                                           const char *errors);
+PyObject *PyUnicode_FromEncodedObject(PyObject *obj, const char *encoding,
+                                      const char *errors);
+
+/* sys.getsizeof shim. The bridge has no per-object size tracking, so this
+ * is a constant-0 stub — pickle uses it only for an output buffer
+ * preallocation hint; returning 0 just skips the optimization. */
+size_t _PySys_GetSizeOf(PyObject *o);
 
 /* Misc — used by _struct. */
 PyObject *PyUnicode_AsASCIIString(PyObject *unicode);
@@ -1232,6 +1276,25 @@ int PyType_Freeze(PyTypeObject *type);
 
 /* _pickle-needed additions. */
 PyObject *PyMemoryView_FromMemory(char *mem, Py_ssize_t size, int flags);
+/* PyMemoryView_FromObject — used by pickle protocol 5's read-only buffer
+ * opcode (load_readonly_buffer). The bridge has no full memoryview impl,
+ * so this is a stub that fails the path (returns NULL + NotImplementedError).
+ * Basic pickle/unpickle of int/str/list/dict/tuple/bytes/etc. never
+ * reaches this code path, so the stub is sufficient for the common case.
+ * PyMemoryView_GET_BUFFER lives after Py_buffer's struct definition
+ * (further down) since it returns a Py_buffer*. */
+PyObject  *PyMemoryView_FromObject(PyObject *obj);
+
+/* CPython internals exposed under bridge-friendly names. */
+/* _PyInterpreterState_GET — fast inline in CPython, mapped to the public
+ * getter here. pickle uses it inside its global-name resolution path. */
+#define _PyInterpreterState_GET() PyInterpreterState_Get()
+/* _PyUnicode_InternMortal — interning is a memory/perf optimization, not
+ * required for correctness. Stub as no-op so pickle's intern attempts
+ * are silent. */
+static inline void _PyUnicode_InternMortal(PyInterpreterState *_i, PyObject **_p) {
+    (void)_i; (void)_p;
+}
 char     *_PyMem_Strdup(const char *str);
 PyObject *PyUnicode_Split(PyObject *s, PyObject *sep, Py_ssize_t maxsplit);
 PyObject *_Py_LATIN1_CHR(int ch);
@@ -1454,6 +1517,12 @@ int  PyObject_CheckBuffer(PyObject *obj);
 void PyBuffer_Release(Py_buffer *view);
 int  PyBuffer_IsContiguous(const Py_buffer *view, char fortran);
 
+/* PyMemoryView_GET_BUFFER — see comment above PyMemoryView_FromObject.
+ * Stub returns a static dummy Py_buffer; reached only on the
+ * memoryview path that PyMemoryView_FromObject already rejects, so
+ * its contents never matter — non-NULL suffices for the link. */
+Py_buffer *PyMemoryView_GET_BUFFER(PyObject *mv);
+
 /* More _pickle support. */
 extern PyTypeObject PyPickleBuffer_Type;
 extern PyTypeObject PyFunction_Type;
@@ -1518,6 +1587,10 @@ PyObject *PyObject_CallMethodNoArgs(PyObject *self, PyObject *name);
 PyObject *PyObject_CallOneArg(PyObject *func, PyObject *arg);
 PyObject *PyObject_GetAttrString(PyObject *o, const char *name);
 int       PyObject_HasAttrString(PyObject *o, const char *name);
+/* PyObject_HasAttrWithError — like PyObject_HasAttr but returns -1 on
+ * genuine getattr error (any non-AttributeError exception). Returns 1
+ * if present, 0 if absent. New in CPython 3.13. */
+int       PyObject_HasAttrWithError(PyObject *o, PyObject *name);
 
 /* Argument parsing — sha2module's clinic uses these */
 typedef struct {

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — _pickle smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>Wasthon — _pickle smoke test</h1>
+<p style="color:#666;font-size:0.9em;">
+  Round-trips assorted Python values through <code>_pickle.dumps</code> →
+  <code>_pickle.loads</code>. This is the C accelerator used by the
+  standard library's <code>pickle</code> wrapper; the bridge surface
+  covers protocols 0-4 for ordinary objects. Protocol-5 read-only
+  buffers and PickleBuffer instances aren't supported and live in the
+  stub paths.
+</p>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[pickle]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading _pickle…');
+    await wasthonLoad('_pickle', '../build/_pickle.mjs');
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _pickle as p
+
+ok_all = True
+def check(name, fn):
+    global ok_all
+    try:
+        cond, detail = fn()
+    except Exception as e:
+        cond = False
+        detail = f'{type(e).__name__}: {e}'
+    mark = '✓' if cond else '✗'
+    log(f'  {mark}  {name}{("  -- " + detail) if detail and not cond else ""}')
+    if not cond: ok_all = False
+
+# Test 1: module attributes
+log('Test 1: module attributes')
+for name in ('dumps', 'loads', 'Pickler', 'Unpickler',
+             'PickleError', 'PicklingError', 'UnpicklingError'):
+    # Note: HIGHEST_PROTOCOL / DEFAULT_PROTOCOL are intentionally NOT
+    # exported by _pickle.c itself — the public pickle.py wrapper adds
+    # them on the Python side. We just use 5 as the highest known.
+    check(f'_pickle.{name}', lambda n=name: (hasattr(p, n), ''))
+
+# Test 2: scalar round-trips
+log('\\nTest 2: scalars')
+for val in (42, -7, 3.14, 'hello', b'raw bytes', None, True, False):
+    check(f'roundtrip {val!r}',
+          lambda v=val: (p.loads(p.dumps(v)) == v, ''))
+
+# Test 3: containers
+log('\\nTest 3: containers')
+check("list [1,2,3]",
+      lambda: (p.loads(p.dumps([1, 2, 3])) == [1, 2, 3], ''))
+check("tuple (1, 'two', 3.0)",
+      lambda: (p.loads(p.dumps((1, 'two', 3.0))) == (1, 'two', 3.0), ''))
+check("dict {'a': 1, 'b': 2}",
+      lambda: (p.loads(p.dumps({'a': 1, 'b': 2})) == {'a': 1, 'b': 2}, ''))
+check("set {1, 2, 3}",
+      lambda: (p.loads(p.dumps({1, 2, 3})) == {1, 2, 3}, ''))
+check("frozenset",
+      lambda: (p.loads(p.dumps(frozenset([4, 5, 6]))) == frozenset([4, 5, 6]), ''))
+check("empty list",
+      lambda: (p.loads(p.dumps([])) == [], ''))
+check("empty dict",
+      lambda: (p.loads(p.dumps({})) == {}, ''))
+
+# Test 4: nested structures
+log('\\nTest 4: nested (incremental complexity)')
+# Bisect the failure: try increasingly nested fragments to find which
+# element triggers "Can't pickle %T".
+check("[1, 2]", lambda: (p.loads(p.dumps([1, 2])) == [1, 2], ''))
+check("{'x': [1, 2]}",
+      lambda: (p.loads(p.dumps({'x': [1, 2]})) == {'x': [1, 2]}, ''))
+check("(None, True)",
+      lambda: (p.loads(p.dumps((None, True))) == (None, True), ''))
+def _t_3tuple():
+    src = (None, True, b'bytes')
+    got = p.loads(p.dumps(src))
+    return (got == src, f'got={got!r} types={[type(x).__name__ for x in got]}')
+check("(None, True, b'bytes')", _t_3tuple)
+check("{'inner': (None, True, b'bytes')}",
+      lambda: (p.loads(p.dumps({'inner': (None, True, b'bytes')})) ==
+               {'inner': (None, True, b'bytes')}, ''))
+def _t_nested():
+    nested = {'x': [1, 2, {'inner': (None, True, b'bytes')}]}
+    got = p.loads(p.dumps(nested))
+    return (got == nested, f'got={got!r}')
+check("nested dict/list/tuple/bytes", _t_nested)
+
+# Test 5: large int (BigInt path)
+log('\\nTest 5: BigInts')
+big = 12345678901234567890
+check(f'big int {big}',
+      lambda: (p.loads(p.dumps(big)) == big, ''))
+negbig = -98765432109876543210
+check(f'negative big int',
+      lambda: (p.loads(p.dumps(negbig)) == negbig, ''))
+
+# Test 6: protocol variants (default, 0, 2, 4)
+log('\\nTest 6: protocol variants')
+# Brython quirk: lambda pr=proto: ...(protocol=pr) compiles the kwarg
+# name from the bound variable's value (0=...). Use positional form
+# (dumps(obj, protocol)) instead, which is equivalent.
+for proto in (0, 2, 4, 5):
+    check(f'protocol={proto} list',
+          lambda pr=proto: (p.loads(p.dumps([1, 2, 3], pr)) == [1, 2, 3], ''))
+
+# Test 7: unicode with non-ASCII
+log('\\nTest 7: unicode')
+check("unicode 'héllo, 世界'",
+      lambda: (p.loads(p.dumps('héllo, 世界')) == 'héllo, 世界', ''))
+
+# Test 8: error path — un-picklable object
+log('\\nTest 8: error on un-picklable')
+def _t_unpicklable():
+    try:
+        p.dumps(lambda x: x)
+    except (p.PicklingError, TypeError, AttributeError):
+        return (True, '')
+    except Exception as e:
+        return (False, f'wrong exc: {type(e).__name__}')
+    return (False, 'no exception raised')
+check("lambda raises PicklingError/TypeError", _t_unpicklable)
+
+log('\\n=== ALL OK ===' if ok_all else '\\n=== SOME FAILED ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

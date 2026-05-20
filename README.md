@@ -74,7 +74,8 @@ at ~75 KB/s. Largest speedup we've measured on any ported module.
 | `cmath`        | complex math (sqrt/exp/log/sin/polar/rect/…)             | 51 KB       |
 | `unicodedata`  | full Unicode 15.x database + normalization               | 669 KB      |
 | `_statistics`  | `_normal_dist_inv_cdf` (Wichura AS241)                   | 15 KB       |
-|                | **Total**                                                | **~2.7 MB** |
+| `_pickle`      | C accelerator for pickle (protocols 2-5)                 | 79 KB       |
+|                | **Total**                                                | **~2.8 MB** |
 
 ### Highlight benchmarks — Wasthon vs Brython
 
@@ -332,8 +333,8 @@ that's Pyodide):
    objects; real WASM pointers for C-allocated instances. The handle IS the
    pointer so `self->field` dereferences hit the right linear memory.
 
-The bridge today covers ~395 distinct C-API entry points. That's enough for
-**22 stdlib modules**, all major type-creation patterns (factory functions,
+The bridge today covers ~410 distinct C-API entry points. That's enough for
+**23 stdlib modules**, all major type-creation patterns (factory functions,
 tp_new-only, tp_new+tp_init, multi-phase exec slot), buffer protocol,
 Unicode (PEP 393 strict, kind-aware), dict/list/tuple, IEEE 754, slot
 dispatch including sequence and number protocols, getset descriptors
@@ -369,13 +370,13 @@ Build any module via the wrapper script (after activating emsdk):
 
 ```bash
 cd wasthon
-./build.sh _sha2          # any of the 22 known modules → build/_sha2.{mjs,wasm}
+./build.sh _sha2          # any of the 23 known modules → build/_sha2.{mjs,wasm}
 ./build.sh _sha2 _decimal # several specific modules in one go
 ./build.sh all            # everything as per-module .mjs/.wasm
                           # (~45 s once libs are cached; first run downloads + builds the libs too)
-./build.sh wasthon        # light bundle: 20 modules in build/wasthon.{mjs,wasm} (~1 MB)
+./build.sh wasthon        # light bundle: 21 modules in build/wasthon.{mjs,wasm} (~1 MB)
                           # — drops the two specialists (unicodedata, _zstd)
-./build.sh wasthon-full   # full bundle: 22 modules in build/wasthon-full.{mjs,wasm} (~2 MB)
+./build.sh wasthon-full   # full bundle: 23 modules in build/wasthon-full.{mjs,wasm} (~2 MB)
 ```
 
 The per-module target is best for dev, bench, and incremental work — each
@@ -405,6 +406,30 @@ python3 -m http.server 8765
 
 Recent ports:
 
+- [x] `_pickle` — C accelerator for `pickle`. Round-trips ints (incl. BigInts),
+      floats, str (incl. non-ASCII unicode), bytes, bool, None, list, tuple,
+      dict, set, frozenset, and arbitrary nestings of these across all four
+      protocols (0–5; default 5). Bit-exact with CPython 3.14. Bundled in
+      `wasthon` light (+57 KB marginal) since serialization is a fundamental
+      Python primitive. Brython's own pickle is pure-Python (slow) and
+      exposes a different API surface; wasthon's port is the genuine
+      CPython API. Surfaced and fixed a stack of latent bridge bugs
+      benefiting all future ports — chief among them: `PyObject_GetAttr`
+      must fall back through `cls.tp_funcs` (Brython's `$getattr` only
+      consults the class dict); `PyErr_NewException` must rebuild the MRO
+      and inherit `tp_new`/`tp_init` (raise-time "$is_slot of undefined"
+      otherwise); the bytes "C wrote into `__wasthon_cstr__` but `.source`
+      still zero" sync must descend recursively into container return
+      values; `PyTuple_New` must go through `tuple.$factory` (a tagged JS
+      Array doesn't fully mimic a Brython tuple); `PyOS_snprintf` needed
+      a real varargs implementation (it was a stub that copied the format
+      string verbatim, so `%zd\n` from protocol-0 INT serialization went
+      straight into the pickle stream). And the gem: `bind_builtin_type`
+      was last-write-wins on the Brython-class key, so `PyODict_Type` was
+      overwriting `PyDict_Type` — making `Py_TYPE(dict) == &PyDict_Type`
+      silently false and pickle fall through to the reduce path. Latent
+      for the previous 22 modules because none compared
+      `Py_TYPE(obj) == &PyXxx_Type` directly.
 - [x] `_decimal` (libmpdec) — arbitrary-precision math, 18-46× speedup.
 - [x] `_csv` — full state machine port, 8-25× speedup.
 - [x] Full compression family: `_bz2`, `_lzma`, `_zstd` alongside `_zlib`.
@@ -481,7 +506,7 @@ Recent ports:
       libzstd + bzip2 sources via `curl`/`wget` on first run, compiles all
       the per-module quirks (which CPython sources, which external library
       objects, include paths, `EXPORTED_FUNCTIONS`, `EXPORT_NAME`). On a
-      fresh checkout: `./build.sh all` goes from zero to 22 `.wasm` in
+      fresh checkout: `./build.sh all` goes from zero to 23 `.wasm` in
       a single command (~45 s once libs are cached).
 - [x] Slot ID collision fix: `Py_nb_multiply` (29) and `Py_sq_length` were
       both registered under slot 29 in the dispatch table. JS object literal
