@@ -9,11 +9,12 @@
 # Usage: ./build.sh <command>
 #   <module>...   build one or several modules (e.g. _sha2, or _sha2 _decimal)
 #   all           build every supported module (~45 s once libs are cached)
-#   wasthon       build the light bundle (20 modules, ~1 MB) — the default
+#   wasthon       build the light bundle (21 modules, ~1 MB) — the default
 #                 drop-in: covers crypto, compression (zlib/bz2/lzma),
 #                 decimal, json/csv/struct/sre/pyexpat, math, array
-#   wasthon-full  build the full bundle (22 modules, ~2 MB), adding the two
-#                 heavy specialists: unicodedata (full Unicode DB) and _zstd
+#   wasthon-full  build the full bundle (24 modules, ~3 MB), adding the
+#                 three heavy specialists: unicodedata (full Unicode DB),
+#                 _zstd (modern compression) and _sqlite3 (embedded DB)
 #   list          show the known module names
 #
 # emcc is installed automatically into ./external/emsdk/ on first run.
@@ -37,8 +38,8 @@ usage() {
 Usage: $0 <command>
   <module>...   build one or several modules (e.g. _sha2, or _sha2 _decimal)
   all           build every supported module
-  wasthon       light bundle (20 modules, ~1 MB) — the default deliverable
-  wasthon-full  full bundle (22 modules, ~2 MB) — adds unicodedata + _zstd
+  wasthon       light bundle (21 modules, ~1 MB) — the default deliverable
+  wasthon-full  full bundle (24 modules, ~3 MB) — adds unicodedata + _zstd + _sqlite3
   list          show the known module names
 EOF
 }
@@ -54,18 +55,19 @@ KNOWN_MODULES=(
     _zlib _bz2 _lzma _zstd
     _csv _json _struct _sre unicodedata pyexpat _pickle
     _decimal _random _statistics math cmath
-    array
+    array _sqlite3
 )
 
 if [[ "${MODULE}" == "list" ]]; then
     cat <<'EOF'
-Known wasthon modules (23):
+Known wasthon modules (24):
   hashlib:     _md5  _sha1  _sha2  _sha3  _blake2  _hmac
   compression: _zlib  _bz2  _lzma  _zstd
   text/parse:  _csv  _json  _struct  _sre  unicodedata  pyexpat
   serialization: _pickle
   numerics:   _decimal  _random  _statistics  math  cmath
   containers: array
+  database:   _sqlite3
 EOF
     exit 0
 fi
@@ -101,6 +103,7 @@ EXPAT_DIR="${EXPAT_DIR:-${EXTERNAL}/expat-2.6.4}"
 ZSTD_DIR="${ZSTD_DIR:-${EXTERNAL}/zstd-1.5.6}"
 XZ_DIR="${XZ_DIR:-${EXTERNAL}/xz-5.4.6}"
 BZIP2_DIR="${BZIP2_DIR:-${EXTERNAL}/bzip2-1.0.8}"
+SQLITE_DIR="${SQLITE_DIR:-${EXTERNAL}/sqlite-amalgamation-3460100}"
 
 mkdir -p "${BUILD}/clinic"
 cd "${BUILD}"
@@ -231,6 +234,49 @@ ensure_zstd() {
     fi
 }
 
+# SQLite amalgamation ships as a .zip from sqlite.org. Distinct from the
+# tarball-based ensure_src helper. Compiles the single sqlite3.c into a
+# sqlite3.o object with WASM-friendly flags (single-threaded, no extension
+# loading, memory-only temp store).
+ensure_sqlite() {
+    if [[ ! -d "${SQLITE_DIR}" ]]; then
+        echo "=== fetching sqlite-amalgamation-3460100 from sqlite.org ==="
+        local tmp; tmp="$(mktemp).zip"
+        fetch "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip" "$tmp"
+        (cd "${EXTERNAL}" && unzip -q "$tmp") || {
+            echo "Need unzip on PATH to extract the SQLite amalgamation." >&2
+            echo "Install unzip or pre-extract sqlite-amalgamation-3460100/ into ${EXTERNAL}/." >&2
+            exit 1
+        }
+        rm -f "$tmp"
+    fi
+    if [[ ! -f "${SQLITE_DIR}/sqlite3.o" ]]; then
+        echo "=== building sqlite3 amalgamation with emcc ==="
+        # Flags rationale (browser/WASM context):
+        #   THREADSAFE=0       single-threaded — no pthread overhead
+        #   OMIT_LOAD_EXTENSION  no dlopen of .so/.dll in a browser
+        #   TEMP_STORE=3       temp tables always in RAM (no /tmp filesystem)
+        #   DEFAULT_MEMSTATUS=0  skip allocator bookkeeping
+        #   ENABLE_FTS5/RTREE  common features users expect
+        # -Oz on the amalgamation: SQLite is large (~9 MB C), most code paths
+        # are cold for typical queries, and the JS↔WASM bridge dominates the
+        # latency budget anyway. ~45% wasm reduction vs -O3. (Tried -flto on
+        # top: no measurable extra gain, +2x link time. The bridge object is
+        # built -O3 without LTO, so there's nothing cross-TU to optimize.)
+        (cd "${SQLITE_DIR}" && emcc -Oz -c \
+            -DSQLITE_THREADSAFE=0 \
+            -DSQLITE_OMIT_LOAD_EXTENSION=1 \
+            -DSQLITE_OMIT_DEPRECATED=1 \
+            -DSQLITE_TEMP_STORE=3 \
+            -DSQLITE_DEFAULT_MEMSTATUS=0 \
+            -DSQLITE_ENABLE_FTS5 \
+            -DSQLITE_ENABLE_RTREE \
+            -DSQLITE_ENABLE_JSON1 \
+            -DHAVE_USLEEP=1 \
+            sqlite3.c -o sqlite3.o)
+    fi
+}
+
 # Ensure wasthon.o is built and current with the latest wasthon.c/.h.
 cp "${SRC}/wasthon.c" .
 emcc -O3 -c -I . -I "${SRC}" wasthon.c -o wasthon.o
@@ -253,7 +299,9 @@ compile_module_src() {
 link_module() {
     [[ "${SKIP_LINK:-0}" -eq 1 ]] && return 0
     local out="$1" init="$2" export_name="$3"; shift 3
-    emcc -O2 "$@" wasthon.o \
+    # EXTRA_LD_FLAGS lets per-module cases inject flags (e.g. -flto for
+    # size-tuned builds). Empty by default — no impact on existing modules.
+    emcc -O2 ${EXTRA_LD_FLAGS:-} "$@" wasthon.o \
         --js-library "${SRC}/wasthon.js" \
         -s ALLOW_MEMORY_GROWTH=1 -s ALLOW_TABLE_GROWTH=1 \
         -s EXPORTED_FUNCTIONS="[\"_${init}\",\"_wasthon_init\",\"_wasthon_module_create\",\"_malloc\",\"_free\"]" \
@@ -364,11 +412,7 @@ fi
 # case re-uses already-built objects (HACL/libmpdec/bzip2 once cached).
 if [[ "${MODULE}" == "all" ]]; then
     SELF="${REPO}/build.sh"
-    for m in _md5 _sha1 _sha2 _sha3 _blake2 _hmac \
-             _zlib _bz2 _lzma _zstd \
-             pyexpat _decimal _sre \
-             array _csv _json _struct _random _statistics \
-             math cmath unicodedata; do
+    for m in "${KNOWN_MODULES[@]}"; do
         echo "=== build ${m} ==="
         "${SELF}" "$m"
     done
@@ -380,13 +424,12 @@ fi
 # links the lot in one emcc call exporting every PyInit_* symbol.
 #
 # Two targets:
-#   wasthon      — light (20 modules, ~1 MB). The default deliverable.
-#                  Drops the two heavy specialists (unicodedata, _zstd) that
-#                  together account for ~57% of the full bundle. Users who
-#                  need them load the per-module .wasm add-on alongside.
-#   wasthon-full — everything (22 modules, ~2 MB). Kitchen-sink, opt-in.
-#                  This is where future heavy ports (e.g. _sqlite3) land
-#                  without bloating the default download.
+#   wasthon      — light (21 modules, ~1 MB). The default deliverable.
+#                  Drops the three heavy specialists (unicodedata, _zstd,
+#                  _sqlite3) that together account for most of the full
+#                  bundle's extra weight. Users who need them load the
+#                  per-module .wasm add-on alongside.
+#   wasthon-full — everything (24 modules, ~3 MB). Kitchen-sink, opt-in.
 #
 # Per-module .mjs files coexist for dev/bench and on-demand use.
 if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
@@ -395,11 +438,13 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
         BUNDLE_EXPORT_NAME="wasthon_init"
         INCLUDE_ZSTD=0
         INCLUDE_UNICODEDATA=0
+        INCLUDE_SQLITE=0
     else
         BUNDLE_NAME="wasthon-full"
         BUNDLE_EXPORT_NAME="wasthon_full_init"
         INCLUDE_ZSTD=1
         INCLUDE_UNICODEDATA=1
+        INCLUDE_SQLITE=1
     fi
 
     # Module list — full set minus opt-outs (build order matters only to
@@ -413,6 +458,7 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
     )
     [[ $INCLUDE_ZSTD -eq 1 ]]        && BUNDLED_MODULES+=( _zstd )
     [[ $INCLUDE_UNICODEDATA -eq 1 ]] && BUNDLED_MODULES+=( unicodedata )
+    [[ $INCLUDE_SQLITE -eq 1 ]]      && BUNDLED_MODULES+=( _sqlite3 )
 
     SELF="${REPO}/build.sh"
     for m in "${BUNDLED_MODULES[@]}"; do
@@ -488,6 +534,11 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
     fi
     if [[ $INCLUDE_UNICODEDATA -eq 1 ]]; then
         OBJS+=( unicodedata.o unicodectype.o )
+    fi
+    if [[ $INCLUDE_SQLITE -eq 1 ]]; then
+        OBJS+=( blob.o connection.o cursor.o microprotocols.o module.o
+                prepare_protocol.o row.o statement.o util.o
+                "${SQLITE_DIR}/sqlite3.o" )
     fi
 
     emcc -O2 "${OBJS[@]}" \
@@ -689,6 +740,35 @@ cmath)
     copy_module_and_clinic "${CPYTHON_SRC}/Modules/cmathmodule.c"
     emcc -O3 -c -I . -I "${SRC}" cmathmodule.c -o cmathmodule.o
     link_module "cmath" "PyInit_cmath" "cmath_init" cmathmodule.o
+    ;;
+
+_sqlite3)
+    ensure_sqlite
+    # _sqlite is multi-file: blob/connection/cursor/microprotocols/module/
+    # prepare_protocol/row/statement/util — each its own .c, plus clinic headers.
+    # Stage ALL headers first (they #include each other freely), then compile.
+    SQLITE_MOD="${CPYTHON_SRC}/Modules/_sqlite"
+    SQLITE_UNITS=( blob connection cursor microprotocols module
+                   prepare_protocol row statement util )
+    for unit in "${SQLITE_UNITS[@]}"; do
+        cp "${SQLITE_MOD}/${unit}.h" . 2>/dev/null || true
+        cp "${SQLITE_MOD}/clinic/${unit}.c.h" clinic/ 2>/dev/null || true
+    done
+    # The connect() function lives under a separate clinic file.
+    cp "${SQLITE_MOD}/clinic/_sqlite3.connect.c.h" clinic/ 2>/dev/null || true
+    SQLITE_OBJS=()
+    for unit in "${SQLITE_UNITS[@]}"; do
+        cp "${SQLITE_MOD}/${unit}.c" .
+        # MODULE_NAME ("sqlite3") is provided by module.h; passing -DPY_SSIZE_T_CLEAN
+        # alone keeps CPython's standard argument-parsing assumption explicit.
+        # -Oz matches the amalgamation: same trade-off applies to the wrappers.
+        emcc -Oz -c -I . -I "${SRC}" -I "${SQLITE_DIR}" \
+             -DPY_SSIZE_T_CLEAN \
+             "${unit}.c" -o "${unit}.o"
+        SQLITE_OBJS+=( "${unit}.o" )
+    done
+    link_module "_sqlite3" "PyInit__sqlite3" "_sqlite3_init" \
+        "${SQLITE_OBJS[@]}" "${SQLITE_DIR}/sqlite3.o"
     ;;
 
 unicodedata)

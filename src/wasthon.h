@@ -426,7 +426,7 @@ typedef PyObject *(*ternaryfunc)(PyObject *, PyObject *, PyObject *);
 #define Py_LOCAL_INLINE(type) static inline type
 #endif
 
-typedef struct {
+typedef struct PyGetSetDef {
     const char *name;
     getter get;
     setter set;
@@ -566,6 +566,7 @@ PyObject *PyObject_SelfIter(PyObject *o);
 
 /* Bytearray API. */
 int        PyByteArray_Check(PyObject *o);
+int        PyByteArray_CheckExact(PyObject *o);
 char      *PyByteArray_AsString(PyObject *o);
 Py_ssize_t PyByteArray_Size(PyObject *o);
 PyObject  *PyByteArray_FromStringAndSize(const char *s, Py_ssize_t len);
@@ -707,6 +708,10 @@ extern PyObject *Py_True;
 extern PyObject *Py_False;
 extern PyObject *Py_NotImplemented;
 #define Py_RETURN_NOTIMPLEMENTED  do { return Py_NewRef(Py_NotImplemented); } while (0)
+/* Identity checks against the singletons — pure pointer comparison. */
+#define Py_IsNone(x)   ((x) == Py_None)
+#define Py_IsTrue(x)   ((x) == Py_True)
+#define Py_IsFalse(x)  ((x) == Py_False)
 
 /* ---------------------------------------------------------------- *
  * Forward declarations of functions implemented in JS via imports. *
@@ -769,6 +774,13 @@ int       PyCallable_Check(PyObject *o);
 PyObject *PyCallIter_New(PyObject *callable, PyObject *sentinel);
 PyObject *PyObject_Vectorcall(PyObject *callable, PyObject *const *args,
                               size_t nargsf, PyObject *kwnames);
+/* Vectorcall arg-count helpers — pure macros, no runtime support needed.
+ * The high bit of nargsf is the ARGUMENTS_OFFSET flag; NARGS masks it off. */
+#define PY_VECTORCALL_ARGUMENTS_OFFSET \
+    ((size_t)1 << (8 * sizeof(size_t) - 1))
+static inline Py_ssize_t PyVectorcall_NARGS(size_t n) {
+    return (Py_ssize_t)(n & ~PY_VECTORCALL_ARGUMENTS_OFFSET);
+}
 PyObject *PyImport_ImportModuleAttrString(const char *modname, const char *attr);
 
 /* Bytes utilities. */
@@ -891,6 +903,7 @@ Py_ssize_t _wasthon_Py_SIZE(PyObject *op);
 #endif
 long      PyLong_AsLong(PyObject *o);
 int       PyLong_AsInt(PyObject *o);
+int       PyLong_AsUInt32(PyObject *o, uint32_t *value);
 unsigned long PyLong_AsUnsignedLong(PyObject *o);
 unsigned long PyLong_AsUnsignedLongMask(PyObject *o);
 Py_ssize_t PyLong_AsSsize_t(PyObject *o);
@@ -980,6 +993,7 @@ int              PyUnicodeWriter_WriteSubstring(PyUnicodeWriter *writer, PyObjec
 
 /* Misc additions */
 PyObject *PySequence_GetItem(PyObject *o, Py_ssize_t i);
+int       PySequence_Check(PyObject *o);
 Py_ssize_t PySequence_Size(PyObject *o);
 #define PySequence_Length(o) PySequence_Size(o)
 int PyList_CheckExact(PyObject *o);
@@ -1437,6 +1451,7 @@ extern PyObject *PyExc_OSError;
 extern PyObject *PyExc_AttributeError;
 extern PyObject *PyExc_ArithmeticError;
 extern PyObject *PyExc_DeprecationWarning;
+extern PyObject *PyExc_Warning;
 extern PyObject *PyExc_ZeroDivisionError;
 
 /* PyType_FromSpec — variant of FromModuleAndSpec with no module association. */
@@ -1446,6 +1461,14 @@ PyObject *PyType_FromSpec(PyType_Spec *spec);
 PyObject *PyErr_NoMemory(void);
 void      PyErr_SetString(PyObject *exc, const char *msg);
 PyObject *PyErr_Format(PyObject *exc, const char *fmt, ...);
+/* _PyErr_FormatFromCause — like PyErr_Format but chains the in-flight
+ * exception as __cause__. The bridge has no exception-chaining machinery,
+ * so it sets the new error and drops the cause link (acceptable: the
+ * message still surfaces; only the __cause__ attribute is lost). */
+PyObject *_PyErr_FormatFromCause(PyObject *exc, const char *fmt, ...);
+/* PyErr_Print — print the pending exception and clear it. Routed to the
+ * JS console; no sys.last_* / traceback object machinery. */
+void      PyErr_Print(void);
 void      PyErr_Clear(void);
 PyObject *PyErr_Occurred(void);
 void      PyErr_SetNone(PyObject *exc);
@@ -1581,8 +1604,40 @@ PyGILState_STATE PyGILState_Ensure(void);
 void PyGILState_Release(PyGILState_STATE state);
 void *PyGILState_GetThisThreadState(void);
 
+/* Single-threaded WASM stubs. There is exactly one thread and the GIL is
+ * always "held"; the interpreter never finalizes (Brython owns the
+ * lifecycle). _PyWeakref_IsDead reports "alive" since the bridge doesn't
+ * implement weakref death — callers that walk weakref'd object lists must
+ * not rely on this for correctness (flagged: real weakref support needed).
+ * PyErr_ResourceWarning is a no-op (no __del__-time warnings in browser). */
+#define PyGILState_Check()              (1)
+static inline unsigned long PyThread_get_thread_ident(void) { return 1; }
+static inline int _Py_IsInterpreterFinalizing(PyInterpreterState *i) {
+    (void)i; return 0;
+}
+static inline int _PyWeakref_IsDead(PyObject *ref) { (void)ref; return 0; }
+static inline int PyErr_ResourceWarning(PyObject *source,
+                                        Py_ssize_t stack_level,
+                                        const char *format, ...) {
+    (void)source; (void)stack_level; (void)format; return 0;
+}
+
 /* Object protocol — common functions used by stdlib modules. */
 const char *PyUnicode_AsUTF8(PyObject *unicode);
+/* _PyUnicode_AsUTF8NoNUL — like PyUnicode_AsUTF8 but rejects strings with
+ * embedded NUL bytes (used for paths / SQL where NUL would truncate). */
+const char *_PyUnicode_AsUTF8NoNUL(PyObject *unicode);
+/* PyUnicode_FSConverter — argument converter (str|bytes -> bytes). On
+ * success writes a new bytes ref to *addr and returns 1; 0 on failure.
+ * The bridge calls it directly (not via PyArg O&), so plain 1/0 success
+ * semantics are sufficient — no Py_CLEANUP_SUPPORTED recursion. */
+int       PyUnicode_FSConverter(PyObject *arg, void *addr);
+/* PyObject_CallFinalizerFromDealloc — invoked on the tp_dealloc path.
+ * The bridge has no tp_dealloc dispatch (Brython owns object lifecycle),
+ * so this is a no-op returning 0 ("proceed with dealloc", never
+ * resurrected). NOTE: resource-holding types (sqlite Connection)
+ * therefore rely on explicit close()/context-manager, not GC finalization. */
+int       PyObject_CallFinalizerFromDealloc(PyObject *self);
 PyObject *PyObject_CallMethodNoArgs(PyObject *self, PyObject *name);
 PyObject *PyObject_CallOneArg(PyObject *func, PyObject *arg);
 PyObject *PyObject_GetAttrString(PyObject *o, const char *name);

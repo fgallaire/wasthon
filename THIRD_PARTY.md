@@ -18,6 +18,12 @@ includes two files copied (near-)verbatim from CPython:
 - `src/pyexpat.h` — copied from CPython's `Include/pyexpat.h`. Defines the
   `PyExpat_CAPI` capsule struct exposed by `pyexpat` to other parser
   modules.
+- `src/pythread.h` — copied from CPython's `Include/pythread.h`. Provides
+  thread-state typedefs and primitives that `_sqlite3` references; the
+  bridge supplies single-threaded WASM stubs for the operations.
+- `src/structmember.h` — copied from CPython's `Include/structmember.h`.
+  Provides the `PyMemberDef` type codes used by `_sqlite3` (and any
+  module exposing C struct members as Python attributes).
 
 `src/wasthon.h` re-declares many CPython public C-API function prototypes,
 macros, and struct layouts. Function signatures and macro values are
@@ -53,6 +59,11 @@ to Wasthon users:
   <https://facebook.github.io/zstd/>
 - **zlib** — zlib license, (C) Jean-loup Gailly and Mark Adler. Provided
   by the Emscripten port; used by `_zlib`. <https://zlib.net/>
+- **SQLite 3.46.1** — public domain (the SQLite authors explicitly
+  disclaim copyright via the SQLite "Blessing"). Provides the embedded
+  SQL database engine used by `_sqlite3`. The amalgamation
+  `sqlite-amalgamation-3460100.zip` is downloaded at build time.
+  <https://www.sqlite.org/>
 
 ## Build-time tooling (not redistributed)
 

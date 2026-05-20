@@ -18,7 +18,7 @@
 <h1>Wasthon — tests &amp; benches</h1>
 
 <p class="note">
-  Each of Wasthon's 22 ported modules has a <code>test-*.html</code> (smoke
+  Each of Wasthon's 24 ported modules has a <code>test-*.html</code> (smoke
   correctness) and a <code>bench-*.html</code> (perf vs Brython equivalent),
   with two grouped exceptions: <strong>hashlib</strong> bundles md5/sha1/sha2/sha3/blake2/hmac,
   <strong>cluster</strong> bundles _random/_struct/unicodedata.
@@ -26,8 +26,8 @@
 
 <h2>Bundled targets <span class="note">(one .mjs/.wasm for the whole set)</span></h2>
 <ul class="grid">
-  <li><a href="test-wasthon.html">test-wasthon</a> <span class="note">(light, 20 modules, ~1 MB — default)</span></li>
-  <li><a href="test-wasthon-full.html">test-wasthon-full</a> <span class="note">(full, 22 modules, ~2 MB — adds unicodedata + _zstd)</span></li>
+  <li><a href="test-wasthon.html">test-wasthon</a> <span class="note">(light, 21 modules, ~1 MB — default)</span></li>
+  <li><a href="test-wasthon-full.html">test-wasthon-full</a> <span class="note">(full, 24 modules, ~3 MB — adds unicodedata + _zstd + _sqlite3)</span></li>
 </ul>
 
 <h2>Tests <span class="note">(smoke correctness)</span></h2>
@@ -43,11 +43,12 @@
   <li><a href="test-lzma.html">_lzma</a></li>
   <li><a href="test-math.html">math</a></li>
   <li><a href="test-pyexpat.html">pyexpat</a></li>
-  <li><a href="test-pickle.html">_pickle</a> <span class="note">(C accelerator for pickle)</span></li>
   <li><a href="test-statistics.html">_statistics</a></li>
   <li><a href="test-zlib.html">_zlib</a></li>
   <li><a href="test-zstd.html">_zstd</a></li>
+  <li><a href="test-pickle.html">_pickle</a> <span class="note">(no bench yet)</span></li>
   <li><a href="test-sre.html">_sre</a> <span class="note">(no bench yet)</span></li>
+  <li><a href="test-sqlite.html">_sqlite3</a> <span class="note">(:memory: only, no bench yet)</span></li>
 </ul>
 
 <h2>Benches <span class="note">(Wasthon vs Brython)</span></h2>

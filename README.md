@@ -74,8 +74,9 @@ at ~75 KB/s. Largest speedup we've measured on any ported module.
 | `cmath`        | complex math (sqrt/exp/log/sin/polar/rect/…)             | 51 KB       |
 | `unicodedata`  | full Unicode 15.x database + normalization               | 669 KB      |
 | `_statistics`  | `_normal_dist_inv_cdf` (Wichura AS241)                   | 15 KB       |
-| `_pickle`      | C accelerator for pickle (protocols 2-5)                 | 79 KB       |
-|                | **Total**                                                | **~2.8 MB** |
+| `_pickle`      | C accelerator for pickle (protocols 0-5)                 | 79 KB       |
+| `_sqlite3`     | SQLite 3.46.1 embedded DB (FTS5 + RTREE + JSON1)         | 730 KB      |
+|                | **Total**                                                | **~3.4 MB** |
 
 ### Highlight benchmarks — Wasthon vs Brython
 
@@ -333,8 +334,8 @@ that's Pyodide):
    objects; real WASM pointers for C-allocated instances. The handle IS the
    pointer so `self->field` dereferences hit the right linear memory.
 
-The bridge today covers ~410 distinct C-API entry points. That's enough for
-**23 stdlib modules**, all major type-creation patterns (factory functions,
+The bridge today covers ~420 distinct C-API entry points. That's enough for
+**24 stdlib modules**, all major type-creation patterns (factory functions,
 tp_new-only, tp_new+tp_init, multi-phase exec slot), buffer protocol,
 Unicode (PEP 393 strict, kind-aware), dict/list/tuple, IEEE 754, slot
 dispatch including sequence and number protocols, getset descriptors
@@ -370,24 +371,34 @@ Build any module via the wrapper script (after activating emsdk):
 
 ```bash
 cd wasthon
-./build.sh _sha2          # any of the 23 known modules → build/_sha2.{mjs,wasm}
+./build.sh _sha2          # any of the 24 known modules → build/_sha2.{mjs,wasm}
 ./build.sh _sha2 _decimal # several specific modules in one go
 ./build.sh all            # everything as per-module .mjs/.wasm
                           # (~45 s once libs are cached; first run downloads + builds the libs too)
 ./build.sh wasthon        # light bundle: 21 modules in build/wasthon.{mjs,wasm} (~1 MB)
-                          # — drops the two specialists (unicodedata, _zstd)
-./build.sh wasthon-full   # full bundle: 23 modules in build/wasthon-full.{mjs,wasm} (~2 MB)
+                          # — drops the three specialists (unicodedata, _zstd, _sqlite3)
+./build.sh wasthon-full   # full bundle: 24 modules in build/wasthon-full.{mjs,wasm} (~3 MB)
 ```
 
 The per-module target is best for dev, bench, and incremental work — each
 module is fetched only if imported, and rebuilds are cheap. The bundled
 targets are the "drop one script tag into your HTML" deliverable: one
 fetch, one WASM instance, shared bridge runtime. `wasthon` is the default
-(~1 MB / 348 KB gzip); `wasthon-full` adds the two specialists
-`unicodedata` (full Unicode DB) and `_zstd` (libzstd) which together
-account for ~57% of the full bundle size. Users who need either load the
+(~1 MB / 348 KB gzip); `wasthon-full` adds the three specialists
+`unicodedata` (full Unicode DB), `_zstd` (libzstd), and `_sqlite3`
+(SQLite 3.46.1 + FTS5/RTREE/JSON1) — together responsible for most of the
+full bundle's extra weight. Users who need any of them can also load the
 per-module .wasm add-on alongside `wasthon`. See `loader/test-wasthon.html`
 and `loader/test-wasthon-full.html` for working bundle pages.
+
+**Compile flags.** Modules are compiled with `emcc -O3` by default. The
+project's positioning is perf-first — the C accelerators only earn their
+wasm footprint if they beat Brython's pure-Python implementations by
+large margins. `_sqlite3` is the single documented exception: built with
+`-Oz` (halves the wasm — 1.35 MB → 730 KB — with negligible runtime cost
+in practice, since SQLite is bridge-bound and carries large cold-path
+features like FTS5/RTREE/JSON1 that aren't on the query hot loop). This
+size cut is what made bundling `_sqlite3` in `wasthon-full` viable.
 
 The script handles all the per-module quirks: downloading missing source
 trees, compiling external libraries (libexpat, liblzma, libzstd, bzip2,
@@ -406,6 +417,31 @@ python3 -m http.server 8765
 
 Recent ports:
 
+- [x] `_sqlite3` — SQLite 3.46.1 amalgamation + CPython's full `_sqlite`
+      hierarchy (Connection / Cursor / Row / Blob / PrepareProtocol /
+      Statement / microprotocols / util). FTS5, RTREE, and JSON1 enabled
+      for real-world usefulness; `:memory:` only for now (no persistence
+      wired yet). Bundled in `wasthon-full`, also loadable standalone for
+      sites that only need a database. **Compiled with `emcc -Oz`** —
+      the project's overall rule is `-O3` (perf-first, that's wasthon's
+      value prop), but SQLite is a documented exception: -Oz halves the
+      wasm (1.35 MB → 730 KB) with negligible cost in practice (SQLite
+      is bridge-bound + carries large cold-path features like FTS5/RTREE/
+      JSON1 that aren't on query hot loops). The size cut is what made
+      bundling sqlite in `wasthon-full` viable. Bench validation was
+      blocked by the pending `tp_dealloc` infrastructure (loop-bench
+      leaks Connection handles); a proper compare-loop bench will be
+      re-run once dealloc lands. Bridge growth from this port — chief
+      among them: `forwardError` helper preserves the original Brython
+      exception class through C boundaries (replaces ~30 sites of
+      `setError(RuntimeError, e.message)` flattening); `Py_tp_call`
+      slot wiring lets callable types dispatch through C (sqlite's
+      `statement_cache(lru_cache(n))` flow needs this); `__wasthon_type__`
+      on `tp_new`'d instances unlocks `PyObject_TypeCheck` for clinic
+      `__init__` guards; new bridge symbols `_PyUnicode_AsUTF8NoNUL`,
+      `PyUnicode_FSConverter`, `PyLong_AsUInt32`, `PySequence_Check`,
+      `_PyErr_FormatFromCause`, `PyErr_Print`, `PyExc_Warning`, plus
+      single-threaded GIL stubs and `PyArg_ParseTuple` format-char `'U'`.
 - [x] `_pickle` — C accelerator for `pickle`. Round-trips ints (incl. BigInts),
       floats, str (incl. non-ASCII unicode), bytes, bool, None, list, tuple,
       dict, set, frozenset, and arbitrary nestings of these across all four
@@ -598,6 +634,8 @@ and [zstd](https://facebook.github.io/zstd/) (Yann Collet, Meta). `_decimal`
 embeds [libmpdec](https://www.bytereef.org/mpdecimal/) (Stefan Krah).
 `pyexpat` rides on [libexpat](https://libexpat.github.io/) (James Clark
 and successors).
+`_sqlite3` bundles the [SQLite](https://www.sqlite.org/) amalgamation
+(D. Richard Hipp; placed in the public domain).
 Wasthon is mostly the plumbing that lets these libraries talk to Python
 code translated to JavaScript by Brython, through a synthetic CPython
 C-API implemented over the JavaScript runtime.

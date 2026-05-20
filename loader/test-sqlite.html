@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — _sqlite3 smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>wasthon — _sqlite3 smoke test</h1>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    const fmt = a => typeof a === 'string' ? a :
+        (typeof a === 'number' || typeof a === 'boolean') ? String(a) :
+        (() => { try { return JSON.stringify(a); } catch (_) { return Object.prototype.toString.call(a); }})();
+    document.getElementById('log').textContent += args.map(fmt).join(' ') + '\n';
+    console.log('[sqlite]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading _sqlite3…');
+    await wasthonLoad('_sqlite3', '../build/_sqlite3.mjs');
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _sqlite3 as sq
+
+# Test 1: module attributes
+log('Test 1: module attributes')
+for name in ('connect', 'Connection', 'Cursor', 'sqlite_version',
+             'OperationalError', 'IntegrityError', 'DatabaseError'):
+    log(f'  _sqlite3.{name}: {"✓" if hasattr(sq, name) else "✗"}')
+try:
+    log(f'  sqlite_version = {sq.sqlite_version}')
+except Exception as e:
+    log(f'  sqlite_version FAIL: {type(e).__name__}: {e}')
+
+# Test 2: connect to in-memory DB
+log('\\nTest 2: connect(":memory:")')
+con = None
+try:
+    con = sq.connect(':memory:')
+    log(f'  connected: {"✓" if con is not None else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 3: cursor + CREATE TABLE + INSERT
+log('\\nTest 3: cursor() + CREATE TABLE + INSERT')
+cur = None
+try:
+    cur = con.cursor()
+    cur.execute('CREATE TABLE fruit (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER)')
+    cur.execute("INSERT INTO fruit (name, qty) VALUES ('apple', 3)")
+    cur.execute("INSERT INTO fruit (name, qty) VALUES ('banana', 5)")
+    con.commit()
+    log(f'  cursor + created + inserted 2 rows: {"✓" if cur is not None else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 4: SELECT fetchall
+log('\\nTest 4: SELECT fetchall')
+try:
+    cur.execute('SELECT name, qty FROM fruit ORDER BY name')
+    rows = cur.fetchall()
+    log(f'  rows = {rows}')
+    ok = rows == [('apple', 3), ('banana', 5)]
+    log(f'  expect [("apple", 3), ("banana", 5)]: {"✓" if ok else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 5: parameterized query (qmark style)
+log('\\nTest 5: parameterized query')
+try:
+    cur.execute('SELECT qty FROM fruit WHERE name = ?', ('banana',))
+    r = cur.fetchone()
+    log(f'  qty for banana = {r}  (expect (5,)): {"✓" if r == (5,) else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 6: executemany + aggregate
+log('\\nTest 6: executemany + COUNT/SUM')
+try:
+    cur.executemany('INSERT INTO fruit (name, qty) VALUES (?, ?)',
+                     [('cherry', 10), ('date', 2)])
+    con.commit()
+    cur.execute('SELECT COUNT(*), SUM(qty) FROM fruit')
+    n, total = cur.fetchone()
+    log(f'  COUNT={n} SUM={total}  (expect 4, 20): {"✓" if (n, total) == (4, 20) else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 7: cursor iteration
+log('\\nTest 7: cursor iteration')
+try:
+    cur.execute('SELECT name FROM fruit ORDER BY name')
+    names = [row[0] for row in cur]
+    ok = names == ['apple', 'banana', 'cherry', 'date']
+    log(f'  names = {names}: {"✓" if ok else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+# Test 8: error handling on bad SQL
+log('\\nTest 8: OperationalError on bad SQL')
+try:
+    cur.execute('SELECT * FROM no_such_table')
+    log('  ✗ (expected an exception, got none)')
+except Exception as e:
+    is_op = type(e).__name__ == 'OperationalError'
+    log(f'  raised {type(e).__name__}: {"✓" if is_op else "✗ (expected OperationalError)"}')
+
+# Test 9: close
+log('\\nTest 9: close')
+try:
+    con.close()
+    log('  closed: ✓')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED to bootstrap: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

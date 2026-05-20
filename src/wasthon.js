@@ -216,6 +216,35 @@ mergeInto(LibraryManager.library, {
             this.pendingException = { exc: excHandle, msg: msg };
         },
 
+        /* Forward a caught JS value as the pending Python exception,
+         * preserving the original Brython exception class + message
+         * instead of flattening everything to RuntimeError/"[object
+         * Object]". `e` may be a Brython exception object (has
+         * __class__/args), a JS Error, or anything. `fallbackCls` is the
+         * Brython class to use when `e` carries no usable class. */
+        forwardError: function(e, fallbackCls) {
+            var rt = this;
+            var cls = fallbackCls || rt._b_.RuntimeError;
+            var msg;
+            try {
+                if (e && (e.__class__ || (e.ob_type && e.args !== undefined))) {
+                    cls = e.__class__ || rt.$B.get_class(e) || cls;
+                    if (e.args && e.args.length > 0) {
+                        msg = String(e.args[0]);
+                    } else {
+                        try { msg = rt.$B.class_name(e); } catch (_) { msg = ''; }
+                    }
+                } else if (e && typeof e.message === 'string') {
+                    msg = e.message;
+                } else {
+                    msg = String(e);
+                }
+            } catch (_) {
+                msg = 'error';
+            }
+            this.pendingException = { exc: rt.wrap(cls), msg: msg };
+        },
+
         // Normalise any Brython str-like to a primitive JS string.
         // Brython represents BMP strings as primitives, but astral-plane
         // strings (codepoints > U+FFFF) and certain str-subclass instances
@@ -515,7 +544,7 @@ mergeInto(LibraryManager.library, {
         if (obj === null) return 0;
         try { return rt.wrap(rt._b_.iter(obj)); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
     },
@@ -565,7 +594,7 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(objH);
         try { return rt.wrap(rt._b_.float.$factory(obj)); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
     },
@@ -936,7 +965,7 @@ mergeInto(LibraryManager.library, {
         try {
             return rt.wrap(rt.$B.$call.apply(rt.$B, [fn].concat(args)));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
@@ -1719,7 +1748,7 @@ mergeInto(LibraryManager.library, {
                       rt.$B.$getattr(sep, 'join')(seq);
             return rt.wrap(out);
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
     },
@@ -2185,6 +2214,29 @@ mergeInto(LibraryManager.library, {
         return -1;
     },
 
+    /* PyLong_AsUInt32(obj, *value) — 0 on success (writes uint32 to
+     * *value), -1 on error (TypeError if not int, OverflowError if out of
+     * range). New in CPython 3.14; used by cursor.arraysize setter. */
+    PyLong_AsUInt32__deps: ['$WasthonRT'],
+    PyLong_AsUInt32: function(handle, valuePtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        var n;
+        if (typeof obj === 'number') n = obj;
+        else if (typeof obj === 'bigint') n = Number(obj);
+        else {
+            rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
+            return -1;
+        }
+        if (!Number.isInteger(n) || n < 0 || n > 0xFFFFFFFF) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "Python int too large to convert to C uint32_t");
+            return -1;
+        }
+        HEAPU32[valuePtr >> 2] = n >>> 0;
+        return 0;
+    },
+
     PyLong_AsUnsignedLong__deps: ['$WasthonRT'],
     PyLong_AsUnsignedLong: function(handle) {
         var obj = WasthonRT.unwrap(handle);
@@ -2460,7 +2512,7 @@ mergeInto(LibraryManager.library, {
         if (cls === null) return -1;
         try { return rt.$B.$isinstance(obj, cls) ? 1 : 0; }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return -1;
         }
     },
@@ -2511,6 +2563,19 @@ mergeInto(LibraryManager.library, {
         if (obj === null) return 0;
         try { return WasthonRT.$B.$isinstance(obj, WasthonRT._b_.bytearray) ? 1 : 0; }
         catch (e) { return 0; }
+    },
+
+    /* PyByteArray_CheckExact — exactly bytearray, not a subclass. Brython
+     * doesn't subclass bytearray internally, so this matches Check. */
+    PyByteArray_CheckExact__deps: ['$WasthonRT'],
+    PyByteArray_CheckExact: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        try {
+            return (obj.__class__ === rt._b_.bytearray ||
+                    rt.$B.$isinstance(obj, rt._b_.bytearray)) ? 1 : 0;
+        } catch (e) { return 0; }
     },
 
     PyByteArray_AsString__deps: ['$WasthonRT'],
@@ -3031,6 +3096,58 @@ mergeInto(LibraryManager.library, {
         return ptr;
     },
 
+    /* _PyUnicode_AsUTF8NoNUL — PyUnicode_AsUTF8 but rejects embedded NUL.
+     * Used where a NUL would silently truncate (paths, SQL text). */
+    _PyUnicode_AsUTF8NoNUL__deps: ['$WasthonRT', 'PyUnicode_AsUTF8'],
+    _PyUnicode_AsUTF8NoNUL: function(handle) {
+        var rt = WasthonRT;
+        var ptr = _PyUnicode_AsUTF8(handle);
+        if (ptr === 0) return 0;
+        var s = rt.asJSStr(rt.unwrap(handle));
+        if (typeof s === 'string' && s.indexOf('\0') !== -1) {
+            rt.setError(rt.wrap(rt._b_.ValueError),
+                "embedded null character");
+            return 0;
+        }
+        return ptr;
+    },
+
+    /* PyUnicode_FSConverter(arg, *addr) — str|bytes -> bytes. Writes a new
+     * bytes handle to *addr, returns 1; 0 + sets error on failure. The
+     * bridge calls this directly (not via PyArg O&), so plain success
+     * semantics (1) suffice — no Py_CLEANUP_SUPPORTED cleanup pass. */
+    PyUnicode_FSConverter__deps: ['$WasthonRT'],
+    PyUnicode_FSConverter: function(argHandle, addrPtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(argHandle);
+        var bytesObj;
+        try {
+            if (rt.$B.$isinstance(obj, rt._b_.bytes)) {
+                bytesObj = obj;
+            } else {
+                var s = rt.asJSStr(obj);
+                if (typeof s !== 'string') {
+                    rt.setError(rt.wrap(rt._b_.TypeError),
+                        "expected str, bytes or os.PathLike object");
+                    return 0;
+                }
+                if (s.indexOf('\0') !== -1) {
+                    rt.setError(rt.wrap(rt._b_.ValueError),
+                        "embedded null byte");
+                    return 0;
+                }
+                var enc = new TextEncoder().encode(s);
+                bytesObj = rt._b_.bytes.$factory(Array.from(enc));
+            }
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "expected str, bytes or os.PathLike object");
+            return 0;
+        }
+        HEAP32[addrPtr >> 2] = rt.wrap(bytesObj);
+        return 1;
+    },
+
     PyObject_CallMethodNoArgs__deps: ['$WasthonRT'],
     PyObject_CallMethodNoArgs: function(selfHandle, nameHandle) {
         var rt = WasthonRT;
@@ -3044,7 +3161,7 @@ mergeInto(LibraryManager.library, {
             var method = rt.$B.$getattr(self, name);
             return rt.wrap(rt.$B.$call(method));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
@@ -3057,7 +3174,7 @@ mergeInto(LibraryManager.library, {
         if (!fn) return 0;
         try { return rt.wrap(rt.$B.$call(fn, arg)); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
@@ -3085,7 +3202,7 @@ mergeInto(LibraryManager.library, {
         var method;
         try { method = rt.$B.$getattr(obj, name); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.AttributeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.AttributeError);
             return 0;
         }
         var args = [], p = varargs;
@@ -3111,7 +3228,7 @@ mergeInto(LibraryManager.library, {
         }
         try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [method].concat(args))); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
@@ -3329,6 +3446,24 @@ mergeInto(LibraryManager.library, {
         return 0;
     },
 
+    /* PySequence_Check(o) — does o support the sequence protocol? True for
+     * list/tuple/str/bytes/bytearray and anything with __getitem__ that
+     * isn't a mapping (dict). Mirrors CPython: a dict is not a sequence. */
+    PySequence_Check__deps: ['$WasthonRT'],
+    PySequence_Check: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (obj === null || obj === undefined) return 0;
+        if (Array.isArray(obj) || typeof obj === 'string') return 1;
+        try {
+            if (rt.$B.$isinstance(obj, rt._b_.dict)) return 0;
+            if (rt.$B.$isinstance(obj, [rt._b_.list, rt._b_.tuple,
+                    rt._b_.str, rt._b_.bytes, rt._b_.bytearray])) return 1;
+            var cls = obj.__class__ || (rt._b_.type && rt.$B.get_class(obj));
+            return (cls && rt.$B.$getattr(cls, '__getitem__', null)) ? 1 : 0;
+        } catch (e) { return 0; }
+    },
+
     /* PySequence_GetItem(o, i) — o[i]. */
     PySequence_GetItem__deps: ['$WasthonRT'],
     PySequence_GetItem: function(objH, i) {
@@ -3337,7 +3472,7 @@ mergeInto(LibraryManager.library, {
         if (obj === null) return 0;
         try { return rt.wrap(rt.$B.$getitem(obj, i)); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.IndexError), e.message || String(e));
+            rt.forwardError(e, rt._b_.IndexError);
             return 0;
         }
     },
@@ -3569,7 +3704,7 @@ mergeInto(LibraryManager.library, {
             // caller object usually accepts them via a special dict.
             return rt.wrap(rt.$B.$call.apply(null, [fn].concat(Array.from(args))));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
@@ -3581,7 +3716,7 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(objH);
         try { return rt.wrap(rt._b_.int.$factory(obj)); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
     },
@@ -3612,7 +3747,7 @@ mergeInto(LibraryManager.library, {
             }
             return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__add__'), b));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
     },
@@ -3638,7 +3773,7 @@ mergeInto(LibraryManager.library, {
             }
             return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__mul__'), b));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
     },
@@ -3647,28 +3782,28 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
         try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__floordiv__'), b)); }
-        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
     PyNumber_TrueDivide__deps: ['$WasthonRT'],
     PyNumber_TrueDivide: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
         try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__truediv__'), b)); }
-        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
     PyNumber_Remainder__deps: ['$WasthonRT'],
     PyNumber_Remainder: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
         try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__mod__'), b)); }
-        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
     PyNumber_And__deps: ['$WasthonRT'],
     PyNumber_And: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
         try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__and__'), b)); }
-        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
     /* PyUnicode helpers */
@@ -3724,7 +3859,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
         try { return rt.wrap(rt._b_.str.$factory(obj)); }
-        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
     /* PyObject_CallMethodObjArgs(obj, name, arg1, ..., NULL) */
@@ -3758,7 +3893,7 @@ mergeInto(LibraryManager.library, {
         if (name === null) return 0;
         try { return rt.wrap(rt._b_.__import__(name)); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.ImportError), e.message || String(e));
+            rt.forwardError(e, rt._b_.ImportError);
             return 0;
         }
     },
@@ -3851,7 +3986,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
         try { return rt.wrap(rt._b_.divmod(a, b)); }
-        catch (e) { rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e)); return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
     /* PyObject_CallNoArgs(callable) — callable(). */
@@ -3862,7 +3997,7 @@ mergeInto(LibraryManager.library, {
         if (!fn) return 0;
         try { return rt.wrapMaybeType(rt.$B.$call(fn)); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
@@ -3959,7 +4094,7 @@ mergeInto(LibraryManager.library, {
         }
         try { return rt.wrap(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
@@ -4426,6 +4561,37 @@ mergeInto(LibraryManager.library, {
         WasthonRT.pendingException = null;
     },
 
+    /* _PyErr_FormatFromCause(exc, fmt, ...) — set a new formatted error,
+     * conceptually chaining the in-flight one as __cause__. The bridge has
+     * no chaining machinery, so we drop the prior exception and set the
+     * new one (message still surfaces; __cause__ link is lost). Reuses
+     * PyErr_Format's printf-subset formatter. */
+    _PyErr_FormatFromCause__deps: ['$WasthonRT', 'PyErr_Format'],
+    _PyErr_FormatFromCause: function(excHandle, fmtPtr, varargs) {
+        WasthonRT.pendingException = null;
+        return _PyErr_Format(excHandle, fmtPtr, varargs);
+    },
+
+    /* PyErr_Print — emit the pending exception to the JS console and clear
+     * it. No sys.last_*, no traceback object (the bridge has no traceback
+     * machinery); the message is what callers care about here. */
+    PyErr_Print__deps: ['$WasthonRT'],
+    PyErr_Print: function() {
+        var rt = WasthonRT;
+        var e = rt.pendingException;
+        if (e) {
+            var name = "Exception";
+            try { name = rt.unwrap(e.exc).__name__ || name; } catch (_) {}
+            console.error("[wasthon] " + name + ": " + (e.msg || ""));
+        }
+        rt.pendingException = null;
+    },
+
+    /* PyObject_CallFinalizerFromDealloc — tp_dealloc-path finalizer hook.
+     * No-op: the bridge has no tp_dealloc dispatch (Brython owns object
+     * lifecycle). Resource types must expose explicit close()/__exit__. */
+    PyObject_CallFinalizerFromDealloc: function(_self) { return 0; },
+
     PyErr_Occurred__deps: ['$WasthonRT'],
     PyErr_Occurred: function() {
         return WasthonRT.pendingException ? WasthonRT.pendingException.exc : 0;
@@ -4444,8 +4610,22 @@ mergeInto(LibraryManager.library, {
      * .args tuple. */
     PyErr_SetObject__deps: ['$WasthonRT'],
     PyErr_SetObject: function(excHandle, valueHandle) {
-        var v = WasthonRT.unwrap(valueHandle);
-        WasthonRT.setError(excHandle, v === null ? "" : v);
+        var rt = WasthonRT;
+        var v = rt.unwrap(valueHandle);
+        var msg = "";
+        if (v === null || v === undefined) {
+            msg = "";
+        } else if (typeof v === 'string') {
+            msg = v;
+        } else if (v && (v.__class__ || (v.ob_type && v.args !== undefined))) {
+            try {
+                if (v.args && v.args.length > 0) msg = String(v.args[0]);
+                else msg = rt.$B.class_name(v);
+            } catch (_) { msg = ""; }
+        } else {
+            try { msg = String(v); } catch (_) { msg = ""; }
+        }
+        rt.setError(excHandle, msg);
     },
 
     /* PyObject_HashNotImplemented: used as a tp_hash slot to declare a type
@@ -4569,7 +4749,7 @@ mergeInto(LibraryManager.library, {
             if (c !== 'O' && c !== 'i' && c !== 'I' && c !== 'k' &&
                 c !== 'l' && c !== 'L' && c !== 'K' && c !== 'n' &&
                 c !== 'b' && c !== 'B' && c !== 'h' && c !== 'H' &&
-                c !== 'p' && c !== 'C') {
+                c !== 'p' && c !== 'C' && c !== 'U') {
                 rt.setError(rt.wrap(rt._b_.SystemError),
                     "PyArg_ParseTuple[AndKeywords]: format char '" + c + "' not implemented");
                 return 0;
@@ -4600,6 +4780,14 @@ mergeInto(LibraryManager.library, {
                 var outPtr = HEAP32[p >> 2];
                 if (outPtr !== 0) {
                     if (c === 'O') {
+                        HEAP32[outPtr >> 2] = rt.wrap(value);
+                    } else if (c === 'U') {
+                        /* Unicode object: must be a str; store the handle. */
+                        if (rt.asJSStr(value) === null) {
+                            rt.setError(rt.wrap(rt._b_.TypeError),
+                                "argument must be str");
+                            return 0;
+                        }
                         HEAP32[outPtr >> 2] = rt.wrap(value);
                     } else if (c === 'p') {
                         /* predicate: store 1 byte int 0/1 */
@@ -4742,6 +4930,8 @@ mergeInto(LibraryManager.library, {
     wasthon_get_PyExc_ArithmeticError:      function() { return WasthonRT.wrap(WasthonRT._b_.ArithmeticError); },
     wasthon_get_PyExc_DeprecationWarning__deps: ['$WasthonRT'],
     wasthon_get_PyExc_DeprecationWarning:   function() { return WasthonRT.wrap(WasthonRT._b_.DeprecationWarning); },
+    wasthon_get_PyExc_Warning__deps:        ['$WasthonRT'],
+    wasthon_get_PyExc_Warning:              function() { return WasthonRT.wrap(WasthonRT._b_.Warning); },
     wasthon_get_PyExc_ZeroDivisionError__deps: ['$WasthonRT'],
     wasthon_get_PyExc_ZeroDivisionError:    function() { return WasthonRT.wrap(WasthonRT._b_.ZeroDivisionError); },
 
@@ -5769,7 +5959,7 @@ mergeInto(LibraryManager.library, {
             }
             return rt.wrap(mod);
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.ImportError), e.message || String(e));
+            rt.forwardError(e, rt._b_.ImportError);
             return 0;
         }
     },
@@ -5827,7 +6017,7 @@ mergeInto(LibraryManager.library, {
         var args = parse(undefined);
         try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
@@ -5879,7 +6069,7 @@ mergeInto(LibraryManager.library, {
         if (obj === null) return 0;
         try { return rt.wrap(rt._b_.iter(obj)); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
     },
@@ -5899,7 +6089,7 @@ mergeInto(LibraryManager.library, {
             var a = rt.unwrap(aH), b = rt.unwrap(bH);
             return rt.wrap(rt.$B.$call(rt._b_.int.__mul__, a, b));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
     },
@@ -5911,7 +6101,7 @@ mergeInto(LibraryManager.library, {
             var a = rt.unwrap(aH), b = rt.unwrap(bH);
             return rt.wrap(rt.$B.$call(rt._b_.int.__floordiv__, a, b));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
     },
@@ -5927,7 +6117,7 @@ mergeInto(LibraryManager.library, {
             }
             return rt.wrap(rt._b_.pow(a, b, c));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
     },
@@ -5939,7 +6129,7 @@ mergeInto(LibraryManager.library, {
             var x = rt.unwrap(handle);
             return rt.wrap(Math.abs(typeof x === 'number' ? x : Number(x)));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
     },
@@ -5981,7 +6171,7 @@ mergeInto(LibraryManager.library, {
             var fn = rt.$B.$getattr(rt._b_.float, 'as_integer_ratio');
             return rt.wrap(rt.$B.$call(fn, asNum));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.RuntimeError), e.message || String(e));
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
@@ -7127,10 +7317,12 @@ mergeInto(LibraryManager.library, {
                 // created via make_builtin_class) or __mro__ (Python-side).
                 if (brythonCls.tp_mro) chain = chain.concat(brythonCls.tp_mro);
                 else if (brythonCls.__mro__) chain = chain.concat(brythonCls.__mro__);
+                var typeStructForInst = 0;
                 for (var i = 0; i < chain.length; i++) {
                     var c = chain[i];
                     if (c && c.__wasthon_basicsize__ > 0) {
                         size = c.__wasthon_basicsize__;
+                        typeStructForInst = c.__wasthon_type_handle__ || 0;
                         break;
                     }
                 }
@@ -7144,6 +7336,13 @@ mergeInto(LibraryManager.library, {
                     __class__: brythonCls,
                     ob_type: brythonCls,
                     __wasthon_ptr__: instancePtr,
+                    /* Without this, Py_TYPE(inst) (wasthon_get_type_of)
+                     * can't return the type-struct pointer, so
+                     * PyObject_TypeCheck(inst, &XxxType) — used by clinic
+                     * __init__ guards like sqlite3 Cursor(connection) —
+                     * always fails. Mirror what wasthon_object_gc_new does
+                     * for types that DO have a Py_tp_new slot. */
+                    __wasthon_type__: typeStructForInst || typeHandle,
                 };
                 rt.bindInstance(instancePtr, inst);
                 return inst;
@@ -7435,6 +7634,42 @@ mergeInto(LibraryManager.library, {
         } else if (tpNewPtr) {
             // tp_new fully initialised; alias to object so Brython skips init.
             cls.tp_init = rt._b_.object.tp_init;
+        }
+
+        // Wire Py_tp_call (slot 77, wasthon.h numbering) as cls.tp_call so
+        // Brython's $call() treats instances as callable. CPython sig:
+        //   PyObject *tp_call(PyObject *self, PyObject *args, PyObject *kw)
+        // Brython invokes it as call_method(self, ...args[, $kw]).
+        // sqlite3 relies on this: statement_cache = lru_cache(n)(connection)
+        // then cache(sql) calls connection(sql) -> pysqlite_connection_call.
+        var tpCallPtr = slotMap[77 /* Py_tp_call */];
+        if (tpCallPtr) {
+            cls.tp_call = function(self) {
+                var jsArgs = Array.from(arguments).slice(1);
+                var kw = null;
+                if (jsArgs.length > 0 && jsArgs[jsArgs.length - 1] &&
+                        jsArgs[jsArgs.length - 1].$nat === 'kw') {
+                    kw = jsArgs.pop();
+                }
+                var selfH = self && self.__wasthon_ptr__
+                    ? self.__wasthon_ptr__ : rt.wrap(self);
+                var argsH = rt.wrap(jsArgs);
+                var kwH   = kw ? rt.wrap(kw) : 0;
+                rt.pendingException = null;
+                var resH = getWasmTableEntry(tpCallPtr)(selfH, argsH, kwH);
+                if (resH === 0 || rt.pendingException) {
+                    var pe = rt.pendingException;
+                    rt.pendingException = null;
+                    if (pe) {
+                        var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
+                        throw rt.$B.$call(exc, typeof pe.msg === 'string'
+                            ? pe.msg : String(pe.msg));
+                    }
+                    throw rt.$B.$call(rt._b_.RuntimeError,
+                        "tp_call returned NULL");
+                }
+                return rt.unwrap(resH);
+            };
         }
 
         // Install dealloc hook so that when Brython GCs an instance we
