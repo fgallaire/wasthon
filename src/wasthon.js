@@ -3446,6 +3446,59 @@ mergeInto(LibraryManager.library, {
         return 0;
     },
 
+    /* _Py_strhex_bytes_with_sep — format `bytes_len` bytes from C buffer
+     * as a hex BYTES object (CPython naming convention: the `bytes_`
+     * infix indicates the return type, not the input type — there's
+     * a paired `_Py_strhex_with_sep` returning str). `sep` may be NULL
+     * (no separator) or a 1-char bytes/str object inserted every
+     * |bytes_per_sep| bytes; positive bytes_per_sep groups from the
+     * right (matches bytes.hex(sep, n)), negative groups from the
+     * left. Used by binascii.b2a_hex / binascii.hexlify. */
+    _Py_strhex_bytes_with_sep__deps: ['$WasthonRT'],
+    _Py_strhex_bytes_with_sep: function(bufPtr, bytesLen, sepHandle, bytesPerSep) {
+        var rt = WasthonRT;
+        var hex = '0123456789abcdef';
+        var raw = '';
+        for (var i = 0; i < bytesLen; i++) {
+            var b = HEAPU8[bufPtr + i];
+            raw += hex[b >> 4] + hex[b & 0xf];
+        }
+        var out;
+        if (sepHandle === 0 || bytesPerSep === 0) {
+            out = raw;
+        } else {
+            var sep = rt.unwrap(sepHandle);
+            var sepStr = '';
+            if (typeof sep === 'string') sepStr = sep;
+            else if (sep && sep.source) sepStr = String.fromCharCode(sep.source[0] & 0xff);
+            else sepStr = String(sep);
+            var groupChars = Math.abs(bytesPerSep) * 2;
+            var groupFromRight = bytesPerSep > 0;
+            out = '';
+            if (groupFromRight) {
+                var first = raw.length % groupChars;
+                var idx = 0;
+                if (first > 0) { out = raw.substr(0, first); idx = first; }
+                while (idx < raw.length) {
+                    if (out.length > 0) out += sepStr;
+                    out += raw.substr(idx, groupChars);
+                    idx += groupChars;
+                }
+            } else {
+                for (var j = 0; j < raw.length; j += groupChars) {
+                    if (j > 0) out += sepStr;
+                    out += raw.substr(j, groupChars);
+                }
+            }
+        }
+        // Encode as ASCII bytes — hex chars and the separator are all
+        // single-byte. (If a user passes a multi-byte unicode sep, this
+        // would truncate; binascii's caller passes a single ASCII char.)
+        var arr = new Array(out.length);
+        for (var k = 0; k < out.length; k++) arr[k] = out.charCodeAt(k) & 0xff;
+        return rt.wrap(rt._b_.bytes.$factory(arr));
+    },
+
     /* PySequence_Check(o) — does o support the sequence protocol? True for
      * list/tuple/str/bytes/bytearray and anything with __getitem__ that
      * isn't a mapping (dict). Mirrors CPython: a dict is not a sequence. */

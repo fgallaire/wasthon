@@ -76,6 +76,7 @@ at ~75 KB/s. Largest speedup we've measured on any ported module.
 | `_statistics`  | `_normal_dist_inv_cdf` (Wichura AS241)                   | 15 KB       |
 | `_pickle`      | C accelerator for pickle (protocols 0-5)                 | 79 KB       |
 | `_sqlite3`     | SQLite 3.46.1 embedded DB (FTS5 + RTREE + JSON1)         | 730 KB      |
+| `binascii`     | hex / base64 / CRC encoding (CPython C accelerator)      | 24 KB       |
 |                | **Total**                                                | **~3.4 MB** |
 
 ### Highlight benchmarks — Wasthon vs Brython
@@ -334,8 +335,8 @@ that's Pyodide):
    objects; real WASM pointers for C-allocated instances. The handle IS the
    pointer so `self->field` dereferences hit the right linear memory.
 
-The bridge today covers ~420 distinct C-API entry points. That's enough for
-**24 stdlib modules**, all major type-creation patterns (factory functions,
+The bridge today covers ~425 distinct C-API entry points. That's enough for
+**25 stdlib modules**, all major type-creation patterns (factory functions,
 tp_new-only, tp_new+tp_init, multi-phase exec slot), buffer protocol,
 Unicode (PEP 393 strict, kind-aware), dict/list/tuple, IEEE 754, slot
 dispatch including sequence and number protocols, getset descriptors
@@ -371,13 +372,13 @@ Build any module via the wrapper script (after activating emsdk):
 
 ```bash
 cd wasthon
-./build.sh _sha2          # any of the 24 known modules → build/_sha2.{mjs,wasm}
+./build.sh _sha2          # any of the 25 known modules → build/_sha2.{mjs,wasm}
 ./build.sh _sha2 _decimal # several specific modules in one go
 ./build.sh all            # everything as per-module .mjs/.wasm
                           # (~45 s once libs are cached; first run downloads + builds the libs too)
-./build.sh wasthon        # light bundle: 21 modules in build/wasthon.{mjs,wasm} (~1 MB)
+./build.sh wasthon        # light bundle: 22 modules in build/wasthon.{mjs,wasm} (~1 MB)
                           # — drops the three specialists (unicodedata, _zstd, _sqlite3)
-./build.sh wasthon-full   # full bundle: 24 modules in build/wasthon-full.{mjs,wasm} (~3 MB)
+./build.sh wasthon-full   # full bundle: 25 modules in build/wasthon-full.{mjs,wasm} (~3 MB)
 ```
 
 The per-module target is best for dev, bench, and incremental work — each
@@ -417,6 +418,39 @@ python3 -m http.server 8765
 
 Recent ports:
 
+- [x] `binascii` — CPython C accelerator for hex / base64 / CRC encoding
+      (`hexlify`/`unhexlify`, `b2a_base64`/`a2b_base64`, `crc32`, `crc_hqx`,
+      `b2a_hex` with the 3.14 `sep`/`bytes_per_sep` API). 24 KB wasm, the
+      smallest module ported so far. Bundled in `wasthon` light by
+      default (+13 KB marginal — encoding is a fundamental Python
+      primitive used wherever bytes touch the network or the file
+      system). Brython's `binascii` is pure-Python; wasthon replaces it
+      transparently with bit-exact CPython behaviour. **Honest
+      benchmark** (2 MB payloads, median of 10 runs): decode operations
+      are **~4× faster** (`unhexlify` 3.9×, `a2b_base64` 4.3×) and
+      `crc32` works at all — Brython's pure-Python `crc32` raises
+      `TypeError: ord() expected a character, but int was found`, a
+      latent bug in its impl that wasthon resolves in passing. Encode
+      operations are mixed: `b2a_base64` ~1.8× faster, but
+      **`hexlify` is actually slower than Brython** (~0.55×) because
+      the bridge bandwidth cost on `bytes → hex string` (6 MB of
+      transfer for 2 MB input) outweighs the C win on what is otherwise
+      a trivial byte-to-char operation. Reporting that regression
+      honestly rather than papering it over with a JS-side shortcut:
+      wasthon's contract is "real CPython C behaviour", optimization
+      of `hexlify`-as-pure-Python belongs upstream in Brython.
+      Port surfaced two CPython-internal symbols not previously
+      needed by the bridge: `_PyLong_DigitValue[256]` (char→digit
+      lookup used by hex parsing, added verbatim from
+      `Objects/longobject.c`) and `_Py_strhex_bytes_with_sep`
+      (hex-with-separator formatter; the naming is misleading — the
+      `bytes_` infix denotes the *return* type, not the input, so it
+      returns a `bytes` object). Also hit a new instance of the Brython
+      kwarg-falsy-default quirk: a direct top-level
+      `b2a_base64(b'…', newline=False)` compiles to
+      `b2a_base64(b'…', 0=False)` (the kwarg name '`0`' is the value of
+      `False`). Previously thought lambda-only; now confirmed to fire
+      from plain calls too.
 - [x] `_sqlite3` — SQLite 3.46.1 amalgamation + CPython's full `_sqlite`
       hierarchy (Connection / Cursor / Row / Blob / PrepareProtocol /
       Statement / microprotocols / util). FTS5, RTREE, and JSON1 enabled

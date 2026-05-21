@@ -991,6 +991,19 @@ int              PyUnicodeWriter_WriteStr(PyUnicodeWriter *writer, PyObject *obj
 int              PyUnicodeWriter_WriteRepr(PyUnicodeWriter *writer, PyObject *obj);
 int              PyUnicodeWriter_WriteSubstring(PyUnicodeWriter *writer, PyObject *str, Py_ssize_t start, Py_ssize_t end);
 
+/* _PyLong_DigitValue[c] — lookup table mapping a char to its digit value
+ * (0-9 for '0'-'9', 10-35 for 'a'-'z'/'A'-'Z', 37 for invalid). Used by
+ * binascii's unhexlify to parse hex chars. Defined in wasthon.c. */
+extern const unsigned char _PyLong_DigitValue[256];
+
+/* _Py_strhex_bytes_with_sep — CPython internal: format bytes as hex string
+ * with optional separator every N bytes. Signature mirrors CPython:
+ * sep is a single-char bytes/str (or NULL for no sep); positive
+ * bytes_per_sep groups from the right (matches `bytes.hex(sep, n)`),
+ * negative from the left. Used by binascii.b2a_hex's sep variant. */
+PyObject *_Py_strhex_bytes_with_sep(const char *bytes, Py_ssize_t bytes_len,
+                                    PyObject *sep, int bytes_per_sep);
+
 /* Misc additions */
 PyObject *PySequence_GetItem(PyObject *o, Py_ssize_t i);
 int       PySequence_Check(PyObject *o);
@@ -1693,6 +1706,14 @@ PyObject *PyErr_NewException(const char *name, PyObject *base, PyObject *dict);
 
 /* Hex-encode `argbuf` (length argbuflen) into a new Python str. */
 PyObject *_Py_strhex(const char *argbuf, Py_ssize_t argbuflen);
+
+/* Expose `_PyBytesWriter` (the bytes-builder used by _pickle, binascii,
+ * and other modules that go through CPython's _PyBytesWriter API). The
+ * canonical struct + decls live in pycore_bytesobject.h; modules that
+ * include it explicitly (like _pickle.c) get it directly, modules that
+ * don't (like binascii.c, which expects Python.h to expose it) get it
+ * via this re-export. */
+#include "pycore_bytesobject.h"
 
 /* Byte swap intrinsic — modules use this for endianness. Trivial impl. */
 static inline uint32_t _Py_bswap32(uint32_t v) {

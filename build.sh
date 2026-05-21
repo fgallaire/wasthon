@@ -9,10 +9,10 @@
 # Usage: ./build.sh <command>
 #   <module>...   build one or several modules (e.g. _sha2, or _sha2 _decimal)
 #   all           build every supported module (~45 s once libs are cached)
-#   wasthon       build the light bundle (21 modules, ~1 MB) — the default
+#   wasthon       build the light bundle (22 modules, ~1 MB) — the default
 #                 drop-in: covers crypto, compression (zlib/bz2/lzma),
 #                 decimal, json/csv/struct/sre/pyexpat, math, array
-#   wasthon-full  build the full bundle (24 modules, ~3 MB), adding the
+#   wasthon-full  build the full bundle (25 modules, ~3 MB), adding the
 #                 three heavy specialists: unicodedata (full Unicode DB),
 #                 _zstd (modern compression) and _sqlite3 (embedded DB)
 #   list          show the known module names
@@ -38,8 +38,8 @@ usage() {
 Usage: $0 <command>
   <module>...   build one or several modules (e.g. _sha2, or _sha2 _decimal)
   all           build every supported module
-  wasthon       light bundle (21 modules, ~1 MB) — the default deliverable
-  wasthon-full  full bundle (24 modules, ~3 MB) — adds unicodedata + _zstd + _sqlite3
+  wasthon       light bundle (22 modules, ~1 MB) — the default deliverable
+  wasthon-full  full bundle (25 modules, ~3 MB) — adds unicodedata + _zstd + _sqlite3
   list          show the known module names
 EOF
 }
@@ -53,18 +53,18 @@ MODULE="$1"
 KNOWN_MODULES=(
     _md5 _sha1 _sha2 _sha3 _blake2 _hmac
     _zlib _bz2 _lzma _zstd
-    _csv _json _struct _sre unicodedata pyexpat _pickle
+    _csv _json _struct _sre unicodedata pyexpat _pickle binascii
     _decimal _random _statistics math cmath
     array _sqlite3
 )
 
 if [[ "${MODULE}" == "list" ]]; then
     cat <<'EOF'
-Known wasthon modules (24):
+Known wasthon modules (25):
   hashlib:     _md5  _sha1  _sha2  _sha3  _blake2  _hmac
   compression: _zlib  _bz2  _lzma  _zstd
   text/parse:  _csv  _json  _struct  _sre  unicodedata  pyexpat
-  serialization: _pickle
+  serialization: _pickle  binascii
   numerics:   _decimal  _random  _statistics  math  cmath
   containers: array
   database:   _sqlite3
@@ -424,12 +424,12 @@ fi
 # links the lot in one emcc call exporting every PyInit_* symbol.
 #
 # Two targets:
-#   wasthon      — light (21 modules, ~1 MB). The default deliverable.
+#   wasthon      — light (22 modules, ~1 MB). The default deliverable.
 #                  Drops the three heavy specialists (unicodedata, _zstd,
 #                  _sqlite3) that together account for most of the full
 #                  bundle's extra weight. Users who need them load the
 #                  per-module .wasm add-on alongside.
-#   wasthon-full — everything (24 modules, ~3 MB). Kitchen-sink, opt-in.
+#   wasthon-full — everything (25 modules, ~3 MB). Kitchen-sink, opt-in.
 #
 # Per-module .mjs files coexist for dev/bench and on-demand use.
 if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
@@ -453,7 +453,7 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
         _md5 _sha1 _sha2 _sha3 _blake2 _hmac
         _zlib _bz2 _lzma
         pyexpat _decimal _sre _pickle
-        array _csv _json _struct _random _statistics
+        array _csv _json _struct _random _statistics binascii
         math cmath
     )
     [[ $INCLUDE_ZSTD -eq 1 ]]        && BUNDLED_MODULES+=( _zstd )
@@ -525,6 +525,7 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
         _struct.o
         _randommodule.o
         _statisticsmodule.o
+        binascii.o
         mathmodule.o
         cmathmodule.o
     )
@@ -707,6 +708,12 @@ _pickle)
     copy_module_and_clinic "${CPYTHON_SRC}/Modules/_pickle.c"
     emcc -O3 -c -I . -I "${SRC}" _pickle.c -o _pickle.o
     link_module "_pickle" "PyInit__pickle" "_pickle_init" _pickle.o
+    ;;
+
+binascii)
+    copy_module_and_clinic "${CPYTHON_SRC}/Modules/binascii.c"
+    emcc -O3 -c -I . -I "${SRC}" binascii.c -o binascii.o
+    link_module "binascii" "PyInit_binascii" "binascii_init" binascii.o
     ;;
 
 _struct)

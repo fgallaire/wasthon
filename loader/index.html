@@ -18,7 +18,7 @@
 <h1>Wasthon — tests &amp; benches</h1>
 
 <p class="note">
-  Each of Wasthon's 24 ported modules has a <code>test-*.html</code> (smoke
+  Each of Wasthon's 25 ported modules has a <code>test-*.html</code> (smoke
   correctness) and a <code>bench-*.html</code> (perf vs Brython equivalent),
   with two grouped exceptions: <strong>hashlib</strong> bundles md5/sha1/sha2/sha3/blake2/hmac,
   <strong>cluster</strong> bundles _random/_struct/unicodedata.
@@ -26,13 +26,14 @@
 
 <h2>Bundled targets <span class="note">(one .mjs/.wasm for the whole set)</span></h2>
 <ul class="grid">
-  <li><a href="test-wasthon.html">test-wasthon</a> <span class="note">(light, 21 modules, ~1 MB — default)</span></li>
-  <li><a href="test-wasthon-full.html">test-wasthon-full</a> <span class="note">(full, 24 modules, ~3 MB — adds unicodedata + _zstd + _sqlite3)</span></li>
+  <li><a href="test-wasthon.html">test-wasthon</a> <span class="note">(light, 22 modules, ~1 MB — default)</span></li>
+  <li><a href="test-wasthon-full.html">test-wasthon-full</a> <span class="note">(full, 25 modules, ~3 MB — adds unicodedata + _zstd + _sqlite3)</span></li>
 </ul>
 
 <h2>Tests <span class="note">(smoke correctness)</span></h2>
 <ul class="grid">
   <li><a href="test-array.html">array</a></li>
+  <li><a href="test-binascii.html">binascii</a></li>
   <li><a href="test-bz2.html">_bz2</a></li>
   <li><a href="test-cluster.html">cluster</a> <span class="note">(_random/_struct/unicodedata)</span></li>
   <li><a href="test-cmath.html">cmath</a></li>
@@ -54,6 +55,7 @@
 <h2>Benches <span class="note">(Wasthon vs Brython)</span></h2>
 <ul class="grid">
   <li><a href="bench-array.html">array</a></li>
+  <li><a href="bench-binascii.html">binascii</a></li>
   <li><a href="bench-bz2.html">_bz2</a></li>
   <li><a href="bench-cluster.html">cluster</a> <span class="note">(_random/_struct/unicodedata)</span></li>
   <li><a href="bench-cmath.html">cmath</a></li>

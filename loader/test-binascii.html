@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — binascii smoke test</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>Wasthon — binascii smoke test</h1>
+<p style="color:#666;font-size:0.9em;">
+  Smoke-tests <code>binascii</code> — the C accelerator for hex / base64 /
+  CRC encoding. Round-trips known payloads against pre-computed expected
+  values to verify byte-exact compatibility with CPython 3.14.
+</p>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[binascii]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading binascii…');
+    await wasthonLoad('binascii', '../build/binascii.mjs');
+    log('Loaded. Running smoke tests…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import binascii
+
+passes = 0
+fails = 0
+def check(label, got, expected):
+    global passes, fails
+    if got == expected:
+        passes += 1
+        log(f'  ✓  {label}')
+    else:
+        fails += 1
+        log(f'  ✗  {label}\\n        got:      {got!r}\\n        expected: {expected!r}')
+
+log('Test 1: module attributes')
+for name in ('hexlify', 'unhexlify', 'b2a_hex', 'a2b_hex',
+             'b2a_base64', 'a2b_base64', 'crc32', 'crc_hqx',
+             'Error', 'Incomplete'):
+    check(f'binascii.{name}', hasattr(binascii, name), True)
+
+log('\\nTest 2: hex round-trip')
+check('hexlify b\\'\\\\x00\\\\xff\\'',
+      binascii.hexlify(b'\\x00\\xff'), b'00ff')
+check('hexlify hello',
+      binascii.hexlify(b'hello'), b'68656c6c6f')
+check('unhexlify 68656c6c6f',
+      binascii.unhexlify(b'68656c6c6f'), b'hello')
+check('hex round-trip 256 bytes',
+      binascii.unhexlify(binascii.hexlify(bytes(range(256)))), bytes(range(256)))
+check('b2a_hex == hexlify',
+      binascii.b2a_hex(b'foo'), binascii.hexlify(b'foo'))
+check('a2b_hex == unhexlify',
+      binascii.a2b_hex(b'666f6f'), binascii.unhexlify(b'666f6f'))
+
+log('\\nTest 3: hex with separator (CPython 3.14 API)')
+check('b2a_hex with sep b\\'-\\'',
+      binascii.b2a_hex(b'\\x01\\x02\\x03\\x04', b'-'), b'01-02-03-04')
+check('b2a_hex sep + bytes_per_sep=2',
+      binascii.b2a_hex(b'\\x01\\x02\\x03\\x04', b':', 2), b'0102:0304')
+check('b2a_hex sep negative bytes_per_sep',
+      binascii.b2a_hex(b'\\x01\\x02\\x03\\x04\\x05', b':', -2), b'0102:0304:05')
+
+log('\\nTest 4: base64 round-trip')
+# Note: binascii.b2a_base64 accepts newline=True/False as keyword-only.
+# Brython 3.14.1 has a kwarg-with-falsy-default compilation quirk
+# (related to quirk #7) that misroutes \`newline=False\` to a kwarg
+# named '0'. We exercise the trailing-newline shape via .rstrip
+# instead — same functional coverage, avoids the upstream bug.
+check('b2a_base64 hello',
+      binascii.b2a_base64(b'hello'), b'aGVsbG8=\\n')
+check('b2a_base64 hello (content w/o newline)',
+      binascii.b2a_base64(b'hello').rstrip(b'\\n'), b'aGVsbG8=')
+check('a2b_base64 aGVsbG8=',
+      binascii.a2b_base64(b'aGVsbG8='), b'hello')
+check('base64 round-trip random 256 bytes',
+      binascii.a2b_base64(binascii.b2a_base64(bytes(range(256)))), bytes(range(256)))
+check('b2a_base64 empty',
+      binascii.b2a_base64(b''), b'\\n')
+
+log('\\nTest 5: CRC32')
+check('crc32 empty', binascii.crc32(b''), 0)
+# Known CPython value:
+check('crc32 hello', binascii.crc32(b'hello'), 907060870)
+check('crc32 \\'The quick brown fox jumps over the lazy dog\\'',
+      binascii.crc32(b'The quick brown fox jumps over the lazy dog'),
+      0x414FA339)
+# Incremental
+crc1 = binascii.crc32(b'hello')
+crc_chained = binascii.crc32(b' world', crc1)
+check('crc32 chained equals one-shot',
+      crc_chained, binascii.crc32(b'hello world'))
+
+log('\\nTest 6: error path')
+try:
+    binascii.unhexlify(b'XYZ')
+    check('unhexlify(invalid) raises Error', False, True)
+except binascii.Error:
+    check('unhexlify(invalid) raises Error', True, True)
+except Exception as e:
+    check(f'unhexlify(invalid) raises Error (got {type(e).__name__})', False, True)
+
+try:
+    binascii.unhexlify(b'abc')  # odd length
+    check('unhexlify(odd-length) raises Error', False, True)
+except binascii.Error:
+    check('unhexlify(odd-length) raises Error', True, True)
+
+log(f'\\n=== {passes}/{passes+fails} tests passed ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED to bootstrap: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

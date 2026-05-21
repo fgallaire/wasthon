@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wasthon — binascii bench vs Brython</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  table { border-collapse: collapse; margin: 1rem 0; width: 100%; font-size: 13px; }
+  th, td { padding: 5px 10px; text-align: right; border-bottom: 1px solid #ddd; font-variant-numeric: tabular-nums; }
+  th { background: #f4f4f4; text-align: left; }
+  td:first-child { text-align: left; }
+  .speedup { background: #fff8e0; font-weight: 600; }
+  #log { white-space: pre-wrap; font-family: monospace; background: #f8f8f8; padding: 1rem; border-radius: 4px; max-height: 300px; overflow: auto; font-size: 12px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+
+<h1>Wasthon — <code>binascii</code> (C) vs Brython's pure-Python <code>binascii</code></h1>
+<p>Comparing wasthon's C <code>binascii</code> against Brython's pure-Python
+fallback on the four most-used codecs (hex, base64, CRC32). Each timing is
+the median of 10 runs after 2 warmup passes; payloads are non-degenerate
+(crypto-random bytes) and sized so individual runs sit well above timer
+granularity. Brython's pure-Python <code>crc32</code> crashes on bytes
+input (a bug: it calls <code>ord(int)</code>) — reported as N/A.</p>
+
+<table id="results">
+  <thead><tr>
+    <th>Operation</th><th>Input size</th>
+    <th>wasthon med (ms)</th><th>w min</th><th>w max</th>
+    <th>Brython med (ms)</th><th>b min</th><th>b max</th>
+    <th class="speedup">Speedup</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<h3>Log</h3>
+<pre id="log"></pre>
+
+<script type="module">
+const log = (...args) => {
+    const el = document.getElementById('log');
+    el.textContent += args.map(a => typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    el.scrollTop = el.scrollHeight;
+};
+window.__bench_log = log;
+window.__bench_render = (op, size, wMed, wMin, wMax, bMed, bMin, bMax) => {
+    const tbody = document.querySelector('#results tbody');
+    const tr = document.createElement('tr');
+    const brythonOk = bMed >= 0;
+    const speedup = (brythonOk && bMed > 0 && wMed > 0) ? (bMed / wMed).toFixed(2) + 'x' : '—';
+    tr.innerHTML = `
+        <td>${op}</td>
+        <td>${size.toLocaleString()}</td>
+        <td>${wMed.toFixed(2)}</td>
+        <td>${wMin.toFixed(2)}</td>
+        <td>${wMax.toFixed(2)}</td>
+        <td>${brythonOk ? bMed.toFixed(2) : 'N/A (bug)'}</td>
+        <td>${brythonOk ? bMin.toFixed(2) : '—'}</td>
+        <td>${brythonOk ? bMax.toFixed(2) : '—'}</td>
+        <td class="speedup">${speedup}</td>
+    `;
+    tbody.appendChild(tr);
+};
+
+try {
+    log('Loading binascii under alias to keep Brython pure-Python version reachable…');
+    await wasthonLoad('_wasthon_binascii', '../build/binascii.mjs', { initName: 'binascii' });
+    log('Loaded. Booting Brython…');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__bench_log
+render = window.__bench_render
+perf = window.performance.now
+
+import _wasthon_binascii as wb   # wasthon C version
+import binascii as pb            # Brython pure-Python
+
+import os
+
+# Non-degenerate payload generators. os.urandom maps to crypto.getRandomValues
+# (capped at 64 KB per call by the browser; chunk to reach MB sizes).
+def make_random(size):
+    parts = []
+    remaining = size
+    while remaining > 0:
+        n = min(64 * 1024, remaining)
+        parts.append(os.urandom(n))
+        remaining -= n
+    return b''.join(parts)
+
+def median(xs):
+    s = sorted(xs)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+WARMUP = 2
+ITERS  = 10
+
+def bench(name, size, w_fn, b_fn):
+    # 2 warmup runs (dropped) + 10 timed runs, median + min/max reported.
+    # Brython's pure-Python binascii has bugs (e.g. crc32 calls ord on int)
+    # that crash the first call; in that case we still report wasthon's
+    # number and mark Brython as N/A.
+    try:
+        for _ in range(WARMUP): w_fn()
+    except Exception as e:
+        log(f'  {name:30}: wasthon FAIL ({type(e).__name__}: {e})')
+        return
+    brython_ok = True
+    try:
+        for _ in range(WARMUP): b_fn()
+    except Exception as e:
+        brython_ok = False
+        b_err = f'{type(e).__name__}: {e}'
+    w_samples = []
+    for _ in range(ITERS):
+        t0 = perf(); w_fn(); w_samples.append(perf() - t0)
+    w_med, w_min, w_max = median(w_samples), min(w_samples), max(w_samples)
+    if brython_ok:
+        b_samples = []
+        for _ in range(ITERS):
+            t0 = perf(); b_fn(); b_samples.append(perf() - t0)
+        b_med, b_min, b_max = median(b_samples), min(b_samples), max(b_samples)
+        speedup = (b_med / w_med) if w_med > 0 else 0
+        log(f'  {name:30}: wasthon med {w_med:7.2f}ms (min {w_min:6.2f} max {w_max:6.2f})  '
+            f'Brython med {b_med:7.2f}ms (min {b_min:6.2f} max {b_max:6.2f})  speedup {speedup:5.2f}x')
+        render(name, size, w_med, w_min, w_max, b_med, b_min, b_max)
+    else:
+        log(f'  {name:30}: wasthon med {w_med:7.2f}ms (min {w_min:6.2f} max {w_max:6.2f})  '
+            f'Brython N/A (bug: {b_err})')
+        render(name, size, w_med, w_min, w_max, -1, -1, -1)
+
+log('\\nGenerating payloads…')
+# Sized so each Brython run takes well above timer granularity (~1 ms in
+# Chrome), exposing real differences instead of noise. Doubling sizes
+# vs the first iteration of this bench.
+SIZE_HEX = 2 * 1024 * 1024   # 2 MB
+SIZE_B64 = 2 * 1024 * 1024
+SIZE_CRC = 5 * 1024 * 1024   # 5 MB — crc32 is the fastest of the lot
+data_hex = make_random(SIZE_HEX)
+data_b64 = make_random(SIZE_B64)
+data_crc = make_random(SIZE_CRC)
+hex_payload   = wb.hexlify(data_hex)
+# Strip trailing newline byte before feeding the decoder. CPython accepts
+# the newline that b2a_base64 emits by default; Brython pure-Python does
+# not (raises Incorrect padding). Pass the canonical no-newline form to
+# both decoders for a fair comparison.
+b64_payload   = wb.b2a_base64(data_b64).rstrip(b'\\n')
+
+log(f'\\nRunning bench (median of 5 runs, 1 warmup)…\\n')
+
+bench('hexlify (encode hex)', SIZE_HEX,
+      lambda: wb.hexlify(data_hex),
+      lambda: pb.hexlify(data_hex))
+
+bench('unhexlify (decode hex)', len(hex_payload),
+      lambda: wb.unhexlify(hex_payload),
+      lambda: pb.unhexlify(hex_payload))
+
+bench('b2a_base64 (encode)', SIZE_B64,
+      lambda: wb.b2a_base64(data_b64),
+      lambda: pb.b2a_base64(data_b64))
+
+bench('a2b_base64 (decode)', len(b64_payload),
+      lambda: wb.a2b_base64(b64_payload),
+      lambda: pb.a2b_base64(b64_payload))
+
+bench('crc32', SIZE_CRC,
+      lambda: wb.crc32(data_crc),
+      lambda: pb.crc32(data_crc))
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('FAILED: ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>
