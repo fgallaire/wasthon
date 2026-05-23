@@ -8174,11 +8174,35 @@ mergeInto(LibraryManager.library, {
             // have a self.
             var jsArgs = Array.from(arguments);
             // Brython kwargs convention: last arg is sometimes a $kw object.
+            // The $kw value can be:
+            //   - a plain dict {name: value, ...}, or
+            //   - an Array of two dicts [forced_positional_kw, kw_expansion]
+            //     which Brython uses when the call site does `f(*args, **kw)`.
+            // Without the Array handling, `Object.keys` returns numeric
+            // indices ("0", "1") and they leak into the C function call as
+            // bogus kwarg names — the actual bug Pierre's _sre integration
+            // hit ("got an unexpected keyword argument '0'").
             var kw = null;
             if (jsArgs.length > 0) {
                 var last = jsArgs[jsArgs.length - 1];
                 if (last && (last.$kw || last.$nat === 'kw')) {
-                    kw = last.$kw || last;
+                    var kwRaw = last.$kw || last;
+                    if (Array.isArray(kwRaw)) {
+                        kw = {};
+                        for (var ki = 0; ki < kwRaw.length; ki++) {
+                            var part = kwRaw[ki];
+                            if (part && typeof part === 'object') {
+                                for (var kk in part) {
+                                    if (kk !== '$kw' && kk !== '$nat' &&
+                                            Object.prototype.hasOwnProperty.call(part, kk)) {
+                                        kw[kk] = part[kk];
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        kw = kwRaw;
+                    }
                     jsArgs = jsArgs.slice(0, -1);
                 }
             }

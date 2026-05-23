@@ -551,6 +551,17 @@ Recent ports:
       Smallest port to date (15 KB wasm), single METH_FASTCALL function.
       Textbook validation of the work-density rule — one bridge crossing,
       ~30-50 flops inside C, never close to break-even.
+- [x] Trampoline `**kw` fix — calling a C function with `f(*args, **kw)`
+      from Python (e.g. `re._compiler.compile` doing
+      `_sre.compile(*args, **kw)`) raised `TypeError: got an unexpected
+      keyword argument '0'`. Brython passes such calls a marker
+      `{$kw: [{}, {}]}` where `$kw` is an **Array of two dicts**
+      (`[forced_positional_kw, kw_expansion]`), not a plain dict. The
+      trampoline treated the Array itself as the kwargs object, so
+      `Object.keys` returned the numeric indices `"0"`/`"1"` and they
+      leaked into the C call as bogus kwarg names. Fix merges the two
+      dicts. Transversal — benefits every C function taking `*args`/
+      `**kw` or keyword args.
 - [x] Bridge surface ~7200 lines: METH_METHOD trampoline, getset
       descriptors, sequence protocol slots, dict-style kwargs in
       `_PyArg_UnpackKeywords`, struct-aware `Py_SIZE`/`Py_SET_SIZE`,
