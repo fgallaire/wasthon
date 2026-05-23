@@ -216,6 +216,22 @@ mergeInto(LibraryManager.library, {
             this.pendingException = { exc: excHandle, msg: msg };
         },
 
+        /* Coerce obj to a JS number-or-bigint primitive, honoring Python's
+         * `__int__`/`__index__` protocol. Returns undefined if the object
+         * cannot be converted to an integer. Used by all PyLong_As*
+         * variants — without this fallback, instances of int subclasses
+         * (IntEnum, IntFlag, user-defined `class X(int)`) fail to convert
+         * because they reach C-side as Brython objects, not JS primitives.
+         * Mirrors CPython's PyLong_AsLong which dispatches through nb_int. */
+        coerceInt: function(obj) {
+            if (typeof obj === 'number' || typeof obj === 'bigint') return obj;
+            try {
+                var n = this._b_.int.$factory(obj);
+                if (typeof n === 'number' || typeof n === 'bigint') return n;
+            } catch (_) {}
+            return undefined;
+        },
+
         /* Forward a caught JS value as the pending Python exception,
          * preserving the original Brython exception class + message
          * instead of flattening everything to RuntimeError/"[object
@@ -2196,22 +2212,24 @@ mergeInto(LibraryManager.library, {
 
     PyLong_AsLong__deps: ['$WasthonRT'],
     PyLong_AsLong: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
-        if (typeof obj === 'number') return obj | 0;
-        if (typeof obj === 'bigint') return Number(obj) | 0;
-        WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
-            "an integer is required");
-        return -1;
+        var rt = WasthonRT;
+        var n = rt.coerceInt(rt.unwrap(handle));
+        if (n === undefined) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
+            return -1;
+        }
+        return (typeof n === 'bigint' ? Number(n) : n) | 0;
     },
 
     PyLong_AsInt__deps: ['$WasthonRT'],
     PyLong_AsInt: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
-        if (typeof obj === 'number') return obj | 0;
-        if (typeof obj === 'bigint') return Number(obj) | 0;
-        WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
-            "an integer is required");
-        return -1;
+        var rt = WasthonRT;
+        var n = rt.coerceInt(rt.unwrap(handle));
+        if (n === undefined) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
+            return -1;
+        }
+        return (typeof n === 'bigint' ? Number(n) : n) | 0;
     },
 
     /* PyLong_AsUInt32(obj, *value) — 0 on success (writes uint32 to
@@ -2220,14 +2238,12 @@ mergeInto(LibraryManager.library, {
     PyLong_AsUInt32__deps: ['$WasthonRT'],
     PyLong_AsUInt32: function(handle, valuePtr) {
         var rt = WasthonRT;
-        var obj = rt.unwrap(handle);
-        var n;
-        if (typeof obj === 'number') n = obj;
-        else if (typeof obj === 'bigint') n = Number(obj);
-        else {
+        var coerced = rt.coerceInt(rt.unwrap(handle));
+        if (coerced === undefined) {
             rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
             return -1;
         }
+        var n = typeof coerced === 'bigint' ? Number(coerced) : coerced;
         if (!Number.isInteger(n) || n < 0 || n > 0xFFFFFFFF) {
             rt.setError(rt.wrap(rt._b_.OverflowError),
                 "Python int too large to convert to C uint32_t");
@@ -2239,57 +2255,62 @@ mergeInto(LibraryManager.library, {
 
     PyLong_AsUnsignedLong__deps: ['$WasthonRT'],
     PyLong_AsUnsignedLong: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
-        if (typeof obj === 'number') return obj >>> 0;
-        if (typeof obj === 'bigint') return Number(obj) >>> 0;
-        WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
-            "an integer is required");
-        return 0xFFFFFFFF;
+        var rt = WasthonRT;
+        var n = rt.coerceInt(rt.unwrap(handle));
+        if (n === undefined) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
+            return 0xFFFFFFFF;
+        }
+        return (typeof n === 'bigint' ? Number(n) : n) >>> 0;
     },
 
     PyLong_AsUnsignedLongMask__deps: ['$WasthonRT'],
     PyLong_AsUnsignedLongMask: function(handle) {
-        // Wrap-around semantics — same as AsUnsignedLong but no error
-        var obj = WasthonRT.unwrap(handle);
-        if (typeof obj === 'number') return obj >>> 0;
-        if (typeof obj === 'bigint') return Number(obj & 0xFFFFFFFFn) >>> 0;
-        return 0;
+        // Wrap-around semantics — no error path.
+        var rt = WasthonRT;
+        var n = rt.coerceInt(rt.unwrap(handle));
+        if (n === undefined) return 0;
+        if (typeof n === 'bigint') return Number(n & 0xFFFFFFFFn) >>> 0;
+        return n >>> 0;
     },
 
     PyLong_AsSsize_t__deps: ['$WasthonRT'],
     PyLong_AsSsize_t: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
-        if (typeof obj === 'number') return obj | 0;
-        if (typeof obj === 'bigint') return Number(obj) | 0;
-        WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
-            "an integer is required");
-        return -1;
+        var rt = WasthonRT;
+        var n = rt.coerceInt(rt.unwrap(handle));
+        if (n === undefined) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
+            return -1;
+        }
+        return (typeof n === 'bigint' ? Number(n) : n) | 0;
     },
 
     PyLong_AsSize_t__deps: ['$WasthonRT'],
     PyLong_AsSize_t: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
-        if (typeof obj === 'number') return obj >>> 0;
-        if (typeof obj === 'bigint') return Number(obj) >>> 0;
-        return 0;
+        var rt = WasthonRT;
+        var n = rt.coerceInt(rt.unwrap(handle));
+        if (n === undefined) return 0;
+        return (typeof n === 'bigint' ? Number(n) : n) >>> 0;
     },
 
     /* PyLong long-long variants. wasm has i64 emulated via i32 pairs at the
      * ABI level — emcc handles this so the JS side sees standard numbers. */
     PyLong_AsLongLong__deps: ['$WasthonRT'],
     PyLong_AsLongLong: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
-        if (typeof obj === 'number') return BigInt(Math.trunc(obj));
-        if (typeof obj === 'bigint') return obj;
-        return 0n;
+        var rt = WasthonRT;
+        var n = rt.coerceInt(rt.unwrap(handle));
+        if (n === undefined) return 0n;
+        if (typeof n === 'bigint') return n;
+        return BigInt(Math.trunc(n));
     },
 
     PyLong_AsUnsignedLongLong__deps: ['$WasthonRT'],
     PyLong_AsUnsignedLongLong: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
-        if (typeof obj === 'number') return BigInt(Math.trunc(Math.abs(obj)));
-        if (typeof obj === 'bigint') return obj < 0n ? 0n : obj;
-        return 0n;
+        var rt = WasthonRT;
+        var n = rt.coerceInt(rt.unwrap(handle));
+        if (n === undefined) return 0n;
+        if (typeof n === 'bigint') return n < 0n ? 0n : n;
+        return BigInt(Math.trunc(Math.abs(n)));
     },
 
     PyLong_FromLongLong__deps: ['$WasthonRT'],
