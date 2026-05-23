@@ -7250,7 +7250,7 @@ mergeInto(LibraryManager.library, {
     },
 
     /* ---- PyType_FromModuleAndSpec ----                                  */
-    PyType_FromModuleAndSpec__deps: ['$WasthonRT', '$WasthonRT_module_state', '$__wasthon_install_methods', '$__wasthon_install_getsets'],
+    PyType_FromModuleAndSpec__deps: ['$WasthonRT', '$WasthonRT_module_state', '$__wasthon_install_methods', '$__wasthon_install_getsets', '$__wasthon_install_members'],
     PyType_FromModuleAndSpec: function(moduleHandle, specPtr, basesHandle) {
         var rt = WasthonRT;
         rt.trace('PyType_FromModuleAndSpec', 'specPtr=' + specPtr);
@@ -7267,7 +7267,7 @@ mergeInto(LibraryManager.library, {
 
         // Walk slots, collecting them into a JS object keyed by slot ID.
         var slotMap = {};
-        var methodsPtr = 0, getsetPtr = 0;
+        var methodsPtr = 0, getsetPtr = 0, membersPtr = 0;
         if (slotsPtr !== 0) {
             for (var sp = slotsPtr; ; sp += 8) {
                 var sid = HEAP32[sp >> 2];
@@ -7276,6 +7276,7 @@ mergeInto(LibraryManager.library, {
                 slotMap[sid] = pfunc;
                 if (sid === 64 /* Py_tp_methods */) methodsPtr = pfunc;
                 if (sid === 66 /* Py_tp_getset  */) getsetPtr  = pfunc;
+                if (sid === 72 /* Py_tp_members */) membersPtr = pfunc;
             }
         }
 
@@ -7349,6 +7350,14 @@ mergeInto(LibraryManager.library, {
         // Install getset descriptors (typecode, itemsize, etc.).
         if (getsetPtr !== 0) {
             __wasthon_install_getsets(cls, getsetPtr);
+        }
+
+        // Install member descriptors — fields exposed by C struct offset
+        // via PyMemberDef (re.Match.string, sqlite Connection.in_transaction,
+        // etc.). Without this, instance attributes declared via tp_members
+        // silently disappear.
+        if (membersPtr !== 0) {
+            __wasthon_install_members(cls, membersPtr);
         }
 
         // Wire Py_tp_new (slot id 65) so Brython can instantiate the type.
@@ -7996,6 +8005,129 @@ mergeInto(LibraryManager.library, {
             } catch (e) {
                 /* Fall back to a plain getter function on the class. */
                 if (capGet) cls[name] = fget;
+            }
+        }
+    },
+
+    /* __wasthon_install_members — install PyMemberDef[] entries on `cls`
+     * as property descriptors. Each member exposes a C struct field at a
+     * fixed byte offset within the instance (inst.__wasthon_ptr__ + offset),
+     * interpreted according to its type code (Py_T_INT, Py_T_OBJECT_EX,
+     * etc., see wasthon.h:366-378). The getter reads linear memory; the
+     * setter writes it (skipped when Py_READONLY flag is set). Used by
+     * modules like _sre (Match.string/pos/endpos), sqlite (Connection
+     * members), _struct, etc. */
+    $__wasthon_install_members__deps: ['$WasthonRT'],
+    $__wasthon_install_members: function(cls, membersPtr) {
+        if (!membersPtr) return;
+        var rt = WasthonRT;
+        /* PyMemberDef on wasm32 = 20 bytes:
+         *   +0  char *name
+         *   +4  int   type
+         *   +8  Py_ssize_t offset
+         *   +12 int   flags  (bit 0 = Py_READONLY)
+         *   +16 char *doc */
+        for (var mp = membersPtr; ; mp += 20) {
+            var namePtr = HEAP32[mp >> 2];
+            if (namePtr === 0) break;
+            var type    = HEAP32[(mp +  4) >> 2];
+            var offset  = HEAP32[(mp +  8) >> 2];
+            var flags   = HEAP32[(mp + 12) >> 2];
+            var name    = UTF8ToString(namePtr);
+            var readonly = (flags & 1) !== 0;
+
+            /* Capture loop vars into closure scope. */
+            var T = type, O = offset, N = name;
+
+            var fget = (function(t, off, n) {
+                return function(self) {
+                    var instPtr = self && self.__wasthon_ptr__;
+                    if (!instPtr) {
+                        throw rt.$B.$call(rt._b_.AttributeError, n);
+                    }
+                    var addr = instPtr + off;
+                    switch (t) {
+                        case 1:  return HEAP32[addr >> 2] | 0;                 /* Py_T_INT */
+                        case 2:  return HEAP32[addr >> 2] | 0;                 /* Py_T_PYSSIZET */
+                        case 3:  return HEAPU8[addr] !== 0;                    /* Py_T_BOOL */
+                        case 4: {                                              /* Py_T_OBJECT_EX */
+                            var h = HEAP32[addr >> 2];
+                            if (h === 0) {
+                                throw rt.$B.$call(rt._b_.AttributeError, n);
+                            }
+                            return rt.unwrap(h);
+                        }
+                        case 5: {                                              /* Py_T_STRING */
+                            var sp = HEAP32[addr >> 2];
+                            return sp === 0 ? rt._b_.None : UTF8ToString(sp);
+                        }
+                        case 6:  return HEAPU32[addr >> 2] >>> 0;              /* Py_T_UINT */
+                        case 7:  return HEAP32[addr >> 2] | 0;                 /* Py_T_LONG */
+                        case 8:  return HEAPU32[addr >> 2] >>> 0;              /* Py_T_ULONG */
+                        case 9:  return (HEAP16[addr >> 1] << 16) >> 16;       /* Py_T_SHORT */
+                        case 10: return HEAPU16[addr >> 1];                    /* Py_T_USHORT */
+                        case 11: return (HEAP8[addr] << 24) >> 24;             /* Py_T_BYTE */
+                        case 12: return HEAPU8[addr];                          /* Py_T_UBYTE */
+                        default:
+                            throw rt.$B.$call(rt._b_.SystemError,
+                                "unsupported PyMemberDef type: " + t);
+                    }
+                };
+            })(T, O, N);
+
+            var fset = readonly ? rt._b_.None : (function(t, off, n) {
+                return function(self, value) {
+                    var instPtr = self && self.__wasthon_ptr__;
+                    if (!instPtr) {
+                        throw rt.$B.$call(rt._b_.AttributeError, n);
+                    }
+                    var addr = instPtr + off;
+                    var iv;  // coerced int value, used by integer cases
+                    switch (t) {
+                        case 1: case 2: case 7:
+                            iv = rt.coerceInt(value);
+                            HEAP32[addr >> 2] = (iv === undefined ? 0 : iv) | 0;
+                            break;
+                        case 6: case 8:
+                            iv = rt.coerceInt(value);
+                            HEAPU32[addr >> 2] = (iv === undefined ? 0 : iv) >>> 0;
+                            break;
+                        case 3:
+                            HEAPU8[addr] = rt._b_.bool.$factory(value) ? 1 : 0;
+                            break;
+                        case 4:
+                            HEAP32[addr >> 2] = rt.wrap(value);
+                            break;
+                        case 9:
+                            iv = rt.coerceInt(value);
+                            HEAP16[addr >> 1] = (iv === undefined ? 0 : iv) & 0xffff;
+                            break;
+                        case 10:
+                            iv = rt.coerceInt(value);
+                            HEAPU16[addr >> 1] = (iv === undefined ? 0 : iv) & 0xffff;
+                            break;
+                        case 11:
+                            iv = rt.coerceInt(value);
+                            HEAP8[addr] = (iv === undefined ? 0 : iv) & 0xff;
+                            break;
+                        case 12:
+                            iv = rt.coerceInt(value);
+                            HEAPU8[addr] = (iv === undefined ? 0 : iv) & 0xff;
+                            break;
+                        /* Py_T_STRING (5) is read-only in CPython too; no setter. */
+                    }
+                };
+            })(T, O, N);
+
+            try {
+                var prop = rt._b_.property.$factory(fget, fset);
+                cls[name] = prop;
+                try {
+                    var dictObj = rt.$B.get_dict(cls);
+                    if (dictObj) rt.$B.str_dict_set(dictObj, name, prop);
+                } catch (_) {}
+            } catch (e) {
+                cls[name] = fget;
             }
         }
     },
