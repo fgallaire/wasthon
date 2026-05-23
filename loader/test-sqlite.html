@@ -131,7 +131,7 @@ log('\\n=== done ===')
     document.body.appendChild(py);
     brython({debug: 1});
 } catch (e) {
-    log('FAILED to bootstrap: ' + e.message);
+    log('=== FAILED === bootstrap: ' + e.message);
     console.error(e);
 }
 </script>

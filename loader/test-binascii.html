@@ -123,11 +123,12 @@ except binascii.Error:
     check('unhexlify(odd-length) raises Error', True, True)
 
 log(f'\\n=== {passes}/{passes+fails} tests passed ===')
+log('=== done ===')
 `;
     document.body.appendChild(py);
     brython({debug: 1});
 } catch (e) {
-    log('FAILED to bootstrap: ' + e.message);
+    log('=== FAILED === bootstrap: ' + e.message);
     console.error(e);
 }
 </script>

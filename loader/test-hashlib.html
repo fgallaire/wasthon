@@ -88,11 +88,12 @@ ok &= hmac_ok
 
 log('')
 log('=== ALL OK ===' if ok else '=== SOME FAILED ===')
+log('=== done ===')
 `;
     document.body.appendChild(py);
     brython({debug: 1});
 } catch (e) {
-    log('FAILED:', e.message);
+    log('=== FAILED ===', e.message);
     console.error(e);
 }
 </script>

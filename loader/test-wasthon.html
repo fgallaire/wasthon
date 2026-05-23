@@ -246,11 +246,12 @@ def _t_chain_zlib_md5():
 check("zlib-compress then md5", _t_chain_zlib_md5)
 
 log('\\n=== ALL OK ===' if ok_all else '\\n=== SOME FAILED ===')
+log('=== done ===')
 `;
     document.body.appendChild(py);
     brython({debug: 1});
 } catch (e) {
-    log('FAILED: ' + e.message);
+    log('=== FAILED === ' + e.message);
     console.error(e);
 }
 </script>

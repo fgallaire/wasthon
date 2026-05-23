@@ -118,11 +118,12 @@ check("normalize NFC recombines to é",
 check("numeric('½') == 0.5", lambda: (wuni.numeric('½') == 0.5, ''))
 
 log('\\n=== ALL OK ===' if ok_all else '\\n=== SOME FAILED ===')
+log('=== done ===')
 `;
     document.body.appendChild(py);
     brython({debug: 1});
 } catch (e) {
-    log('FAILED: ' + e.message);
+    log('=== FAILED === ' + e.message);
     console.error(e);
 }
 </script>
