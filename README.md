@@ -411,8 +411,25 @@ Serve and test:
 ```bash
 # from the wasthon directory
 python3 -m http.server 8765
-# open http://localhost:8765/loader/test-cascade.html
+# open http://localhost:8765/loader/index.html
+# → individual test-*.html and bench-*.html pages for each module
+# → test-all.html for a one-click sequential sweep of every test page
 ```
+
+Headless runs and CI:
+
+```bash
+pip install playwright
+playwright install chromium
+python3 test.py   # spawns http.server, drives test-all.html via Chromium,
+                  # exits 0 on green / 1 on red
+```
+
+A GitHub Actions workflow (`.github/workflows/test.yml`) runs this on every
+push to `main` and every pull request — it builds all modules, both bundles,
+and runs the headless sweep. The first run is the slow one (downloads
+CPython + SQLite + emsdk + all libs, cold-compiles everything); subsequent
+runs benefit from the `external/` and `build/*.o` caches.
 
 ## What's next
 

@@ -1,0 +1,68 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Cache external source trees: CPython tarball, sqlite zip, expat, xz,
+      # zstd, bzip2 + emsdk. Without this, every CI run re-downloads ~200 MB
+      # and re-installs emsdk (~3 min). Key on build.sh because that's where
+      # versions are pinned.
+      - name: Cache external/
+        uses: actions/cache@v4
+        with:
+          path: external/
+          key: external-${{ hashFiles('build.sh') }}
+          restore-keys: |
+            external-
+
+      # Cache build/*.o object files too — cold compiles take 5-10 min.
+      # Key on src/ + build.sh because any of those changing should force
+      # a rebuild of the touched modules anyway.
+      - name: Cache build objects
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/*.o
+            build/libmpdec/
+            build/bzip2/
+            build/clinic/
+          key: build-objs-${{ hashFiles('src/**', 'build.sh') }}
+          restore-keys: |
+            build-objs-
+
+      - name: Install Playwright (Python)
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      # Build every per-module artifact (so the individual test-*.html
+      # pages can fetch their .mjs/.wasm). `all` calls each known module's
+      # case in build.sh.
+      - name: Build all modules
+        run: ./build.sh all
+
+      # Build both bundles for the test-wasthon{,-full}.html pages.
+      - name: Build wasthon (light) bundle
+        run: ./build.sh wasthon
+
+      - name: Build wasthon-full bundle
+        run: ./build.sh wasthon-full
+
+      - name: Run headless tests
+        run: python3 test.py
