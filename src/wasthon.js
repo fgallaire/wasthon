@@ -793,7 +793,12 @@ mergeInto(LibraryManager.library, {
         }
         return 0;
     },
-    _PyOS_URandomNonblock__deps: ['$WasthonRT'],
+    // Declare _PyOS_URandom as a dep so emcc keeps it in the link when
+    // only _PyOS_URandomNonblock is referenced from wasm. Without this,
+    // tree-shaking drops _PyOS_URandom and the JS-to-JS call below hits
+    // `__PyOS_URandom is not defined` at runtime (broke _random.Random()
+    // with no explicit seed).
+    _PyOS_URandomNonblock__deps: ['$WasthonRT', '_PyOS_URandom'],
     _PyOS_URandomNonblock: function(bufPtr, size) {
         return __PyOS_URandom(bufPtr, size);
     },
