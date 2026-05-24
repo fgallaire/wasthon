@@ -764,7 +764,15 @@ mergeInto(LibraryManager.library, {
          * an explicit _b_.float instance so format strings like `:.6f`
          * find a proper Python float to dispatch on. */
         if (rt._b_ && rt._b_.float && rt._b_.float.$factory) {
-            return rt.wrap(rt._b_.float.$factory(v));
+            var f = rt._b_.float.$factory(v);
+            // Brython 3.14 migrated float to a PyTypeObject mirror (like
+            // slice / bool / dict): `$factory` only sets `ob_type`, not
+            // `__class__`. But some builtins still look up
+            // `obj.__class__.__mro__` (e.g. the `float()` builtin) and
+            // crash on undefined. Patch __class__ to point at the same
+            // type so both lookup paths work.
+            if (f && !f.__class__ && f.ob_type) f.__class__ = f.ob_type;
+            return rt.wrap(f);
         }
         return rt.wrap(v);
     },
@@ -2097,7 +2105,7 @@ mergeInto(LibraryManager.library, {
     },
 
     /* PyFloat_FromString — parse a string into a float. */
-    PyFloat_FromString__deps: ['$WasthonRT'],
+    PyFloat_FromString__deps: ['$WasthonRT', 'PyFloat_FromDouble'],
     PyFloat_FromString: function(sH) {
         var rt = WasthonRT;
         var s = rt.asJSStr(rt.unwrap(sH));
@@ -2111,7 +2119,12 @@ mergeInto(LibraryManager.library, {
                 "could not convert string to float: '" + s + "'");
             return 0;
         }
-        return rt.wrap(v);
+        // Route through PyFloat_FromDouble so the result is wrapped as
+        // a proper _b_.float (with both ob_type and __class__) — otherwise
+        // Brython sees a raw JS number as a JSObject and `float()` /
+        // type() lookups go wrong (e.g. Decimal.__float__ via
+        // PyDec_AsFloat → PyFloat_FromString).
+        return _PyFloat_FromDouble(v);
     },
 
     /* _PyLong_NumBits — number of bits required to represent abs(v). */

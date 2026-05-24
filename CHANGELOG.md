@@ -7,6 +7,25 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `float` wrapping for Brython 3.14 `PyTypeObject` mirror — Brython
+      3.14 migrated `_b_.float` to the same `PyTypeObject`-mirror shape
+      as `_b_.slice` / `_b_.bool` / `_b_.dict`. Its `$factory` now
+      produces `{ob_type, value}` instances without `__class__` — yet
+      some builtins still look up `obj.__class__.__mro__` (e.g. the
+      `float()` callable) and crash on `undefined`. `D('1.5').exp()` /
+      `D('100').ln()` failed with `JavascriptError: can't access
+      property "indexOf", klass.__mro__ is undefined` because
+      `Decimal.__float__` goes through `PyDec_AsFloat` →
+      `PyFloat_FromString`, and the bridge returned the parsed JS
+      number raw (`rt.wrap(v)`) → Brython saw a `JSObject` instead of
+      a `float`. *(1)* `PyFloat_FromDouble`: patch `obj.__class__ =
+      obj.ob_type` on the `$factory` result so both lookup paths
+      resolve. *(2)* `PyFloat_FromString`: route through
+      `PyFloat_FromDouble` after parsing instead of `rt.wrap(rawNumber)`,
+      so the wrapping is consistent. Transversal — any C function
+      returning a float (`math`, `cmath`, `_decimal`, `_statistics`, …)
+      now produces a properly-typed Python `float`.
+
 - [x] `'O&'` converter format in `Py_BuildValue` — `pyexpat`'s
       `ProcessingInstruction` and `Comment` handlers use
       `Py_BuildValue("(NO&)", name, conv_string_to_unicode_void, data)`
