@@ -598,6 +598,37 @@ Recent ports:
       `$__wasthon_make_trampoline`. Tests in `loader/test-debug.html`
       lock both code paths (`Context(**d)`, mixed
       `Context(name=value, **d)`, `blake2b(**opts)`).
+- [x] `array.array` cluster fixes — 6 ✗ collapsed to 0, surfaced by
+      `loader/test-debug.html` fishing. Four root causes, all in the
+      type-slot dispatch layer:
+      *(1)* `src/wasthon.h` reuses slot IDs across protocols —
+      `Py_sq_length=29==Py_nb_multiply`, `Py_sq_item=32==Py_nb_positive`,
+      `Py_mp_subscript=27==Py_nb_invert(fallback)`. The dispatch table
+      treated 27/29/32 as their `nb_*` meanings unconditionally, so
+      sequence types saw `__len__` etc. silently unwired. Disambiguates
+      by presence of unambiguous markers (`Py_sq_ass_item=39` or
+      `Py_sq_contains=41`); when set, patches the table to treat 27/29/32
+      as `mp_subscript`/`sq_length`/`sq_item`.
+      *(2)* When both `mp_subscript` and `sq_item` are present (array
+      defines both), CPython's `PyObject_GetItem` prefers `mp_subscript`
+      because it handles slices and non-int keys natively. Post-loop
+      fixup re-binds `cls.__getitem__` to `mp_subscript` so `arr[1:4]`
+      and `arr[-1]` work (otherwise `sq_item`'s int-only dispatch wins
+      via numerical key ordering in the slot loop).
+      *(3)* `PySlice_Check` checked `obj.__class__ === _b_.slice`, but
+      Brython 3.14 represents slice instances via `ob_type` not
+      `__class__` (new C-API-compat layer where `_b_.slice` is a
+      `PyTypeObject` mirror with `tp_name`/`tp_basicsize`). Accept both
+      shapes.
+      *(4)* `PyObject_RichCompareBool` called the now-removed
+      `$B.$eq(a, b)` — Brython 3.14 renamed it to
+      `$B.rich_comp(op, x, y)` (op is a dunder-name string). Rewires
+      all 6 ops (`<`/`<=`/`==`/`!=`/`>`/`>=`) through `rich_comp` so
+      `array_contains`, `list.remove`, dict-key lookup, etc. work.
+      Also adds a new dispatch shape `'bi'` (binary returning int) for
+      `sq_contains`, which previously used the binary-returns-PyObject
+      shape `'b'` and silently turned `99 in arr` into truthy via the
+      `resH===0 → NotImplemented` branch.
 - [x] Bridge surface ~7200 lines: METH_METHOD trampoline, getset
       descriptors, sequence protocol slots, dict-style kwargs in
       `_PyArg_UnpackKeywords`, struct-aware `Py_SIZE`/`Py_SET_SIZE`,

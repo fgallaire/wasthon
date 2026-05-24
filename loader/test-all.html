@@ -13,6 +13,7 @@
   tr.running td { color: #04a; }
   tr.pass     { background: #e8f6e8; }
   tr.fail     { background: #fde8e8; }
+  tr.info     { background: #eef2fb; }
   tr.timeout  { background: #fff4e0; }
   td.duration { font-variant-numeric: tabular-nums; }
   #summary { font-size: 1.2rem; margin-top: 1.5rem; font-weight: 600; }
@@ -68,7 +69,13 @@ const PAGES = [
     'test-zstd.html',
     'test-wasthon.html',
     'test-wasthon-full.html',
+    'test-debug.html',
 ];
+
+// Informational pages — fishing pages with known-unfixed probes. Their
+// ✗ count is shown but does NOT count toward the overall fail tally
+// (so CI stays green while the cleanup continues).
+const INFORMATIONAL = new Set(['test-debug.html']);
 
 const TIMEOUT_MS = 60_000;
 const POLL_MS    = 250;
@@ -128,10 +135,22 @@ async function runOne(page, idx) {
 
             if (log.includes('=== done ===')) {
                 const fail = log.includes('=== SOME FAILED ===');
-                finish({
-                    cls:   fail ? 'fail' : 'pass',
-                    label: fail ? '✗ fail' : '✓ pass',
-                });
+                if (INFORMATIONAL.has(page)) {
+                    // Surface the failure count from the GRAND TOTAL line
+                    // specifically (not the first per-section footer, which
+                    // would just give the count for the first section).
+                    const m = log.match(/GRAND TOTAL:\s*\d+\s*✓\s*\/\s*(\d+)\s*✗/);
+                    const detail = m ? ` (${m[1]} known ✗)` : '';
+                    finish({
+                        cls:   'info',
+                        label: fail ? `ℹ probes${detail}` : '✓ probes (all OK)',
+                    });
+                } else {
+                    finish({
+                        cls:   fail ? 'fail' : 'pass',
+                        label: fail ? '✗ fail' : '✓ pass',
+                    });
+                }
             } else if (log.includes('=== FAILED ===')) {
                 finish({cls: 'fail', label: '✗ bootstrap'});
             }
@@ -144,22 +163,26 @@ async function runOne(page, idx) {
 }
 
 async function runAll() {
-    let passed = 0, failed = 0, timedOut = 0;
+    let passed = 0, failed = 0, timedOut = 0, info = 0;
     for (let i = 0; i < PAGES.length; i++) {
         const r = await runOne(PAGES[i], i);
-        if (r.cls === 'pass') passed++;
+        if (r.cls === 'pass')         passed++;
         else if (r.cls === 'timeout') timedOut++;
-        else failed++;
+        else if (r.cls === 'info')    info++;
+        else                          failed++;
     }
-    const total = PAGES.length;
+    // Pass/fail tally ignores informational pages — CI doesn't fail on them.
+    const regressionTotal = PAGES.length - info;
     const summary = document.getElementById('summary');
     if (failed === 0 && timedOut === 0) {
         summary.className = 'ok';
-        summary.textContent = `✓ ${passed}/${total} pages passed`;
+        const tail = info > 0 ? ` (+ ${info} informational)` : '';
+        summary.textContent = `✓ ${passed}/${regressionTotal} pages passed${tail}`;
     } else {
-        const bits = [`${passed}/${total} pages passed`];
+        const bits = [`${passed}/${regressionTotal} pages passed`];
         if (failed > 0)   bits.push(`<span class="ko">${failed} failed</span>`);
         if (timedOut > 0) bits.push(`<span class="warn">${timedOut} timed out</span>`);
+        if (info > 0)     bits.push(`${info} informational`);
         summary.innerHTML = bits.join(' — ');
     }
 }

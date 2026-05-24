@@ -1704,17 +1704,25 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var a = rt.unwrap(o1H);
         var b = rt.unwrap(o2H);
-        var r;
-        switch (op) {
-            case 0: r = a <  b; break;
-            case 1: r = a <= b; break;
-            case 2: r = a === b || rt.$B.$eq(a, b); break;
-            case 3: r = !(a === b || rt.$B.$eq(a, b)); break;
-            case 4: r = a >  b; break;
-            case 5: r = a >= b; break;
-            default: return -1;
+        // Brython 3.14 exposes equality / comparison via $B.rich_comp(op,
+        // x, y) where op is a dunder name string. The older $B.$eq is
+        // gone — calling it raises "is not a function" and silently
+        // breaks any C-side caller (array.__contains__, list.remove,
+        // PyDict key lookup, etc.). Identity shortcut still applies for
+        // eq/ne since Brython does it internally too.
+        try {
+            switch (op) {
+                case 0: return rt.$B.rich_comp('__lt__', a, b) ? 1 : 0;
+                case 1: return rt.$B.rich_comp('__le__', a, b) ? 1 : 0;
+                case 2: return (a === b || rt.$B.rich_comp('__eq__', a, b)) ? 1 : 0;
+                case 3: return (a !== b && !rt.$B.rich_comp('__eq__', a, b)) ? 1 : 0;
+                case 4: return rt.$B.rich_comp('__gt__', a, b) ? 1 : 0;
+                case 5: return rt.$B.rich_comp('__ge__', a, b) ? 1 : 0;
+                default: return -1;
+            }
+        } catch (e) {
+            return -1;
         }
-        return r ? 1 : 0;
     },
 
     /* Internal helpers exposed via pycore_*.h headers. _sre needs these. */
@@ -5945,8 +5953,15 @@ mergeInto(LibraryManager.library, {
     /* Slice protocol. */
     PySlice_Check__deps: ['$WasthonRT'],
     PySlice_Check: function(handle) {
+        // Brython 3.14 represents slice instances with `ob_type` pointing
+        // to the PyTypeObject-mirror at _b_.slice; the old `__class__`
+        // attribute is no longer set. Accept either shape so this works
+        // against both Brython versions.
         var obj = WasthonRT.unwrap(handle);
-        return (obj && obj.__class__ === WasthonRT._b_.slice) ? 1 : 0;
+        if (!obj) return 0;
+        if (obj.ob_type === WasthonRT._b_.slice) return 1;
+        if (obj.__class__ === WasthonRT._b_.slice) return 1;
+        return 0;
     },
 
     PySlice_Unpack__deps: ['$WasthonRT'],
@@ -7502,6 +7517,15 @@ mergeInto(LibraryManager.library, {
         // pointing to the same dispatch function so either lookup path works.
         // Format: slotID → [brythonSlotName, [dunderNames], shape]
         // (b=binary, t=ternary, r=unary->obj, i=inquiry->int).
+        // wasthon.h has slot ID collisions: Py_sq_length=29 == Py_nb_multiply=29
+        // and Py_sq_item=32 == Py_nb_positive=32. Whether a given pfunc at
+        // slot 29/32 means sq_* or nb_* can't be told from the ID alone.
+        // Disambiguate by other slots: if the type has Py_sq_ass_item (39)
+        // OR Py_sq_contains (41) — both unambiguous markers — it's a
+        // sequence, so 29/32 belong to sq_length/sq_item. Otherwise they're
+        // nb_multiply/nb_positive. (None of our currently-ported modules
+        // mix sequence and numeric protocols in the same type.)
+        var isSequence = !!(slotMap[39] || slotMap[41]);
         var slotDispatch = {
             7:  ['nb_add',                    ['__add__'],           'b'],
             36: ['nb_subtract',               ['__sub__'],           'b'],
@@ -7543,16 +7567,31 @@ mergeInto(LibraryManager.library, {
              * is handled specially below — one slotPtr → 6 dispatch funcs
              * each calling slot(self, other, op) with a different op. */
             60: ['tp_richcompare',            null,                  'c'],
-            /* sequence protocol — slot IDs per Include/typeslots.h */
-            45: ['sq_length',                 ['__len__'],           'i'],
-            44: ['sq_item',                   ['__getitem__'],       'si'],
+            /* Sequence protocol slot IDs (wasthon.h numbering — same as
+             * CPython's for 39/40/41/42/43/46, but NOT for sq_length / sq_item
+             * which collide with nb_multiply/nb_positive at 29/32. Those are
+             * patched in below when isSequence is true). */
             39: ['sq_ass_item',               ['__setitem__'],       'sis'],
             40: ['sq_concat',                 ['__add__'],           'b'],
-            41: ['sq_contains',               ['__contains__'],      'b'],
+            41: ['sq_contains',               ['__contains__'],      'bi'],
             46: ['sq_repeat',                 ['__mul__','__rmul__'], 'si'],
             42: ['sq_inplace_concat',         ['__iadd__'],          'b'],
             43: ['sq_inplace_repeat',         ['__imul__'],          'si'],
         };
+        // Patch the colliding entries for sequence types. wasthon.h reuses
+        // these slot IDs for both numeric and sequence/mapping operations:
+        //   27: Py_nb_invert (default in table)   == Py_mp_subscript
+        //   29: Py_nb_multiply (default in table) == Py_sq_length
+        //   32: Py_nb_positive (default in table) == Py_sq_item
+        // For numeric types the defaults are correct. For sequence types
+        // (detected via the unambiguous Py_sq_ass_item=39 or
+        // Py_sq_contains=41 markers above) these IDs really mean the
+        // mp_*/sq_* slots; patch the dispatch accordingly.
+        if (isSequence) {
+            slotDispatch[27] = ['mp_subscript', ['__getitem__'], 'b'];
+            slotDispatch[29] = ['sq_length',    ['__len__'],     'i'];
+            slotDispatch[32] = ['sq_item',      ['__getitem__'], 'si'];
+        }
         Object.keys(slotDispatch).forEach(function(sidStr) {
             var sid = sidStr | 0;
             var slotPtr = slotMap[sid];
@@ -7575,6 +7614,25 @@ mergeInto(LibraryManager.library, {
                         return rt._b_.NotImplemented;
                     }
                     return rt.unwrap(resH);
+                };
+            } else if (shape === 'bi') {
+                /* binary returning int (0/1, -1 on error) — used by
+                 * sq_contains. Returning the int as a handle and
+                 * unwrap()-ing it (the 'b' shape's behaviour) produces
+                 * junk: `99 in arr` would come back truthy because the
+                 * raw `0` got the resH-is-0 → NotImplemented branch and
+                 * Brython treated NotImplemented as truthy. */
+                dispatch = function(self, other) {
+                    var selfH  = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    var otherH = other && other.__wasthon_ptr__ ? other.__wasthon_ptr__ : rt.wrap(other);
+                    rt.pendingException = null;
+                    var rc = getWasmTableEntry(slotPtr)(selfH, otherH);
+                    if (rc < 0 && rt.pendingException) {
+                        var pe = rt.pendingException; rt.pendingException = null;
+                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
+                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                    }
+                    return rc ? true : false;
                 };
             } else if (shape === 't') {
                 dispatch = function(self, other, modulo) {
@@ -7734,6 +7792,20 @@ mergeInto(LibraryManager.library, {
                 catch (_) {}
             }
         });
+
+        // For sequence types that define BOTH mp_subscript and sq_item,
+        // mp_subscript wins for __getitem__ — it accepts slice + general
+        // PyObject keys and does its own negative-index normalization,
+        // whereas sq_item is int-only and gets the index raw (no negative
+        // adjustment), so `arr[-1]` and `arr[1:4]` would otherwise fail.
+        // CPython's PyObject_GetItem follows the same precedence.
+        if (isSequence && cls.mp_subscript && cls.sq_item) {
+            cls.__getitem__ = cls.mp_subscript;
+            cls.tp_funcs = cls.tp_funcs || {};
+            cls.tp_funcs.__getitem__ = cls.mp_subscript;
+            try { rt.$B.set_to_dict(cls, '__getitem__', cls.mp_subscript); }
+            catch (_) {}
+        }
 
         // Wire Py_tp_init (slot id 61) if the type defines one. The C
         // init slot has signature `int (*)(PyObject *self, PyObject *args,

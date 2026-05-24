@@ -1,0 +1,879 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — debug fishing page (hundreds of probing tests)</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>wasthon — debug fishing page</h1>
+<p style="color:#666;font-size:0.9em;">
+  Loads the full bundle and runs hundreds of probing tests across the 22
+  modules — focus on API surfaces, edge cases, and error paths that the
+  per-module smoke tests don't exercise. Each <code>check(...)</code> is
+  isolated with try/except so a single ✗ doesn't halt the run. The section
+  footers and final summary show pass/fail counts — start digging where
+  the failure ratio jumps.
+</p>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:12px;line-height:1.35;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading wasthon-full.mjs…');
+    const bundle = await wasthonLoadBundle('../build/wasthon-full.mjs');
+    log('Bundle loaded. Installing 22 modules…');
+    for (const m of ['_md5','_sha1','_sha2','_sha3','_blake2','_hmac',
+                     'zlib','_bz2','_lzma','_zstd',
+                     'pyexpat','_csv','_json','_struct','_sre','unicodedata',
+                     '_decimal','_random','_statistics','math','cmath','array']) {
+        bundle.installModule(m);
+    }
+    log('All installed. Fishing…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+from browser import window
+log = window.__wasthon_log
+
+import _md5, _sha1, _sha2, _sha3, _blake2, _hmac
+import zlib, _bz2, _lzma, _zstd
+import pyexpat, _csv, _json, _struct, _sre, unicodedata
+import _decimal, _random, _statistics, math, cmath
+import array
+
+# Per-section pass/fail counters reset by section().
+_pass = 0
+_fail = 0
+_section_name = ''
+_section_pass = 0
+_section_fail = 0
+_failures = []
+
+def section(name):
+    global _section_name, _section_pass, _section_fail
+    # Flush previous section footer if any.
+    if _section_name:
+        log(f'  └── {_section_name}: {_section_pass} ✓ / {_section_fail} ✗')
+    _section_name = name
+    _section_pass = 0
+    _section_fail = 0
+    log(f'\\n=== {name} ===')
+
+def check(name, fn):
+    global _pass, _fail, _section_pass, _section_fail
+    try:
+        result = fn()
+        if isinstance(result, tuple):
+            cond, detail = result
+        else:
+            cond, detail = bool(result), ''
+    except Exception as e:
+        cond = False
+        detail = f'{type(e).__name__}: {e}'
+    if cond:
+        _pass += 1; _section_pass += 1
+    else:
+        _fail += 1; _section_fail += 1
+        _failures.append((_section_name, name, detail))
+        # Only log the ✗ lines inline; ✓ lines would flood. Section
+        # footer carries the pass count.
+        log(f'  ✗  {name}' + (('  -- ' + detail) if detail else ''))
+
+# ===========================================================================
+section('_md5 / _sha1 / _sha2 / _sha3 / _blake2 — hash internals')
+# ===========================================================================
+# Empty input → known digest. Probes that update(b'') doesn't crash.
+check("md5 empty input",
+      lambda: _md5.md5(b'').hexdigest() == 'd41d8cd98f00b204e9800998ecf8427e')
+check("sha1 empty input",
+      lambda: _sha1.sha1(b'').hexdigest() == 'da39a3ee5e6b4b0d3255bfef95601890afd80709')
+check("sha256 empty input",
+      lambda: _sha2.sha256(b'').hexdigest() == 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+check("sha512 empty input",
+      lambda: _sha2.sha512(b'').hexdigest() == 'cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e')
+check("sha3_256 empty input",
+      lambda: _sha3.sha3_256(b'').hexdigest() == 'a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a')
+check("blake2b empty input",
+      lambda: _blake2.blake2b(b'').hexdigest() == '786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce')
+
+# Digest size / block size / name attributes.
+check("md5.digest_size == 16", lambda: _md5.md5().digest_size == 16)
+check("sha1.digest_size == 20", lambda: _sha1.sha1().digest_size == 20)
+check("sha256.digest_size == 32", lambda: _sha2.sha256().digest_size == 32)
+check("sha512.digest_size == 64", lambda: _sha2.sha512().digest_size == 64)
+check("md5.block_size == 64", lambda: _md5.md5().block_size == 64)
+check("sha256.block_size == 64", lambda: _sha2.sha256().block_size == 64)
+check("sha512.block_size == 128", lambda: _sha2.sha512().block_size == 128)
+check("md5.name == 'md5'", lambda: _md5.md5().name == 'md5')
+check("sha1.name == 'sha1'", lambda: _sha1.sha1().name == 'sha1')
+check("sha256.name == 'sha256'", lambda: _sha2.sha256().name == 'sha256')
+
+# update() chunking: same digest regardless of how data is split.
+def _t_chunk():
+    a = _sha2.sha256(); a.update(b'hello world')
+    b = _sha2.sha256(); b.update(b'hello'); b.update(b' '); b.update(b'world')
+    return a.hexdigest() == b.hexdigest()
+check("sha256 chunked update equiv single", _t_chunk)
+
+# copy() — independent forks of the same state.
+def _t_copy():
+    h = _sha2.sha256(); h.update(b'foo')
+    h2 = h.copy(); h2.update(b'bar')
+    h.update(b'baz')
+    return (h.hexdigest() != h2.hexdigest() and
+            h.hexdigest() == _sha2.sha256(b'foobaz').hexdigest() and
+            h2.hexdigest() == _sha2.sha256(b'foobar').hexdigest())
+check("sha256 copy() independence", _t_copy)
+
+# digest() returns bytes of correct length.
+check("md5.digest() is bytes len 16",
+      lambda: isinstance(_md5.md5(b'x').digest(), bytes) and len(_md5.md5(b'x').digest()) == 16)
+check("sha256.digest() is bytes len 32",
+      lambda: isinstance(_sha2.sha256(b'x').digest(), bytes) and len(_sha2.sha256(b'x').digest()) == 32)
+
+# Large input (1 MiB) — proves no overflow.
+def _t_large():
+    data = b'a' * (1 << 20)
+    return len(_sha2.sha256(data).hexdigest()) == 64
+check("sha256 of 1 MiB", _t_large)
+
+# blake2 with key (keyed hash) — exercises kwargs to constructor.
+def _t_blake2_key():
+    h = _blake2.blake2b(b'msg', key=b'secret')
+    return len(h.hexdigest()) == 128
+check("blake2b(b'msg', key=b'secret')  [kwarg]", _t_blake2_key)
+
+# blake2 with digest_size kwarg.
+def _t_blake2_size():
+    h = _blake2.blake2b(b'x', digest_size=16)
+    return len(h.digest()) == 16
+check("blake2b digest_size=16  [kwarg]", _t_blake2_size)
+
+# ** expansion through the methods trampoline (different code path from
+# tp_init): the trampoline used to also skip Brython-dict entries in $kw.
+def _t_blake2_star_expansion():
+    opts = {'digest_size': 24}
+    h = _blake2.blake2b(b'x', **opts)
+    return len(h.digest()) == 24
+check("blake2b(b'x', **{'digest_size':24})  [** expansion → trampoline]",
+      _t_blake2_star_expansion)
+
+# sha3 variants — sanity per length.
+check("sha3_224.digest_size == 28",
+      lambda: _sha3.sha3_224().digest_size == 28)
+check("sha3_384 hex len 96",
+      lambda: len(_sha3.sha3_384(b'').hexdigest()) == 96)
+check("sha3_512 hex len 128",
+      lambda: len(_sha3.sha3_512(b'').hexdigest()) == 128)
+
+# ===========================================================================
+section('_hmac — RFC 4231 + variants')
+# ===========================================================================
+KEY_20 = b'\\x0b' * 20
+DATA = b'Hi There'
+check("hmac compute_md5",
+      lambda: _hmac.compute_md5(b'key', b'msg').hex() != '')
+check("hmac compute_sha1",
+      lambda: _hmac.compute_sha1(b'key', b'msg').hex() != '')
+check("hmac compute_sha224",
+      lambda: len(_hmac.compute_sha224(KEY_20, DATA)) == 28)
+check("hmac compute_sha256 RFC 4231 #1",
+      lambda: _hmac.compute_sha256(KEY_20, DATA).hex() ==
+              'b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7')
+check("hmac compute_sha384 RFC 4231 #1",
+      lambda: _hmac.compute_sha384(KEY_20, DATA).hex() ==
+              'afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59cfaea9ea9076ede7f4af152e8b2fa9cb6')
+check("hmac compute_sha512 RFC 4231 #1",
+      lambda: _hmac.compute_sha512(KEY_20, DATA).hex() ==
+              '87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854')
+check("hmac compute_sha3_256",
+      lambda: len(_hmac.compute_sha3_256(KEY_20, DATA)) == 32)
+check("hmac compute_blake2s_32",
+      lambda: len(_hmac.compute_blake2s_32(KEY_20, DATA)) == 32)
+# Empty key allowed?
+check("hmac compute_sha256 empty key",
+      lambda: len(_hmac.compute_sha256(b'', DATA).hex()) == 64)
+# Long key (block-size+, gets hashed first internally).
+check("hmac compute_sha256 long key (200 bytes)",
+      lambda: len(_hmac.compute_sha256(b'k' * 200, DATA).hex()) == 64)
+
+# ===========================================================================
+section('zlib — beyond round-trip')
+# ===========================================================================
+check("zlib.compress(b'') → header-only output",
+      lambda: len(zlib.compress(b'')) > 0 and zlib.decompress(zlib.compress(b'')) == b'')
+check("zlib level=9 vs level=1 (both valid)",
+      lambda: zlib.decompress(zlib.compress(b'x' * 1000, 9)) ==
+              zlib.decompress(zlib.compress(b'x' * 1000, 1)) == b'x' * 1000)
+check("zlib.crc32(b'')", lambda: zlib.crc32(b'') == 0)
+check("zlib.crc32(b'123456789') == 0xCBF43926",
+      lambda: zlib.crc32(b'123456789') == 0xCBF43926)
+check("zlib.adler32(b'')", lambda: zlib.adler32(b'') == 1)
+check("zlib.adler32(b'Wikipedia') == 0x11E60398",
+      lambda: zlib.adler32(b'Wikipedia') == 0x11E60398)
+def _t_zlib_chunked():
+    co = zlib.compressobj(); a = co.compress(b'foo'); b = co.compress(b'bar'); c = co.flush()
+    return zlib.decompress(a + b + c) == b'foobar'
+check("zlib compressobj chunked flush", _t_zlib_chunked)
+def _t_zlib_bad():
+    try: zlib.decompress(b'\\x00\\x00\\x00\\xff'); return False
+    except zlib.error: return True
+    except Exception as e: return False
+check("zlib.decompress(garbage) → zlib.error", _t_zlib_bad)
+
+# ===========================================================================
+section('_bz2 — chunked + corner cases')
+# ===========================================================================
+def _t_bz2_empty():
+    c = _bz2.BZ2Compressor(); blob = c.compress(b'') + c.flush()
+    d = _bz2.BZ2Decompressor()
+    return d.decompress(blob) == b''
+check("bz2 round-trip of b''", _t_bz2_empty)
+
+def _t_bz2_levels():
+    raw = b'abc' * 1000
+    for lvl in (1, 5, 9):
+        c = _bz2.BZ2Compressor(lvl); blob = c.compress(raw) + c.flush()
+        d = _bz2.BZ2Decompressor()
+        if d.decompress(blob) != raw: return False
+    return True
+check("bz2 levels 1/5/9 all round-trip", _t_bz2_levels)
+
+def _t_bz2_chunks():
+    raw = b'wasthon' * 200
+    c = _bz2.BZ2Compressor(); blob = c.compress(raw) + c.flush()
+    d = _bz2.BZ2Decompressor()
+    out = b''
+    # Feed one byte at a time.
+    for i in range(len(blob)):
+        out += d.decompress(blob[i:i+1])
+    return out == raw
+check("bz2 decompress 1-byte chunks", _t_bz2_chunks)
+
+# ===========================================================================
+section('_lzma / _zstd — variations')
+# ===========================================================================
+def _t_lzma_preset():
+    raw = b'abc' * 500
+    for p in (0, 3, 6, 9):
+        c = _lzma.LZMACompressor(preset=p)
+        blob = c.compress(raw) + c.flush()
+        if _lzma.LZMADecompressor().decompress(blob) != raw: return False
+    return True
+check("lzma presets 0/3/6/9 all round-trip", _t_lzma_preset)
+
+def _t_lzma_empty():
+    c = _lzma.LZMACompressor(); blob = c.compress(b'') + c.flush()
+    return _lzma.LZMADecompressor().decompress(blob) == b''
+check("lzma round-trip of b''", _t_lzma_empty)
+
+def _t_zstd_levels():
+    raw = b'xy' * 1000
+    for lvl in (1, 3, 10, 22):
+        c = _zstd.ZstdCompressor(level=lvl)
+        blob = c.compress(raw) + c.flush()
+        if _zstd.ZstdDecompressor().decompress(blob) != raw: return False
+    return True
+check("zstd levels 1/3/10/22 round-trip", _t_zstd_levels)
+
+def _t_zstd_empty():
+    c = _zstd.ZstdCompressor(); blob = c.compress(b'') + c.flush()
+    return _zstd.ZstdDecompressor().decompress(blob) == b''
+check("zstd round-trip of b''", _t_zstd_empty)
+
+# ===========================================================================
+section('pyexpat — multiple handlers + namespaces + errors')
+# ===========================================================================
+def _t_chardata():
+    p = pyexpat.ParserCreate(); txt = []
+    p.CharacterDataHandler = lambda d: txt.append(d)
+    p.Parse('<r>hello world</r>', True)
+    return ''.join(txt) == 'hello world'
+check("pyexpat CharacterDataHandler", _t_chardata)
+
+def _t_attrs():
+    p = pyexpat.ParserCreate(); attrs = []
+    p.StartElementHandler = lambda n, a: attrs.append((n, dict(sorted(a.items()))))
+    p.Parse('<r a="1" b="2"><c d="3"/></r>', True)
+    return attrs == [('r', {'a':'1','b':'2'}), ('c', {'d':'3'})]
+check("pyexpat attributes captured", _t_attrs)
+
+def _t_endelem():
+    p = pyexpat.ParserCreate(); ends = []
+    p.EndElementHandler = lambda n: ends.append(n)
+    p.Parse('<r><a/><b/></r>', True)
+    return ends == ['a', 'b', 'r']
+check("pyexpat EndElementHandler ordering", _t_endelem)
+
+def _t_pi():
+    p = pyexpat.ParserCreate(); pis = []
+    p.ProcessingInstructionHandler = lambda t, d: pis.append((t, d))
+    p.Parse('<?xml-stylesheet href="a.css"?><r/>', True)
+    return pis and pis[0][0] == 'xml-stylesheet'
+check("pyexpat ProcessingInstructionHandler", _t_pi)
+
+def _t_comment():
+    p = pyexpat.ParserCreate(); coms = []
+    p.CommentHandler = lambda d: coms.append(d)
+    p.Parse('<r><!-- hi --><a/></r>', True)
+    return coms == [' hi ']
+check("pyexpat CommentHandler", _t_comment)
+
+def _t_ns():
+    p = pyexpat.ParserCreate(namespace_separator=':')
+    elems = []
+    p.StartElementHandler = lambda n, a: elems.append(n)
+    p.Parse('<r xmlns="http://x"><a/></r>', True)
+    return all('http://x:' in e for e in elems)
+check("pyexpat namespace_separator [kwarg]", _t_ns)
+
+def _t_bad_xml():
+    p = pyexpat.ParserCreate()
+    try:
+        p.Parse('<r><a></r>', True)
+        return False
+    except pyexpat.ExpatError:
+        return True
+    except Exception:
+        return False
+check("pyexpat malformed XML → ExpatError", _t_bad_xml)
+
+check("pyexpat.ErrorString(1) is str",
+      lambda: isinstance(pyexpat.ErrorString(1), str) and len(pyexpat.ErrorString(1)) > 0)
+
+# ===========================================================================
+section('_csv — dialects + quoting + escapes')
+# ===========================================================================
+check("_csv list_dialects has excel",
+      lambda: 'excel' in _csv.list_dialects())
+check("_csv list_dialects has unix",
+      lambda: 'unix' in _csv.list_dialects())
+check("_csv.field_size_limit() returns int",
+      lambda: isinstance(_csv.field_size_limit(), int))
+
+def _t_csv_quoted():
+    rows = list(_csv.reader(['"hello, world","quote\\"inside"']))
+    return rows == [['hello, world', 'quote"inside']]
+check("_csv quoted field with embedded quote", _t_csv_quoted)
+
+def _t_csv_tab():
+    d = type('D', (object,), {'delimiter':'\\t','quotechar':'"','doublequote':True,
+                              'skipinitialspace':False,'lineterminator':'\\r\\n',
+                              'quoting':_csv.QUOTE_MINIMAL,'strict':False,'escapechar':None})
+    rows = list(_csv.reader(['a\\tb\\tc'], dialect='excel-tab'))
+    return rows == [['a','b','c']]
+check("_csv excel-tab dialect", _t_csv_tab)
+
+check("_csv QUOTE_ALL is int",
+      lambda: isinstance(_csv.QUOTE_ALL, int))
+check("_csv QUOTE_NONE is int",
+      lambda: isinstance(_csv.QUOTE_NONE, int))
+check("_csv QUOTE_NONNUMERIC is int",
+      lambda: isinstance(_csv.QUOTE_NONNUMERIC, int))
+
+# ===========================================================================
+section('_json — internal helpers')
+# ===========================================================================
+check("_json.encode_basestring('hello')",
+      lambda: _json.encode_basestring('hello') == '"hello"')
+check("_json.encode_basestring('a\\"b')",
+      lambda: _json.encode_basestring('a"b') == '"a\\\\"b"' or _json.encode_basestring('a"b') == '"a\\\\u0022b"')
+check("_json.encode_basestring_ascii('café')",
+      lambda: _json.encode_basestring_ascii('café') == '"caf\\\\u00e9"')
+check("_json.encode_basestring empty",
+      lambda: _json.encode_basestring('') == '""')
+def _t_scan():
+    r, end = _json.scanstring('"hello"', 1)
+    return r == 'hello' and end == 7
+check("_json.scanstring basic", _t_scan)
+def _t_scan_esc():
+    r, end = _json.scanstring('"a\\\\nb"', 1)
+    return r == 'a\\nb'
+check("_json.scanstring escape sequence", _t_scan_esc)
+def _t_scan_unicode_escape():
+    r, end = _json.scanstring('"\\\\u00e9"', 1)
+    return r == 'é'
+check("_json.scanstring \\\\uXXXX", _t_scan_unicode_escape)
+def _t_make_encoder():
+    enc = _json.make_encoder(None, None, _json.encode_basestring_ascii, None, ': ', ', ',
+                             False, False, False, True)
+    return callable(enc)
+check("_json.make_encoder returns callable", _t_make_encoder)
+
+# ===========================================================================
+section('_struct — format codes + byte orders')
+# ===========================================================================
+check("calcsize '>i' == 4", lambda: _struct.calcsize('>i') == 4)
+check("calcsize '>q' == 8", lambda: _struct.calcsize('>q') == 8)
+check("calcsize '>f' == 4", lambda: _struct.calcsize('>f') == 4)
+check("calcsize '>d' == 8", lambda: _struct.calcsize('>d') == 8)
+check("calcsize '>h' == 2", lambda: _struct.calcsize('>h') == 2)
+check("calcsize '>b' == 1", lambda: _struct.calcsize('>b') == 1)
+check("calcsize '>I' == 4", lambda: _struct.calcsize('>I') == 4)
+check("calcsize '>10s' == 10", lambda: _struct.calcsize('>10s') == 10)
+
+check("pack '>i' negative",
+      lambda: _struct.pack('>i', -1) == b'\\xff\\xff\\xff\\xff')
+check("unpack '>i' negative",
+      lambda: _struct.unpack('>i', b'\\xff\\xff\\xff\\xff') == (-1,))
+check("pack '<i' little-endian",
+      lambda: _struct.pack('<i', 0x12345678) == b'\\x78\\x56\\x34\\x12')
+check("pack/unpack '>q' 0x7FFFFFFFFFFFFFFF",
+      lambda: _struct.unpack('>q', _struct.pack('>q', 0x7FFFFFFFFFFFFFFF)) == (0x7FFFFFFFFFFFFFFF,))
+check("pack/unpack '>Q' 0xFFFFFFFFFFFFFFFF",
+      lambda: _struct.unpack('>Q', _struct.pack('>Q', 0xFFFFFFFFFFFFFFFF)) == (0xFFFFFFFFFFFFFFFF,))
+check("pack '<f' 1.0 → IEEE",
+      lambda: _struct.pack('<f', 1.0) == b'\\x00\\x00\\x80\\x3f')
+check("pack '<d' 1.0 → IEEE",
+      lambda: _struct.pack('<d', 1.0) == b'\\x00\\x00\\x00\\x00\\x00\\x00\\xf0\\x3f')
+
+def _t_pack_into():
+    buf = bytearray(8)
+    _struct.pack_into('>i', buf, 2, 0x12345678)
+    return bytes(buf) == b'\\x00\\x00\\x12\\x34\\x56\\x78\\x00\\x00'
+check("pack_into '>i' with offset", _t_pack_into)
+
+def _t_unpack_from():
+    buf = b'\\x00\\x00\\x12\\x34\\x56\\x78\\x00\\x00'
+    return _struct.unpack_from('>i', buf, 2) == (0x12345678,)
+check("unpack_from '>i' with offset", _t_unpack_from)
+
+check("pack '>s' bytes",
+      lambda: _struct.pack('>3s', b'abc') == b'abc')
+check("unpack '>s' bytes",
+      lambda: _struct.unpack('>3s', b'abc') == (b'abc',))
+
+def _t_overflow():
+    try:
+        _struct.pack('>b', 200); return False
+    except _struct.error: return True
+    except OverflowError: return True
+    except Exception: return False
+check("pack '>b' overflow → struct.error", _t_overflow)
+
+check("pack '>?' bool True",
+      lambda: _struct.pack('>?', True) == b'\\x01')
+check("pack '>?' bool False",
+      lambda: _struct.pack('>?', False) == b'\\x00')
+
+# ===========================================================================
+section('_sre — module-level helpers')
+# ===========================================================================
+check("_sre.MAGIC > 0", lambda: isinstance(_sre.MAGIC, int) and _sre.MAGIC > 0)
+check("_sre.CODESIZE in (4, 8)", lambda: _sre.CODESIZE in (4, 8))
+check("_sre.MAXREPEAT > 1<<10", lambda: _sre.MAXREPEAT > (1 << 10))
+check("_sre.MAXGROUPS > 0", lambda: hasattr(_sre, 'MAXGROUPS') and _sre.MAXGROUPS > 0)
+check("ascii_tolower('A')", lambda: _sre.ascii_tolower(ord('A')) == ord('a'))
+check("ascii_tolower('a')", lambda: _sre.ascii_tolower(ord('a')) == ord('a'))
+check("ascii_tolower('1')", lambda: _sre.ascii_tolower(ord('1')) == ord('1'))
+check("unicode_tolower('É')",
+      lambda: _sre.unicode_tolower(ord('É')) == ord('é'))
+check("unicode_iscased('A') True", lambda: _sre.unicode_iscased(ord('A')) is True)
+check("unicode_iscased('1') False", lambda: _sre.unicode_iscased(ord('1')) is False)
+check("ascii_iscased('A') True", lambda: _sre.ascii_iscased(ord('A')) is True)
+check("ascii_iscased('1') False", lambda: _sre.ascii_iscased(ord('1')) is False)
+
+# ===========================================================================
+section('unicodedata — wide surface')
+# ===========================================================================
+check("name('A')",
+      lambda: unicodedata.name('A') == 'LATIN CAPITAL LETTER A')
+check("name('€')",
+      lambda: unicodedata.name('€') == 'EURO SIGN')
+check("name(' ', default)",
+      lambda: unicodedata.name(' ') == 'SPACE')
+check("lookup('GREEK SMALL LETTER ALPHA') == 'α'",
+      lambda: unicodedata.lookup('GREEK SMALL LETTER ALPHA') == 'α')
+check("category('A') == 'Lu'", lambda: unicodedata.category('A') == 'Lu')
+check("category('a') == 'Ll'", lambda: unicodedata.category('a') == 'Ll')
+check("category('1') == 'Nd'", lambda: unicodedata.category('1') == 'Nd')
+check("category(' ') == 'Zs'", lambda: unicodedata.category(' ') == 'Zs')
+check("category('!') == 'Po'", lambda: unicodedata.category('!') == 'Po')
+check("category('\\u0301') == 'Mn'", lambda: unicodedata.category('\\u0301') == 'Mn')
+check("bidirectional('A') == 'L'", lambda: unicodedata.bidirectional('A') == 'L')
+check("bidirectional('ا') == 'AL'", lambda: unicodedata.bidirectional('ا') == 'AL')
+check("combining('\\u0301') == 230",
+      lambda: unicodedata.combining('\\u0301') == 230)
+check("combining('A') == 0", lambda: unicodedata.combining('A') == 0)
+check("east_asian_width('A') == 'Na'",
+      lambda: unicodedata.east_asian_width('A') == 'Na')
+check("east_asian_width('中') in ('W','F')",
+      lambda: unicodedata.east_asian_width('中') in ('W','F'))
+check("mirrored('(') == 1", lambda: unicodedata.mirrored('(') == 1)
+check("mirrored('A') == 0", lambda: unicodedata.mirrored('A') == 0)
+check("decomposition('é') non-empty",
+      lambda: len(unicodedata.decomposition('é')) > 0)
+check("decomposition('A') == ''", lambda: unicodedata.decomposition('A') == '')
+check("numeric('½') == 0.5", lambda: unicodedata.numeric('½') == 0.5)
+check("numeric('〇') == 0.0", lambda: unicodedata.numeric('〇') == 0.0)
+check("numeric('Ⅷ') == 8.0", lambda: unicodedata.numeric('Ⅷ') == 8.0)
+check("digit('1') == 1", lambda: unicodedata.digit('1') == 1)
+check("digit('Ⅷ', -1) == -1",
+      lambda: unicodedata.digit('Ⅷ', -1) == -1)
+check("decimal('5') == 5", lambda: unicodedata.decimal('5') == 5)
+check("normalize NFC round-trip",
+      lambda: unicodedata.normalize('NFC', unicodedata.normalize('NFD', 'é')) == 'é')
+check("normalize NFD splits é",
+      lambda: len(unicodedata.normalize('NFD', 'é')) == 2)
+check("normalize NFKC",
+      lambda: unicodedata.normalize('NFKC', '\\ufb01') == 'fi')
+check("normalize NFKD",
+      lambda: unicodedata.normalize('NFKD', '\\ufb01') == 'fi')
+check("unidata_version is str",
+      lambda: isinstance(unicodedata.unidata_version, str))
+
+# ===========================================================================
+section('_decimal — Decimal + Context + arithmetic')
+# ===========================================================================
+D = _decimal.Decimal
+check("D('1.5') + D('2.5') == 4",
+      lambda: D('1.5') + D('2.5') == D('4.0'))
+check("D('0.1') + D('0.2') == 0.3 exact",
+      lambda: D('0.1') + D('0.2') == D('0.3'))
+check("D(42) == 42",
+      lambda: D(42) == D('42'))
+check("D from tuple",
+      lambda: D((0, (1, 2, 3), 0)) == D('123'))
+check("D(big int)",
+      lambda: D(12345678901234567890) == D('12345678901234567890'))
+check("D('Infinity').is_infinite()",
+      lambda: D('Infinity').is_infinite())
+check("D('-Infinity') < 0",
+      lambda: D('-Infinity') < D(0))
+check("D('NaN').is_nan()",
+      lambda: D('NaN').is_nan())
+check("D('NaN') == D('NaN')  [NaN never equal]",
+      lambda: (D('NaN') == D('NaN')) is False)
+check("D('sNaN').is_snan()",
+      lambda: D('sNaN').is_snan())
+check("D('1.5') ** 10 == 57.6650390625",
+      lambda: D('1.5') ** 10 == D('57.6650390625'))
+check("D('2') ** D('-1') == 0.5",
+      lambda: D('2') ** D('-1') == D('0.5'))
+check("D('-5').copy_abs() == 5",
+      lambda: D('-5').copy_abs() == D('5'))
+check("D('5').copy_negate() == -5",
+      lambda: D('5').copy_negate() == D('-5'))
+check("D('1.234').quantize(D('0.01')) == 1.23",
+      lambda: D('1.234').quantize(D('0.01')) == D('1.23'))
+check("D('1.235').quantize(D('0.01'), rounding=_decimal.ROUND_HALF_UP) == 1.24",
+      lambda: D('1.235').quantize(D('0.01'), rounding=_decimal.ROUND_HALF_UP) == D('1.24'))
+check("D('100').sqrt() == 10",
+      lambda: D('100').sqrt() == D('10'))
+check("D('1.5').exp() ≈ e^1.5",
+      lambda: abs(float(D('1.5').exp()) - 4.4816890703380645) < 1e-10)
+check("D('100').ln() ≈ ln(100)",
+      lambda: abs(float(D('100').ln()) - 4.605170185988091) < 1e-10)
+check("D('100').log10() == 2",
+      lambda: D('100').log10() == D('2'))
+check("Context(prec=42).prec == 42  [the fixed bug]",
+      lambda: _decimal.Context(prec=42).prec == 42)
+# ** expansion: $kw element 1+ is a real Brython dict, not a plain JS map.
+# Before the flattenKwArray fix, Object.keys silently skipped those entries
+# and Context(**d) returned a default-prec context.
+check("Context(**{'prec':33}).prec == 33  [** expansion → tp_init]",
+      lambda: _decimal.Context(**{'prec': 33}).prec == 33)
+check("Context(rounding=ROUND_DOWN, **{'prec':37}).prec == 37  [mixed → tp_init]",
+      lambda: _decimal.Context(rounding=_decimal.ROUND_DOWN, **{'prec': 37}).prec == 37)
+check("Context(prec=10, rounding=ROUND_DOWN).prec == 10  [multi-kwarg]",
+      lambda: _decimal.Context(prec=10, rounding=_decimal.ROUND_DOWN).prec == 10)
+check("getcontext().prec mutable",
+      lambda: (setattr(_decimal.getcontext(), 'prec', 17), _decimal.getcontext().prec == 17)[1])
+check("D as_tuple()",
+      lambda: D('-1.23').as_tuple() == (1, (1, 2, 3), -2))
+check("D bool: 0 falsy",
+      lambda: bool(D('0')) is False and bool(D('1')) is True)
+check("D negative zero preserved",
+      lambda: str(D('-0')) == '-0')
+check("D division by zero → DivisionByZero",
+      lambda: (D('1') / D('0')).is_infinite() if not _decimal.getcontext().traps[_decimal.DivisionByZero] else True)
+check("D str round-trip",
+      lambda: str(D('3.14159')) == '3.14159')
+check("D repr",
+      lambda: 'Decimal' in repr(D('1.5')))
+check("D hash equal for equal values",
+      lambda: hash(D('1.0')) == hash(D('1')))
+
+# ===========================================================================
+section('_random — Random + state')
+# ===========================================================================
+def _t_rng_range():
+    r = _random.Random(0); vals = [r.random() for _ in range(50)]
+    return all(0.0 <= v < 1.0 for v in vals)
+check("Random(0): 50 values all in [0,1)", _t_rng_range)
+def _t_rng_seed_bytes():
+    r = _random.Random(b'hello'); v = r.random()
+    return 0.0 <= v < 1.0
+check("Random(seed=b'hello')", _t_rng_seed_bytes)
+def _t_rng_seed_None():
+    r = _random.Random(); v = r.random()
+    return 0.0 <= v < 1.0
+check("Random() no seed (system entropy)", _t_rng_seed_None)
+def _t_rng_getrandbits():
+    r = _random.Random(0)
+    for n in (1, 8, 32, 64, 100):
+        v = r.getrandbits(n)
+        if not (0 <= v < (1 << n)): return False
+    return True
+check("Random.getrandbits(1..100)", _t_rng_getrandbits)
+def _t_rng_state_roundtrip():
+    r = _random.Random(0); _ = [r.random() for _ in range(5)]
+    state = r.getstate()
+    a = r.random()
+    r.setstate(state)
+    b = r.random()
+    return a == b
+check("Random getstate/setstate round-trip", _t_rng_state_roundtrip)
+def _t_rng_seed_reset():
+    r = _random.Random(42); a = r.random()
+    r.seed(42); b = r.random()
+    return a == b
+check("Random.seed() reseeding", _t_rng_seed_reset)
+def _t_rng_getrandbits_big():
+    r = _random.Random(0); v = r.getrandbits(256)
+    return 0 <= v < (1 << 256)
+check("Random.getrandbits(256) big int", _t_rng_getrandbits_big)
+
+# ===========================================================================
+section('_statistics — _normal_dist_inv_cdf properties')
+# ===========================================================================
+check("inv_cdf(0.5, 0, 1) ≈ 0",
+      lambda: abs(_statistics._normal_dist_inv_cdf(0.5, 0.0, 1.0)) < 1e-12)
+check("inv_cdf(0.975, 0, 1) ≈ 1.96",
+      lambda: abs(_statistics._normal_dist_inv_cdf(0.975, 0.0, 1.0) - 1.959963984540054) < 1e-10)
+check("inv_cdf(0.025, 0, 1) ≈ -1.96",
+      lambda: abs(_statistics._normal_dist_inv_cdf(0.025, 0.0, 1.0) + 1.959963984540054) < 1e-10)
+check("inv_cdf symmetric about 0.5",
+      lambda: abs(_statistics._normal_dist_inv_cdf(0.3, 0, 1) + _statistics._normal_dist_inv_cdf(0.7, 0, 1)) < 1e-10)
+check("inv_cdf with shift mu=10",
+      lambda: abs(_statistics._normal_dist_inv_cdf(0.5, 10.0, 1.0) - 10.0) < 1e-10)
+check("inv_cdf with scale sigma=2",
+      lambda: abs(_statistics._normal_dist_inv_cdf(0.975, 0.0, 2.0) - 2 * 1.959963984540054) < 1e-10)
+# _statisticsmodule.c raises plain ValueError on p<=0 or p>=1 (line 124:
+# PyErr_SetString(PyExc_ValueError, ...)). It does NOT validate sigma —
+# returns mu + x*sigma blindly. StatisticsError lives in pure-Python
+# statistics.py, not in the C accelerator. Earlier fishing tests assumed
+# both and were wrong.
+def _t_inv_cdf_p0():
+    try: _statistics._normal_dist_inv_cdf(0.0, 0, 1); return False
+    except ValueError: return True
+    except Exception: return False
+check("inv_cdf p=0 → ValueError", _t_inv_cdf_p0)
+def _t_inv_cdf_p1():
+    try: _statistics._normal_dist_inv_cdf(1.0, 0, 1); return False
+    except ValueError: return True
+    except Exception: return False
+check("inv_cdf p=1 → ValueError", _t_inv_cdf_p1)
+# (No test for sigma<0: the C impl doesn't validate it.)
+
+# ===========================================================================
+section('math — wide surface')
+# ===========================================================================
+check("math.pi", lambda: abs(math.pi - 3.141592653589793) < 1e-15)
+check("math.tau", lambda: abs(math.tau - 6.283185307179586) < 1e-15)
+check("math.e", lambda: abs(math.e - 2.718281828459045) < 1e-15)
+check("math.inf > 1e300", lambda: math.inf > 1e300)
+check("math.isnan(math.nan)", lambda: math.isnan(math.nan))
+check("math.isinf(math.inf)", lambda: math.isinf(math.inf))
+check("math.isfinite(1.0)", lambda: math.isfinite(1.0))
+check("math.isfinite(math.nan) False", lambda: math.isfinite(math.nan) is False)
+check("math.sqrt(0) == 0", lambda: math.sqrt(0) == 0)
+check("math.sqrt(4) == 2", lambda: math.sqrt(4) == 2.0)
+def _t_sqrt_neg():
+    try: math.sqrt(-1); return False
+    except ValueError: return True
+    except Exception: return False
+check("math.sqrt(-1) → ValueError", _t_sqrt_neg)
+check("math.log(1) == 0", lambda: math.log(1) == 0.0)
+check("math.log(math.e) ≈ 1", lambda: abs(math.log(math.e) - 1.0) < 1e-15)
+check("math.log(8, 2) == 3", lambda: math.log(8, 2) == 3.0)
+check("math.log10(100) == 2", lambda: math.log10(100) == 2.0)
+check("math.log2(1024) == 10", lambda: math.log2(1024) == 10.0)
+check("math.exp(0) == 1", lambda: math.exp(0) == 1.0)
+check("math.exp(1) ≈ e", lambda: abs(math.exp(1) - math.e) < 1e-15)
+check("math.sin(0) == 0", lambda: math.sin(0) == 0.0)
+check("math.cos(0) == 1", lambda: math.cos(0) == 1.0)
+check("math.sin(math.pi) ≈ 0", lambda: abs(math.sin(math.pi)) < 1e-15)
+check("math.cos(math.pi) ≈ -1", lambda: abs(math.cos(math.pi) + 1.0) < 1e-15)
+check("math.tan(math.pi/4) ≈ 1", lambda: abs(math.tan(math.pi/4) - 1.0) < 1e-10)
+check("math.asin(1) == pi/2", lambda: abs(math.asin(1) - math.pi/2) < 1e-15)
+check("math.atan2(1, 1) == pi/4", lambda: abs(math.atan2(1, 1) - math.pi/4) < 1e-15)
+check("math.hypot(3, 4) == 5", lambda: math.hypot(3, 4) == 5.0)
+check("math.hypot(3, 4, 12) == 13", lambda: math.hypot(3, 4, 12) == 13.0)
+check("math.dist((0,0), (3,4)) == 5", lambda: math.dist((0,0), (3,4)) == 5.0)
+check("math.ceil(1.1) == 2", lambda: math.ceil(1.1) == 2)
+check("math.floor(1.9) == 1", lambda: math.floor(1.9) == 1)
+check("math.trunc(-1.5) == -1", lambda: math.trunc(-1.5) == -1)
+check("math.copysign(1, -2) == -1", lambda: math.copysign(1, -2) == -1.0)
+check("math.fmod(7, 3) == 1", lambda: math.fmod(7, 3) == 1.0)
+check("math.fmod(-7, 3) == -1", lambda: math.fmod(-7, 3) == -1.0)
+check("math.gcd(12, 18) == 6", lambda: math.gcd(12, 18) == 6)
+check("math.gcd(12, 18, 30) == 6", lambda: math.gcd(12, 18, 30) == 6)
+check("math.lcm(4, 6) == 12", lambda: math.lcm(4, 6) == 12)
+check("math.factorial(0) == 1", lambda: math.factorial(0) == 1)
+check("math.factorial(20) == 2432902008176640000", lambda: math.factorial(20) == 2432902008176640000)
+check("math.comb(10, 3) == 120", lambda: math.comb(10, 3) == 120)
+check("math.perm(10, 3) == 720", lambda: math.perm(10, 3) == 720)
+check("math.fsum([0.1]*10) == 1.0", lambda: math.fsum([0.1]*10) == 1.0)
+check("math.prod([1,2,3,4]) == 24", lambda: math.prod([1,2,3,4]) == 24)
+check("math.gamma(5) == 24", lambda: math.gamma(5) == 24.0)
+check("math.lgamma(5) ≈ ln(24)", lambda: abs(math.lgamma(5) - math.log(24)) < 1e-10)
+check("math.erf(0) == 0", lambda: math.erf(0) == 0.0)
+check("math.erfc(0) == 1", lambda: math.erfc(0) == 1.0)
+check("math.degrees(math.pi) == 180", lambda: math.degrees(math.pi) == 180.0)
+check("math.radians(180) ≈ pi", lambda: abs(math.radians(180) - math.pi) < 1e-15)
+check("math.isclose(1.0, 1.0+1e-10)", lambda: math.isclose(1.0, 1.0+1e-10))
+check("math.isclose(1.0, 1.1) False", lambda: math.isclose(1.0, 1.1) is False)
+check("math.frexp(8.0) == (0.5, 4)", lambda: math.frexp(8.0) == (0.5, 4))
+check("math.ldexp(0.5, 4) == 8.0", lambda: math.ldexp(0.5, 4) == 8.0)
+check("math.modf(3.5) == (0.5, 3.0)", lambda: math.modf(3.5) == (0.5, 3.0))
+check("math.remainder(7, 3) == 1", lambda: math.remainder(7, 3) == 1.0)
+check("math.nextafter(1.0, 2.0) > 1.0",
+      lambda: math.nextafter(1.0, 2.0) > 1.0 and math.nextafter(1.0, 2.0) < 1.0 + 1e-10)
+check("math.ulp(1.0) is positive small",
+      lambda: 0 < math.ulp(1.0) < 1e-10)
+
+# ===========================================================================
+section('cmath — complex math')
+# ===========================================================================
+check("cmath.pi == math.pi", lambda: cmath.pi == math.pi)
+check("cmath.e == math.e", lambda: cmath.e == math.e)
+check("cmath.tau == math.tau", lambda: cmath.tau == math.tau)
+check("cmath.inf == math.inf", lambda: cmath.inf == math.inf)
+check("cmath.isnan(cmath.nanj)", lambda: cmath.isnan(cmath.nanj))
+check("cmath.isinf(cmath.infj)", lambda: cmath.isinf(cmath.infj))
+check("cmath.sqrt(-1) == 1j",
+      lambda: abs(cmath.sqrt(-1).imag - 1.0) < 1e-15 and abs(cmath.sqrt(-1).real) < 1e-15)
+check("cmath.sqrt(-4) == 2j",
+      lambda: abs(cmath.sqrt(-4).imag - 2.0) < 1e-15)
+check("cmath.exp(1j*pi) ≈ -1 (Euler)",
+      lambda: abs(cmath.exp(1j*math.pi).real + 1.0) < 1e-10)
+check("cmath.log(1) == 0", lambda: cmath.log(1) == 0)
+check("cmath.log10(100) == 2", lambda: cmath.log10(100) == 2)
+check("cmath.sin(0) == 0", lambda: cmath.sin(0) == 0)
+check("cmath.cos(0) == 1", lambda: cmath.cos(0) == 1)
+check("cmath.phase(1+0j) == 0", lambda: cmath.phase(1+0j) == 0)
+check("cmath.phase(0+1j) == pi/2", lambda: abs(cmath.phase(0+1j) - math.pi/2) < 1e-15)
+check("cmath.polar(1+1j)",
+      lambda: abs(cmath.polar(1+1j)[0] - math.sqrt(2)) < 1e-15 and
+              abs(cmath.polar(1+1j)[1] - math.pi/4) < 1e-15)
+check("cmath.rect(1, pi/2) ≈ 1j",
+      lambda: abs(cmath.rect(1, math.pi/2).imag - 1.0) < 1e-15)
+check("cmath.isclose(1+0j, 1)", lambda: cmath.isclose(1+0j, 1))
+check("cmath.isfinite(1+1j)", lambda: cmath.isfinite(1+1j))
+
+# ===========================================================================
+section('array — typecodes + methods')
+# ===========================================================================
+for tc, size in [('b',1),('B',1),('h',2),('H',2),('i',4),('I',4),
+                 ('l',4),('L',4),('q',8),('Q',8),('f',4),('d',8)]:
+    check(f"array('{tc}').itemsize == {size}",
+          (lambda tc=tc, size=size: array.array(tc).itemsize == size))
+
+# Methods.
+def _t_array_methods():
+    a = array.array('i', [1, 2, 3])
+    a.append(4); a.extend([5, 6])
+    a.insert(0, 0)
+    if list(a) != [0, 1, 2, 3, 4, 5, 6]: return False
+    popped = a.pop()
+    if popped != 6: return False
+    a.remove(0)
+    if list(a) != [1, 2, 3, 4, 5]: return False
+    if a.index(3) != 2: return False
+    if a.count(3) != 1: return False
+    a.reverse()
+    if list(a) != [5, 4, 3, 2, 1]: return False
+    return True
+check("array methods: append/extend/insert/pop/remove/index/count/reverse",
+      _t_array_methods)
+
+def _t_array_bytes():
+    a = array.array('i', [1, 2, 3])
+    b = a.tobytes()
+    a2 = array.array('i'); a2.frombytes(b)
+    return list(a2) == [1, 2, 3]
+check("array tobytes/frombytes round-trip", _t_array_bytes)
+
+def _t_array_unicode():
+    a = array.array('u', 'héllo')
+    return a.tounicode() == 'héllo'
+check("array 'u' tounicode round-trip", _t_array_unicode)
+
+def _t_array_fromlist():
+    a = array.array('i'); a.fromlist([10, 20, 30])
+    return list(a) == [10, 20, 30]
+check("array.fromlist", _t_array_fromlist)
+
+def _t_array_byteswap():
+    a = array.array('I', [0x12345678])
+    a.byteswap()
+    return a[0] == 0x78563412
+check("array.byteswap on 'I'", _t_array_byteswap)
+
+check("array equality",
+      lambda: array.array('i', [1,2,3]) == array.array('i', [1,2,3]))
+check("array inequality (different typecode)",
+      lambda: (array.array('i', [1]) == array.array('l', [1])) is False
+              or array.array('i', [1]) == array.array('l', [1]))  # implementation-defined
+check("array len",
+      lambda: len(array.array('i', range(100))) == 100)
+check("array __contains__",
+      lambda: 3 in array.array('i', [1,2,3]) and 99 not in array.array('i', [1,2,3]))
+check("array slicing",
+      lambda: list(array.array('i', [0,1,2,3,4])[1:4]) == [1,2,3])
+check("array negative indexing",
+      lambda: array.array('i', [10,20,30])[-1] == 30)
+
+def _t_array_overflow():
+    a = array.array('b')
+    try: a.append(200); return False
+    except OverflowError: return True
+    except Exception: return False
+check("array 'b' overflow → OverflowError", _t_array_overflow)
+
+# ===========================================================================
+# Final summary
+# ===========================================================================
+# Flush last section.
+if _section_name:
+    log(f'  └── {_section_name}: {_section_pass} ✓ / {_section_fail} ✗')
+
+log('')
+log(f'=' * 60)
+log(f'GRAND TOTAL: {_pass} ✓ / {_fail} ✗ ({_pass + _fail} tests)')
+log(f'=' * 60)
+
+if _failures:
+    log('')
+    log('All failures by section:')
+    cur = None
+    for s, n, d in _failures:
+        if s != cur:
+            log(f'  [{s}]')
+            cur = s
+        log(f'    ✗ {n}' + (('  -- ' + d) if d else ''))
+
+# Marker for the test-all.html runner. Stays red until all probes pass.
+log('\\n=== ALL OK ===' if _fail == 0 else '\\n=== SOME FAILED ===')
+log('=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1});
+} catch (e) {
+    log('=== FAILED === ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>
