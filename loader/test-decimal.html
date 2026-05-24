@@ -93,6 +93,17 @@ try:
 except Exception as e:
     log(f'  FAIL: {type(e).__name__}: {e}')
 
+# Test 8: kwarg-to-tp_init — Context(prec=N). Previously known broken
+# (TypeError or silent default 28). If this now prints prec=42 the
+# tp_init kwarg threading is fixed.
+log('\\nTest 8: Context(prec=42) — kwarg to tp_init')
+try:
+    ctx = D.Context(prec=42)
+    log(f'  Context(prec=42).prec = {ctx.prec}  (expect 42): '
+        f'{"✓" if ctx.prec == 42 else "✗"}')
+except Exception as e:
+    log(f'  FAIL: {type(e).__name__}: {e}')
+
 log('\\n=== done ===')
 `;
     document.body.appendChild(py);

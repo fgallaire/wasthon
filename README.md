@@ -551,6 +551,24 @@ Recent ports:
       Smallest port to date (15 KB wasm), single METH_FASTCALL function.
       Textbook validation of the work-density rule — one bridge crossing,
       ~30-50 flops inside C, never close to break-even.
+- [x] `tp_init` kwarg threading fix — `_decimal.Context(prec=42)` raised
+      `TypeError: an integer is required` and never reached
+      `context_setattrs`. The `cls.tp_init` wrapper only detected the
+      bridge's *outbound* `{$nat:'kw',$kw:obj}` shape; Brython 3.14 emits
+      the *inbound* form `{$kw:[{name:value, ...}]}` (Array of maps, no
+      `$nat`) which the wrapper missed entirely, so `kw` stayed `null`,
+      the `$kw` marker leaked as the first positional, and
+      `PyArg_ParseTupleAndKeywords` coerced it as the `prec` slot. Fix:
+      widen detection to `(.$kw !== undefined || .$nat === 'kw')`,
+      flatten the `$kw` Array into `[name, value]` pairs, and build a
+      real Brython dict with `$B.empty_dict()` + `dict.$setitem` (same
+      primitives `PyDict_SetItem` uses) so PyArg's `dict.get`/`$getitem`
+      lookups land in real hash storage. Found by instrumenting `tp_init`
+      and `PyArg_ParseTupleAndKeywords` with `console.log` — one cycle
+      showed the defect was purely in extraction, after three earlier
+      guess-driven attempts had blindly rewritten dict construction.
+      Transversal: benefits any C type whose `tp_init` reads kwargs via
+      `PyArg_ParseTupleAndKeywords`.
 - [x] Trampoline `**kw` fix — calling a C function with `f(*args, **kw)`
       from Python (e.g. `re._compiler.compile` doing
       `_sre.compile(*args, **kw)`) raised `TypeError: got an unexpected

@@ -7696,14 +7696,50 @@ mergeInto(LibraryManager.library, {
                 // Brython call sig: tp_init(self, ...args, kwarg)
                 // CPython sig:      tp_init(self, args_tuple, kwargs_dict)
                 var jsArgs = Array.from(arguments).slice(1);
-                var kw = null;
-                if (jsArgs.length > 0 && jsArgs[jsArgs.length - 1] &&
-                        jsArgs[jsArgs.length - 1].$nat === 'kw') {
-                    kw = jsArgs.pop();
+                // Brython 3.14 packs keywords as a trailing {$kw:[ {name:
+                // value, ...}, ...starred ]} object — $kw is an Array of
+                // plain maps (ast_to_js.js emits `{$kw:[${kw}]}`). The
+                // bridge's own outbound convention (PyObject_VectorcallDict)
+                // is {$nat:'kw',$kw:obj}. Detect either shape; flatten the
+                // Array source into [name,value] pairs. The previous version
+                // only checked `.$nat === 'kw'`, so under Brython 3.14 it
+                // missed the marker entirely, leaving the `$kw` wrapper to
+                // leak as a positional — which PyArg_ParseTupleAndKeywords
+                // then tried to coerce as the first slot ("an integer is
+                // required" on _decimal.Context(prec=42)).
+                var kwPairs = null;
+                if (jsArgs.length > 0) {
+                    var last = jsArgs[jsArgs.length - 1];
+                    if (last && (last.$kw !== undefined || last.$nat === 'kw')) {
+                        var src = last.$kw !== undefined ? last.$kw : last;
+                        var maps = Array.isArray(src) ? src : [src];
+                        kwPairs = [];
+                        for (var mi = 0; mi < maps.length; mi++) {
+                            var m = maps[mi];
+                            if (!m) continue;
+                            var ks = Object.keys(m);
+                            for (var kj = 0; kj < ks.length; kj++) {
+                                var nm = ks[kj];
+                                if (nm === '$kw' || nm === '$nat') continue;
+                                kwPairs.push([nm, m[nm]]);
+                            }
+                        }
+                        jsArgs.pop();
+                    }
                 }
                 var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
                 var argsH = rt.wrap(jsArgs);
-                var kwH   = kw ? rt.wrap(kw) : 0;
+                // Build a real Brython dict (same primitives PyDict_SetItem
+                // uses) so PyArg_ParseTupleAndKeywords' dict.get / $getitem
+                // lookups land in real hash storage.
+                var kwH = 0;
+                if (kwPairs && kwPairs.length > 0) {
+                    var kwDict = rt.$B.empty_dict();
+                    for (var ki = 0; ki < kwPairs.length; ki++) {
+                        rt._b_.dict.$setitem(kwDict, kwPairs[ki][0], kwPairs[ki][1]);
+                    }
+                    kwH = rt.wrap(kwDict);
+                }
                 rt.pendingException = null;
                 var rc = getWasmTableEntry(tpInitPtr)(selfH, argsH, kwH);
                 if (rc !== 0 || rt.pendingException) {
