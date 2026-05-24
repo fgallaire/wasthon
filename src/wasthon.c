@@ -334,11 +334,16 @@ int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
     return 0;
 }
 
+extern void wasthon_buffer_release(Py_buffer *view);
+
 void PyBuffer_Release(Py_buffer *view) {
     if (view == NULL || view->buf == NULL) {
         return;
     }
-    free(view->buf);
+    /* JS side handles two cases: read-only buffers (just free), and
+     * writable buffers from PyArg_Parse('w*') which copy linear-mem
+     * back into the source Brython object before freeing. */
+    wasthon_buffer_release(view);
     view->buf = NULL;
     view->obj = NULL;
 }

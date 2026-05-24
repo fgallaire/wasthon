@@ -1302,6 +1302,39 @@ mergeInto(LibraryManager.library, {
             HEAP32[outPtr >> 2] = s.codePointAt(0) || s.charCodeAt(0);
             return 1;
         }
+        if (c === 'w' && fmt[1] === '*') {
+            // 'w*' — writable buffer view. Used by _struct.pack_into.
+            // Materialize the Brython bytearray's bytes into linear memory
+            // (where C can write); paired with PyBuffer_Release for
+            // write-back. Py_buffer layout on wasm32 = 12 * 4 = 48 bytes.
+            var src = arg && (arg.source || (arg instanceof Uint8Array ? arg : null));
+            if (!src) {
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                    "PyArg_Parse: 'w*' expects a writable buffer (got " +
+                    (typeof arg) + ")");
+                return 0;
+            }
+            var blen = src.length;
+            var bbuf = _malloc(blen || 1);
+            if (bbuf === 0 && blen > 0) {
+                rt.setError(rt.wrap(rt._b_.MemoryError), "w* alloc failed");
+                return 0;
+            }
+            HEAPU8.set(src, bbuf);
+            var vp = outPtr;                                        // &Py_buffer
+            HEAP32[(vp +  0) >> 2] = bbuf;                          // buf
+            HEAP32[(vp +  4) >> 2] = argH;                          // obj (handle)
+            HEAP32[(vp +  8) >> 2] = blen;                          // len
+            HEAP32[(vp + 12) >> 2] = 1;                             // itemsize
+            HEAP32[(vp + 16) >> 2] = 0;                             // readonly (writable)
+            HEAP32[(vp + 20) >> 2] = 1;                             // ndim
+            HEAP32[(vp + 24) >> 2] = 0;                             // format
+            HEAP32[(vp + 28) >> 2] = 0;                             // shape
+            HEAP32[(vp + 32) >> 2] = 0;                             // strides
+            HEAP32[(vp + 36) >> 2] = 0;                             // suboffsets
+            HEAP32[(vp + 40) >> 2] = 0;                             // internal
+            return 1;
+        }
         if (c === 's') {
             // 's' — `const char *` from a Python str (UTF-8). The pointer
             // stays valid for the str's lifetime via PyUnicode_AsUTF8's
@@ -7166,6 +7199,30 @@ mergeInto(LibraryManager.library, {
         HEAP32[outBufPtrPtr >> 2] = buf;
         HEAP32[outLenPtr >> 2] = len;
         return 0;
+    },
+
+    /* Called from C-side PyBuffer_Release. For writable buffers acquired
+     * via PyArg_Parse('w*'), copies linear-mem bytes back into the source
+     * (Brython bytearray's .source array) so Python sees the mutations.
+     * Then frees the linear-mem buffer. Read-only buffers skip the
+     * copy-back and just free. */
+    wasthon_buffer_release__deps: ['$WasthonRT'],
+    wasthon_buffer_release: function(viewPtr) {
+        if (viewPtr === 0) return;
+        var bufPtr   = HEAP32[viewPtr >> 2];
+        var objH     = HEAP32[(viewPtr + 4) >> 2];
+        var len      = HEAP32[(viewPtr + 8) >> 2];
+        var readonly = HEAP32[(viewPtr + 16) >> 2];
+        if (bufPtr === 0) return;
+        if (!readonly && objH !== 0) {
+            var obj = WasthonRT.unwrap(objH);
+            var src = obj && (obj.source ||
+                              (obj instanceof Uint8Array ? obj : null));
+            if (src) {
+                for (var i = 0; i < len; i++) src[i] = HEAPU8[bufPtr + i];
+            }
+        }
+        _free(bufPtr);
     },
 
     wasthon_object_check_buffer__deps: ['$WasthonRT'],
