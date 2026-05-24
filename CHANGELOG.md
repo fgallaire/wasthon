@@ -16,9 +16,10 @@ Module ports and the bridge-surface inventory live in `README.md`.
       reproducible ways: *(a)* hooking `$getattribute` directly →
       recursion through `C context_getattr → PyObject_GenericGetAttr →
       $B.$getattr → $getattribute → us`; *(b)* try-default-then-fallback
-      → didn't trigger because Brython 3.14's default
-      `object.tp_getattro` returns an `Object {null:null}` "missing"
-      sentinel instead of raising `AttributeError`. The working
+      → didn't trigger because Brython's default `object.tp_getattro`
+      returns an `Object {null:null}` "missing" sentinel for absent
+      attrs instead of raising `AttributeError` (so our `catch
+      (AttributeError)` never fired). The working
       strategy is **C-first with a re-entry guard**: invoke the C
       function first; for hard-coded interceptions (`traps`/`flags`) it
       returns the struct field directly, and for everything else it
@@ -28,24 +29,24 @@ Module ports and the bridge-surface inventory live in `README.md`.
       via the normal getset). Transversal: any C type with a custom
       `tp_getattro` slot.
 
-- [x] `float` wrapping for Brython 3.14 `PyTypeObject` mirror — Brython
-      3.14 migrated `_b_.float` to the same `PyTypeObject`-mirror shape
-      as `_b_.slice` / `_b_.bool` / `_b_.dict`. Its `$factory` now
-      produces `{ob_type, value}` instances without `__class__` — yet
-      some builtins still look up `obj.__class__.__mro__` (e.g. the
-      `float()` callable) and crash on `undefined`. `D('1.5').exp()` /
+- [x] `float` wrapping consistency — `D('1.5').exp()` /
       `D('100').ln()` failed with `JavascriptError: can't access
       property "indexOf", klass.__mro__ is undefined` because
       `Decimal.__float__` goes through `PyDec_AsFloat` →
       `PyFloat_FromString`, and the bridge returned the parsed JS
       number raw (`rt.wrap(v)`) → Brython saw a `JSObject` instead of
-      a `float`. *(1)* `PyFloat_FromDouble`: patch `obj.__class__ =
-      obj.ob_type` on the `$factory` result so both lookup paths
-      resolve. *(2)* `PyFloat_FromString`: route through
-      `PyFloat_FromDouble` after parsing instead of `rt.wrap(rawNumber)`,
-      so the wrapping is consistent. Transversal — any C function
-      returning a float (`math`, `cmath`, `_decimal`, `_statistics`, …)
-      now produces a properly-typed Python `float`.
+      a `float`, and the `float()` builtin's `obj.__class__.__mro__`
+      lookup blew up on `undefined`. In Brython 3.14, `_b_.float` is a
+      `PyTypeObject` mirror (same shape as `_b_.slice` / `_b_.bool` /
+      `_b_.dict`) and its `$factory` produces `{ob_type, value}`
+      instances **without** `__class__` — a fact the bridge needed to
+      know but wasn't accounting for. *(1)* `PyFloat_FromDouble`:
+      patch `obj.__class__ = obj.ob_type` on the `$factory` result so
+      both lookup paths resolve. *(2)* `PyFloat_FromString`: route
+      through `PyFloat_FromDouble` after parsing instead of
+      `rt.wrap(rawNumber)`, so the wrapping is consistent. Transversal
+      — any C function returning a float (`math`, `cmath`, `_decimal`,
+      `_statistics`, …) now produces a properly-typed Python `float`.
 
 - [x] `'O&'` converter format in `Py_BuildValue` — `pyexpat`'s
       `ProcessingInstruction` and `Comment` handlers use
@@ -60,13 +61,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 - [x] `_csv` cluster — `list_dialects()`, `reader(…, delimiter='\t')`,
       kwarg-driven dialects. Four bridge gaps surfaced together by
       `loader/test-debug.html`, all in the kwargs/dict path:
-      *(1)* `PyDict_Keys` called `_b_.dict.keys(d)` — `_b_.dict` is now
-      a `PyTypeObject` mirror in Brython 3.14, exposes only `$`-prefixed
+      *(1)* `PyDict_Keys` called `_b_.dict.keys(d)`, but `_b_.dict` (a
+      `PyTypeObject` mirror in Brython 3.14) only exposes `$`-prefixed
       internal methods (`$getitem`/`$setitem`/`$contains`/…) and no
-      top-level `keys`. Route through `$B.$getattr(d, 'keys')` + `$B.$call(list, …)`,
-      same canonical pattern `flattenKwArray` already uses for `.items()`.
-      Unblocks `_csv.list_dialects()` (was raising `RuntimeError: …
-      returned NULL`).
+      top-level `keys` — so the call raised "is not a function". The
+      bridge code was simply written against the wrong API surface.
+      Route through `$B.$getattr(d, 'keys')` + `$B.$call(list, …)`
+      instead, the same canonical pattern `flattenKwArray` already
+      uses for `.items()`. Unblocks `_csv.list_dialects()` (was raising
+      `RuntimeError: … returned NULL`).
       *(2)* `METH_VARARGS|METH_KEYWORDS` legacy trampoline built its
       `kwDict` with the dead `str_dict_set ? … : (kwDict[k]=v)` idiom —
       same pattern we already replaced for `tp_init` earlier. Use
@@ -74,14 +77,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
       hash storage. Without this, every kwarg passed to legacy
       `METH_KEYWORDS` C functions was silently lost.
       *(3)* `flattenKwArray`'s Brython-dict detection checked
-      `m.__class__ === _b_.dict`, but Brython 3.14 instances mark their
-      type via `ob_type` (same shape as the slice fix). Accept either.
+      `m.__class__ === _b_.dict`, but Brython 3.14 instances mark
+      their type via `ob_type` (and the bridge had the same `__class__`
+      assumption baked in elsewhere — same family as the `PySlice_Check`
+      fix). Accept either shape.
       *(4)* `PyObject_VectorcallDict` wrapped kwargs as
-      `{$nat:'kw', $kw: <Brython dict>}`. Modern Brython expects `$kw`
-      to be an **Array of plain JS maps**, not a single dict — passing
-      a dict as an element made `$call` build a fresh empty `kw` at the
-      receiver. Walk the dict's `.items()` into a plain JS map and pass
-      `{$kw: [flat]}`. `_csv`'s `_call_dialect` (and any other
+      `{$nat:'kw', $kw: <Brython dict>}`. Brython's call codegen
+      expects `$kw` to be an **Array of plain JS maps**, not a single
+      dict — passing a dict as an element made `$call` build a fresh
+      empty `kw` at the receiver. The bridge had been emitting the
+      wrong shape since this code was written. Walk the dict's
+      `.items()` into a plain JS map and pass `{$kw: [flat]}`. `_csv`'s
+      `_call_dialect` (and any other
       `PyObject_VectorcallDict` caller) sees the kwargs intact at
       `tp_new`/`tp_init`. Transversal — fixes 2/3/4 benefit every C
       type taking kwargs through these paths (`_sqlite3` Connection
@@ -116,17 +123,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 - [x] `bool` coercion + `callable()` on C-call types — two small bridge
       gaps surfaced by `loader/test-debug.html` while probing
       `_json.make_encoder`. *(1)* `PyArg_Parse` format `'p'` (predicate)
-      called `_b_.bool(value)`, but Brython 3.14 turned `_b_.bool` into a
-      `PyTypeObject` mirror (same shape as `_b_.slice`), no longer
-      callable directly — use `_b_.bool.$factory` instead (the
-      trampoline's own `'p'` handler already uses that form, so the
-      bridge was inconsistent with itself). *(2)* `tp_call` wiring set
-      `cls.tp_call` but never `cls.__call__`, so Brython's `callable(obj)`
-      returned False for any C type defining `tp_call` (`_json` Encoder,
-      `_decimal` Context, `_sqlite3` Connection, etc.); mirror the
-      dispatch as `cls.__call__` + `set_to_dict` so Brython's MRO lookup
-      finds it. Transversal: any C function taking a `'p'`-format arg or
-      any C type with `tp_call` benefits.
+      called `_b_.bool(value)` directly, but in Brython 3.14 `_b_.bool`
+      is a `PyTypeObject` mirror, not a callable function — the right
+      form is `_b_.bool.$factory(value)`, which the trampoline's own
+      `'p'` handler was already using. So the bridge was inconsistent
+      with itself, not with Brython. *(2)* `tp_call` wiring set
+      `cls.tp_call` but never `cls.__call__`, so Brython's
+      `callable(obj)` returned False for any C type defining `tp_call`
+      (`_json` Encoder, `_decimal` Context, `_sqlite3` Connection,
+      etc.); mirror the dispatch as `cls.__call__` + `set_to_dict` so
+      Brython's MRO lookup finds it. Transversal: any C function
+      taking a `'p'`-format arg or any C type with `tp_call` benefits.
 
 - [x] `array.array` cluster fixes — 6 ✗ collapsed to 0, surfaced by
       `loader/test-debug.html` fishing. Four root causes, all in the
@@ -146,14 +153,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
       and `arr[-1]` work (otherwise `sq_item`'s int-only dispatch wins
       via numerical key ordering in the slot loop).
       *(3)* `PySlice_Check` checked `obj.__class__ === _b_.slice`, but
-      Brython 3.14 represents slice instances via `ob_type` not
-      `__class__` (new C-API-compat layer where `_b_.slice` is a
-      `PyTypeObject` mirror with `tp_name`/`tp_basicsize`). Accept both
-      shapes.
-      *(4)* `PyObject_RichCompareBool` called the now-removed
-      `$B.$eq(a, b)` — Brython 3.14 renamed it to
-      `$B.rich_comp(op, x, y)` (op is a dunder-name string). Rewires
-      all 6 ops (`<`/`<=`/`==`/`!=`/`>`/`>=`) through `rich_comp` so
+      slice instances in Brython 3.14 mark their type via `ob_type`,
+      not `__class__` (`_b_.slice` is a `PyTypeObject` mirror with
+      `tp_name`/`tp_basicsize`). The bridge had been reading the
+      wrong field since the check was written — accept both shapes.
+      *(4)* `PyObject_RichCompareBool` called `$B.$eq(a, b)` —
+      a function that doesn't exist in Brython 3.14 (the actual API is
+      `$B.rich_comp(op, x, y)` with op as a dunder-name string). The
+      bridge had simply written the wrong symbol name. Rewires all 6
+      ops (`<`/`<=`/`==`/`!=`/`>`/`>=`) through `rich_comp` so
       `array_contains`, `list.remove`, dict-key lookup, etc. work.
       Also adds a new dispatch shape `'bi'` (binary returning int) for
       `sq_contains`, which previously used the binary-returns-PyObject
@@ -194,9 +202,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 - [x] `tp_init` kwarg threading fix — `_decimal.Context(prec=42)` raised
       `TypeError: an integer is required` and never reached
       `context_setattrs`. The `cls.tp_init` wrapper only detected the
-      bridge's *outbound* `{$nat:'kw',$kw:obj}` shape; Brython 3.14 emits
-      the *inbound* form `{$kw:[{name:value, ...}]}` (Array of maps, no
-      `$nat`) which the wrapper missed entirely, so `kw` stayed `null`,
+      bridge's own *outbound* `{$nat:'kw',$kw:obj}` shape (constructed
+      in `PyObject_VectorcallDict`); Brython's actual *inbound* form
+      from a call site like `Context(prec=42)` is `{$kw:[{name:value,
+      ...}]}` (Array of maps, no `$nat` — `ast_to_js.js` codegen). The
+      wrapper missed that entirely, so `kw` stayed `null`,
       the `$kw` marker leaked as the first positional, and
       `PyArg_ParseTupleAndKeywords` coerced it as the `prec` slot. Fix:
       widen detection to `(.$kw !== undefined || .$nat === 'kw')`,

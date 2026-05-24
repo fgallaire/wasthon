@@ -472,6 +472,14 @@ check("pack '>?' bool True",
 check("pack '>?' bool False",
       lambda: _struct.pack('>?', False) == b'\\x00')
 
+# _struct._clearcache() calls PyDict_Clear on the format cache. Probes
+# whether the bridge's PyDict_Clear (→ _b_.dict.clear) actually works
+# against the loaded Brython runtime.
+def _t_struct_clearcache():
+    _struct._clearcache()
+    return True   # success == no exception
+check("_struct._clearcache() (exercises PyDict_Clear)", _t_struct_clearcache)
+
 # ===========================================================================
 section('_sre — module-level helpers')
 # ===========================================================================
