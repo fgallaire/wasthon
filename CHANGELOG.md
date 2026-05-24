@@ -7,6 +7,27 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] custom `tp_getattro` slot wiring — `_decimal.Context.traps` /
+      `.flags` live on the C struct (not in any Brython dict / getset)
+      and are intercepted by `context_getattr` before its fallback to
+      `PyObject_GenericGetAttr`. The bridge didn't read slot 57
+      (`Py_tp_getattro` per wasthon.h's numbering), so `ctx.traps`
+      raised `AttributeError`. Two earlier strategies failed in
+      reproducible ways: *(a)* hooking `$getattribute` directly →
+      recursion through `C context_getattr → PyObject_GenericGetAttr →
+      $B.$getattr → $getattribute → us`; *(b)* try-default-then-fallback
+      → didn't trigger because Brython 3.14's default
+      `object.tp_getattro` returns an `Object {null:null}` "missing"
+      sentinel instead of raising `AttributeError`. The working
+      strategy is **C-first with a re-entry guard**: invoke the C
+      function first; for hard-coded interceptions (`traps`/`flags`) it
+      returns the struct field directly, and for everything else it
+      falls through to `PyObject_GenericGetAttr` → `$B.$getattr` →
+      back into us, where the re-entry guard sees the in-flight name
+      and bottoms out to the default lookup (which finds `prec` etc.
+      via the normal getset). Transversal: any C type with a custom
+      `tp_getattro` slot.
+
 - [x] `float` wrapping for Brython 3.14 `PyTypeObject` mirror — Brython
       3.14 migrated `_b_.float` to the same `PyTypeObject`-mirror shape
       as `_b_.slice` / `_b_.bool` / `_b_.dict`. Its `$factory` now

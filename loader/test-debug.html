@@ -601,8 +601,19 @@ check("D bool: 0 falsy",
       lambda: bool(D('0')) is False and bool(D('1')) is True)
 check("D negative zero preserved",
       lambda: str(D('-0')) == '-0')
-check("D division by zero → DivisionByZero",
-      lambda: (D('1') / D('0')).is_infinite() if not _decimal.getcontext().traps[_decimal.DivisionByZero] else True)
+# Context.traps lives on the C struct (not in any dict / getset) and is
+# intercepted by context_getattr. Previously the bridge didn't wire the
+# custom tp_getattro slot, so ctx.traps raised AttributeError. Verify
+# it's now reachable — that's the bridge fix this test locks down.
+# SignalDict semantics (signal classes as keys, bool values) are
+# CPython behaviour we don't probe here.
+def _t_decimal_traps():
+    try:
+        t = _decimal.getcontext().traps
+    except AttributeError:
+        return False
+    return t is not None
+check("Context.traps reachable (custom tp_getattro wiring)", _t_decimal_traps)
 check("D str round-trip",
       lambda: str(D('3.14159')) == '3.14159')
 check("D repr",

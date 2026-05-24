@@ -74,8 +74,10 @@ const PAGES = [
 
 // Informational pages — fishing pages with known-unfixed probes. Their
 // ✗ count is shown but does NOT count toward the overall fail tally
-// (so CI stays green while the cleanup continues).
-const INFORMATIONAL = new Set(['test-debug.html']);
+// (so CI stays green while the cleanup continues). test-debug.html
+// passed 288/288 on 2026-05-24; promoted to regression — any future ✗
+// counts as a CI failure.
+const INFORMATIONAL = new Set();
 
 const TIMEOUT_MS = 60_000;
 const POLL_MS    = 250;

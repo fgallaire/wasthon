@@ -8053,6 +8053,61 @@ mergeInto(LibraryManager.library, {
             try { rt.$B.set_to_dict(cls, '__call__', _tpCallWrap); } catch (_) {}
         }
 
+        // Wire Py_tp_getattro (slot 57 per wasthon.h numbering) using a
+        // try-default-then-fallback strategy. The C-side custom getattr
+        // (e.g. _decimal Context's context_getattr) intercepts specific
+        // names like `traps`/`flags` that live on the C struct (not in
+        // any Brython dict / MRO). Hooking $getattribute directly (the
+        // morning attempt) caused recursion: C falls through to
+        // PyObject_GenericGetAttr → $B.$getattr → cls.$getattribute → us
+        // again. Instead: first run the default object.tp_getattro
+        // (handles all normal attrs without entering our wrapper); on
+        // AttributeError, call the C function for the custom intercepts.
+        // Re-entry guard for the case where C also falls through and the
+        // bridge GenericGetAttr re-invokes us on the same name.
+        var tpGetattroPtr = slotMap[57 /* Py_tp_getattro */];
+        if (tpGetattroPtr) {
+            var _objGetattr = rt._b_.object.tp_getattro;
+            cls.tp_getattro = cls.$getattribute = function(self, name) {
+                // Re-entry guard: when C falls through to PyObject_GenericGetAttr
+                // → $B.$getattr → us again, break out to the default tp_getattro
+                // so normal descriptor lookup terminates the cycle.
+                if (self && self.__wasthon_in_getattro__ === name) {
+                    return _objGetattr(self, name);
+                }
+                // C-first: invoke the C-side custom getattr. For its
+                // hard-coded interceptions (e.g. _decimal Context's
+                // `traps`/`flags`) it returns a real PyObject* directly.
+                // For everything else it falls through to
+                // PyObject_GenericGetAttr, which (with the re-entry guard)
+                // ends up in the default _objGetattr above.
+                if (self) self.__wasthon_in_getattro__ = name;
+                try {
+                    var selfH = self && self.__wasthon_ptr__
+                        ? self.__wasthon_ptr__ : rt.wrap(self);
+                    var nameH = rt.wrap(name);
+                    rt.pendingException = null;
+                    var resH = getWasmTableEntry(tpGetattroPtr)(selfH, nameH);
+                    if (resH !== 0 && !rt.pendingException) {
+                        return rt.unwrap(resH);
+                    }
+                    var pe = rt.pendingException;
+                    rt.pendingException = null;
+                    if (pe) {
+                        var exc = rt.unwrap(pe.exc) || rt._b_.AttributeError;
+                        throw rt.$B.$call(exc, typeof pe.msg === 'string'
+                            ? pe.msg : String(pe.msg));
+                    }
+                    // C returned NULL without setting an exception — final
+                    // miss. Surface a clean AttributeError.
+                    throw rt.$B.$call(rt._b_.AttributeError,
+                        "'" + (cls.tp_name || 'object') + "' object has no attribute '" + name + "'");
+                } finally {
+                    if (self) delete self.__wasthon_in_getattro__;
+                }
+            };
+        }
+
         // Install dealloc hook so that when Brython GCs an instance we
         // free the WASM-side struct. We attach a finalizer registry to
         // each instance at GC_New time; see __wasthon_object_gc_new.
