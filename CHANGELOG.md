@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `'O&'` converter format in `Py_BuildValue` — `pyexpat`'s
+      `ProcessingInstruction` and `Comment` handlers use
+      `Py_BuildValue("(NO&)", name, conv_string_to_unicode_void, data)`
+      to convert the raw `XML_Char *` data argument to a Python `str`
+      via a callback. The bridge had no `'O&'` handler and bailed with
+      `SystemError: unsupported format '&'`. Add it: read fn ptr +
+      arg ptr, dispatch via `getWasmTableEntry(fnPtr)(arg)`, wrap the
+      result. Transversal — any C function calling `Py_BuildValue` with
+      `'O&'` benefits.
+
 - [x] `_csv` cluster — `list_dialects()`, `reader(…, delimiter='\t')`,
       kwarg-driven dialects. Four bridge gaps surfaced together by
       `loader/test-debug.html`, all in the kwargs/dict path:

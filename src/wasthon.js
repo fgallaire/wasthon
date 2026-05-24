@@ -1650,6 +1650,17 @@ mergeInto(LibraryManager.library, {
             var c = fmt[i];
             switch (c) {
                 case 'O': case 'N': case 'S': {
+                    // 'O&' — converter callback: PyObject *conv(void *arg).
+                    // Read fn pointer + arg pointer, call conv(arg), use
+                    // the returned PyObject* handle. pyexpat's
+                    // ProcessingInstruction / Comment handlers use this:
+                    // Py_BuildValue("(NO&)", name, conv_string_to_unicode_void, data).
+                    if (c === 'O' && fmt[i+1] === '&') {
+                        var fnPtr = readPtr();
+                        var arg   = readPtr();
+                        var resH  = getWasmTableEntry(fnPtr)(arg);
+                        return [rt.unwrap(resH), i+2];
+                    }
                     var h = readPtr();
                     return [rt.unwrap(h), i+1];
                 }
