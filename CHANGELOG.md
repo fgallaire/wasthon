@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `PyLong_FromUnsignedLongLong` i64 sign — `_struct.unpack('>Q',
+      b'\xff' * 8)` returned `(-1,)` instead of `(0xFFFFFFFFFFFFFFFF,)`.
+      Root cause: `bu_ulonglong` computes the unsigned `u64` correctly
+      in C, but at the wasm→JS boundary emcc converts `i64` to BigInt
+      with **signed** interpretation, so values with the high bit set
+      arrive as negative BigInts. The bridge then wrapped the negative
+      BigInt directly. Reinterpret in `[0, 2^64)` before wrapping
+      (`if (v < 0n) v = (1n << 64n) + v`). Transversal: any C function
+      returning `unsigned long long` benefits; the 32-bit variants are
+      fine since wasm i32 stays in `Number` range.
+
 - [x] `'w*'` writable-buffer format in `PyArg_Parse` —
       `_struct.pack_into(buf, off, …)` raised `"cannot convert (got
       object)"`: the bridge had handlers for `'O'`/`'C'`/`'s'`/`'s#'`

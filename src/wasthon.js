@@ -2606,6 +2606,11 @@ mergeInto(LibraryManager.library, {
     PyLong_FromUnsignedLongLong__deps: ['$WasthonRT'],
     PyLong_FromUnsignedLongLong: function(v) {
         if (typeof v === 'bigint') {
+            // emcc's wasm i64 ABI converts to BigInt with SIGNED
+            // interpretation, so values with the high bit set come over
+            // as negative. This entry point is explicitly the
+            // "from unsigned" one — reinterpret in the [0, 2^64) range.
+            if (v < 0n) v = (1n << 64n) + v;
             if (v > 9007199254740992n) return WasthonRT.wrap(v);
             return WasthonRT.wrap(Number(v));
         }
