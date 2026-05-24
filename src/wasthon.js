@@ -1277,7 +1277,7 @@ mergeInto(LibraryManager.library, {
      * char, write into *out. Critical for arraymodule's per-item type
      * conversion (b_setitem, h_setitem, ... each call PyArg_Parse to coerce
      * an iterable's value into the typed slot before storing it). */
-    PyArg_Parse__deps: ['$WasthonRT'],
+    PyArg_Parse__deps: ['$WasthonRT', 'PyUnicode_AsUTF8', 'PyUnicode_AsUTF8AndSize'],
     PyArg_Parse: function(argH, fmtPtr, varargs) {
         var rt = WasthonRT;
         var fmt = fmtPtr ? UTF8ToString(fmtPtr) : "";
@@ -1300,6 +1300,26 @@ mergeInto(LibraryManager.library, {
                 return 0;
             }
             HEAP32[outPtr >> 2] = s.codePointAt(0) || s.charCodeAt(0);
+            return 1;
+        }
+        if (c === 's') {
+            // 's' — `const char *` from a Python str (UTF-8). The pointer
+            // stays valid for the str's lifetime via PyUnicode_AsUTF8's
+            // string-keyed cache.
+            // 's#' — same, plus byte length written to a second out slot.
+            //   unicodedata.lookup uses this: PyArg_Parse(arg, "s#:lookup",
+            //   &name, &name_length).
+            if (rt.asJSStr(arg) === null) {
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                    "PyArg_Parse: 's' format expects str (got " + (typeof arg) + ")");
+                return 0;
+            }
+            if (fmt[1] === '#') {
+                var lenPtr = HEAP32[(varargs + 4) >> 2];
+                HEAP32[outPtr >> 2] = _PyUnicode_AsUTF8AndSize(argH, lenPtr);
+            } else {
+                HEAP32[outPtr >> 2] = _PyUnicode_AsUTF8(argH);
+            }
             return 1;
         }
 
