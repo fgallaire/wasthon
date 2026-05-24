@@ -629,6 +629,20 @@ Recent ports:
       `sq_contains`, which previously used the binary-returns-PyObject
       shape `'b'` and silently turned `99 in arr` into truthy via the
       `resH===0 → NotImplemented` branch.
+- [x] `bool` coercion + `callable()` on C-call types — two small bridge
+      gaps surfaced by `loader/test-debug.html` while probing
+      `_json.make_encoder`. *(1)* `PyArg_Parse` format `'p'` (predicate)
+      called `_b_.bool(value)`, but Brython 3.14 turned `_b_.bool` into a
+      `PyTypeObject` mirror (same shape as `_b_.slice`), no longer
+      callable directly — use `_b_.bool.$factory` instead (the
+      trampoline's own `'p'` handler already uses that form, so the
+      bridge was inconsistent with itself). *(2)* `tp_call` wiring set
+      `cls.tp_call` but never `cls.__call__`, so Brython's `callable(obj)`
+      returned False for any C type defining `tp_call` (`_json` Encoder,
+      `_decimal` Context, `_sqlite3` Connection, etc.); mirror the
+      dispatch as `cls.__call__` + `set_to_dict` so Brython's MRO lookup
+      finds it. Transversal: any C function taking a `'p'`-format arg or
+      any C type with `tp_call` benefits.
 - [x] Bridge surface ~7200 lines: METH_METHOD trampoline, getset
       descriptors, sequence protocol slots, dict-style kwargs in
       `_PyArg_UnpackKeywords`, struct-aware `Py_SIZE`/`Py_SET_SIZE`,

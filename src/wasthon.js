@@ -4926,8 +4926,11 @@ mergeInto(LibraryManager.library, {
                         }
                         HEAP32[outPtr >> 2] = rt.wrap(value);
                     } else if (c === 'p') {
-                        /* predicate: store 1 byte int 0/1 */
-                        HEAPU8[outPtr] = rt._b_.bool(value) ? 1 : 0;
+                        /* predicate: store 1 byte int 0/1. Brython 3.14
+                         * made _b_.bool a PyTypeObject mirror, no longer
+                         * callable directly; use $factory like the
+                         * trampoline's 'p'-format handler at ~8218. */
+                        HEAPU8[outPtr] = rt._b_.bool.$factory(value) ? 1 : 0;
                     } else if (c === 'C') {
                         /* single Python str char as C int (codepoint) */
                         var s = rt.asJSStr(value);
@@ -7876,7 +7879,8 @@ mergeInto(LibraryManager.library, {
         // then cache(sql) calls connection(sql) -> pysqlite_connection_call.
         var tpCallPtr = slotMap[77 /* Py_tp_call */];
         if (tpCallPtr) {
-            cls.tp_call = function(self) {
+            var _tpCallWrap;
+            cls.tp_call = _tpCallWrap = function(self) {
                 var jsArgs = Array.from(arguments).slice(1);
                 var kw = null;
                 if (jsArgs.length > 0 && jsArgs[jsArgs.length - 1] &&
@@ -7902,6 +7906,15 @@ mergeInto(LibraryManager.library, {
                 }
                 return rt.unwrap(resH);
             };
+            // Also expose as __call__ so Brython's `callable(obj)` builtin
+            // (and `obj(...)` syntax via $call) finds it. Without this,
+            // tp_call is wired at the C level but callable() returns False
+            // and _json.make_encoder's encoder, _decimal Context, etc.
+            // aren't seen as callable from Python.
+            cls.__call__ = _tpCallWrap;
+            cls.tp_funcs = cls.tp_funcs || {};
+            cls.tp_funcs.__call__ = _tpCallWrap;
+            try { rt.$B.set_to_dict(cls, '__call__', _tpCallWrap); } catch (_) {}
         }
 
         // Install dealloc hook so that when Brython GCs an instance we
