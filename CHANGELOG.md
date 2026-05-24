@@ -7,6 +7,36 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `_csv` cluster — `list_dialects()`, `reader(…, delimiter='\t')`,
+      kwarg-driven dialects. Four bridge gaps surfaced together by
+      `loader/test-debug.html`, all in the kwargs/dict path:
+      *(1)* `PyDict_Keys` called `_b_.dict.keys(d)` — `_b_.dict` is now
+      a `PyTypeObject` mirror in Brython 3.14, exposes only `$`-prefixed
+      internal methods (`$getitem`/`$setitem`/`$contains`/…) and no
+      top-level `keys`. Route through `$B.$getattr(d, 'keys')` + `$B.$call(list, …)`,
+      same canonical pattern `flattenKwArray` already uses for `.items()`.
+      Unblocks `_csv.list_dialects()` (was raising `RuntimeError: …
+      returned NULL`).
+      *(2)* `METH_VARARGS|METH_KEYWORDS` legacy trampoline built its
+      `kwDict` with the dead `str_dict_set ? … : (kwDict[k]=v)` idiom —
+      same pattern we already replaced for `tp_init` earlier. Use
+      `$B.empty_dict()` + `dict.$setitem()` so entries land in real
+      hash storage. Without this, every kwarg passed to legacy
+      `METH_KEYWORDS` C functions was silently lost.
+      *(3)* `flattenKwArray`'s Brython-dict detection checked
+      `m.__class__ === _b_.dict`, but Brython 3.14 instances mark their
+      type via `ob_type` (same shape as the slice fix). Accept either.
+      *(4)* `PyObject_VectorcallDict` wrapped kwargs as
+      `{$nat:'kw', $kw: <Brython dict>}`. Modern Brython expects `$kw`
+      to be an **Array of plain JS maps**, not a single dict — passing
+      a dict as an element made `$call` build a fresh empty `kw` at the
+      receiver. Walk the dict's `.items()` into a plain JS map and pass
+      `{$kw: [flat]}`. `_csv`'s `_call_dialect` (and any other
+      `PyObject_VectorcallDict` caller) sees the kwargs intact at
+      `tp_new`/`tp_init`. Transversal — fixes 2/3/4 benefit every C
+      type taking kwargs through these paths (`_sqlite3` Connection
+      options, `pyexpat.ParserCreate` flags, etc.).
+
 - [x] `PyLong_FromUnsignedLongLong` i64 sign — `_struct.unpack('>Q',
       b'\xff' * 8)` returned `(-1,)` instead of `(0xFFFFFFFFFFFFFFFF,)`.
       Root cause: `bu_ulonglong` computes the unsigned `u64` correctly

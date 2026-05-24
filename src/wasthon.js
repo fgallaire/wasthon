@@ -170,9 +170,12 @@ mergeInto(LibraryManager.library, {
             for (var mi = 0; mi < maps.length; mi++) {
                 var m = maps[mi];
                 if (!m || typeof m !== 'object') continue;
-                var isBrythonDict = (m.__class__ &&
-                    (m.__class__ === this._b_.dict ||
-                     (this.$B.$isinstance && this.$B.$isinstance(m, this._b_.dict))));
+                // Brython 3.14 instances use `ob_type` (PyTypeObject mirror)
+                // rather than `__class__`. Accept both shapes for the
+                // detection; fall back to $isinstance for subclasses.
+                var isBrythonDict = (m.ob_type === this._b_.dict) ||
+                    (m.__class__ && m.__class__ === this._b_.dict) ||
+                    (this.$B.$isinstance && this.$B.$isinstance(m, this._b_.dict));
                 if (isBrythonDict) {
                     // Walk via .items() — same canonical pattern as
                     // PyDict_Next snapshotting (see line ~1700).
@@ -680,11 +683,25 @@ mergeInto(LibraryManager.library, {
         for (var i = 0; i < nargs; i++) {
             args.push(rt.unwrap(HEAP32[(argsPtr + i * 4) >> 2]));
         }
-        // For kwargs, Brython expects them as a special $kw object.
+        // Brython 3.14 expects kwargs in `{$kw: [plain JS map, ...starred]}`
+        // form. Passing a Brython dict as the $kw element (the previous
+        // shape) made $call drop the kwargs silently (the inner dict was
+        // not iterated as a map). Walk our kwDict via .items() to build a
+        // plain JS map. Affects e.g. _csv.reader(iter, delimiter='\t')
+        // routed through _call_dialect → PyObject_VectorcallDict.
         var kw = kwargsH === 0 ? null : rt.unwrap(kwargsH);
         if (kw) {
-            var kwArg = { $nat: 'kw', $kw: kw };
-            args.push(kwArg);
+            var flat = {};
+            try {
+                var items_view = rt.$B.$call(rt.$B.$getattr(kw, 'items'));
+                var items_list = rt.$B.$call(rt._b_.list, items_view);
+                var n = rt._b_.len(items_list);
+                for (var i = 0; i < n; i++) {
+                    var pair = rt.$B.$getitem(items_list, i);
+                    flat[rt.$B.$getitem(pair, 0)] = rt.$B.$getitem(pair, 1);
+                }
+            } catch (_) { /* empty / unusable dict — pass nothing */ }
+            args.push({ $kw: [flat] });
         }
         try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
@@ -1164,7 +1181,15 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var d = rt.unwrap(dictH);
         if (d === null) return 0;
-        try { return rt.wrap(rt._b_.list.$factory(rt._b_.dict.keys(d))); }
+        // Brython 3.14: _b_.dict only exposes a subset of $-prefixed
+        // internal methods ($getitem, $setitem, $contains, $factory, …)
+        // — the top-level `keys` method isn't there. Go through
+        // $getattr to find it via the MRO / type descriptor, same
+        // pattern as flattenKwArray uses for `.items()`.
+        try {
+            var keys_view = rt.$B.$call(rt.$B.$getattr(d, 'keys'));
+            return rt.wrap(rt.$B.$call(rt._b_.list, keys_view));
+        }
         catch (e) { return 0; }
     },
 
@@ -8504,14 +8529,20 @@ mergeInto(LibraryManager.library, {
                 } else if (flags & KEYWORDS) {
                     // METH_VARARGS | METH_KEYWORDS (legacy):
                     //   fn(self, args_tuple, kwargs_dict)
+                    // Use $B.empty_dict + dict.$setitem (the proven
+                    // PyDict_SetItem primitives) so the entries land in
+                    // Brython's real hash storage. The earlier
+                    // str_dict_set / kwDict[k]=v fallback dropped every
+                    // entry — same bug as tp_init's kwarg path before
+                    // we centralized on $setitem. e.g. _csv.reader([...],
+                    // delimiter='\t') saw delimiter ignored.
                     var argsTuple = rt._b_.tuple.$factory(posArgs);
                     var kwDict = null;
                     if (kwNames.length > 0) {
-                        kwDict = rt._b_.dict.$factory();
+                        kwDict = rt.$B.empty_dict();
                         for (var i = 0; i < kwNames.length; i++) {
-                            rt._b_.dict.str_dict_set
-                                ? rt.$B.str_dict_set(kwDict, kwNames[i], kw[kwNames[i]])
-                                : (kwDict[kwNames[i]] = kw[kwNames[i]]);
+                            rt._b_.dict.$setitem(kwDict, kwNames[i],
+                                                 kw[kwNames[i]]);
                         }
                     }
                     resultHandle = fn(selfHandle, rt.wrap(argsTuple),

@@ -354,25 +354,31 @@ check("pyexpat.ErrorString(1) is str",
 # ===========================================================================
 section('_csv — dialects + quoting + escapes')
 # ===========================================================================
-check("_csv list_dialects has excel",
-      lambda: 'excel' in _csv.list_dialects())
-check("_csv list_dialects has unix",
-      lambda: 'unix' in _csv.list_dialects())
+# _csv (the C accelerator) starts with an empty dialect registry; 'excel',
+# 'unix', 'excel-tab' are registered by the pure-Python csv.py wrapper which
+# we don't import here. Validate list_dialects returns a list (was failing
+# with RuntimeError before the dict.keys → $getattr fix).
+check("_csv.list_dialects() returns a list",
+      lambda: isinstance(_csv.list_dialects(), list))
+def _t_csv_register():
+    _csv.register_dialect('probe-dialect', delimiter='|')
+    out = _csv.list_dialects()
+    return 'probe-dialect' in out
+check("_csv register_dialect + list_dialects round-trip", _t_csv_register)
 check("_csv.field_size_limit() returns int",
       lambda: isinstance(_csv.field_size_limit(), int))
 
+# _csv with explicit kwargs (no pre-registered dialect needed).
 def _t_csv_quoted():
-    rows = list(_csv.reader(['"hello, world","quote\\"inside"']))
+    rows = list(_csv.reader(['"hello, world","quote""inside"'],
+                            delimiter=',', quotechar='"', doublequote=True))
     return rows == [['hello, world', 'quote"inside']]
-check("_csv quoted field with embedded quote", _t_csv_quoted)
+check("_csv quoted field with doubled-quote escape", _t_csv_quoted)
 
 def _t_csv_tab():
-    d = type('D', (object,), {'delimiter':'\\t','quotechar':'"','doublequote':True,
-                              'skipinitialspace':False,'lineterminator':'\\r\\n',
-                              'quoting':_csv.QUOTE_MINIMAL,'strict':False,'escapechar':None})
-    rows = list(_csv.reader(['a\\tb\\tc'], dialect='excel-tab'))
+    rows = list(_csv.reader(['a\\tb\\tc'], delimiter='\\t'))
     return rows == [['a','b','c']]
-check("_csv excel-tab dialect", _t_csv_tab)
+check("_csv tab delimiter (kwarg)", _t_csv_tab)
 
 check("_csv QUOTE_ALL is int",
       lambda: isinstance(_csv.QUOTE_ALL, int))
