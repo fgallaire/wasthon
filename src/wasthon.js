@@ -148,6 +148,60 @@ mergeInto(LibraryManager.library, {
             if (handle < 0x10000) this.freeList.push(handle);
         },
 
+        /* Flatten a Brython $kw payload to [[name, value], ...] pairs.
+         *
+         * Brython 3.14 represents keyword args as `{$kw: src}` where src is
+         * either a single map or an Array of maps. Per pmp-p / Pierre:
+         *   f(x=1, y=2)              → {$kw: [{x:1, y:2}]}
+         *   f(**d1, **d2, **d3)      → {$kw: [{}, d1, d2, d3]}
+         *   f(x=1, **d1, **d2)       → {$kw: [{x:1}, d1, d2]}
+         * Element 0 is a plain JS object (the explicit name=value pairs).
+         * Elements 1+ are the mappings from `**d` expansions and ARE real
+         * Brython dicts — their entries live in Symbol-keyed hash storage,
+         * NOT as enumerable own properties. So `Object.keys` / `for...in`
+         * silently skip them. We need .items() for those.
+         *
+         * Returns: array of [name, value] pairs (later duplicate keys win,
+         * matching CPython's left-to-right ** evaluation). */
+        flattenKwArray: function(src) {
+            var out = [];
+            if (src === null || src === undefined) return out;
+            var maps = Array.isArray(src) ? src : [src];
+            for (var mi = 0; mi < maps.length; mi++) {
+                var m = maps[mi];
+                if (!m || typeof m !== 'object') continue;
+                var isBrythonDict = (m.__class__ &&
+                    (m.__class__ === this._b_.dict ||
+                     (this.$B.$isinstance && this.$B.$isinstance(m, this._b_.dict))));
+                if (isBrythonDict) {
+                    // Walk via .items() — same canonical pattern as
+                    // PyDict_Next snapshotting (see line ~1700).
+                    try {
+                        var items_view = this.$B.$call(this.$B.$getattr(m, 'items'));
+                        var items_list = this.$B.$call(this._b_.list, items_view);
+                        var n = this._b_.len(items_list);
+                        for (var i = 0; i < n; i++) {
+                            var pair = this.$B.$getitem(items_list, i);
+                            var k = this.$B.$getitem(pair, 0);
+                            var v = this.$B.$getitem(pair, 1);
+                            if (k === '$kw' || k === '$nat') continue;
+                            out.push([k, v]);
+                        }
+                    } catch (_) { /* ignore — bad dict, skip */ }
+                } else {
+                    // Plain JS object (the first $kw element with explicit
+                    // name=value kwargs). Own enumerable string keys.
+                    var ks = Object.keys(m);
+                    for (var kj = 0; kj < ks.length; kj++) {
+                        var nm = ks[kj];
+                        if (nm === '$kw' || nm === '$nat') continue;
+                        out.push([nm, m[nm]]);
+                    }
+                }
+            }
+            return out;
+        },
+
         lastCall: null,
         trace: function(name, info) {
             this.lastCall = name + (info ? '(' + info + ')' : '');
@@ -7696,34 +7750,21 @@ mergeInto(LibraryManager.library, {
                 // Brython call sig: tp_init(self, ...args, kwarg)
                 // CPython sig:      tp_init(self, args_tuple, kwargs_dict)
                 var jsArgs = Array.from(arguments).slice(1);
-                // Brython 3.14 packs keywords as a trailing {$kw:[ {name:
-                // value, ...}, ...starred ]} object — $kw is an Array of
-                // plain maps (ast_to_js.js emits `{$kw:[${kw}]}`). The
-                // bridge's own outbound convention (PyObject_VectorcallDict)
-                // is {$nat:'kw',$kw:obj}. Detect either shape; flatten the
-                // Array source into [name,value] pairs. The previous version
-                // only checked `.$nat === 'kw'`, so under Brython 3.14 it
-                // missed the marker entirely, leaving the `$kw` wrapper to
-                // leak as a positional — which PyArg_ParseTupleAndKeywords
-                // then tried to coerce as the first slot ("an integer is
-                // required" on _decimal.Context(prec=42)).
+                // Brython 3.14 packs keywords as a trailing {$kw:[...]}
+                // object — Array of: a plain-JS map at index 0 (explicit
+                // name=value pairs) then real Brython dicts at 1+ (each
+                // `**d` expansion). The bridge's outbound convention
+                // (PyObject_VectorcallDict) is {$nat:'kw',$kw:obj}. Detect
+                // either shape and flatten via rt.flattenKwArray, which
+                // handles BOTH plain-JS-obj and Brython-dict element types
+                // — the previous inline version only iterated plain own
+                // properties, so `Context(**d)` silently lost every key.
                 var kwPairs = null;
                 if (jsArgs.length > 0) {
                     var last = jsArgs[jsArgs.length - 1];
                     if (last && (last.$kw !== undefined || last.$nat === 'kw')) {
                         var src = last.$kw !== undefined ? last.$kw : last;
-                        var maps = Array.isArray(src) ? src : [src];
-                        kwPairs = [];
-                        for (var mi = 0; mi < maps.length; mi++) {
-                            var m = maps[mi];
-                            if (!m) continue;
-                            var ks = Object.keys(m);
-                            for (var kj = 0; kj < ks.length; kj++) {
-                                var nm = ks[kj];
-                                if (nm === '$kw' || nm === '$nat') continue;
-                                kwPairs.push([nm, m[nm]]);
-                            }
-                        }
+                        kwPairs = rt.flattenKwArray(src);
                         jsArgs.pop();
                     }
                 }
@@ -8209,35 +8250,31 @@ mergeInto(LibraryManager.library, {
             // and positional args follow. Module-scope functions don't
             // have a self.
             var jsArgs = Array.from(arguments);
-            // Brython kwargs convention: last arg is sometimes a $kw object.
-            // The $kw value can be:
-            //   - a plain dict {name: value, ...}, or
-            //   - an Array of two dicts [forced_positional_kw, kw_expansion]
-            //     which Brython uses when the call site does `f(*args, **kw)`.
-            // Without the Array handling, `Object.keys` returns numeric
-            // indices ("0", "1") and they leak into the C function call as
-            // bogus kwarg names — the actual bug Pierre's _sre integration
-            // hit ("got an unexpected keyword argument '0'").
+            // Brython kwargs convention: last arg is sometimes a {$kw:[...]}
+            // marker. Per Pierre / Brython ast_to_js: $kw is an Array whose
+            // element 0 is a plain JS object (explicit name=value pairs)
+            // and elements 1+ are real Brython dicts (each `**d` expansion).
+            // Brython dicts store entries under Symbol keys in hash storage,
+            // not as enumerable own properties — `Object.keys`/`for...in`
+            // silently skip them. flattenKwArray dispatches per element
+            // type and handles both cases.
+            //
+            // Examples:
+            //   f(x=1, y=2)         → {$kw: [{x:1, y:2}]}
+            //   f(**d1, **d2)       → {$kw: [{}, d1, d2]}
+            //   f(x=1, **d1, **d2)  → {$kw: [{x:1}, d1, d2]}
             var kw = null;
             if (jsArgs.length > 0) {
                 var last = jsArgs[jsArgs.length - 1];
-                if (last && (last.$kw || last.$nat === 'kw')) {
-                    var kwRaw = last.$kw || last;
-                    if (Array.isArray(kwRaw)) {
+                if (last && (last.$kw !== undefined || last.$nat === 'kw')) {
+                    var kwSrc = last.$kw !== undefined ? last.$kw : last;
+                    var kwPairs = rt.flattenKwArray(kwSrc);
+                    if (kwPairs.length > 0) {
                         kw = {};
-                        for (var ki = 0; ki < kwRaw.length; ki++) {
-                            var part = kwRaw[ki];
-                            if (part && typeof part === 'object') {
-                                for (var kk in part) {
-                                    if (kk !== '$kw' && kk !== '$nat' &&
-                                            Object.prototype.hasOwnProperty.call(part, kk)) {
-                                        kw[kk] = part[kk];
-                                    }
-                                }
-                            }
+                        // Later wins (matches CPython's left-to-right ** eval).
+                        for (var pi = 0; pi < kwPairs.length; pi++) {
+                            kw[kwPairs[pi][0]] = kwPairs[pi][1];
                         }
-                    } else {
-                        kw = kwRaw;
                     }
                     jsArgs = jsArgs.slice(0, -1);
                 }

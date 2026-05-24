@@ -580,6 +580,24 @@ Recent ports:
       leaked into the C call as bogus kwarg names. Fix merges the two
       dicts. Transversal — benefits every C function taking `*args`/
       `**kw` or keyword args.
+- [x] `$kw` Brython-dict entries — completes the two prior `**kw` /
+      `tp_init` fixes. Per Brython `ast_to_js.js` (and Pierre / pmp-p):
+      `$kw` is `[plainJS, dict1, dict2, ...]` where element 0 is a plain
+      JS object holding explicit `name=value` pairs and elements 1+ are
+      **real Brython dicts** (one per `**d` expansion). Both prior fixes
+      enumerated with `Object.keys` / `for...in` + `hasOwnProperty`,
+      which only sees plain own properties — Brython dicts store entries
+      under Symbol keys in hash storage, so every key in a `**d` element
+      was silently dropped. So `Context(**{'prec': 33})` returned a
+      default-prec context, and `blake2b(b'x', **opts)` ignored
+      `digest_size`. Centralizes the walk in a new
+      `WasthonRT.flattenKwArray(src)`: per-element type dispatch —
+      Brython dict → `.items()` (same canonical pattern as
+      `PyDict_Next` snapshotting); plain JS object → `Object.keys`.
+      Used from both the `cls.tp_init` wrapper and
+      `$__wasthon_make_trampoline`. Tests in `loader/test-debug.html`
+      lock both code paths (`Context(**d)`, mixed
+      `Context(name=value, **d)`, `blake2b(**opts)`).
 - [x] Bridge surface ~7200 lines: METH_METHOD trampoline, getset
       descriptors, sequence protocol slots, dict-style kwargs in
       `_PyArg_UnpackKeywords`, struct-aware `Py_SIZE`/`Py_SET_SIZE`,
