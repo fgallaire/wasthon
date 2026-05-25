@@ -868,6 +868,101 @@ def _t_array_overflow():
 check("array 'b' overflow → OverflowError", _t_array_overflow)
 
 # ===========================================================================
+section('attribute-lookup symmetry on wasthon heap types')
+# ===========================================================================
+# Regression for the 2026-05-26 fix in __wasthon_install_methods: install
+# methods as method_descriptor in tp_dict (not just tp_funcs), so that
+# both call paths work — direct call obj.m(...) AND attribute access
+# obj.m / getattr(obj,'m') / hasattr / dir. Discovered fishing Pierre's
+# AttributeError: 'Pattern' object has no attribute 'match'.
+
+def _t_attr_symmetry(inst, method_name):
+    """Verify all four attribute-lookup paths reach the method, and the
+    repr matches Brython's canonical "<built-in method NAME of CLASS object>"."""
+    cls = type(inst)
+    # Path 1: dir(cls) lists the method
+    if method_name not in dir(cls):
+        return (False, f'{method_name!r} not in dir({cls.__name__})')
+    # Path 2: hasattr(inst, method) is True
+    if not hasattr(inst, method_name):
+        return (False, f'hasattr({cls.__name__}_inst, {method_name!r}) False')
+    # Path 3: getattr returns a bound method object (doesn't raise)
+    try:
+        m = getattr(inst, method_name)
+    except Exception as e:
+        return (False, f'getattr raised {type(e).__name__}: {e}')
+    # Path 4: repr is canonical (matches Brython natives' shape)
+    r = repr(m)
+    if 'built-in method' not in r or method_name not in r:
+        return (False, f'repr unexpected: {r}')
+    return True
+
+# Pattern (the original bug Pierre reported).
+def _t_pattern_attrs():
+    code_a = [14, 8, 3, 1, 1, 1, 1, 97, 0, 16, 97, 1]
+    p = _sre.compile('a', 32, code_a, 0, {}, (None,))
+    for m in ('match', 'fullmatch', 'search', 'findall', 'sub', 'split'):
+        r = _t_attr_symmetry(p, m)
+        if r is not True:
+            return r
+    return True
+check("Pattern: match/fullmatch/search/findall/sub/split reachable via getattr",
+      _t_pattern_attrs)
+
+# BZ2Compressor — module: _bz2
+def _t_bz2compressor_attrs():
+    c = _bz2.BZ2Compressor()
+    for m in ('compress', 'flush'):
+        r = _t_attr_symmetry(c, m)
+        if r is not True:
+            return r
+    return True
+check("BZ2Compressor: compress/flush reachable via getattr",
+      _t_bz2compressor_attrs)
+
+# sha256 — module: _sha2
+def _t_sha256_attrs():
+    h = _sha2.sha256(b'')
+    for m in ('update', 'digest', 'hexdigest', 'copy'):
+        r = _t_attr_symmetry(h, m)
+        if r is not True:
+            return r
+    return True
+check("sha256: update/digest/hexdigest/copy reachable via getattr",
+      _t_sha256_attrs)
+
+# XMLParser — module: pyexpat
+def _t_xmlparser_attrs():
+    p = pyexpat.ParserCreate()
+    for m in ('Parse', 'ParseFile', 'SetParamEntityParsing'):
+        r = _t_attr_symmetry(p, m)
+        if r is not True:
+            return r
+    return True
+check("XMLParser: Parse/ParseFile/SetParamEntityParsing reachable via getattr",
+      _t_xmlparser_attrs)
+
+# Bonus: assert the call path STILL works (catches the case where someone
+# breaks tp_funcs install while fixing tp_dict install).
+def _t_pattern_call_still_works():
+    code_a = [14, 8, 3, 1, 1, 1, 1, 97, 0, 16, 97, 1]
+    p = _sre.compile('a', 32, code_a, 0, {}, (None,))
+    m = p.match('a')
+    return m is not None and m.group(0) == 'a'
+check("Pattern.match('a') direct call still works (call_attr+tp_funcs path)",
+      _t_pattern_call_still_works)
+
+# Bonus: assert the bind-then-call pattern works (was crashing before fix).
+def _t_pattern_bind_then_call():
+    code_a = [14, 8, 3, 1, 1, 1, 1, 97, 0, 16, 97, 1]
+    p = _sre.compile('a', 32, code_a, 0, {}, (None,))
+    bound = p.match
+    m = bound('a')
+    return m is not None and m.group(0) == 'a'
+check("Pattern: m=p.match; m('a') (bind-then-call) — was AttributeError pre-fix",
+      _t_pattern_bind_then_call)
+
+# ===========================================================================
 # Final summary
 # ===========================================================================
 # Flush last section.

@@ -8507,6 +8507,34 @@ mergeInto(LibraryManager.library, {
                 target.tp_funcs = target.tp_funcs || {};
                 target.tp_funcs[name] = trampoline;
                 trampoline.ob_type = rt.$B.builtin_method;
+                /* Also install a method_descriptor wrapper in the class's
+                 * tp_dict — mirrors Brython's own finalize_builtin_types.js
+                 * lines 309-325 for native types (dict, list, range, str…).
+                 * Without this wrapper, Brython's $B.$getattr fast path
+                 * (py_builtin_functions.js:789, case $B.builtin_method)
+                 * returns a bare anonymous function missing m_self / ml /
+                 * $function_infos — which crashes the next repr(), __name__
+                 * access, or any path through builtin_function_or_method's
+                 * tp_repr. The method_descriptor.tp_descr_get builds the
+                 * proper bound wrapper with all required fields. CPython
+                 * equivalent: PyDescr_NewMethod populating tp_dict from
+                 * PyType_Ready. Discovered 2026-05-26 fishing pattern.match. */
+                try {
+                    var dictObj = rt.$B.get_dict(target);
+                    if (dictObj) {
+                        var descr = {
+                            ob_type: rt.$B.method_descriptor,
+                            method: trampoline,
+                            d_name: name,
+                            d_type: target,
+                        };
+                        rt.$B.str_dict_set(dictObj, name, descr);
+                        /* Cross-ref: Brython native install does
+                         * `method.self = $B.get_from_dict(cls, descr)`
+                         * (finalize_builtin_types.js:323). */
+                        trampoline.self = descr;
+                    }
+                } catch (_) {}
             }
         }
     },

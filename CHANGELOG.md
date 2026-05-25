@@ -7,6 +7,43 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `__wasthon_install_methods` — install methods as `method_descriptor`
+      in tp_dict, not just in `tp_funcs`. Discovered fishing Pierre's
+      `AttributeError: 'Pattern' object has no attribute 'match'`:
+      `pattern.match(...)` (direct call) worked, but `pattern.match`
+      (attribute access), `hasattr(p, 'match')`, `getattr(p, 'match')`,
+      `'match' in dir(Pattern)`, and `m = p.match; m(...)` all failed —
+      on every heap type created via `PyType_FromModuleAndSpec` (Pattern,
+      Match, Connection, Cursor, BZ2Compressor, LZMACompressor,
+      ZstdCompressor, ZstdDecompressor, ZstdDict, XMLParser, Pickler,
+      Unpickler, csv.reader/writer, decimal.Context, …). Latent for the
+      previous 25 modules because every test + bench exercises only
+      `obj.method(...)` (compiled by Brython to `call_attr` which reads
+      `tp_funcs` directly), never the attribute-lookup path used by
+      `getattr` / `dir` / `hasattr` / bind-then-call. Root cause: Brython's
+      `$B.$getattr` fast path (`py_builtin_functions.js:789`, condition
+      `klass.tp_funcs && klass.$getattribute === object.tp_getattro`)
+      reads `$B.get_from_dict(klass, attr)` — i.e. the **class dict**, not
+      `tp_funcs[attr]`. For its own natives Brython populates tp_dict
+      with `method_descriptor` objects (see
+      `finalize_builtin_types.js:309-325`). Wasthon installed methods
+      only in `tp_funcs` → `get_from_dict` returned NULL → fallback to
+      `object_getattribute` returned NULL → `AttributeError`. Fix mirrors
+      Brython's own native install: after `target.tp_funcs[name] =
+      trampoline` and `trampoline.ob_type = $B.builtin_method`, also do
+      `str_dict_set(get_dict(target), name, {ob_type: $B.method_descriptor,
+      method: trampoline, d_name: name, d_type: target})` and the
+      `trampoline.self = descr` cross-ref. Brython's
+      `method_descriptor.tp_descr_get` then builds the proper bound
+      wrapper with `m_self` + `ml` + `$infos` — without which the next
+      `repr()` or `__name__` access crashes on `$function_infos[1]
+      undefined`. Transversal: 15+ heap-type classes across 10+ modules
+      benefit. New regression section in `loader/test-debug.html` covers
+      the four lookup paths on Pattern / BZ2Compressor / sha256 /
+      XMLParser. Earlier sibling fix (PyObject_GetAttr C-side
+      tp_funcs fallback, see `_pickle` entry below) covered the
+      C-to-Python lookup; this one covers the Python-to-Python lookup.
+
 - [x] custom `tp_getattro` slot wiring — `_decimal.Context.traps` /
       `.flags` live on the C struct (not in any Brython dict / getset)
       and are intercepted by `context_getattr` before its fallback to
