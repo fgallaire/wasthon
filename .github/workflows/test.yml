@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -66,3 +69,38 @@ jobs:
 
       - name: Run headless tests
         run: python3 test.py
+
+      # ----- Pages deployment staging (push to main only) -----
+      # Assembles the static site to publish: the loader pages + the
+      # freshly-built bundles, with a root index.html that redirects to
+      # the loader index. All loader pages already load Brython from the
+      # jsdelivr CDN, so no symlink rewriting is needed; `brython-dev` is
+      # a local-only untracked symlink absent from CI checkouts.
+      - name: Stage Pages site
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p _site
+          cp -r loader _site/
+          cp -r build  _site/
+          printf '<!doctype html><meta charset="utf-8"><title>wasthon</title><meta http-equiv="refresh" content="0; url=loader/"><p>Redirecting to <a href="loader/">loader/</a>…</p>\n' > _site/index.html
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
