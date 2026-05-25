@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — CPython test_struct.py against wasthon _struct</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>wasthon — CPython <code>test_struct.py</code> vs wasthon <code>_struct</code></h1>
+<p style="color:#666;font-size:0.9em;">
+  Runs CPython's own <code>Lib/test/test_struct.py</code> against the wasthon
+  <code>_struct</code> module (via the stdlib <code>struct.py</code> wrapper).
+  Proof-of-concept: behavioural ground truth from CPython's suite, far more
+  thorough than the hand-written probes. <code>@cpython_only</code> and
+  subprocess tests are stubbed to skip — they're environment limits, not
+  wasthon bugs.
+</p>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:12px;line-height:1.35;"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+    console.log('[cpython-struct]', ...args);
+};
+window.__wasthon_log = log;
+
+try {
+    log('Loading wasthon-full.mjs…');
+    const bundle = await wasthonLoadBundle('../build/wasthon-full.mjs');
+    log('Installing _struct, array, math…');
+    bundle.installModule('_struct');
+    bundle.installModule('array');
+    bundle.installModule('math');
+    log('Running CPython test_struct.py…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+import sys, types, unittest
+from browser import window
+log = window.__wasthon_log
+
+# --- Stub the test.support infrastructure test_struct.py imports. -------
+# These cover CPython-only / subprocess paths that don't apply in-browser;
+# stubbing them to skip keeps the *behavioural* tests running.
+test_pkg = types.ModuleType('test')
+support = types.ModuleType('test.support')
+support.cpython_only = lambda f: unittest.skip('cpython_only')(f)
+support.calcobjsize  = lambda fmt: 0
+support.check_sizeof = lambda *a, **k: None
+support.skip_on_s390x = lambda f: f
+import_helper = types.ModuleType('test.support.import_helper')
+import_helper.import_fresh_module = lambda name, *a, **k: __import__(name)
+import_helper.import_module = lambda name, *a, **k: __import__(name)
+script_helper = types.ModuleType('test.support.script_helper')
+def _assert_python_ok(*a, **k):
+    raise unittest.SkipTest('subprocess not available in browser')
+script_helper.assert_python_ok = _assert_python_ok
+support.import_helper = import_helper
+support.script_helper = script_helper
+test_pkg.support = support
+sys.modules['test'] = test_pkg
+sys.modules['test.support'] = support
+sys.modules['test.support.import_helper'] = import_helper
+sys.modules['test.support.script_helper'] = script_helper
+
+try:
+    import test_struct
+except Exception as e:
+    log(f'IMPORT FAILED: {type(e).__name__}: {e}')
+    log('\\n=== FAILED ===')
+    raise
+
+suite = unittest.TestLoader().loadTestsFromModule(test_struct)
+result = unittest.TestResult()
+suite.run(result)
+
+log(f'ran     = {result.testsRun}')
+log(f'passed  = {result.testsRun - len(result.failures) - len(result.errors)}')
+log(f'failures= {len(result.failures)}')
+log(f'errors  = {len(result.errors)}')
+log(f'skipped = {len(result.skipped)}')
+
+if result.failures:
+    log('\\n--- FAILURES ---')
+    for t, tb in result.failures:
+        log(f'  ✗ {t}')
+        # last meaningful line of the traceback
+        lines = [l for l in tb.strip().split('\\n') if l.strip()]
+        if lines: log(f'      {lines[-1][:160]}')
+if result.errors:
+    log('\\n--- ERRORS ---')
+    for t, tb in result.errors:
+        log(f'  ✗ {t}')
+        lines = [l for l in tb.strip().split('\\n') if l.strip()]
+        if lines: log(f'      {lines[-1][:160]}')
+
+log('\\n=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({debug: 1, pythonpath: ['./cpython-tests']});
+} catch (e) {
+    log('=== FAILED === ' + e.message);
+    console.error(e);
+}
+</script>
+</body>
+</html>

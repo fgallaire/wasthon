@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — CPython suite dashboard</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid #ddd; }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: #f4f4f4; }
+  tr.pending td { color: #999; }
+  tr.running td { color: #04a; }
+  tr.allpass  { background: #e8f6e8; }
+  tr.somefail { background: #fde8e8; }
+  tr.importfail { background: #fff4e0; }
+  tr.timeout  { background: #fff4e0; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .bar { display:inline-block; height:10px; background:#0a0; border-radius:2px; vertical-align:middle; }
+  .barbg { display:inline-block; height:10px; width:80px; background:#eee; border-radius:2px; vertical-align:middle; text-align:left; }
+  #summary { font-size: 1.1rem; margin-top: 1.5rem; font-weight: 600; }
+</style>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>wasthon — CPython suite dashboard</h1>
+<p style="color:#666;font-size:0.9em;">
+  Runs each CPython <code>Lib/test/test_&lt;mod&gt;.py</code> against the
+  corresponding wasthon module (sequential, hidden iframes via
+  <code>test-cpython.html?test=…</code>). Scores are CPython's own
+  assertions — environment-limited tests (cpython-only / resource /
+  subprocess) are skipped, not failed. <code>json</code> is excluded
+  (its Brython wrapper is coupled to Brython's own <code>_json</code>,
+  needs integration work).
+</p>
+
+<table id="results">
+  <thead><tr>
+    <th>Module</th><th>ran</th><th>pass</th><th>fail</th><th>skip</th><th>pass rate</th><th>status</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<div id="summary">⏳ Running…</div>
+
+<script>
+// Light / import-diagnosis-prone modules first; the heavy ones that tend to
+// burn the full timeout (hashlib, zlib, bz2, lzma) trail at the end so the
+// tail rows' import errors surface before the timeout wall.
+const PAGES = [
+    'test_struct', 'test_array', 'test_math', 'test_cmath', 'test_binascii',
+    'test_csv', 'test_random', 'test_unicodedata', 'test_pyexpat',
+    'test_pickle', 'test_re', 'test_sqlite3', 'test_decimal', 'test_hmac',
+    'test_zlib', 'test_bz2', 'test_lzma', 'test_hashlib',
+    'test_statistics', 'test_zstd',
+];
+
+// Default 2 min per module. test_pickle reliably runs longer (especially
+// on Chrome which routes a hot pickle path through quadratic Brython
+// internals — see [[wasthon-cpython-harness]] hang patterns). Override
+// per-module here if needed.
+const TIMEOUT_MS_DEFAULT = 120_000;
+const TIMEOUT_MS_OVERRIDE = { test_pickle: 360_000 };
+const POLL_MS    = 300;
+
+function init() {
+    const tbody = document.querySelector('#results tbody');
+    for (const p of PAGES) {
+        const tr = document.createElement('tr');
+        tr.className = 'pending';
+        tr.innerHTML = `<td><a href="test-cpython.html?test=${p}" target="_blank">${p}</a></td>
+            <td class="num">—</td><td class="num">—</td><td class="num">—</td>
+            <td class="num">—</td><td>—</td><td>⏳</td>`;
+        tbody.appendChild(tr);
+    }
+}
+
+function setRow(idx, cls, cells) {
+    const tr = document.querySelector('#results tbody').children[idx];
+    tr.className = cls;
+    for (let i = 0; i < cells.length; i++) tr.children[i+1].innerHTML = cells[i];
+}
+
+function parseCounts(log) {
+    const g = (re) => { const m = log.match(re); return m ? parseInt(m[1], 10) : null; };
+    const im = log.match(/IMPORT FAILED:\s*(.+)/);
+    // First failure/error tail line (indented 4+ spaces under the test name)
+    const tail = log.match(/--- (?:FAILURES|ERRORS) ---[\s\S]*?\n\s{4,}(\S[^\n]*)/);
+    // Sibling-preload failures happen before IMPORT FAILED — they're the
+    // root cause for "ImportError: test.X" patterns (X helper not loadable).
+    const sib = log.match(/\(sibling preload (\S+) failed:\s*([^\)]+)\)/);
+    return {
+        ran:      g(/ran\s*=\s*(\d+)/),
+        passed:   g(/passed\s*=\s*(\d+)/),
+        // test-cpython.html now emits a single deduped-by-parent-test count
+        // as `failed+errored = N` (subTests inflate the raw lengths). Fall
+        // back to the old separate fields if a runner still uses them.
+        failures: g(/failed\+errored\s*=\s*(\d+)/) ?? g(/failures\s*=\s*(\d+)/),
+        errors:   g(/failed\+errored/.test(log) ? /(?!)/ : /errors\s*=\s*(\d+)/) ?? 0,
+        skipped:  g(/skipped\s*=\s*(\d+)/),
+        importFailed: /IMPORT FAILED/.test(log),
+        importError: im ? im[1].trim().slice(0, 200) : '',
+        firstError:  tail ? tail[1].trim().slice(0, 200) : '',
+        siblingFail: sib ? (sib[1] + ': ' + sib[2].trim()).slice(0, 200) : '',
+    };
+}
+
+function runOne(testName, idx) {
+    setRow(idx, 'running', ['…','…','…','…','…','🔄']);
+    return new Promise(resolve => {
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = `test-cpython.html?test=${testName}`;
+        document.body.appendChild(iframe);
+
+        const finish = (result) => {
+            clearInterval(poller); clearTimeout(timer);
+            try { document.body.removeChild(iframe); } catch (_) {}
+            resolve(result);
+        };
+        const poller = setInterval(() => {
+            let doc;
+            try { doc = iframe.contentDocument; } catch (_) { return; }
+            if (!doc) return;
+            const el = doc.querySelector('#log');
+            if (!el) return;
+            const log = el.textContent || '';
+            if (!log.includes('=== done ===')) return;
+            const c = parseCounts(log);
+            if (c.importFailed) {
+                const detail = c.siblingFail
+                    ? c.importError + ' (sibling ' + c.siblingFail + ')'
+                    : c.importError;
+                setRow(idx, 'importfail',
+                    ['—','—','—','—','—',
+                     '⚠ ' + (detail || 'import failed')]);
+                finish({importFailed: true});
+                return;
+            }
+            const fail = (c.failures || 0) + (c.errors || 0);
+            const ran = c.ran || 0;
+            const rate = ran ? Math.round(100 * (c.passed || 0) / ran) : 0;
+            const barW = Math.round(0.8 * rate);
+            const bar = `<span class="barbg"><span class="bar" style="width:${barW}px"></span></span> ${rate}%`;
+            const allpass = fail === 0 && ran > 0;
+            const status = allpass ? '✓'
+                : (c.firstError ? '✗ ' + c.firstError : '✗');
+            setRow(idx, allpass ? 'allpass' : 'somefail',
+                [ran, (c.passed||0), fail, (c.skipped||0), bar, status]);
+            finish({ran, passed: c.passed||0, fail, skipped: c.skipped||0, allpass});
+        }, POLL_MS);
+        const timer = setTimeout(() => {
+            setRow(idx, 'timeout', ['—','—','—','—','—','⏱ timeout']);
+            finish({timeout: true});
+        }, TIMEOUT_MS_OVERRIDE[testName] || TIMEOUT_MS_DEFAULT);
+    });
+}
+
+async function runAll() {
+    let totRan = 0, totPass = 0, totFail = 0, totSkip = 0, modsOK = 0, modsRun = 0, importFails = 0;
+    for (let i = 0; i < PAGES.length; i++) {
+        const r = await runOne(PAGES[i], i);
+        if (r.importFailed) { importFails++; continue; }
+        if (r.timeout) continue;
+        modsRun++;
+        if (r.allpass) modsOK++;
+        totRan += r.ran; totPass += r.passed; totFail += r.fail; totSkip += r.skipped;
+    }
+    const summary = document.getElementById('summary');
+    const rate = totRan ? Math.round(100 * totPass / totRan) : 0;
+    summary.innerHTML =
+        `<b>${modsOK}/${modsRun}</b> modules fully green &nbsp;|&nbsp; ` +
+        `assertions: <b>${totPass}/${totRan}</b> pass (${rate}%), ` +
+        `${totFail} fail, ${totSkip} skip` +
+        (importFails ? ` &nbsp;|&nbsp; ${importFails} import-failed (wrapper integration)` : '');
+}
+
+init();
+runAll();
+</script>
+</body>
+</html>

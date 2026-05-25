@@ -24,6 +24,8 @@
   <strong>cluster</strong> bundles _random/_struct/unicodedata.
   <br><br>
   <a href="test-all.html"><strong>▶ Run all tests</strong></a> — sequential runner across every <code>test-*.html</code>.
+  <br>
+  <a href="test-cpython-all.html"><strong>▶ CPython suite dashboard</strong></a> — runs CPython's own <code>Lib/test/test_*.py</code> against the wasthon modules, with per-module scores (the authoritative behavioural reference).
 </p>
 
 <h2>Bundled targets <span class="note">(one .mjs/.wasm for the whole set)</span></h2>
@@ -72,6 +74,31 @@
   <li><a href="bench-statistics.html">_statistics</a></li>
   <li><a href="bench-zlib.html">_zlib</a></li>
   <li><a href="bench-zstd.html">_zstd</a></li>
+</ul>
+
+<h2>CPython suite <span class="note">(WIP — behavioural ground truth)</span></h2>
+<ul class="grid">
+  <li><a href="test-cpython-all.html">dashboard</a> <span class="note">(all modules, scored)</span></li>
+  <li><a href="test-cpython.html?test=test_struct">test_struct</a></li>
+  <li><a href="test-cpython.html?test=test_math">test_math</a></li>
+  <li><a href="test-cpython.html?test=test_cmath">test_cmath</a></li>
+  <li><a href="test-cpython.html?test=test_array">test_array</a></li>
+  <li><a href="test-cpython.html?test=test_binascii">test_binascii</a></li>
+  <li><a href="test-cpython.html?test=test_csv">test_csv</a></li>
+  <li><a href="test-cpython.html?test=test_decimal">test_decimal</a></li>
+  <li><a href="test-cpython.html?test=test_random">test_random</a></li>
+  <li><a href="test-cpython.html?test=test_hmac">test_hmac</a></li>
+  <li><a href="test-cpython.html?test=test_hashlib">test_hashlib</a></li>
+  <li><a href="test-cpython.html?test=test_zlib">test_zlib</a></li>
+  <li><a href="test-cpython.html?test=test_bz2">test_bz2</a></li>
+  <li><a href="test-cpython.html?test=test_lzma">test_lzma</a></li>
+  <li><a href="test-cpython.html?test=test_unicodedata">test_unicodedata</a></li>
+  <li><a href="test-cpython.html?test=test_pyexpat">test_pyexpat</a></li>
+  <li><a href="test-cpython.html?test=test_pickle">test_pickle</a></li>
+  <li><a href="test-cpython.html?test=test_re">test_re</a></li>
+  <li><a href="test-cpython.html?test=test_sqlite3">test_sqlite3</a></li>
+  <li><a href="test-cpython.html?test=test_statistics">test_statistics</a></li>
+  <li><a href="test-cpython.html?test=test_zstd">test_zstd</a></li>
 </ul>
 
 </body>
