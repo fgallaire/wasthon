@@ -779,10 +779,24 @@ mergeInto(LibraryManager.library, {
 
     PyFloat_AsDouble__deps: ['$WasthonRT'],
     PyFloat_AsDouble: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
         if (typeof obj === 'number') return obj;
         if (obj && typeof obj.value === 'number') return obj.value;
-        WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
+        /* Coerce non-floats via Brython's float() constructor — mirrors
+         * CPython's PyFloat_AsDouble which calls nb_float / __float__
+         * (and falls back to __index__) on non-float operands. Used by
+         * math.floor(IntEnum), math.hypot(decimal.Decimal, ...), etc.
+         * Same pattern as coerceInt for PyLong_As*. Discovered
+         * 2026-05-26 chasing 6 testCeil/Dist/Floor/Hypot/Log1p/ulp fails. */
+        try {
+            var f = rt._b_.float.$factory(obj);
+            if (typeof f === 'number') return f;
+            if (f && typeof f.value === 'number') return f.value;
+        } catch (e) {
+            /* fall through to TypeError below */
+        }
+        rt.setError(rt.wrap(rt._b_.TypeError),
             "PyFloat_AsDouble: argument is not a float");
         return -1;
     },

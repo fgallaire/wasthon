@@ -525,7 +525,7 @@ log('=== ALL OK ===' if (not result.failures and not result.errors) else '=== SO
 log('=== done ===')
 `;
     document.body.appendChild(py);
-    brython({debug: 1, pythonpath: ['./cpython-tests']});
+    brython({debug: 1, pythonpath: ['./cpython-tests'], indexeddb: false, cache: false});
 } catch (e) {
     log('=== FAILED === ' + e.message);
     console.error(e);

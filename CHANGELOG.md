@@ -7,6 +7,22 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `PyFloat_AsDouble` — coerce non-floats via `__float__` / `__index__`.
+      Previously rejected anything that wasn't a JS `number` or a Brython
+      float wrapper (`{value: number}`) with `TypeError: PyFloat_AsDouble:
+      argument is not a float` — surfaced as 5 fails in `test_math`
+      (testDist, testHypot, testLog1p, test_exception_messages, test_ulp)
+      where the test passes a `Decimal`, an `IntEnum`, or any user object
+      with a `__float__` method. CPython's `PyFloat_AsDouble` falls back
+      to `nb_float`/`__float__` then `nb_index`/`__index__` for non-floats.
+      Fix: wrap a `try { _b_.float.$factory(obj) }` around the coercion
+      path (mirrors the `coerceInt` pattern already used by every
+      `PyLong_As*`). Math score 51/89 → 56/89 (+5). testCeil/testFloor
+      still fail — different bug (math.ceil/floor should dispatch on
+      `__ceil__`/`__floor__` before falling back to `__float__`, not yet
+      wired). Discovered 2026-05-26 fishing the failure clusters in
+      `test_math`.
+
 - [x] `tp_new` — honor Python subclasses of wasthon C-types. Sister fix
       to the `__wasthon_install_methods` entry just below, discovered the
       same day fishing why `test_random.py` still crashed at import even
