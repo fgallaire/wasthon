@@ -607,10 +607,14 @@ below has a C module already in place; what's left is integration glue.
       operates at near-libexpat speed (50-60 MB/s effective) because the
       DOM tree is built in C from libexpat callbacks — one bridge crossing
       at the end of the parse instead of one per element.
-- [ ] **Wire `_sre` into Brython's `re.py`.** Brython ships its own
+- [x] **Wire `_sre` into Brython's `re.py`.** Brython ships its own
       pure-Python regex code in `re.py`. Patch (or replace) `re.py` so it
       uses our `_sre` C module when available. More invasive than the XML
       case because Brython has an incumbent, not a gap.
+      *Done by Pierre 2026-05-26: Brython's `Lib/re/` is now CPython
+      3.14's `re/` package verbatim, importing `_sre` (auto-loaded via
+      `$B.wasthonLoad` at boot). Confirmed all `tests/test_wasthon`
+      pass.*
 
 Module candidates worth porting are largely exhausted at this point. What
 remains in CPython's stdlib falls into one of three buckets:

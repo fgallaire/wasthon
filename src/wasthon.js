@@ -222,19 +222,24 @@ mergeInto(LibraryManager.library, {
             if (cls.__wasthon_type_handle__) return cls.__wasthon_type_handle__;
             if (!this._defaultTpAlloc) this._defaultTpAlloc = _wasthon_get_default_tp_alloc();
             if (!this._builtinTpIter)  this._builtinTpIter  = _wasthon_get_builtin_tp_iter();
-            var typeStructPtr = _malloc(60);
-            HEAPU8.fill(0, typeStructPtr, typeStructPtr + 60);
-            // tp_dict at offset 4: ensure the class has a dict, then wrap.
+            // PyTypeObject layout (Phase 1, 64 bytes): offset 0 = ob_refcnt,
+            // 4 = tp_free, 8 = tp_dict, 12 = tp_name, 16 = tp_alloc,
+            // 20 = tp_init, 24 = tp_iter, 28 = tp_as_number, 32 = tp_methods,
+            // 36 = tp_traverse, 40 = tp_dealloc, 44 = tp_clear,
+            // 48 = tp_version_tag, 52 = tp_repr, 56 = tp_iternext, 60 = tp_new.
+            var typeStructPtr = _malloc(64);
+            HEAPU8.fill(0, typeStructPtr, typeStructPtr + 64);
+            // tp_dict at offset 8: ensure the class has a dict, then wrap.
             var dictObj = this.$B.get_dict(cls);
             if (!dictObj) {
                 this.$B.init_dict(cls);
                 dictObj = this.$B.get_dict(cls);
             }
-            HEAP32[(typeStructPtr +  4) >> 2] = this.wrap(dictObj);
-            // tp_name (offset 8): use the class's tp_name if known.
-            // Skip — leaving 0 (NULL) is fine for callers that don't read it.
-            HEAP32[(typeStructPtr + 12) >> 2] = this._defaultTpAlloc;
-            HEAP32[(typeStructPtr + 20) >> 2] = this._builtinTpIter;
+            HEAP32[(typeStructPtr +  8) >> 2] = this.wrap(dictObj);
+            // tp_name (offset 12): leaving 0 (NULL) is fine for callers
+            // that don't read it.
+            HEAP32[(typeStructPtr + 16) >> 2] = this._defaultTpAlloc;  // tp_alloc
+            HEAP32[(typeStructPtr + 24) >> 2] = this._builtinTpIter;   // tp_iter
             cls.__wasthon_type_handle__ = typeStructPtr;
             this.handles.set(typeStructPtr, cls);
             // Register a minimal types-map entry so callers that look up
@@ -7537,26 +7542,31 @@ mergeInto(LibraryManager.library, {
         // Allocate the C-side PyTypeObject. Layout (matches wasthon.h):
         //   +0   tp_free (no-op, NULL)
         //   +4   tp_dict (handle to the class dict)
-        //   +8   tp_name (pointer to UTF-8 name; same as spec.name)
-        //  +12   tp_alloc (function pointer for instance allocation)
-        //  +16   tp_init (0; populated below if Py_tp_init slot present)
-        //  +20   tp_iter (shared with built-in singletons — calls iter())
-        //  +24   tp_as_number (NULL for custom types; built-in singletons
+        // PyTypeObject layout (Phase 1, 64 bytes):
+        //    +0   ob_refcnt (Phase 1 ABI-aligned slot; not modified at runtime)
+        //    +4   tp_free (no-op until tp_dealloc dispatch lands)
+        //    +8   tp_dict
+        //   +12   tp_name (pointer to UTF-8 name; same as spec.name)
+        //   +16   tp_alloc (function pointer for instance allocation)
+        //   +20   tp_init (0; populated below if Py_tp_init slot present)
+        //   +24   tp_iter (shared with built-in singletons — calls iter())
+        //   +28   tp_as_number (NULL for custom types; built-in singletons
         //                       get a populated PyNumberMethods at init)
-        //  +28   tp_methods (PyMethodDef* from spec, for _decimal which
+        //   +32   tp_methods (PyMethodDef* from spec, for _decimal which
         //                     reads it directly to enumerate methods)
+        //   +36   tp_traverse  (NULL — no cycle GC yet)
+        //   +40   tp_dealloc   (NULL — Phase 1 leaves dispatch off)
         if (!rt._defaultTpAlloc) rt._defaultTpAlloc = _wasthon_get_default_tp_alloc();
         if (!rt._builtinTpIter)  rt._builtinTpIter  = _wasthon_get_builtin_tp_iter();
-        var typeStructPtr = _malloc(60);
-        HEAPU8.fill(0, typeStructPtr, typeStructPtr + 60);
+        var typeStructPtr = _malloc(64);
+        HEAPU8.fill(0, typeStructPtr, typeStructPtr + 64);
         var dictObj = rt.$B.get_dict(cls);
         var dictHandle = rt.wrap(dictObj);
-        HEAP32[(typeStructPtr +  4) >> 2] = dictHandle;
-        HEAP32[(typeStructPtr +  8) >> 2] = namePtr;
-        HEAP32[(typeStructPtr + 12) >> 2] = rt._defaultTpAlloc;
-        HEAP32[(typeStructPtr + 20) >> 2] = rt._builtinTpIter;
-        HEAP32[(typeStructPtr + 28) >> 2] = methodsPtr;
-        // offsets 32 (tp_traverse), 36 (tp_dealloc) — left NULL (zeroed)
+        HEAP32[(typeStructPtr +  8) >> 2] = dictHandle;     // tp_dict
+        HEAP32[(typeStructPtr + 12) >> 2] = namePtr;        // tp_name
+        HEAP32[(typeStructPtr + 16) >> 2] = rt._defaultTpAlloc;  // tp_alloc
+        HEAP32[(typeStructPtr + 24) >> 2] = rt._builtinTpIter;   // tp_iter
+        HEAP32[(typeStructPtr + 32) >> 2] = methodsPtr;     // tp_methods
         var typeHandle = typeStructPtr;
         rt.bindInstance(typeHandle, cls);
         cls.__wasthon_type_handle__ = typeHandle;

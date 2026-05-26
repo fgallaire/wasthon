@@ -63,11 +63,13 @@ extern "C" {
  * The "pointer" is in fact a handle ID into a JS-side object map; the
  * bridge pretends it is a real pointer so that C semantics work normally.
  */
-/* Complete type with a dummy field so sizeof(PyObject) is well-defined.
- * The C side only ever holds pointers — no one allocates a bare PyObject
- * — so the field contents are immaterial. Needed so macros like
- * `_Py_STR(name) = (*Py_None)` (dereference) compile. */
-struct _object { int _opaque; };
+/* PyObject layout: ob_refcnt at offset 0, matching CPython ABI so that
+ * PyObject_HEAD-prefixed instance structs and PyTypeObject all share a
+ * refcount slot at the same offset. Phase 1 (2026-05-27): slot present
+ * but never modified — Py_INCREF/Py_DECREF macros below stay no-op.
+ * sizeof(PyObject) stays 4 bytes (same as the prior `int _opaque` shim),
+ * so no struct grows unexpectedly. */
+struct _object { intptr_t ob_refcnt; };
 typedef struct _object PyObject;
 
 typedef intptr_t Py_ssize_t;
@@ -129,28 +131,32 @@ typedef struct {
 } PyNumberMethods;
 
 struct _typeobject {
-    void     (*tp_free)(void *self);                              /* offset 0  */
-    PyObject  *tp_dict;                                           /* offset 4  */
-    const char *tp_name;                                          /* offset 8  */
-    PyObject *(*tp_alloc)(struct _typeobject *type, Py_ssize_t nitems);  /* offset 12 */
-    int       (*tp_init)(PyObject *self, PyObject *args, PyObject *kw);  /* offset 16 — CPython's initproc returns int (0 / -1) */
-    PyObject *(*tp_iter)(PyObject *self);                         /* offset 20 */
-    PyNumberMethods       *tp_as_number;                          /* offset 24 */
-    struct PyMethodDef    *tp_methods;                            /* offset 28 */
-    int       (*tp_traverse)(PyObject *self, int (*visit)(PyObject *, void *), void *arg);  /* offset 32 */
-    void      (*tp_dealloc)(PyObject *self);                      /* offset 36 */
-    int       (*tp_clear)(PyObject *self);                        /* offset 40 */
-    unsigned int tp_version_tag;                                  /* offset 44 */
-    PyObject *(*tp_repr)(PyObject *self);                         /* offset 48 */
-    PyObject *(*tp_iternext)(PyObject *self);                     /* offset 52 */
-    /* tp_new appended at the end so no existing offset shifts. Never
-     * populated by the bridge (we don't support Python-subclassing C
-     * types), so it stays NULL. Some clinic-generated __init__ guards
-     * compare `Py_TYPE(self)->tp_new == base_tp->tp_new` to detect a
-     * non-overriding subclass; NULL == NULL reads as "same", which is
-     * the correct answer in our no-subclass model. */
+    /* ob_refcnt at offset 0 — Phase 1 ABI alignment with CPython. Matches
+     * PyObject layout so `Py_INCREF(&PyDict_Type)` (and similar patterns
+     * in CPython source code like `_pickle.c:5042`) would touch a real
+     * refcount slot, not tp_free. Macros stay no-op in Phase 1; the slot
+     * is present so subsequent phases can flip the macros without another
+     * struct shift. */
+    intptr_t ob_refcnt;                                           /* offset 0  */
+    void     (*tp_free)(void *self);                              /* offset 4  */
+    PyObject  *tp_dict;                                           /* offset 8  */
+    const char *tp_name;                                          /* offset 12 */
+    PyObject *(*tp_alloc)(struct _typeobject *type, Py_ssize_t nitems);  /* offset 16 */
+    int       (*tp_init)(PyObject *self, PyObject *args, PyObject *kw);  /* offset 20 — CPython's initproc returns int (0 / -1) */
+    PyObject *(*tp_iter)(PyObject *self);                         /* offset 24 */
+    PyNumberMethods       *tp_as_number;                          /* offset 28 */
+    struct PyMethodDef    *tp_methods;                            /* offset 32 */
+    int       (*tp_traverse)(PyObject *self, int (*visit)(PyObject *, void *), void *arg);  /* offset 36 */
+    void      (*tp_dealloc)(PyObject *self);                      /* offset 40 */
+    int       (*tp_clear)(PyObject *self);                        /* offset 44 */
+    unsigned int tp_version_tag;                                  /* offset 48 */
+    PyObject *(*tp_repr)(PyObject *self);                         /* offset 52 */
+    PyObject *(*tp_iternext)(PyObject *self);                     /* offset 56 */
+    /* tp_new appended at the end so the historical offsets above don't
+     * shift further. Never populated by the bridge (we don't support
+     * Python-subclassing C types), so it stays NULL. */
     PyObject *(*tp_new)(struct _typeobject *type, PyObject *args,
-                        PyObject *kw);                            /* offset 56 */
+                        PyObject *kw);                            /* offset 60 */
 };
 typedef struct _typeobject PyTypeObject;
 
@@ -256,19 +262,28 @@ void       PyUnicode_WRITE(int kind, void *data, Py_ssize_t i, Py_UCS4 ch);
 } while (0)
 
 /*
- * PyObject_HEAD / PyObject_VAR_HEAD: in real CPython these expand to
- * struct fields (refcount, type pointer, [size]). In the bridge, modules
- * declare structs starting with PyObject_HEAD; we make these empty so
- * the resulting struct is just the C-side state owned by the module
- * (e.g. a HACL state pointer for sha2). Refcount and type live in JS.
+ * PyObject_HEAD / PyObject_VAR_HEAD: Phase 1 ABI alignment with CPython.
+ *
+ * Every module struct that uses these macros gets ob_refcnt at offset 0,
+ * matching CPython's PyObject layout. This means Py_INCREF / Py_DECREF on
+ * such structs would touch a real refcount slot, not arbitrary leading
+ * data. Phase 1 keeps the refcount macros no-op (defined below); the
+ * field exists so future phases can enable real refcounting without
+ * another struct shift.
+ *
+ * ob_type (CPython's second field in PyObject) is intentionally omitted —
+ * the bridge resolves Py_TYPE() through the JS handle table, never via
+ * a struct read. Same for PyObject_VAR_HEAD: we mirror ob_refcnt + ob_size
+ * but drop ob_type. Total prefix: 4 bytes (HEAD) or 8 bytes (VAR_HEAD).
+ *
+ * Modules using these macros must be recompiled when this layout changes.
  */
-#define PyObject_HEAD       /* empty */
-/* PyObject_VAR_HEAD: variable-size objects (array, bytes-like). Allocates
- * a Py_ssize_t ob_size at struct offset 0. Modules accessing ob_size via
- * Py_SIZE / Py_SET_SIZE go through the bridge for JS-side compatibility,
- * but direct `((PyVarObject*)x)->ob_size` reads/writes work because the
- * struct field exists in linear memory. */
-#define PyObject_VAR_HEAD   Py_ssize_t ob_size;
+#define PyObject_HEAD       intptr_t ob_refcnt;
+/* PyObject_VAR_HEAD: variable-size objects (array, bytes-like). Modules
+ * accessing ob_size via Py_SIZE / Py_SET_SIZE go through the bridge JS
+ * helper; direct `((PyVarObject*)x)->ob_size` reads/writes work because
+ * the struct field exists in linear memory at offset 4. */
+#define PyObject_VAR_HEAD   intptr_t ob_refcnt; Py_ssize_t ob_size;
 
 /* ---------------------------------------------------------------- *
  * Refcounting & object-lifetime macros                             *
@@ -1135,10 +1150,12 @@ int       PySlice_Check(PyObject *o);
 int       PySlice_Unpack(PyObject *slice, Py_ssize_t *start, Py_ssize_t *stop, Py_ssize_t *step);
 Py_ssize_t PySlice_AdjustIndices(Py_ssize_t length, Py_ssize_t *start, Py_ssize_t *stop, Py_ssize_t step);
 
-/* PyVarObject — variable-size objects. The struct layout must match
- * PyObject_VAR_HEAD so that `((PyVarObject*)op)->ob_size` reads the same
- * memory as `op->ob_base.ob_size`. */
+/* PyVarObject — variable-size objects. Layout matches PyObject_VAR_HEAD
+ * so `((PyVarObject*)op)->ob_size` reads the same memory as
+ * `op->ob_base.ob_size`. ob_refcnt at offset 0, ob_size at offset 4,
+ * 8 bytes total. */
 typedef struct {
+    intptr_t   ob_refcnt;
     Py_ssize_t ob_size;
 } PyVarObject;
 
