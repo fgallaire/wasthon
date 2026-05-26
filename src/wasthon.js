@@ -7743,7 +7743,7 @@ mergeInto(LibraryManager.library, {
             30: ['nb_negative',               ['__neg__'],           'r'],
             32: ['nb_positive',               ['__pos__'],           'r'],
             6:  ['nb_absolute',               ['__abs__'],           'r'],
-            27: ['nb_invert',                 ['__invert__'],        'r'],
+            27: ['mp_subscript',              ['__getitem__'],       'b'],
             11: ['nb_float',                  ['__float__'],         'r'],
             26: ['nb_int',                    ['__int__'],           'r'],
             13: ['nb_index',                  ['__index__'],         'r'],
@@ -7773,16 +7773,12 @@ mergeInto(LibraryManager.library, {
             43: ['sq_inplace_repeat',         ['__imul__'],          'si'],
         };
         // Patch the colliding entries for sequence types. wasthon.h reuses
-        // these slot IDs for both numeric and sequence/mapping operations:
-        //   27: Py_nb_invert (default in table)   == Py_mp_subscript
-        //   29: Py_nb_multiply (default in table) == Py_sq_length
-        //   32: Py_nb_positive (default in table) == Py_sq_item
-        // For numeric types the defaults are correct. For sequence types
-        // (detected via the unambiguous Py_sq_ass_item=39 or
-        // Py_sq_contains=41 markers above) these IDs really mean the
-        // mp_*/sq_* slots; patch the dispatch accordingly.
+        // these slot IDs for both numeric and sequence operations:
+        //   29: Py_nb_multiply == Py_sq_length
+        //   32: Py_nb_positive == Py_sq_item
+        // Disambiguate via the unambiguous Py_sq_ass_item=39 / Py_sq_contains=41
+        // markers; if either is present, treat 29/32 as sq_* not nb_*.
         if (isSequence) {
-            slotDispatch[27] = ['mp_subscript', ['__getitem__'], 'b'];
             slotDispatch[29] = ['sq_length',    ['__len__'],     'i'];
             slotDispatch[32] = ['sq_item',      ['__getitem__'], 'si'];
         }
@@ -7987,13 +7983,10 @@ mergeInto(LibraryManager.library, {
             }
         });
 
-        // For sequence types that define BOTH mp_subscript and sq_item,
-        // mp_subscript wins for __getitem__ — it accepts slice + general
-        // PyObject keys and does its own negative-index normalization,
-        // whereas sq_item is int-only and gets the index raw (no negative
-        // adjustment), so `arr[-1]` and `arr[1:4]` would otherwise fail.
-        // CPython's PyObject_GetItem follows the same precedence.
-        if (isSequence && cls.mp_subscript && cls.sq_item) {
+        // Wire __getitem__ from mp_subscript whenever it's defined. Mirrors
+        // CPython's PyObject_GetItem precedence: mp_subscript first
+        // (accepts slice + arbitrary key), sq_item as fallback (int-only).
+        if (cls.mp_subscript) {
             cls.__getitem__ = cls.mp_subscript;
             cls.tp_funcs = cls.tp_funcs || {};
             cls.tp_funcs.__getitem__ = cls.mp_subscript;

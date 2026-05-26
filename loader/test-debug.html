@@ -942,6 +942,27 @@ def _t_xmlparser_attrs():
 check("XMLParser: Parse/ParseFile/SetParamEntityParsing reachable via getattr",
       _t_xmlparser_attrs)
 
+# Match[i] subscript — Pierre 2026-05-26: 'Match' object is not subscriptable.
+# Match has mp_subscript but no sq_item, so the previous isSequence-gated
+# wiring left __getitem__ unset. The fix routes slot 27 to mp_subscript by
+# default and wires __getitem__ whenever mp_subscript is present.
+def _t_match_subscript():
+    # opcodes for '(a|b)' — group capture
+    code_alt = [14, 8, 4, 1, 1, 22, 97, 98, 0,
+                17, 0, 13, 5, 22, 97, 98, 0,
+                17, 1, 1]
+    p = _sre.compile('(a|b)', 32, code_alt, 1, {}, (None, None))
+    m = p.match('a')
+    if m is None:
+        return (False, 'match returned None')
+    if m[0] != 'a':
+        return (False, f'm[0] = {m[0]!r}, expected "a"')
+    if m[1] != 'a':
+        return (False, f'm[1] = {m[1]!r}, expected "a"')
+    return True
+check("Match: m[0] subscript (mp_subscript wiring without sq_item)",
+      _t_match_subscript)
+
 # Bonus: assert the call path STILL works (catches the case where someone
 # breaks tp_funcs install while fixing tp_dict install).
 def _t_pattern_call_still_works():

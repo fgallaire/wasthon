@@ -7,6 +7,31 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `Py_mp_subscript` (slot 27) wired by default; `__getitem__`
+      installed whenever `cls.mp_subscript` is set. Pierre 2026-05-26:
+      ```
+      regex = re.compile('(a|b)')
+      mo = regex.match("a")
+      assert mo[0] == "a"   # TypeError: 'Match' object is not subscriptable
+      ```
+      Root cause: wasthon.h defines `Py_mp_subscript = 27`, but the
+      `slotDispatch` table in `PyType_FromModuleAndSpec` had
+      `27: nb_invert` as default and only switched to `mp_subscript`
+      when `isSequence` was true (detected via `Py_sq_ass_item=39` or
+      `Py_sq_contains=41` markers). `_sre.Match` has `mp_subscript` but
+      no `sq_*` markers, so it stayed unwired. Verified that
+      `Py_nb_invert` is NOT defined in wasthon.h at all, so no C module
+      can ever pass slot 27 as nb_invert — the gating was historic /
+      cargo-cult. Two changes: (1) slot 27 default in `slotDispatch` is
+      now `['mp_subscript', ['__getitem__'], 'b']` unconditionally;
+      (2) the `__getitem__` wiring at the end of `PyType_FromModuleAndSpec`
+      now fires `if (cls.mp_subscript)` alone (was
+      `if (isSequence && cls.mp_subscript && cls.sq_item)`), mirroring
+      CPython's `PyObject_GetItem` precedence (mp_subscript first,
+      sq_item as fallback). Transversal: any wasthon heap type with
+      `mp_subscript` but no `sq_item` now supports `obj[key]`. Regression
+      test added to `loader/test-debug.html` ("Match: m[0] subscript").
+
 - [x] `cls.tp_descr_get` / `cls.tp_descr_set` default to `$B.NULL` on heap
       types. Brython's `type_getattribute` (py_type.js:1318) reads
       `$B.get_class(attribute).tp_descr_get` after finding the attribute
