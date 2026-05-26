@@ -7,6 +7,41 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `tp_new` — honor Python subclasses of wasthon C-types. Sister fix
+      to the `__wasthon_install_methods` entry just below, discovered the
+      same day fishing why `test_random.py` still crashed at import even
+      after the install_methods fix landed. Brython's `random.py:110`
+      defines `class Random(_random.Random):` adding `uniform`, `randint`,
+      `seed` (Python wrapper that calls `self.gauss_next = None`), etc.
+      Then `_inst = Random()` at line 891 instantiated the Python
+      subclass, but our `cls.tp_new` (set in `PyType_FromModuleAndSpec`
+      ~l.7578) passed the **parent** `typeHandle` to the C side and
+      returned the result as-is — so `type(_inst)` was `_random.Random`
+      (the parent C-type), not `Random` (the Python subclass).
+      Consequences: `_inst.uniform` raised `AttributeError` (the Python
+      method was on the subclass, lookup happened on the parent), and
+      even after that path was fixed, `self.gauss_next = None` raised
+      "no __dict__ for setting new attributes" because the parent C-type
+      had `tp_dictoffset = 0` and we hadn't given the subclass instance
+      its own `__dict__`. Fix in two parts, both in the post-C-tp_new
+      block of `cls.tp_new`: (1) when `brythonCls !== cls` (the captured
+      parent), override `inst.ob_type = brythonCls; inst.__class__ =
+      brythonCls` — mirrors what CPython's `tp_new` does naturally via
+      `tp_alloc(type, 0)` honoring its `type` argument; (2) attach an
+      instance `__dict__` via `$B.set_dict(inst, $B.obj_dict({}))` —
+      mirrors what Brython's `object.$new` (`py_object.js:130`) does
+      unconditionally for `cls !== object`, and what CPython's
+      `PyType_Ready` does by auto-adding a `__dict__` slot to subclasses
+      of C-types that don't have one. `__wasthon_type__` is left pointing
+      at the parent C-type struct so `Py_TYPE`/`PyObject_TypeCheck` on
+      the C side still see the correct PyTypeObject. Transversal: any
+      Python subclass of any wasthon heap type benefits — `random.Random`
+      (now testable, 84/114 vs Brython-native 82/114, +2 from bit-exact
+      Mersenne Twister), and any user code doing `class MyX(C_type)`.
+      Regression coverage: `loader/test-subclass-debug.html` instruments
+      both paths (subclass identity + Python attr storage) on Random,
+      BZ2Compressor, and a Brython-native dict control.
+
 - [x] `__wasthon_install_methods` — install methods as `method_descriptor`
       in tp_dict, not just in `tp_funcs`. Discovered fishing Pierre's
       `AttributeError: 'Pattern' object has no attribute 'match'`:

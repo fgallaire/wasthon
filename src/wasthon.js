@@ -7588,7 +7588,36 @@ mergeInto(LibraryManager.library, {
                     // $B.$call is the generic dispatch that handles both.
                     throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
                 }
-                return rt.unwrap(resultH);
+                var inst = rt.unwrap(resultH);
+                /* Honor Python subclasses. The C tp_new received `typeHandle`
+                 * (our parent C-type, captured in closure), so the instance
+                 * comes back with ob_type pointing to the parent. If Brython
+                 * is instantiating a Python subclass (`class MyR(_random.Random):
+                 * ...`), brythonCls is the subclass — override ob_type so
+                 * `type(MyR())` returns MyR (not _random.Random) and Python
+                 * attribute lookup hits the subclass dict. Mirrors what
+                 * CPython's tp_new does naturally via tp_alloc(type, 0)
+                 * honoring the `type` argument. Discovered 2026-05-26 when
+                 * Brython's random.py:894 (`uniform=_inst.uniform` on a
+                 * Random(_random.Random) subclass) crashed with
+                 * AttributeError: 'Random' object has no attribute 'uniform'.
+                 * NB: __wasthon_type__ stays the parent C-type so Py_TYPE
+                 * and PyObject_TypeCheck on the C side still work. */
+                if (inst && brythonCls && brythonCls !== cls) {
+                    inst.ob_type = brythonCls;
+                    inst.__class__ = brythonCls;
+                    /* Attach an instance __dict__ so Python user code can
+                     * `self.foo = bar` on the subclass instance. CPython
+                     * does this automatically for subclasses of C-types via
+                     * PyType_Ready adding a __dict__ slot (tp_dictoffset);
+                     * Brython's object.$new (py_object.js:130) does it
+                     * unconditionally for cls !== object. Without this,
+                     * Brython's random.py:171 `self.gauss_next = None` on
+                     * a Random(_random.Random) subclass crashes with
+                     * "no __dict__ for setting new attributes". */
+                    rt.$B.set_dict(inst, rt.$B.obj_dict({}));
+                }
+                return inst;
             };
             cls.tp_new.$is_slot = true;
         } else {
