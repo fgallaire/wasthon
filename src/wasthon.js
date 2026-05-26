@@ -7521,6 +7521,18 @@ mergeInto(LibraryManager.library, {
          * (e.g. pickle's `persistent_id` lookup on Pickler) and pickle
          * fails at dump-time with `AttributeError: persistent_id`. */
         if (!cls.$getattribute) cls.$getattribute = rt._b_.object.tp_getattro;
+        /* Brython's type_getattribute (py_type.js:1318) reads
+         * `cls.tp_descr_get` and checks `if (local_get !== $B.NULL)`. If we
+         * leave it `undefined`, the condition is truthy → Brython calls
+         * `undefined(...)` → "local_get is not a function" crash. This
+         * surfaces when a wasthon instance is used as a class attribute on
+         * a Python subclass (`class T: db = wasthon_obj`) — discovered
+         * 2026-05-26 fishing test_unicodedata's `Unicode_3_2_0_FunctionsTest`
+         * cluster (18 `getter is not a function` fails) and is also
+         * suspected to underlie similar `*_get is not a function` patterns
+         * across modules. Default to NULL; descr-type classes override. */
+        if (cls.tp_descr_get === undefined) cls.tp_descr_get = rt.$B.NULL;
+        if (cls.tp_descr_set === undefined) cls.tp_descr_set = rt.$B.NULL;
 
         // Allocate the C-side PyTypeObject. Layout (matches wasthon.h):
         //   +0   tp_free (no-op, NULL)

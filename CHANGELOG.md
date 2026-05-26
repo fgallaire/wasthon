@@ -7,6 +7,29 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `cls.tp_descr_get` / `cls.tp_descr_set` default to `$B.NULL` on heap
+      types. Brython's `type_getattribute` (py_type.js:1318) reads
+      `$B.get_class(attribute).tp_descr_get` after finding the attribute
+      in the MRO, then `if (local_get !== $B.NULL) { ... local_get(...) }`.
+      If `cls.tp_descr_get` is `undefined` (not set at all), the truthy
+      check passes, Brython logs `not a function undefined NULL` and then
+      crashes with `JavascriptError: local_get is not a function` when
+      it tries to actually call `undefined(...)`. Surfaces specifically
+      when a wasthon C-object is assigned as a **class attribute** on a
+      Python subclass — e.g. `class T: db = unicodedata.ucd_3_2_0` —
+      because that's when Brython traverses the MRO and lands on the
+      wasthon instance, then queries its `__class__.tp_descr_get`.
+      Discovered 2026-05-26 fishing the `Unicode_3_2_0_FunctionsTest`
+      cluster (18 fails `JavascriptError: getter is not a function`,
+      which turned out to be the parent-message variant of the same
+      pattern). Fix: in `PyType_FromModuleAndSpec`, default both
+      `tp_descr_get` and `tp_descr_set` to `$B.NULL` when not otherwise
+      set (mirrors what Brython does for its own native types via
+      `init_type`). Transversal — but the gain in the harness was
+      moderate (+4 on test_unicodedata, 25 → 29; other suspected
+      clusters `__hashvalue__ of undefined`, `$function_infos undefined`
+      were unaffected, so those are distinct bugs).
+
 - [x] `PyFloat_AsDouble` — coerce non-floats via `__float__` / `__index__`.
       Previously rejected anything that wasn't a JS `number` or a Brython
       float wrapper (`{value: number}`) with `TypeError: PyFloat_AsDouble:
