@@ -288,23 +288,42 @@ void       PyUnicode_WRITE(int kind, void *data, Py_ssize_t i, Py_UCS4 ch);
 /* ---------------------------------------------------------------- *
  * Refcounting & object-lifetime macros                             *
  *                                                                  *
- * Brython objects are GC'd by the JS engine. The C side of the     *
- * bridge does not maintain refcounts. All these macros are no-ops or *
- * pass-throughs; the *only* lifetime mechanism that matters is the *
- * JS-side handle map (which holds strong refs while a handle is    *
- * reachable from C, and drops them when explicitly released).      *
+ * Refcount lives on the JS side in WasthonRT.refcounts (a Map      *
+ * keyed by C-allocated instance pointers). Sentinel handles and    *
+ * any other value not in the Map are silent no-ops, so the macros  *
+ * are safe to call on anything without a value-range guard.        *
+ *                                                                  *
+ * Macros NULL-guard before calling wasthon_incref / wasthon_decref *
+ * to avoid the JS-bridge cost on the common NULL path.             *
  * ---------------------------------------------------------------- */
 
-/* Casts to PyObject* so any subtype pointer is accepted. */
-#define Py_INCREF(op)       ((void)(op))
-#define Py_DECREF(op)       ((void)(op))
-#define Py_XDECREF(op)      ((void)(op))
-#define Py_CLEAR(op)        ((op) = NULL)
-#define Py_NewRef(op)       ((PyObject *)(op))
-#define Py_XNewRef(op)      ((PyObject *)(op))
+extern void wasthon_incref(PyObject *op);
+extern void wasthon_decref(PyObject *op);
+
+#define Py_INCREF(op)       do { if (op) wasthon_incref((PyObject *)(op)); } while (0)
+#define Py_DECREF(op)       do { if (op) wasthon_decref((PyObject *)(op)); } while (0)
+#define Py_XINCREF(op)      Py_INCREF(op)
+#define Py_XDECREF(op)      Py_DECREF(op)
+
+#define Py_NewRef(op)       ((op) ? (wasthon_incref((PyObject *)(op)), (PyObject *)(op)) : NULL)
+#define Py_XNewRef(op)      Py_NewRef(op)
+
+#define Py_CLEAR(op) do { \
+    PyObject *_py_tmp = (PyObject *)(op); \
+    if (_py_tmp) { (op) = NULL; wasthon_decref(_py_tmp); } \
+} while (0)
+
+#define Py_SETREF(op, op2) do { \
+    PyObject *_py_old = (PyObject *)(op); \
+    (op) = (op2); \
+    if (_py_old) wasthon_decref(_py_old); \
+} while (0)
+#define Py_XSETREF(op, op2) Py_SETREF(op, op2)
+
+/* Py_VISIT — for tp_traverse cycle walking. No-op until a cycle GC
+ * is wired; tp_traverse bodies still compile, their `visit` and `arg`
+ * parameters just go unused. */
 #define Py_VISIT(op)        ((void)(op))
-#define Py_SETREF(op, op2)  ((op) = (op2))
-#define Py_XSETREF(op, op2) ((op) = (op2))
 
 /* GC tracking macros: no-ops, JS GC handles it */
 #define PyObject_GC_Track(op)    ((void)(op))

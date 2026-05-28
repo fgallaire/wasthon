@@ -65,6 +65,16 @@ mergeInto(LibraryManager.library, {
         modules: null,
         types: null,
 
+        // refcounts: per-instance refcount table. Populated by
+        // wasthon_object_gc_new, never holds sentinels. Macros Py_INCREF /
+        // Py_DECREF route through wasthon_incref / wasthon_decref which
+        // touch this Map; for any handle not in the Map (sentinels, NULL,
+        // built-in singletons), they are no-ops. Discrimination by Map
+        // membership avoids value-range tricks and never reads handle
+        // memory, so sentinels remain safe even when intermixed with
+        // pointer values in the low address range.
+        refcounts: null,
+
         init: function() {
             var B = globalThis.__BRYTHON__;
             if (!B) {
@@ -77,6 +87,7 @@ mergeInto(LibraryManager.library, {
             this.moduleDefs = new Map();
             this.modules = new Map();
             this.types = new Map();
+            this.refcounts = new Map();
 
             this.handles.set(this.SLOT_NONE,  this._b_.None);
             this.handles.set(this.SLOT_TRUE,  this._b_.True);
@@ -8285,6 +8296,31 @@ mergeInto(LibraryManager.library, {
             slots:   slots,
         });
         return defPtr;
+    },
+
+    /* ---- wasthon_incref / wasthon_decref: refcount on wasthon-allocated *
+     * instances. Sentinels and any handle not in the refcounts Map are    *
+     * silent no-ops — discrimination by Map membership keeps the path     *
+     * safe regardless of the handle's numeric value.                      *
+     *                                                                     *
+     * The Map is empty unless wasthon_object_gc_new has populated it for  *
+     * a given pointer (Phase 3 work). With the Map empty (Phase 2 state), *
+     * both functions are silent no-ops and the harness sees no behaviour  *
+     * change from the macros being wired up.                              */
+    wasthon_incref__deps: ['$WasthonRT'],
+    wasthon_incref: function(handle) {
+        var rc = WasthonRT.refcounts;
+        if (rc.has(handle)) rc.set(handle, rc.get(handle) + 1);
+    },
+
+    wasthon_decref__deps: ['$WasthonRT'],
+    wasthon_decref: function(handle) {
+        var rc = WasthonRT.refcounts;
+        if (!rc.has(handle)) return;
+        var n = rc.get(handle) - 1;
+        if (n > 0) { rc.set(handle, n); return; }
+        rc.delete(handle);
+        /* TODO Phase 4: dispatch tp_dealloc on refcount 0. */
     },
 
     /* ---- wasthon_object_gc_new: allocate a new C-side instance.         *
