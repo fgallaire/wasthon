@@ -189,10 +189,12 @@ multiplication walks JS → bridge → C → bridge → JS).
 
 **`cmath`** (complex math) — smoke 8/8, bench is noisy across runs because
 each iteration leaks a Brython complex wrapper into the bridge's handle
-map (the no-`tp_dealloc` infra debt). Across reruns the directional
-pattern is consistent: complex→complex ops (sqrt/exp/log/sin/cos) tend to
-win **2-3.5×** while scalar-returning ops (`phase`, `polar`) lose. Won't
-commit to exact speedup numbers until `tp_dealloc` lands; the noise floor
+map (the sentinel handle-map leak — distinct from instance `tp_dealloc`,
+which is now implemented but structurally cannot touch these borrowed
+wraps). Across reruns the directional pattern is consistent: complex→complex
+ops (sqrt/exp/log/sin/cos) tend to win **2-3.5×** while scalar-returning ops
+(`phase`, `polar`) lose. Won't commit to exact speedup numbers until that
+handle-map leak is addressed; the noise floor
 right now is ~50% on cmath bench results. Brython's bundled `cmath.py` is
 broken at import time — wasthon's port is the first working complex math
 for Brython users regardless.
@@ -479,10 +481,12 @@ Recent ports:
       wasm (1.35 MB → 730 KB) with negligible cost in practice (SQLite
       is bridge-bound + carries large cold-path features like FTS5/RTREE/
       JSON1 that aren't on query hot loops). The size cut is what made
-      bundling sqlite in `wasthon-full` viable. Bench validation was
-      blocked by the pending `tp_dealloc` infrastructure (loop-bench
-      leaks Connection handles); a proper compare-loop bench will be
-      re-run once dealloc lands. Bridge growth from this port — chief
+      bundling sqlite in `wasthon-full` viable. Bench validation is still
+      blocked on handle reclamation: `tp_dealloc` dispatch has since landed,
+      but a loop-bench `con = connect()` drops the Connection at Python
+      scope exit, where there is no FinalizationRegistry hook to DECREF it —
+      so it still leaks. A proper compare-loop bench waits on that
+      scope-exit reclamation. Bridge growth from this port — chief
       among them: `forwardError` helper preserves the original Brython
       exception class through C boundaries (replaces ~30 sites of
       `setError(RuntimeError, e.message)` flattening); `Py_tp_call`
@@ -541,8 +545,10 @@ Recent ports:
 - [x] `cmath` — complex math. 8/8 smoke. Bench is too noisy across reruns
       to claim exact speedups (50%+ variance, occasional FAIL from
       handle-map pressure) — directionally: complex→complex ops win
-      ~2-3.5×, scalar-returning ops lose. Will solidify once `tp_dealloc`
-      lands. Exposed the emcc wasm32 ABI pattern for passing/returning
+      ~2-3.5×, scalar-returning ops lose. Will solidify once the sentinel
+      handle-map leak is addressed (instance `tp_dealloc` has landed but
+      doesn't cover these borrowed complex wraps). Exposed the emcc wasm32
+      ABI pattern for passing/returning
       small structs (Py_complex) by value via sret. Brython's own
       `cmath.py` is broken at import time — wasthon's is the first
       working complex math for Brython users regardless.
@@ -637,9 +643,26 @@ than **breadth** (more modules).
 
 Infrastructure work that pays back on existing modules:
 
-- [ ] Implement `tp_dealloc` dispatch — currently C-allocated instances
-      never get freed when Python objects go out of scope, which limits
-      bench loop depth for heavy modules (LZMA, Zstd compressors).
+- [x] `tp_dealloc` dispatch + reference counting — C-allocated instances are
+      reclaimed when their refcount reaches zero. Refcount kept JS-side in a
+      `Map<ptr,int>` (discrimination by Map membership, not value range); ABI
+      aligned so `ob_refcnt` sits at offset 0; `Py_INCREF`/`DECREF` route
+      through `wasthon_incref`/`decref`; on zero the bridge dispatches the
+      type's `tp_dealloc` → `tp_free` → `PyObject_GC_Del`. Backed by a C-API
+      refcount-convention audit (no-steal INCREF / steal / new-ref) that
+      keeps the harness at 1750/4485, zero regression. Proven by
+      `loader/test-tp-dealloc.html` (`refcounts.size` flat with dispatch on,
+      +1/call with it off). Full design in `CHANGELOG.md`.
+- [ ] Python-scope-exit reclamation — there is no FinalizationRegistry hook
+      from Brython back into `wasthon_decref`, so an instance held only by a
+      Python local that goes out of scope is never DECREF'd and still leaks.
+      This (not `tp_dealloc` itself, which now exists) is what caps loop-bench
+      depth for heavy modules (LZMA/Zstd compressors, sqlite Connections).
+- [ ] JS-side handle-map (sentinel) leak — internal `wrap()` calls during a C
+      operation (~67 per `pickle.dumps`) add `handles` Map entries that are
+      never released; this is the dominant `pickle.dumps` byte-leak and is
+      orthogonal to `tp_dealloc`. Part of the stated motivation for the
+      WasmGC pivot.
 
 Eventually:
 

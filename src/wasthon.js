@@ -75,6 +75,45 @@ mergeInto(LibraryManager.library, {
         // pointer values in the low address range.
         refcounts: null,
 
+        // Internal incref/decref helpers — used by both the C-callable
+        // wasthon_incref / wasthon_decref library functions and by JS-side
+        // library bridges that must take ownership of a value (e.g. the
+        // "no-steal" APIs PyModule_AddObjectRef, PyDict_SetItem, etc.).
+        incref: function(handle) {
+            var rc = this.refcounts;
+            if (rc.has(handle)) rc.set(handle, rc.get(handle) + 1);
+        },
+        // Wrap a value that is a "new reference" handed from a Python-side
+        // callee to C (the result of PyObject_Call / Vectorcall / etc.).
+        // Brython held the instance via JS without touching the wasthon
+        // refcount; the C caller owns the returned ref and will DECREF it.
+        // INCREF so that DECREF doesn't free an object Brython still holds.
+        // No-op for sentinels (not in refcounts).
+        wrapNewRef: function(value) {
+            var h = this.wrap(value);
+            this.incref(h);
+            return h;
+        },
+        decref: function(handle) {
+            var rc = this.refcounts;
+            if (!rc.has(handle)) return;
+            var n = rc.get(handle) - 1;
+            if (n > 0) { rc.set(handle, n); return; }
+            // A/B harness switch: when set, the reference reaches zero but the
+            // instance is neither dispatched to tp_dealloc nor freed — it stays
+            // pinned in handles/refcounts forever. This reproduces the bridge's
+            // behaviour before tp_dealloc existed, so test-tp-dealloc.html can
+            // contrast reclaimed vs leaked memory on the exact same workload.
+            if (this.noFree) { rc.set(handle, 0); return; }
+            rc.delete(handle);
+            var inst = this.handles.get(handle);
+            if (!inst || !inst.__wasthon_type__) return;
+            var tp_dealloc = HEAP32[(inst.__wasthon_type__ + 40) >> 2];
+            if (!tp_dealloc) return;
+            try { getWasmTableEntry(tp_dealloc)(handle); }
+            catch (e) { /* defensive */ }
+        },
+
         init: function() {
             var B = globalThis.__BRYTHON__;
             if (!B) {
@@ -933,6 +972,7 @@ mergeInto(LibraryManager.library, {
         var arr = WasthonRT.unwrap(listHandle);
         if (!Array.isArray(arr)) return -1;
         arr.push(WasthonRT.unwrap(itemHandle));
+        WasthonRT.incref(itemHandle);  // no-steal: list takes its own ref
         return 0;
     },
 
@@ -974,6 +1014,7 @@ mergeInto(LibraryManager.library, {
         if (i < 0) i = Math.max(0, n + i);
         if (i > n) i = n;
         arr.splice(i, 0, WasthonRT.unwrap(itemHandle));
+        WasthonRT.incref(itemHandle);  // no-steal: list takes its own ref
         return 0;
     },
 
@@ -1050,7 +1091,9 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var arr = new Array(n);
         for (var i = 0; i < n; i++) {
-            arr[i] = rt.unwrap(HEAP32[(varargs + i * 4) >> 2]);
+            var itemH = HEAP32[(varargs + i * 4) >> 2];
+            arr[i] = rt.unwrap(itemH);
+            rt.incref(itemH);  // no-steal: tuple takes its own ref on each item
         }
         return rt.wrap(rt._b_.tuple.$factory(arr));
     },
@@ -1093,7 +1136,7 @@ mergeInto(LibraryManager.library, {
         }
         // kwnames support is rare in sre's call sites; skip for now.
         try {
-            return rt.wrap(rt.$B.$call.apply(rt.$B, [fn].concat(args)));
+            return rt.wrapNewRef(rt.$B.$call.apply(rt.$B, [fn].concat(args)));
         } catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
@@ -1178,8 +1221,16 @@ mergeInto(LibraryManager.library, {
         var k = rt.unwrap(keyH);
         var v = rt.unwrap(valueH);
         if (!d) return -1;
-        try { rt._b_.dict.$setitem(d, k, v); return 0; }
-        catch (e) { return -1; }
+        try {
+            rt._b_.dict.$setitem(d, k, v);
+            // CPython contract: SetItem does NOT steal — the dict takes its
+            // own ref on key and value. INCREF so a caller's later DECREF
+            // doesn't free a value the dict still holds. (No-op for the
+            // common sentinel keys/values not tracked in refcounts.)
+            rt.incref(keyH);
+            rt.incref(valueH);
+            return 0;
+        } catch (e) { return -1; }
     },
 
     PyDict_Contains__deps: ['$WasthonRT'],
@@ -1265,7 +1316,9 @@ mergeInto(LibraryManager.library, {
         try {
             var v = rt._b_.dict.$getitem(d, k);
             if (v === undefined) { HEAP32[resultPtr >> 2] = 0; return 0; }
-            HEAP32[resultPtr >> 2] = rt.wrap(v);
+            var h = rt.wrap(v);
+            HEAP32[resultPtr >> 2] = h;
+            rt.incref(h);  // *Ref API returns a NEW reference (caller DECREFs)
             return 1;
         } catch (e) {
             HEAP32[resultPtr >> 2] = 0;
@@ -1279,7 +1332,11 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(objH);
         var name = rt.unwrap(nameH);
         var v = rt.unwrap(valueH);
-        try { rt._b_.setattr(obj, name, v); return 0; } catch (e) { return -1; }
+        try {
+            rt._b_.setattr(obj, name, v);
+            rt.incref(valueH);  // no-steal: attribute slot takes its own ref
+            return 0;
+        } catch (e) { return -1; }
     },
 
     /* PyType_GetSlot — read a slot off a type at runtime. */
@@ -3558,7 +3615,9 @@ mergeInto(LibraryManager.library, {
             HEAP32[outPtr >> 2] = 0;
             return 0;
         }
-        HEAP32[outPtr >> 2] = rt.wrap(ref);
+        var h = rt.wrap(ref);
+        HEAP32[outPtr >> 2] = h;
+        rt.incref(h);  // *Ref API returns a NEW reference (caller DECREFs)
         return 1;
     },
 
@@ -4111,7 +4170,9 @@ mergeInto(LibraryManager.library, {
         try {
             var v = rt.$B.$getattr(obj, name, undefined);
             if (v === undefined || v === null) { HEAP32[outPtr >> 2] = 0; return 0; }
-            HEAP32[outPtr >> 2] = rt.wrap(v);
+            var h = rt.wrap(v);
+            HEAP32[outPtr >> 2] = h;
+            rt.incref(h);  // *Optional* API returns a NEW reference (caller DECREFs)
             return 1;
         } catch (e) {
             HEAP32[outPtr >> 2] = 0;
@@ -4430,6 +4491,7 @@ mergeInto(LibraryManager.library, {
         }
         try {
             rt._b_.setattr(obj, name, rt.unwrap(valueHandle));
+            rt.incref(valueHandle);  // no-steal: attribute slot takes its own ref
             return 0;
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.AttributeError),
@@ -4488,6 +4550,7 @@ mergeInto(LibraryManager.library, {
         }
         try {
             rt._b_.setattr(obj, name, rt.unwrap(valueH));
+            rt.incref(valueH);  // no-steal: attribute slot takes its own ref
             return 0;
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.AttributeError),
@@ -4714,6 +4777,7 @@ mergeInto(LibraryManager.library, {
         var v = rt.unwrap(valueHandle);
         try {
             rt.$B.str_dict_set(d, name, v);
+            rt.incref(valueHandle);  // no-steal: dict takes its own ref
             return 0;
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.RuntimeError),
@@ -5361,7 +5425,13 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(objH);
         var key = rt.unwrap(keyH);
         var val = rt.unwrap(valH);
-        try { rt.$B.$setitem(obj, key, val); return 0; }
+        try {
+            rt.$B.$setitem(obj, key, val);
+            // no-steal: the container takes its own refs on key and value.
+            rt.incref(keyH);
+            rt.incref(valH);
+            return 0;
+        }
         catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError), "setitem failed: " + (e.message || String(e)));
             return -1;
@@ -7553,31 +7623,34 @@ mergeInto(LibraryManager.library, {
         // Allocate the C-side PyTypeObject. Layout (matches wasthon.h):
         //   +0   tp_free (no-op, NULL)
         //   +4   tp_dict (handle to the class dict)
-        // PyTypeObject layout (Phase 1, 64 bytes):
-        //    +0   ob_refcnt (Phase 1 ABI-aligned slot; not modified at runtime)
-        //    +4   tp_free (no-op until tp_dealloc dispatch lands)
+        // PyTypeObject layout (64 bytes, ABI-aligned with CPython for the
+        // refcount slot at offset 0):
+        //    +0   ob_refcnt (immortal-ish for runtime types; not manipulated)
+        //    +4   tp_free   (PyObject_GC_Del default; module Py_tp_free wins)
         //    +8   tp_dict
-        //   +12   tp_name (pointer to UTF-8 name; same as spec.name)
-        //   +16   tp_alloc (function pointer for instance allocation)
-        //   +20   tp_init (0; populated below if Py_tp_init slot present)
-        //   +24   tp_iter (shared with built-in singletons — calls iter())
-        //   +28   tp_as_number (NULL for custom types; built-in singletons
-        //                       get a populated PyNumberMethods at init)
-        //   +32   tp_methods (PyMethodDef* from spec, for _decimal which
-        //                     reads it directly to enumerate methods)
-        //   +36   tp_traverse  (NULL — no cycle GC yet)
-        //   +40   tp_dealloc   (NULL — Phase 1 leaves dispatch off)
+        //   +12   tp_name
+        //   +16   tp_alloc
+        //   +20   tp_init   (populated below if Py_tp_init slot present)
+        //   +24   tp_iter
+        //   +28   tp_as_number
+        //   +32   tp_methods
+        //   +36   tp_traverse (NULL — no cycle GC)
+        //   +40   tp_dealloc  (from Py_tp_dealloc slot; drives JS-side
+        //                      wasthon_decref dispatch on refcount=0)
         if (!rt._defaultTpAlloc) rt._defaultTpAlloc = _wasthon_get_default_tp_alloc();
         if (!rt._builtinTpIter)  rt._builtinTpIter  = _wasthon_get_builtin_tp_iter();
+        if (!rt._defaultTpFree)  rt._defaultTpFree  = _wasthon_get_default_tp_free();
         var typeStructPtr = _malloc(64);
         HEAPU8.fill(0, typeStructPtr, typeStructPtr + 64);
         var dictObj = rt.$B.get_dict(cls);
         var dictHandle = rt.wrap(dictObj);
+        HEAP32[(typeStructPtr +  4) >> 2] = slotMap[63 /* Py_tp_free */] || rt._defaultTpFree;  // tp_free
         HEAP32[(typeStructPtr +  8) >> 2] = dictHandle;     // tp_dict
         HEAP32[(typeStructPtr + 12) >> 2] = namePtr;        // tp_name
         HEAP32[(typeStructPtr + 16) >> 2] = rt._defaultTpAlloc;  // tp_alloc
         HEAP32[(typeStructPtr + 24) >> 2] = rt._builtinTpIter;   // tp_iter
         HEAP32[(typeStructPtr + 32) >> 2] = methodsPtr;     // tp_methods
+        HEAP32[(typeStructPtr + 40) >> 2] = slotMap[52 /* Py_tp_dealloc */] || 0;  // tp_dealloc
         var typeHandle = typeStructPtr;
         rt.bindInstance(typeHandle, cls);
         cls.__wasthon_type_handle__ = typeHandle;
@@ -8256,8 +8329,10 @@ mergeInto(LibraryManager.library, {
         return 0;
     },
 
-    /* PyModule_AddObjectRef: same semantics as PyModule_Add for our purposes
-     * (refcounting is JS-side). Inlined to avoid the JS-library indirection. */
+    /* PyModule_AddObjectRef — CPython spec: does NOT steal the value
+     * reference. Caller passes a "new ref" (refcount=1) and is expected
+     * to Py_DECREF after this call returns. We must INCREF the value so
+     * the module attribute survives the caller's release. */
     PyModule_AddObjectRef__deps: ['$WasthonRT'],
     PyModule_AddObjectRef: function(moduleHandle, namePtr, valueHandle) {
         var rt = WasthonRT;
@@ -8267,6 +8342,7 @@ mergeInto(LibraryManager.library, {
         rt.trace('PyModule_AddObjectRef', name);
         try {
             rt.$B.module_setattr(modObj, name, rt.unwrap(valueHandle));
+            rt.incref(valueHandle);
             return 0;
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.RuntimeError),
@@ -8308,20 +8384,10 @@ mergeInto(LibraryManager.library, {
      * both functions are silent no-ops and the harness sees no behaviour  *
      * change from the macros being wired up.                              */
     wasthon_incref__deps: ['$WasthonRT'],
-    wasthon_incref: function(handle) {
-        var rc = WasthonRT.refcounts;
-        if (rc.has(handle)) rc.set(handle, rc.get(handle) + 1);
-    },
+    wasthon_incref: function(handle) { WasthonRT.incref(handle); },
 
     wasthon_decref__deps: ['$WasthonRT'],
-    wasthon_decref: function(handle) {
-        var rc = WasthonRT.refcounts;
-        if (!rc.has(handle)) return;
-        var n = rc.get(handle) - 1;
-        if (n > 0) { rc.set(handle, n); return; }
-        rc.delete(handle);
-        /* TODO Phase 4: dispatch tp_dealloc on refcount 0. */
-    },
+    wasthon_decref: function(handle) { WasthonRT.decref(handle); },
 
     /* ---- wasthon_object_gc_new: allocate a new C-side instance.         *
      * Called from C through the PyObject_GC_New(type, typeobj) macro      *
@@ -8352,6 +8418,7 @@ mergeInto(LibraryManager.library, {
             __wasthon_type__: typeHandle,
         };
         rt.bindInstance(ptr, instance);
+        rt.refcounts.set(ptr, 1);  // CPython convention: fresh object starts at 1
         return ptr;
     },
 
@@ -8374,13 +8441,16 @@ mergeInto(LibraryManager.library, {
             __wasthon_type__: typeHandle,
         };
         rt.bindInstance(ptr, instance);
+        rt.refcounts.set(ptr, 1);  // CPython convention: fresh object starts at 1
         return ptr;
     },
 
     PyObject_GC_Del__deps: ['$WasthonRT'],
     PyObject_GC_Del: function(ptr) {
         if (ptr === 0) return;
-        WasthonRT.handles.delete(ptr);
+        var rt = WasthonRT;
+        rt.handles.delete(ptr);
+        rt.refcounts.delete(ptr);
         _free(ptr);
     },
 
@@ -8787,6 +8857,11 @@ mergeInto(LibraryManager.library, {
                     for (var i = 0, len = src.length; i < len; i++) {
                         src[i] = HEAPU8[ptr + i];
                     }
+                    // The C buffer is now redundant — its content lives in
+                    // .source. Reclaim it; PyBytes_AsString re-allocates from
+                    // .source on demand if C touches the bytes again later.
+                    _free(ptr);
+                    v.__wasthon_cstr__ = 0;
                 }
                 /* tuple / list — iterable JS array-shaped object with
                  * .length, and Brython tuple/list expose elements at

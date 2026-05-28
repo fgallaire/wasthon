@@ -7,6 +7,71 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `tp_dealloc` dispatch + reference counting — C-allocated instances are
+      now reclaimed when their refcount reaches zero, instead of living
+      forever in the bridge's handle map. Long-standing infra debt (the
+      "no-`tp_dealloc`" caveat referenced throughout the benches). Design,
+      after two abandoned dead ends (top-bit and high-range sentinel
+      encodings — both tripped on i32 signedness / C validation paths
+      comparing handle values): the refcount lives **JS-side in a
+      `Map<ptr,int>` (`WasthonRT.refcounts`)**, never in the C struct, and
+      "is this a refcountable instance?" is decided by **Map membership** —
+      no value-range test, no handle-memory deref, so sentinels (small ints
+      intermixed with real pointers) stay safe. Pieces:
+      *(1)* ABI alignment — `ob_refcnt` given its own slot at offset 0 of
+      `PyObject_HEAD` / `PyVarObject` / `PyTypeObject` (every field shifts
+      +4, type struct 60→64). This alone scored +10 on the harness: the old
+      empty `PyObject_HEAD` meant CPython's `Py_SET_REFCNT` was writing over
+      the first real struct field (latent corruption in the richest instance
+      structs, sqlite3/_decimal).
+      *(2)* `Py_INCREF` / `DECREF` / `XINCREF` / `NewRef` / `CLEAR` / `SETREF`
+      macros route through `wasthon_incref` / `wasthon_decref`, NULL-guarded;
+      a no-op on any handle not in the Map.
+      *(3)* `wasthon_object_gc_new` seeds refcount 1; when `wasthon_decref`
+      reaches 0 the bridge reads `tp_dealloc` at `__wasthon_type__ + 40` and
+      calls it via `getWasmTableEntry`; the C body `Py_CLEAR`s its fields
+      (recursing into decref) then `tp_free` = `PyObject_GC_Del`, freeing the
+      linear-memory struct and dropping the handle.
+      *(4)* **C-API refcount-convention audit** — every bridge API taking or
+      returning a `PyObject*` was checked against CPython's contract and
+      fixed: no-steal container inserts INCREF the stored value(s)
+      (`PyDict_SetItem` / `SetItemString`, `PyList_Append` / `Insert`,
+      `PyModule_AddObjectRef`, `PyObject_SetAttr` / `SetAttrString` /
+      `GenericSetAttr`, `PyObject_SetItem`, `PyTuple_Pack`); steal APIs
+      (`PyList_SetItem`, `PyTuple_SetItem`, `PyModule_Add`) deliberately do
+      not; new-ref returns INCREF (`PyDict_GetItemRef`, `PyWeakref_GetRef`,
+      `PyObject_GetOptionalAttr`, and `PyObject_Vectorcall` via a new
+      `wrapNewRef` helper). A wrong contract here means a balanced
+      `Py_DECREF` hits zero one ref early → `tp_dealloc` fires → use-after-free;
+      that is exactly how the `_decimal` import crash (`current_context()`'s
+      `PyDict_SetItem` didn't INCREF → DefaultContext freed) and the
+      `_struct` `calcsize→0` regression (cache_struct_converter's
+      `PyDict_GetItemRef` is a new-ref) were traced via per-type
+      INCREF/DECREF logging and fixed. Net: local harness back to
+      **1750/4485, zero regression**, with module-by-module recovery
+      (decimal 49→58, struct 12→20, sqlite3 258→285) each via a specific
+      contract fix.
+      **Proven, not asserted** — `loader/test-tp-dealloc.html` runs the same
+      `_pickle.dumps` loop twice on one module, toggling a new
+      `runtime.noFree` switch (kept as a permanent regression harness; gated,
+      default off): with dispatch on, `refcounts.size` stays flat at 0 across
+      N calls (every internally-created `Pickler` reclaimed); with it off it
+      climbs exactly +1 per call (instances pinned forever).
+      **Honest scope** — this reclaims instances whose refcount actually
+      reaches zero: C-internal create+`Py_DECREF` (Pickler/Unpickler) and
+      container `Py_CLEAR`. It does **not** fix two separate leaks:
+      *(a)* an instance held only by a Python local that goes out of scope —
+      Brython has no FinalizationRegistry hook back into `wasthon_decref`, so
+      nothing DECREFs it (still caps loop-bench depth for compressors /
+      sqlite Connections); *(b)* the dominant `pickle.dumps` byte-leak, which
+      is JS-side sentinel handle-map accumulation (~67 `wrap()` calls per
+      `dumps()` never released — borrowed-ref C code doesn't DECREF and
+      sentinels aren't refcounted). `tp_dealloc` structurally cannot touch
+      either; both stay in `README.md` → *What's next*. Incidental find (not
+      fixed): `_pickle.dumps` on `bytes` > 64 KB trips the protocol-5 framing
+      path with `TypeError: 'UndefinedType' object cannot be interpreted as
+      an integer`.
+
 - [x] `Py_mp_subscript` (slot 27) wired by default; `__getitem__`
       installed whenever `cls.mp_subscript` is set. Pierre 2026-05-26:
       ```

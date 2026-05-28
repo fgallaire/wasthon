@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — tp_dealloc A/B proof</title>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/brython@3.14.1/brython_stdlib.js"></script>
+<script src="./wasthon-loader.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 980px; margin: 1.5rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.05rem; margin: 1.4em 0 0.2em; }
+  table { border-collapse: collapse; margin-top: 0.4em; font-family: monospace; font-size: 12px; }
+  td, th { border: 1px solid #ccc; padding: 0.2em 0.6em; text-align: right; }
+  th { background: #eee; }
+  .ok { color: #0a0; }
+  .leak { color: #c00; font-weight: bold; }
+  pre { background: #f4f4f4; padding: 0.8em; font-size: 12px; line-height: 1.4; white-space: pre-wrap; }
+  .note { color: #555; font-size: 0.9em; }
+  .on { color: #0a0; font-weight: bold; }
+  .off { color: #c00; font-weight: bold; }
+  #summary { margin-top: 1.2em; padding: 0.8em 1em; border: 2px solid #ccc; font-family: monospace;
+             font-size: 13px; white-space: pre-wrap; }
+  #summary.pass { border-color: #0a0; background: #f0fbf0; }
+  #summary.fail { border-color: #c00; background: #fdf2f2; }
+</style>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>wasthon — <code>tp_dealloc</code> A/B proof</h1>
+<p class="note">
+  One page, two phases on the same module, identical workload — a tight loop of
+  <code>_pickle.dumps(obj)</code>. The C <code>dumps()</code> creates a
+  <code>Pickler</code> (a refcounted wasthon instance) and <code>Py_DECREF</code>s
+  it internally; that zero-refcount event is the <em>only</em> place
+  <code>tp_dealloc</code> can fire (a Brython <code>del</code> reaches no
+  FinalizationRegistry).
+  <br><br>
+  <span class="on">Phase A</span>: <code>runtime.noFree = false</code> — refcount→0
+  dispatches <code>tp_dealloc</code> → instance freed.
+  <span class="off">Phase B</span>: <code>runtime.noFree = true</code> — refcount→0
+  does nothing, reproducing the bridge before <code>tp_dealloc</code> existed.
+  <br><br>
+  The deterministic, GC-independent signal is <strong><code>refcounts.size</code></strong>
+  (count of live refcounted instances). Phase A ⇒ flat (every Pickler reclaimed);
+  Phase B ⇒ climbs by one per <code>dumps()</code> (instances pile up). Tune with
+  <code>?iters=20000</code>.
+  <br><br>
+  <em>Caveat:</em> the WASM-heap column grows in <em>both</em> phases — pickling
+  also leaks JS-side sentinel handles (a separate problem <code>tp_dealloc</code>
+  structurally can't touch), and <code>HEAPU8.length</code> only grows in coarse
+  steps. That byte axis can't isolate <code>tp_dealloc</code>; <code>refcounts.size</code>
+  is the signal that does.
+</p>
+
+<div id="status">Loading…</div>
+<div id="summary" style="display:none"></div>
+
+<h2 class="on">Phase A — <code>tp_dealloc</code> enabled (<code>noFree=false</code>)</h2>
+<table id="samplesA">
+  <thead><tr>
+    <th>iter</th><th>refcounts.size</th><th>Δ refcounts</th>
+    <th>handles.size</th><th>WASM (MB)</th><th>Δ WASM (kB)</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<h2 class="off">Phase B — <code>tp_dealloc</code> disabled (<code>noFree=true</code>)</h2>
+<table id="samplesB">
+  <thead><tr>
+    <th>iter</th><th>refcounts.size</th><th>Δ refcounts</th>
+    <th>handles.size</th><th>WASM (MB)</th><th>Δ WASM (kB)</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<pre id="log"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+};
+window.__tpd_log = log;
+
+const params = new URLSearchParams(location.search);
+const iters = parseInt(params.get('iters') || '5000', 10);
+window.__tpd_iters = iters;
+window.__tpd_objsize = (params.get('obj') === 'big') ? 200000 : 0;
+
+window.__tpd_sample = (phase, iter, rc, drc, handles, wasm, dwasm) => {
+    const tbody = document.querySelector('#samples' + phase + ' tbody');
+    const klass = (phase === 'B' && drc > 0) ? 'leak' : 'ok';
+    const row = tbody.insertRow();
+    row.innerHTML =
+        `<td>${iter}</td>` +
+        `<td>${rc}</td>` +
+        `<td class="${klass}">${drc >= 0 ? '+' : ''}${drc}</td>` +
+        `<td>${handles}</td>` +
+        `<td>${(wasm/1048576).toFixed(2)}</td>` +
+        `<td>${(dwasm/1024).toFixed(1)}</td>`;
+};
+
+window.__tpd_status = (txt) => { document.getElementById('status').textContent = txt; };
+window.__tpd_summary = (txt, pass) => {
+    const el = document.getElementById('summary');
+    el.style.display = '';
+    el.className = pass ? 'pass' : 'fail';
+    el.textContent = txt;
+};
+
+try {
+    log('Loading wasthon-full.mjs…');
+    const bundle = await wasthonLoadBundle('../build/wasthon-full.mjs?t=' + Date.now());
+    const rt = bundle.runtime;
+    const M = bundle.module;
+
+    // Probes + the A/B switch, exposed to Brython. refcounts.size / handles.size
+    // are exact counts (no GC dependence); WASM heap is the byte size.
+    window.__tpd_refcounts = () => rt.refcounts.size;
+    window.__tpd_handles = () => rt.handles.size;
+    window.__tpd_wasm = () => (M && M.HEAPU8) ? M.HEAPU8.length : 0;
+    window.__tpd_set_nofree = (v) => { rt.noFree = !!v; return rt.noFree; };
+
+    bundle.installModule('_pickle');
+    log('_pickle installed. Running both phases…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+import _pickle
+from browser import window
+
+log = window.__tpd_log
+sample = window.__tpd_sample
+status = window.__tpd_status
+summary = window.__tpd_summary
+rc_size = window.__tpd_refcounts
+h_size = window.__tpd_handles
+wasm = window.__tpd_wasm
+set_nofree = window.__tpd_set_nofree
+
+ITERS = int(window.__tpd_iters)
+STEP = max(1, ITERS // 20)
+OBJSIZE = int(window.__tpd_objsize or 0)
+
+log(f'_pickle: {_pickle.__name__}; Pickler={_pickle.Pickler}')
+
+# Small object by default. A rich graph generates thousands of internal wrap()
+# handles per dumps() (a separate, JS-side sentinel leak) that would overflow
+# the handles Map. The Pickler instance is created exactly once per dumps()
+# regardless of the object, so the refcounts.size signal holds either way.
+if OBJSIZE > 0:
+    obj = b'x' * OBJSIZE   # ?obj=big — currently trips a large-bytes framing bug
+else:
+    obj = [1, 'hello', {'a': 1, 'b': 2}, (1, 2, 3), b'bytes']
+
+
+def run_phase(phase, no_free, label):
+    set_nofree(no_free)
+    status(f'Phase {phase} ({label}): warming up…')
+    for _ in range(200):
+        _pickle.dumps(obj)
+    rc0, w0 = rc_size(), wasm()
+    log(f'[Phase {phase}] {label}: baseline refcounts.size={rc0} '
+        f'handles.size={h_size()} WASM={w0/1048576:.2f} MB')
+    status(f'Phase {phase} ({label}): running {ITERS} dumps()…')
+    for i in range(1, ITERS + 1):
+        _pickle.dumps(obj)
+        if i % STEP == 0:
+            sample(phase, i, rc_size(), rc_size() - rc0, h_size(), wasm(), wasm() - w0)
+    rc_growth = rc_size() - rc0
+    w_growth = wasm() - w0
+    log(f'[Phase {phase}] final refcounts.size={rc_size()} (grew {rc_growth}) '
+        f'WASM grew {w_growth/1048576:.2f} MB | per dumps(): '
+        f'refcounts +{rc_growth/ITERS:.3f}, WASM +{w_growth/ITERS:.0f} B')
+    return rc_growth
+
+
+a = run_phase('A', False, 'tp_dealloc enabled')
+b = run_phase('B', True, 'tp_dealloc DISABLED')
+set_nofree(False)  # leave the module in the normal state
+
+# Phase A must stay flat (instances reclaimed); Phase B must climb ~1/call.
+a_flat = a < ITERS * 0.01
+b_leaks = b > ITERS * 0.5
+ok = a_flat and b_leaks
+verdict = (
+    f'tp_dealloc A/B over {ITERS} dumps() each:\\n'
+    f'  Phase A (enabled):  refcounts.size grew {a:>7}  (+{a/ITERS:.3f}/call)\\n'
+    f'  Phase B (disabled): refcounts.size grew {b:>7}  (+{b/ITERS:.3f}/call)\\n'
+)
+if ok:
+    verdict += (f'\\nPROVEN: with tp_dealloc, every one of the {ITERS} Pickler '
+                f'instances is reclaimed (flat). Disable it and exactly one '
+                f'leaks per dumps() — {b} live instances pinned forever.')
+else:
+    verdict += '\\nUNEXPECTED: phase A should be flat and phase B should climb ~1/call.'
+status('Done.')
+summary(verdict, ok)
+log('\\n' + verdict)
+`;
+    document.body.appendChild(py);
+    brython({ debug: 1 });
+} catch (e) {
+    log('FATAL: ' + e.message);
+    document.getElementById('status').textContent = 'FATAL: ' + e.message;
+    console.error(e);
+}
+</script>
+</body>
+</html>

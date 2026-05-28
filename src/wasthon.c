@@ -448,6 +448,15 @@ void *wasthon_get_builtin_tp_iter(void) {
     return (void *)wasthon_builtin_tp_iter;
 }
 
+/* Default tp_free — CPython tp_dealloc bodies end with
+ * `Py_TYPE(self)->tp_free(self)`, so every type struct needs a non-NULL
+ * tp_free. The bridge installs this (PyObject_GC_Del) unless the module
+ * ships its own Py_tp_free slot. */
+EMSCRIPTEN_KEEPALIVE
+void *wasthon_get_default_tp_free(void) {
+    return (void *)PyObject_GC_Del;
+}
+
 
 /* Number-protocol slot dispatchers for built-in PyLong/PyFloat. _decimal
  * caches function pointers from PyLong_Type.tp_as_number->nb_multiply etc.
