@@ -1769,6 +1769,9 @@ mergeInto(LibraryManager.library, {
                     if (ptr === 0) return [rt._b_.None, i+1];
                     return [rt._b_.bytes.$factory(UTF8ToString(ptr)), i+1];
                 }
+                case 'C':
+                    // C int → one-character Python str (Unicode ordinal).
+                    return [String.fromCodePoint(readInt()), i+1];
                 case 'i': case 'h': case 'b': case 'l':
                     return [readInt(), i+1];
                 case 'I': case 'H': case 'B': case 'k':
@@ -8712,7 +8715,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var FASTCALL = 0x0080, KEYWORDS = 0x0002, NOARGS = 0x0004, METH_O_ = 0x0008, METH_METHOD = 0x0200;
 
-        return function() {
+        var tramp = function() {
             // Collect args + kw the way Brython conveys them. Brython
             // method calls pass `self` as args[0] for instance methods,
             // and positional args follow. Module-scope functions don't
@@ -8794,6 +8797,9 @@ mergeInto(LibraryManager.library, {
                 } else if (flags & FASTCALL) {
                     resultHandle = fn(selfHandle, argsBufPtr, nargs);
                 } else if (flags & NOARGS) {
+                    // METH_NOARGS: CPython rejects any positional arg.
+                    if (nargs > 0) throw rt.$B.$call(rt._b_.TypeError,
+                        methName + "() takes no arguments (" + nargs + " given)");
                     resultHandle = fn(selfHandle, 0);
                 } else if (flags & METH_O_) {
                     resultHandle = fn(selfHandle, nargs > 0 ? rt.wrap(posArgs[0]) : 0);
@@ -8893,6 +8899,20 @@ mergeInto(LibraryManager.library, {
             }
             return result;
         };
+        // Brython reads $function_infos for a function's __module__/__name__/
+        // __qualname__ and in repr/coroutine paths; native builtins carry it
+        // as [module, name, qualname] (finalize_builtin_types). Trampolines
+        // must too, or any such access crashes on `$function_infos[i]` of
+        // undefined.
+        var modName = 'builtins';
+        try {
+            var modObj = moduleHandle ? rt.handles.get(moduleHandle) : null;
+            if (modObj && modObj.__name__) modName = modObj.__name__;
+        } catch (_) {}
+        var qn = methName || '';
+        tramp.$function_infos = [modName, qn, qn];
+        tramp.m_module = modName;
+        return tramp;
     },
 
     /* --------------------------------------------------------------- *

@@ -36,7 +36,7 @@ const testName = params.get('test') || 'test_struct';
 // Brython's implementations, not the CPython C-API our modules follow.
 // Default mapping test_<x> → wasthon module(s); override with ?install=.
 const INSTALL_MAP = {
-    test_struct: ['_struct'], test_math: ['math'], test_cmath: ['cmath'],
+    test_struct: ['_struct', 'array'], test_math: ['math'], test_cmath: ['cmath'],
     test_binascii: ['binascii'], test_csv: ['_csv'], test_decimal: ['_decimal'],
     test_array: ['array'], test_hmac: ['_hmac'],
     test_statistics: ['_statistics'], test_zstd: ['_zstd'],

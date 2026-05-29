@@ -7,6 +7,47 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] trampoline `$function_infos` — wasthon method/function trampolines now
+      carry `$function_infos = [module, name, qualname]` (Brython's native
+      builtin-function shape, per `set_func_names`), so a wasthon callable can
+      expose `__name__` / `__qualname__` / `__module__` like a native one.
+      **Inert on its own:** a *bound* method is built by Brython's
+      `method_descriptor.tp_descr_get` via `self.method.bind(...)`, which drops
+      the trampoline's own props, and `builtin_function_or_method`'s
+      `__name___get` reads `self.$function_infos[...]` unguarded → crash. The
+      companion Brython-side fix (propagate `$function_infos` onto the bound
+      method in `method_descriptor.tp_descr_get`) is the other half, pending
+      upstream in Brython. Together they fix the bound-method
+      `__name__`/`__qualname__` crash that breaks `unittest.assertRaises`
+      naming the callable (a large suite gain once the Brython half ships in a
+      published Brython).
+
+- [x] `METH_NOARGS` arg-count validation in the method trampoline — a C method
+      declared `METH_NOARGS` (no-arg methods like array's `tolist` / `tobytes` /
+      `reverse` / `count` / `byteswap` / `buffer_info`) silently ignored extra
+      positional arguments instead of raising. CPython raises
+      `TypeError: m() takes no arguments (N given)`. The NOARGS branch of
+      `$__wasthon_make_trampoline` called the C function regardless of `nargs`;
+      it now raises when `nargs > 0`. Surfaced by `test_array` — every
+      `assertRaises(TypeError, arr.method, x)` on a no-arg method failed with
+      "TypeError not raised". +69 on the local CPython harness (array 392→461),
+      zero regression across the 20 suites. The symmetric `METH_O`
+      "exactly one argument" check was tried and **reverted**: some C methods
+      flagged `METH_O` tolerate a 0-arg call (their C body handles a NULL arg),
+      and enforcing it regressed `_decimal` by 8 — left for a per-method flag
+      audit.
+
+- [x] `'C'` format in `Py_BuildValue` — C int → one-character Python `str`
+      (Unicode ordinal). `array.__reduce_ex__` builds
+      `Py_BuildValue("O(CO)O", …)` with the typecode passed as a `'C'` char;
+      the bridge had no `'C'` case and raised `SystemError: unsupported format
+      'C'`. Adds it beside the existing string/char cases (CPython's
+      `Py_BuildValue('C')` = single-char `str`, distinct from `'c'` =
+      single-char `bytes`). Transversal — any C function using
+      `Py_BuildValue('C')`. (Eliminates the error class; the array reduce/pickle
+      tests that hit it still fail on a separate downstream layer, so it is
+      score-neutral on its own but a correct prerequisite.)
+
 - [x] `tp_dealloc` dispatch + reference counting — C-allocated instances are
       now reclaimed when their refcount reaches zero, instead of living
       forever in the bridge's handle map. Long-standing infra debt (the
