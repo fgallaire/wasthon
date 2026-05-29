@@ -18,6 +18,88 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `str[bool]` returns `Undefined` instead of indexing as int (bool is a subclass of int)
+**Impact: 0 tests** on this session's sweep, but a clear correctness bug.
+`"01"[True]` and `"01"[False]` returned JS `undefined` (the `UndefinedType`
+in Brython). `test_unicodedata.test_method_checksum` builds a SHA-1 over
+`"01"[char.isalnum()]`-style strings per codepoint; in CPython bool is an
+int subclass so `s[True] == s[1]` and `s[False] == s[0]`, but Brython took
+`is_int(arg)` true for booleans, then `var jspos = pypos2jspos(self, true)`
+returned `true`, and `self[true]` (JS bracket access by property name) is
+`undefined`. The dead `is bool` branch a few lines below is unreachable
+because `is_int` matched first.
+
+**Fix (1 line):** coerce bool→int via unary `+` at the start of the int branch.
+
+```js
+// py_string.js (str.mp_subscript)
+-        var pos = arg
+-        if(arg < 0){
++        var pos = (typeof arg === 'boolean') ? +arg : arg
++        if(pos < 0){
+```
+
+---
+
+## [x] `re.Pattern` exposes only `groupindex` — `pattern`, `flags`, `groups` raise `AttributeError`
+**Impact: 0 net on test totals** but masks `assertRaisesRegex` failures.
+`unittest.case._AssertRaisesContext` formats the failure message with
+`expected_regex.pattern`; when the inner regex didn't match, the formatting
+itself crashes with `AttributeError: 'Pattern' object has no attribute
+'pattern'`, hiding the real mismatch under a JS-side TypeError. Surfaced
+by `test_zlib.test_wbits` and `test_incomplete_stream`. CPython's
+`re.Pattern` exposes `pattern`, `flags`, `groups` as `PyMemberDef`-backed
+read-only attributes; Brython's JS-native `Pattern` only listed
+`groupindex` in `tp_getset`, even though the JS instance object already
+carries `pattern`, `flags`, `groups` as JS properties (set in `$factory`).
+Brython's attribute lookup ignores raw JS instance props — only
+`tp_getset` / `tp_methods` entries are visible.
+
+**Fix:** add the three `_get` wrappers + list them in `tp_getset`.
+
+```js
+// libs/python_re.js (~ line 1337 onwards)
++Pattern_funcs.pattern_get = function(self){ return self.pattern }
++Pattern_funcs.pattern_set = _b_.None
++Pattern_funcs.flags_get   = function(self){ return self.flags }
++Pattern_funcs.flags_set   = _b_.None
++Pattern_funcs.groups_get  = function(self){ return self.groups }
++Pattern_funcs.groups_set  = _b_.None
+...
+-Pattern.tp_getset = ["groupindex"]
++Pattern.tp_getset = ["groupindex", "pattern", "flags", "groups"]
+```
+
+---
+
+## [x] `str.istitle` calls `str.title` which is undefined (only `str_funcs.title` exists)
+**Impact: 0 tests** (the only test that exercised `istitle` — `test_method_checksum`
+in `test_unicodedata` — also fails for an unrelated reason past the istitle call,
+so net suite total unchanged. Kept anyway: `istitle()` was broken with a hard
+JavaScript error for **any** Python caller, latent on every codepath that uses it.)
+
+**Symptom:** any call to `s.istitle()` crashes with
+`JavascriptError: str.title is not a function`. The CPython `test_unicodedata`
+`test_method_checksum` hits it inside its inner loop over all codepoints.
+
+**Root cause:** in `www/src/py_string.js`, `str_funcs.istitle` body checks
+`s == s.title()` via the JS line `return _self.length > 0 && str.title(_self) == _self`.
+But `str.title` is not installed as a direct property of the type object — only
+`str_funcs.title` (= `_b_.str.tp_funcs.title`) exists. The methods are dispatched
+through the type-protocol machinery; internal-from-JS calls have to go via
+`str_funcs.X`, not `str.X`. Sibling `isupper`/`islower`/… get it right.
+
+**Fix (1 line):** `str.title(_self)` → `str_funcs.title(_self)` at the istitle
+return.
+
+```js
+// py_string.js (str_funcs.istitle)
+-    return _self.length > 0 && str.title(_self) == _self
++    return _self.length > 0 && str_funcs.title(_self) == _self
+```
+
+---
+
 ## [x] bound-method `__name__`/`__qualname__` crash — `$function_infos` not propagated
 **Impact: +166 tests** (local-Brython harness total 1751 → 1917, zero regression).
 Breakdown: array +70, decimal +58, unicodedata +12, sqlite3 +12, zlib +7, bz2 +4,
