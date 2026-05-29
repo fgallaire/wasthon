@@ -4874,28 +4874,63 @@ mergeInto(LibraryManager.library, {
         var out = "", p = varargs;
         for (var i = 0; i < fmt.length; i++) {
             if (fmt[i] !== '%') { out += fmt[i]; continue; }
-            // Consume optional length modifiers (l, ll, z).
-            var spec = "";
-            while (i + 1 < fmt.length && "lhzj".indexOf(fmt[i+1]) !== -1) { spec += fmt[++i]; }
+            // Parse [flags][width][.precision][length]conversion — matches the
+            // PyOS_snprintf parser. Without precision, `PyErr_Format(..,
+            // "Error %d %s: %.200s", ...)` (zlib.error et al.) kept `%.200s`
+            // verbatim in the message.
+            var rawStart = i;
+            var leftAlign = false, zeroPad = false;
+            while (i + 1 < fmt.length && "-+0 #".indexOf(fmt[i+1]) !== -1) {
+                if (fmt[i+1] === '-') leftAlign = true;
+                else if (fmt[i+1] === '0') zeroPad = true;
+                i++;
+            }
+            var width = 0;
+            while (i + 1 < fmt.length && fmt[i+1] >= '0' && fmt[i+1] <= '9') {
+                width = width * 10 + (fmt[++i].charCodeAt(0) - 48);
+            }
+            var precision = -1;
+            if (i + 1 < fmt.length && fmt[i+1] === '.') {
+                i++; precision = 0;
+                while (i + 1 < fmt.length && fmt[i+1] >= '0' && fmt[i+1] <= '9') {
+                    precision = precision * 10 + (fmt[++i].charCodeAt(0) - 48);
+                }
+            }
+            while (i + 1 < fmt.length && "lhzj".indexOf(fmt[i+1]) !== -1) { i++; }
             var c = fmt[++i];
+            var piece = null;
             if (c === 's') {
                 var sp = HEAP32[p >> 2]; p += 4;
-                out += (sp === 0) ? "(null)" : UTF8ToString(sp);
+                piece = (sp === 0) ? "(null)" : UTF8ToString(sp);
+                if (precision >= 0) piece = piece.slice(0, precision);
             } else if (c === 'd' || c === 'i') {
-                out += String(HEAP32[p >> 2] | 0); p += 4;
+                piece = String(HEAP32[p >> 2] | 0); p += 4;
             } else if (c === 'u') {
-                out += String(HEAPU32[p >> 2] >>> 0); p += 4;
+                piece = String(HEAPU32[p >> 2] >>> 0); p += 4;
+            } else if (c === 'x') {
+                piece = (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
+            } else if (c === 'X') {
+                piece = (HEAPU32[p >> 2] >>> 0).toString(16).toUpperCase(); p += 4;
             } else if (c === 'p') {
-                out += "0x" + (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
+                piece = "0x" + (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
             } else if (c === 'R' || c === 'S' || c === 'A') {
                 var h = HEAP32[p >> 2]; p += 4;
                 var obj = rt.unwrap(h);
-                try { out += String(obj); } catch (_) { out += "<obj>"; }
+                try { piece = String(obj); } catch (_) { piece = "<obj>"; }
             } else if (c === '%') {
-                out += '%';
+                piece = '%';
             } else {
-                out += '%' + spec + c;  // unknown — leave as-is
+                out += fmt.slice(rawStart, i + 1);  // unknown — leave as-is
+                continue;
             }
+            if (width > piece.length) {
+                var pad = (zeroPad && !leftAlign && c !== 's' && c !== 'R'
+                            && c !== 'S' && c !== 'A')
+                    ? '0' : ' ';
+                var fill = pad.repeat(width - piece.length);
+                piece = leftAlign ? (piece + fill) : (fill + piece);
+            }
+            out += piece;
         }
         rt.setError(excHandle, out);
         return 0;
@@ -7200,29 +7235,58 @@ mergeInto(LibraryManager.library, {
         var out = "";
         for (var i = 0; i < fmt.length; i++) {
             if (fmt[i] !== '%') { out += fmt[i]; continue; }
-            var spec = "";
-            while (i + 1 < fmt.length && "lhzj".indexOf(fmt[i+1]) !== -1) { spec += fmt[++i]; }
+            // Parse the spec: [flags][width][.precision][length]conversion.
+            // Width matters for unicodedata's `%04X` (zero-padded hex codepoint).
+            var rawStart = i;
+            var leftAlign = false, zeroPad = false;
+            while (i + 1 < fmt.length && "-+0 #".indexOf(fmt[i+1]) !== -1) {
+                if (fmt[i+1] === '-') leftAlign = true;
+                else if (fmt[i+1] === '0') zeroPad = true;
+                i++;
+            }
+            var width = 0;
+            while (i + 1 < fmt.length && fmt[i+1] >= '0' && fmt[i+1] <= '9') {
+                width = width * 10 + (fmt[++i].charCodeAt(0) - 48);
+            }
+            var precision = -1;
+            if (i + 1 < fmt.length && fmt[i+1] === '.') {
+                i++; precision = 0;
+                while (i + 1 < fmt.length && fmt[i+1] >= '0' && fmt[i+1] <= '9') {
+                    precision = precision * 10 + (fmt[++i].charCodeAt(0) - 48);
+                }
+            }
+            while (i + 1 < fmt.length && "lhzj".indexOf(fmt[i+1]) !== -1) { i++; }
             var c = fmt[++i];
+            var piece = null;
             if (c === 's') {
                 var sp = HEAP32[p >> 2]; p += 4;
-                out += (sp === 0) ? "(null)" : UTF8ToString(sp);
+                piece = (sp === 0) ? "(null)" : UTF8ToString(sp);
+                if (precision >= 0) piece = piece.slice(0, precision);
             } else if (c === 'd' || c === 'i') {
-                out += String(HEAP32[p >> 2] | 0); p += 4;
+                piece = String(HEAP32[p >> 2] | 0); p += 4;
             } else if (c === 'u') {
-                out += String(HEAPU32[p >> 2] >>> 0); p += 4;
+                piece = String(HEAPU32[p >> 2] >>> 0); p += 4;
             } else if (c === 'x') {
-                out += (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
+                piece = (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
             } else if (c === 'X') {
-                out += (HEAPU32[p >> 2] >>> 0).toString(16).toUpperCase(); p += 4;
+                piece = (HEAPU32[p >> 2] >>> 0).toString(16).toUpperCase(); p += 4;
             } else if (c === 'p') {
-                out += "0x" + (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
+                piece = "0x" + (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
             } else if (c === 'c') {
-                out += String.fromCharCode(HEAP32[p >> 2] & 0xff); p += 4;
+                piece = String.fromCharCode(HEAP32[p >> 2] & 0xff); p += 4;
             } else if (c === '%') {
-                out += '%';
+                piece = '%';
             } else {
-                out += '%' + spec + c;  // unknown — leave as-is
+                out += fmt.slice(rawStart, i + 1);  // unknown — leave as-is
+                continue;
             }
+            if (width > piece.length) {
+                var pad = (zeroPad && !leftAlign && c !== 's' && c !== 'c')
+                    ? '0' : ' ';
+                var fill = pad.repeat(width - piece.length);
+                piece = leftAlign ? (piece + fill) : (fill + piece);
+            }
+            out += piece;
         }
         var bytes = new TextEncoder().encode(out);
         var n = Math.min(bytes.length, size - 1);

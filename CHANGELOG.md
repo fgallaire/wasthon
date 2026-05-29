@@ -7,6 +7,33 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `PyErr_Format` precision specifier (`%.200s`, `%.Ns`) — same gap as the
+      `PyOS_snprintf` parser below: the format reader only consumed length
+      qualifiers, so `PyErr_Format(exc, "Error %d: %.200s", err, msg)` left
+      `%.200s` verbatim in the exception message. Surfaced by `test_zlib`
+      `assertRaisesRegex` paths (`test_wbits`, `test_incomplete_stream`) where
+      the expected regex was `"Error -5 while decompressing data: %.200s"`,
+      i.e. the test was matching the literal `%.200s` instead of the real
+      tail. Fix mirrors `PyOS_snprintf`: parse the full
+      `%[flags][width][.precision][length]conv` shape, with `.precision`
+      truncating `%s`/`%R`/`%S`/`%A` arguments and width/zero-pad applied
+      after. +2 (zlib 49→51), zero regression.
+
+- [x] `PyOS_snprintf` width specifier (`%04X`, `%5d`, …) — the bridge's tiny
+      printf parser only consumed length qualifiers (`l`/`h`/`z`/`j`) before
+      the conversion letter; flags, width and precision were ignored, so
+      `PyOS_snprintf(..., "%04X", 0x31)` wrote `%04X` literally (the parser
+      took `0` as the conversion and fell through the unknown branch). Surfaced
+      by `test_unicodedata.test_decomposition` — `unicodedata.decomposition()`
+      builds its output with `PyOS_snprintf(..., "%04X", cp)` per codepoint, so
+      `decomposition('¼')` returned `'<fraction> %04X %04X %04X'` instead of
+      `'<fraction> 0031 2044 0034'`. The parser now handles the full
+      `%[flags][width][.precision][length]conv` shape: `-`/`0` flags, decimal
+      width, `.precision` (used by `%.Ns`), then the same conversions as
+      before, with left/right alignment and zero-fill applied after rendering.
+      +4 on the local CPython harness (`test_unicodedata` 41→45 — two
+      `test_decomposition` + two `test_function_checksum`), zero regression.
+
 - [x] buffer protocol accepts `memoryview` / `array.array` (and any object with
       `tobytes()`) — `wasthon_get_buffer_data` (the read side of
       `PyObject_GetBuffer`) and `wasthon_object_check_buffer` only recognised
