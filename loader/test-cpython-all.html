@@ -34,6 +34,21 @@
   needs integration work).
 </p>
 
+<p id="brython-toggle" style="font-size:0.9em;margin:0 0 1em 0;padding:4px 8px;
+   background:#eef;border:1px solid #99a;border-radius:4px;display:inline-block;"></p>
+<script>
+(function () {
+    var cdn = new URLSearchParams(location.search).get('brython') === 'cdn';
+    var t = new URLSearchParams(location.search);
+    if (cdn) { t.delete('brython'); } else { t.set('brython', 'cdn'); }
+    var qs = t.toString();
+    var href = location.pathname + (qs ? '?' + qs : '');
+    document.getElementById('brython-toggle').innerHTML =
+        'Brython source: <b>' + (cdn ? 'CDN stock (brython@3.14.1)' : 'vendored (patched)') +
+        '</b> &middot; <a href="' + href + '">switch to ' + (cdn ? 'vendored' : 'CDN') + '</a>';
+})();
+</script>
+
 <table id="results">
   <thead><tr>
     <th>Module</th><th>ran</th><th>pass</th><th>fail</th><th>skip</th><th>pass rate</th><th>status</th>
@@ -110,7 +125,11 @@ function runOne(testName, idx) {
     return new Promise(resolve => {
         const iframe = document.createElement('iframe');
         iframe.style.display = 'none';
-        iframe.src = `test-cpython.html?test=${testName}`;
+        // Forward ?brython=cdn (etc.) to each suite iframe, else the dashboard
+        // page honours it but the iframes that run the tests default to the
+        // vendored Brython — making ?brython=cdn look like a no-op.
+        const _b = new URLSearchParams(location.search).get('brython');
+        iframe.src = `test-cpython.html?test=${testName}` + (_b ? `&brython=${_b}` : '');
         document.body.appendChild(iframe);
 
         const finish = (result) => {

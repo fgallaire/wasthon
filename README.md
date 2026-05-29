@@ -316,8 +316,13 @@ module exposing `PyInit_<x>()`. A small Brython-side loader
   `./build.sh` run, ~3 GB after a full build.
 - **`loader/`** — `wasthon-loader.js` (Brython integration), `index.html`
   navigation page, 14 per-module smoke pages (`test-*.html`), 14 per-module
-  bench pages (`bench-*.html`). Brython itself is loaded from a pinned CDN
-  URL (`brython@3.14.1` on jsDelivr) — no local checkout needed.
+  bench pages (`bench-*.html`). Brython is loaded via `brython-src.js`, which
+  defaults to the **vendored, patched build in `loader/brython/`** (stock
+  3.14.1 plus the fixes tracked in `BRYTHON_FIX.md`, pending upstream); add
+  `?brython=cdn` to any page to load stock `brython@3.14.1` from jsDelivr
+  instead, for comparison. (`loader/brython/` is vendored so results are
+  reproducible and match GitHub Pages; it goes away once the fixes ship in a
+  published Brython.)
 
 ## Hard rules (so the bridge stays small)
 
@@ -358,8 +363,10 @@ Prerequisites:
   needs to be on PATH up front
 - `make` (used by `emmake make` to build liblzma and libzstd)
 - Python 3 (for `python3 -m http.server`)
-- Brython itself is loaded from a pinned CDN URL by the loader pages — no
-  local checkout needed
+- Brython is loaded by the loader pages from the vendored build in
+  `loader/brython/` (stock 3.14.1 + the patches in `BRYTHON_FIX.md`); pass
+  `?brython=cdn` on any page to load stock `brython@3.14.1` from jsDelivr — no
+  local checkout needed either way
 
 Source trees for CPython and the C libraries (bzip2, expat, xz, zstd) are
 **downloaded automatically** by `build.sh` if not already present. Defaults
