@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] buffer protocol accepts `memoryview` / `array.array` (and any object with
+      `tobytes()`) — `wasthon_get_buffer_data` (the read side of
+      `PyObject_GetBuffer`) and `wasthon_object_check_buffer` only recognised
+      Brython `bytes`/`bytearray` (`.source`), a raw `Uint8Array`, or a JS
+      `Array`; anything else raised `TypeError: a bytes-like object is required,
+      not 'memoryview'` (and `'array'`). CPython's buffer protocol accepts all
+      bytes-like objects. Now, for an object without `.source`, the bridge pulls
+      its raw bytes via `obj.tobytes()` — the byte image the buffer protocol
+      would hand back — covering `memoryview`, `array.array`, and friends.
+      +15 on the local CPython harness: `test_binascii` 26→36, `test_sqlite3`
+      297→300 (BLOB/bytes args), `test_struct` 21→23 (unpack-from a buffer),
+      zero regression. Read path only — write-back through `w*` still propagates
+      only to `bytes`/`bytearray` `.source` (writable `pack_into` into an
+      `array` is a separate, smaller follow-up).
+
 - [x] trampoline `$function_infos` — wasthon method/function trampolines now
       carry `$function_infos = [module, name, qualname]` (Brython's native
       builtin-function shape, per `set_func_names`), so a wasthon callable can

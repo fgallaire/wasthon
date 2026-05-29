@@ -7331,6 +7331,19 @@ mergeInto(LibraryManager.library, {
         } else if (Array.isArray(obj)) {
             src = obj;
         } else {
+            // Other buffer-protocol objects (memoryview, array.array, …) don't
+            // expose .source; pull their raw bytes via tobytes() — the byte
+            // image CPython's buffer protocol would hand back. (Read path only;
+            // write-back via w* propagates only to bytes/bytearray .source.)
+            try {
+                var tb = WasthonRT.$B.$getattr(obj, 'tobytes', null);
+                if (tb) {
+                    var b = WasthonRT.$B.$call(tb);
+                    if (b && b.source !== undefined && b.source !== null) src = b.source;
+                }
+            } catch (e) { /* fall through to the type error */ }
+        }
+        if (src === null) {
             var className = WasthonRT.$B.class_name ? WasthonRT.$B.class_name(obj) : typeof obj;
             WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
                 "a bytes-like object is required, not '" + className + "'");
@@ -7385,11 +7398,13 @@ mergeInto(LibraryManager.library, {
     wasthon_object_check_buffer__deps: ['$WasthonRT'],
     wasthon_object_check_buffer: function(handle) {
         var obj = WasthonRT.unwrap(handle);
-        if (obj === null) return 0;
+        if (obj === null || obj === undefined) return 0;
         if (obj.source !== undefined) return 1;          // bytes/bytearray
         if (obj instanceof Uint8Array) return 1;
-        // Could check for memoryview / array.array via __class__ chain;
-        // sha2module.c only feeds bytes-like, so this is sufficient.
+        // memoryview / array.array / other buffer-protocol objects expose
+        // tobytes() — treat that as "is a buffer" (matches wasthon_get_buffer_data).
+        try { if (WasthonRT.$B.$getattr(obj, 'tobytes', null)) return 1; }
+        catch (e) { /* not buffer-like */ }
         return 0;
     },
 
