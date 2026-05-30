@@ -8102,12 +8102,40 @@ mergeInto(LibraryManager.library, {
                 };
             } else if (shape === 'si') {
                 /* sq_item / sq_repeat: takes self + ssize_t. Returns PyObject*.
-                 * Brython will call this as `instance[i]` or `instance * n`. */
+                 * Brython will call this as `instance[i]` or `instance * n`.
+                 * Reject non-numeric arguments — naive `Number("bad")` is NaN
+                 * which becomes 0 after `|0`, silently succeeding when
+                 * `a * "bad"` should raise TypeError. CPython's sq_repeat
+                 * raises TypeError on non-int via `PyNumber_AsSsize_t`. */
                 dispatch = function(self, idx) {
                     var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
-                    var i = (typeof idx === 'number') ? (idx | 0) :
-                            (typeof idx === 'bigint') ? Number(idx) :
-                            Number(idx) | 0;
+                    var i;
+                    if (typeof idx === 'number') i = idx | 0;
+                    else if (typeof idx === 'bigint') i = Number(idx) | 0;
+                    else if (typeof idx === 'boolean') i = idx ? 1 : 0;
+                    else if (typeof idx === 'string') {
+                        // CPython rejects "5" — caller must pass an int.
+                        throw rt.$B.$call(rt._b_.TypeError,
+                            "can't multiply sequence by non-int of type 'str'");
+                    } else {
+                        // Try __index__ on objects (PyIndex_Check path).
+                        var idxFn = idx && (idx.__index__ ||
+                            (idx.ob_type && idx.ob_type.tp_funcs &&
+                             idx.ob_type.tp_funcs.__index__));
+                        if (typeof idxFn === 'function') {
+                            try { i = Number(idxFn(idx)) | 0; }
+                            catch (e) { throw e; }
+                        } else {
+                            var n = Number(idx);
+                            if (isNaN(n)) {
+                                throw rt.$B.$call(rt._b_.TypeError,
+                                    "an integer is required (got type " +
+                                    (idx && idx.ob_type && idx.ob_type.tp_name ?
+                                        idx.ob_type.tp_name : typeof idx) + ")");
+                            }
+                            i = n | 0;
+                        }
+                    }
                     rt.pendingException = null;
                     var resH = getWasmTableEntry(slotPtr)(selfH, i);
                     if (rt.pendingException) {
@@ -8121,13 +8149,50 @@ mergeInto(LibraryManager.library, {
                     return rt.unwrap(resH);
                 };
             } else if (shape === 'sis') {
-                /* sq_ass_item: self + ssize_t + value. Returns int rc. */
+                /* sq_ass_item: self + ssize_t + value. Returns int rc.
+                 * value === $B.NULL signals "delete this item" in the
+                 * Brython-dispatch convention (Brython's $delitem walks
+                 * through sq_ass_item with $B.NULL). Pass 0/NULL through
+                 * to C, where the slot impl detects NULL and routes to
+                 * the delete-item path.
+                 *
+                 * CPython's PyObject_SetItem fixes negative indices before
+                 * calling sq_ass_item (the slot itself expects 0 ≤ i < len).
+                 * `array_ass_item` raises `array assignment index out of
+                 * range` for any negative i — so `a[-1] = x` always fails.
+                 * Normalise here using the type's sq_length slot. */
                 dispatch = function(self, idx, value) {
                     var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
-                    var i = (typeof idx === 'number') ? (idx | 0) :
-                            (typeof idx === 'bigint') ? Number(idx) :
-                            Number(idx) | 0;
-                    var valH = (value === undefined || value === null) ? 0 :
+                    // Strict-type check (same as sq_repeat path above):
+                    // `a["str"] = X` must raise TypeError, not silently
+                    // coerce to 0. CPython's sq_ass_item path goes through
+                    // PyNumber_AsSsize_t which rejects non-int.
+                    var i;
+                    if (typeof idx === 'number') i = idx | 0;
+                    else if (typeof idx === 'bigint') i = Number(idx) | 0;
+                    else if (typeof idx === 'boolean') i = idx ? 1 : 0;
+                    else {
+                        var idxFn = idx && (idx.__index__ ||
+                            (idx.ob_type && idx.ob_type.tp_funcs &&
+                             idx.ob_type.tp_funcs.__index__));
+                        if (typeof idxFn === 'function') {
+                            i = Number(idxFn(idx)) | 0;
+                        } else {
+                            throw rt.$B.$call(rt._b_.TypeError,
+                                "array indices must be integers");
+                        }
+                    }
+                    if (i < 0) {
+                        var clsObj = self && self.ob_type;
+                        var sqLen = clsObj && clsObj.sq_length;
+                        if (typeof sqLen === 'function') {
+                            try {
+                                var len = sqLen(self) | 0;
+                                if (len > 0) i += len;
+                            } catch (_) {}
+                        }
+                    }
+                    var valH = (value === undefined || value === null || value === rt.$B.NULL) ? 0 :
                                (value && value.__wasthon_ptr__ ? value.__wasthon_ptr__ : rt.wrap(value));
                     rt.pendingException = null;
                     var rc = getWasmTableEntry(slotPtr)(selfH, i, valH);
@@ -8841,7 +8906,7 @@ mergeInto(LibraryManager.library, {
     $__wasthon_make_trampoline__deps: ['$WasthonRT'],
     $__wasthon_make_trampoline: function(fnPtr, flags, moduleHandle, methName, moduleScope, classHandle) {
         var rt = WasthonRT;
-        var FASTCALL = 0x0080, KEYWORDS = 0x0002, NOARGS = 0x0004, METH_O_ = 0x0008, METH_METHOD = 0x0200;
+        var FASTCALL = 0x0080, KEYWORDS = 0x0002, NOARGS = 0x0004, METH_O_ = 0x0008, METH_METHOD = 0x0200, METH_CLASS = 0x0010, METH_STATIC = 0x0020;
 
         var tramp = function() {
             // Collect args + kw the way Brython conveys them. Brython
@@ -8930,6 +8995,20 @@ mergeInto(LibraryManager.library, {
                         methName + "() takes no arguments (" + nargs + " given)");
                     resultHandle = fn(selfHandle, 0);
                 } else if (flags & METH_O_) {
+                    // METH_O: exactly one positional argument. CPython
+                    // raises TypeError on 0 or >1 positional args.
+                    // EXCEPTION: METH_CLASS routes the cls binding through
+                    // a path where Brython presents the value via `self`
+                    // and leaves nargs=0 for the trampoline (e.g.
+                    // `Decimal.from_float(42.5)`). Skip the count check
+                    // when METH_CLASS is set — the C function still gets
+                    // both `cls` and the value via the existing dispatch.
+                    if (!(flags & METH_CLASS) &&
+                            (nargs !== 1 || kwNames.length > 0)) {
+                        throw rt.$B.$call(rt._b_.TypeError,
+                            methName + "() takes exactly one argument (" +
+                            (nargs + kwNames.length) + " given)");
+                    }
                     resultHandle = fn(selfHandle, nargs > 0 ? rt.wrap(posArgs[0]) : 0);
                 } else if (flags & KEYWORDS) {
                     // METH_VARARGS | METH_KEYWORDS (legacy):

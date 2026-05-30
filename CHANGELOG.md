@@ -7,6 +7,39 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] trampoline-level arg validation for `METH_O` + slot dispatcher strict
+      typing — three tightening fixes to the bridge's slot dispatch made
+      sequence/method behaviour match CPython under `assertRaises` and
+      strict-type checks:
+
+      1. `METH_O` arg count: was passing whatever `nargs` happened to be
+         (could be 0 or >1) to the C function with a wrapped first arg if
+         present, else 0. CPython's METH_O *requires* exactly one
+         positional. New check raises `TypeError("takes exactly one
+         argument")` when `nargs > 1` or any kwargs. **Exempts METH_CLASS**
+         — Brython's classmethod path routes the value through `self=cls`
+         and leaves `nargs=0` (e.g. `Decimal.from_float(42.5)` on a
+         subclass), so a strict `nargs !== 1` regressed test_decimal by 8.
+         Letting `nargs == 0 || nargs == 1` past the gate for METH_CLASS
+         keeps the gain (+14 test_array, +4 test_binascii) with zero
+         regression on test_decimal.
+      2. `sq_item / sq_repeat` (shape `'si'`) strict int coercion. Was
+         `Number(idx) | 0`, which silently turned `"bad"` into 0 — so
+         `a * "bad"` returned an empty array instead of raising
+         `TypeError: can't multiply sequence by non-int of type 'str'`.
+         Now: reject strings explicitly, accept `__index__`-bearing
+         objects via the protocol, raise TypeError otherwise.
+      3. `sq_ass_item` (shape `'sis'`) strict int coercion + negative
+         index normalisation. CPython's `PyObject_SetItem` normalises
+         negative indices before calling `sq_ass_item`; the slot itself
+         expects `0 ≤ i < len`. wasthon's dispatch wasn't, so
+         `a[-1] = x` raised "array assignment index out of range".
+         Also added a `$B.NULL` sentinel pass-through for the `del a[i]`
+         path (companion to Brython's `$delitem` slot-aware fix).
+
+      Total **+54 on the local CPython harness**: test_array 461 → 515
+      (+54), test_binascii 41 → 45 (+4). Zero regression.
+
 - [x] `sq_ass_item` slot also installs `__delitem__` dunder alias —
       previously only registered `__setitem__`. `assertRaises(TypeError,
       a.__delitem__)` and explicit `a.__delitem__(i)` access raised
