@@ -7,6 +7,27 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `PyErr_Format` `%R` / `%S` / `%A` / `%T` / `%N` — only `%T`/`%N` were
+      missing entirely (emitted as literal `%T` / `%N`), and `%R`/`%S`/`%A`
+      were doing a naive `String(obj)` which renders Brython class objects
+      as `[object Object]`. _pickle uses both: `PyErr_Format(error,
+      "must be %R, not %R", cls1, cls2)` produced `must be [object Object],
+      not [object Object]` instead of `must be <class 'int'>, not <class
+      'tuple'>`. PyUnicode_FromFormat already routed `%R`/`%S` through real
+      `repr`/`str`; PyErr_Format did not. Now:
+      - `%R` → `String(repr(obj))`
+      - `%S` → `String(str(obj))`
+      - `%A` → `String(ascii(obj))`
+      - `%T` → `class_name(obj)` (with a string coercion guard for cases
+              where the name is a Brython str object rather than a JS
+              primitive)
+      - `%N` → `(tp_name || __name__)` directly on the type object
+      0 net on the local CPython harness (the pickle tests that exercise
+      these formats fail at a deeper assertion — the messages now read
+      correctly but the structural pickle failures remain), zero
+      regression. Correctness fix worth keeping for any future tests
+      whose assertion includes the message text.
+
 - [x] trampoline-level arg validation for `METH_O` + slot dispatcher strict
       typing — three tightening fixes to the bridge's slot dispatch made
       sequence/method behaviour match CPython under `assertRaises` and

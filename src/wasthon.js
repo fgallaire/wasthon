@@ -2450,6 +2450,30 @@ mergeInto(LibraryManager.library, {
                     piece = (obj3 == null) ? '' : (typeof obj3 === 'string' ? obj3 : String(obj3));
                     break;
                 }
+                case 'T': case 'N': {
+                    // %T → fully-qualified type name (CPython 3.13+, e.g. "tuple"
+                    // or "module.Class"). %N → same but for a PyTypeObject*
+                    // argument directly. Used heavily by `_pickle` ("must be
+                    // callable, not %T"). Without this, `%T` was emitted
+                    // verbatim in error messages — confusing to debug and
+                    // breaking ~290 pickle tests that assert on the message.
+                    var oh4 = readPtr();
+                    var obj4 = rt.unwrap(oh4);
+                    var nm;
+                    if (conv === 'N') {
+                        nm = obj4 && (obj4.tp_name || obj4.__name__);
+                    } else {
+                        try { nm = rt.$B.class_name(obj4); }
+                        catch (e) { nm = null; }
+                    }
+                    // Coerce to a plain string — `tp_name` is sometimes a
+                    // Brython str object (with `__class__`), not a JS primitive,
+                    // which `out += piece` stringifies as `[object Object]`.
+                    piece = (typeof nm === 'string') ? nm
+                          : (nm && typeof nm.valueOf === 'function' && typeof nm.valueOf() === 'string') ? nm.valueOf()
+                          : (nm ? String(nm) : '<type>');
+                    break;
+                }
                 default:
                     // Unknown conversion: emit it raw so we notice in tests
                     piece = '%' + conv;
@@ -4914,9 +4938,28 @@ mergeInto(LibraryManager.library, {
             } else if (c === 'p') {
                 piece = "0x" + (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
             } else if (c === 'R' || c === 'S' || c === 'A') {
+                // %R → repr(obj), %S → str(obj), %A → ascii(obj). Was naive
+                // `String(obj)` which stringifies Brython objects as
+                // `[object Object]`. _pickle relies on a real repr for class
+                // names, e.g. "must be %R, not %R" → "<class 'int'>".
                 var h = HEAP32[p >> 2]; p += 4;
                 var obj = rt.unwrap(h);
-                try { piece = String(obj); } catch (_) { piece = "<obj>"; }
+                try {
+                    if (c === 'R')      piece = String(rt._b_.repr(obj));
+                    else if (c === 'A') piece = String(rt._b_.ascii(obj));
+                    else                piece = String(rt._b_.str.$factory(obj));
+                } catch (_) { piece = "<obj>"; }
+            } else if (c === 'T' || c === 'N') {
+                // %T = type name of instance; %N = type name of PyTypeObject*.
+                // Used by _pickle's error formatting (CPython 3.13+).
+                var th = HEAP32[p >> 2]; p += 4;
+                var tobj = rt.unwrap(th);
+                if (c === 'N') {
+                    piece = (tobj && tobj.__name__) ? tobj.__name__ : '<type>';
+                } else {
+                    try { piece = rt.$B.class_name(tobj); }
+                    catch (e) { piece = '<type-err>'; }
+                }
             } else if (c === '%') {
                 piece = '%';
             } else {
