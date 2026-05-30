@@ -7,6 +7,29 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] module-scope trampolines are `builtin_function_or_method`, not bound
+      functions — CPython's C-level module functions skip the descriptor
+      protocol (no `tp_descr_get`), so `class T: f = math.isclose` then
+      `T().f(a, b)` calls `isclose(a, b)`, not `isclose(self, a, b)`. The
+      wasthon trampoline returned by `__wasthon_make_trampoline` was a JS
+      function whose `ob_type` defaulted to `$B.function`, which DOES define
+      `tp_descr_get` → Brython auto-bound it on instance access, so the test
+      pattern `class T: helper = somemodule.somefunc; self.helper(a, b)`
+      always received an extra `self`. Affected at least the
+      `IsCloseTests` / `CompareDigestMixin` family of tests (any
+      `class T: <name> = <module>.<func>` shape).
+
+      Fix: after `__wasthon_make_trampoline`, set
+      `trampoline.ob_type = $B.builtin_function_or_method` for the
+      module-scope branch only (instance methods already explicitly set it
+      to `builtin_method` for separate reasons).
+
+      +23 on the local CPython harness: `test_math` 54→65 (+11),
+      `test_cmath` 13→25 (+12). Zero regression. Root-pattern fix —
+      transverse across any module-level wasthon function used as a class
+      helper. Companion to the Brython-side `_compare_digest` non-binding
+      wrapper for hmac (logged in BRYTHON_FIX.md).
+
 - [x] heap-type `$buffer_protocol` flag from `Py_bf_getbuffer` slot — when
       `PyType_FromModuleAndSpec` saw a `Py_bf_getbuffer` slot (id 1) in the
       spec, the bridge stored it in `slotMap` but never surfaced anything

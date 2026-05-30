@@ -8758,6 +8758,14 @@ mergeInto(LibraryManager.library, {
 
             var trampoline = __wasthon_make_trampoline(fnPtr, flags, moduleHandle, name, moduleScope, classHandle);
             if (moduleScope) {
+                // Mark module-scope trampolines as `builtin_function_or_method`
+                // — CPython's C-level module functions behave this way, and
+                // crucially do NOT auto-bind when assigned as class attributes
+                // (no `tp_descr_get`). Without this, `class T: f = math.isclose`
+                // then `self.f(a, b)` re-injects self → `isclose(self, a, b)`
+                // (3 positional, raises). Affects every test that exercises
+                // `class T: helper = somemodule.somefunc`.
+                trampoline.ob_type = rt.$B.builtin_function_or_method;
                 rt.$B.module_setattr(target, name, trampoline);
             } else {
                 target.tp_funcs = target.tp_funcs || {};
