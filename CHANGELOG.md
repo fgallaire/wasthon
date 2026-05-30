@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `sq_ass_item` slot also installs `__delitem__` dunder alias —
+      previously only registered `__setitem__`. `assertRaises(TypeError,
+      a.__delitem__)` and explicit `a.__delitem__(i)` access raised
+      `AttributeError: 'array' object has no attribute '__delitem__'`.
+      Same dispatcher serves both (NULL value = delete). +14 test_array,
+      zero regression.
+
 - [x] _pickle `PickleBuffer` type — bridge previously bound to a sentinel
       JS object (`{__wasthon_picklebuffer__: true}`) with no `tp_name`, so
       `PyModule_AddType(m, &PyPickleBuffer_Type)` registered it under the

@@ -7982,7 +7982,7 @@ mergeInto(LibraryManager.library, {
              * CPython's for 39/40/41/42/43/46, but NOT for sq_length / sq_item
              * which collide with nb_multiply/nb_positive at 29/32. Those are
              * patched in below when isSequence is true). */
-            39: ['sq_ass_item',               ['__setitem__'],       'sis'],
+            39: ['sq_ass_item',               ['__setitem__', '__delitem__'], 'sis'],
             40: ['sq_concat',                 ['__add__'],           'b'],
             41: ['sq_contains',               ['__contains__'],      'bi'],
             46: ['sq_repeat',                 ['__mul__','__rmul__'], 'si'],
