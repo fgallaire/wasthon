@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] heap-type `$buffer_protocol` flag from `Py_bf_getbuffer` slot — when
+      `PyType_FromModuleAndSpec` saw a `Py_bf_getbuffer` slot (id 1) in the
+      spec, the bridge stored it in `slotMap` but never surfaced anything
+      Brython could detect. Brython's `memoryview()` constructor only accepts
+      objects whose class exposes `__buffer__`, `bf_getbuffer`, or
+      `$buffer_protocol = true` (the marker Brython's own native types set on
+      themselves). Without that marker on wasthon types, `memoryview(arr)`
+      raised `TypeError: a bytes-like object is required, not 'array'`. The
+      fix sets `cls.$buffer_protocol = true` whenever a Py_bf_getbuffer slot
+      is present in the spec — bridges the buffer-protocol declaration into
+      what Brython's type machinery already recognises. 0 net on the local
+      CPython harness (the writable-buffer follow-up paths are still
+      incomplete on the Brython side), zero regression. Companion to the
+      Brython-side `memoryview` patch landed in `BRYTHON_FIX.md`.
+
 - [x] `PyErr_Format` precision specifier (`%.200s`, `%.Ns`) — same gap as the
       `PyOS_snprintf` parser below: the format reader only consumed length
       qualifiers, so `PyErr_Format(exc, "Error %d: %.200s", err, msg)` left

@@ -7770,6 +7770,16 @@ mergeInto(LibraryManager.library, {
             __wasthon_install_members(cls, membersPtr);
         }
 
+        // Signal the buffer protocol to Brython: types that declared a
+        // Py_bf_getbuffer slot (id 1) get `$buffer_protocol = true` so
+        // Brython's `memoryview()` constructor accepts them. Without this,
+        // `memoryview(wasthon_array)` raises `TypeError: memoryview: a
+        // bytes-like object is required, not 'array'`, which blocked
+        // `struct.pack_into` against array.array writable buffers.
+        if (slotMap[1 /* Py_bf_getbuffer */]) {
+            cls.$buffer_protocol = true;
+        }
+
         // Wire Py_tp_new (slot id 65) so Brython can instantiate the type.
         // Brython's _b_.type.tp_call reads cls.tp_new and, if .$is_slot is
         // set, calls new_func(cls, args, kw) — exactly the CPython tp_new
