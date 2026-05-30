@@ -72,6 +72,447 @@ Brython's attribute lookup ignores raw JS instance props — only
 
 ---
 
+## [x] `$B.set_func_names` skipped `tp_funcs` entries — bound methods crashed on repr / __qualname__
+**Impact: +2 tests** (test_re 99 → 101).
+
+**Symptom:** `repr(instance.method)` or any `assertRaises` reporting the
+callable's name for a Brython-native class crashed with
+`JavascriptError: self.$function_infos is undefined`.
+
+**Root cause:** Brython-native classes (`Pattern`, `Match`, `Scanner`,
+`error`, …) expose their methods through `tp_funcs` (the C-style slot
+table). `$B.set_func_names(klass, module)` iterated direct properties of
+`klass` and seeded `$function_infos` on each function found there — but
+never descended into `tp_funcs`. So those methods had no
+`$function_infos`. When `m.group` returned a bound method, `method.tp_repr`
+read `self.im_func.$function_infos[__qualname__]` → crash.
+
+**Fix:** widen `set_func_names` to also iterate `klass.tp_funcs`.
+
+```js
+// brython_builtins.js
+$B.set_func_names = function(klass, module){
+    for(var attr in klass){
+        if(typeof klass[attr] == 'function'){
+            $B.add_function_infos(klass, attr, module)
+        }
+    }
++   if(klass.tp_funcs){
++       for(var attr in klass.tp_funcs){
++           if(typeof klass.tp_funcs[attr] == 'function'){
++               $B.add_function_infos(klass.tp_funcs, attr, module,
++                   (klass.tp_name || '') + '.' + attr)
++           }
++       }
++   }
+}
+```
+
+---
+
+## [x] `reversed.$factory` never initialised `counter` + `tp_iter` re-armed exhausted iterators
+**Impact: +13 tests** (test_array 461 → 474). Affects any sequence type
+without `__reversed__` — Brython's pure-Python lists/tuples mask the bug
+via fast paths, but wasthon C-typed arrays go through this generic
+reversed.
+
+**Symptom:** `next(reversed(seq))` without a preceding `iter(...)` raised
+"array indices must be integers" (`undefined-- = NaN` → getitem(seq, NaN)).
+ALSO `list(exhausted_reversed)` re-yielded the full sequence instead of
+the empty list, because `tp_iter` reset `counter = len` on every
+re-iteration.
+
+**Root cause (two bugs masking each other):**
+1. `reversed.$factory` set `len` but no `counter`. The tp_iternext path
+   did `self.counter--` first — `undefined--` is `NaN`, never < 0, and
+   yielded `getitem(seq, NaN)` forever.
+2. `tp_iter` "lazy-init"ed counter to len. Worked for the common `for x
+   in reversed(seq):` case but RE-armed exhausted iterators if iter() was
+   called twice (e.g. `list(exhausted)` → calls `__iter__` → counter
+   reset → iteration restarts).
+
+**Fix:**
+- `$factory`: set `counter: seqlen` at creation, with a JS-primitive
+  coercion guard (`_b_.len` may return a Brython int wrapper).
+- `tp_iter`: just `return self` (CPython behaviour). Don't touch counter.
+
+---
+
+## [x] `$delitem` ignores `mp_ass_subscript` / `sq_ass_item` slots
+**Impact: 0 net on this fix alone** but unblocks the wasthon-side bridge
+companion (CHANGELOG.md "sq_ass_item negative-index normalisation").
+
+**Symptom:** `del arr[i]` on a wasthon C-typed array raised
+`TypeError: 'array' object doesn't support item deletion`. Brython's
+`$setitem` (in `py_utils.js`) consults `klass.mp_ass_subscript` first as
+a fast path, but the symmetric `$delitem` only had `__delitem__`-via-
+getattr — so types with the slot but no Python-level wrapper missed it.
+
+**Fix:** make `$delitem` check `mp_ass_subscript` and `sq_ass_item`
+directly with `value = $B.NULL` (the wasthon dispatch is updated in
+parallel to route NULL through to the C slot's delete path).
+
+---
+
+## [x] `memoryview.$factory` looked for wrong slot name `tp_getbuffer` (real one is `bf_getbuffer`)
+**Impact: 0 net** (the downstream `memoryview(x).pack_into(…)` / `.tobytes()`
+paths still fail at the next layer for wasthon C arrays), but a real
+correctness fix: `memoryview(any_buffer_object)` had been raising
+TypeError unconditionally except for objects already typed as memoryview.
+
+**Symptom:** `memoryview(array.array('b', b'…'))` raised
+`TypeError: a bytes-like object is required, not 'array'` even when the
+array exposed the buffer protocol. The `tp_new` path I'd extended earlier
+was never reached because `memoryview.$factory` (line 22 of
+`memoryobject.js`) takes precedence in `$B.$call` — and it checked for
+slot `tp_getbuffer`, which Brython doesn't use anywhere (the slot is
+called `bf_getbuffer`).
+
+**Fix:** widen the check the same way as `tp_new`: accept `__buffer__`
+(PEP 688) OR `bf_getbuffer` slot OR the `$buffer_protocol = true` marker.
+
+```js
+// memoryobject.js (memoryview.$factory)
+-    var getbuffer = $B.search_slot($B.get_class(obj), 'tp_getbuffer', $B.NULL)
+-    if(getbuffer === $B.NULL){
++    var cls_obj = $B.get_class(obj)
++    var has_buffer = $B.$getattr(obj, '__buffer__', $B.NULL) !== $B.NULL
++                  || (cls_obj && cls_obj.bf_getbuffer)
++                  || (cls_obj && cls_obj.$buffer_protocol)
++    if(!has_buffer){
+         $B.RAISE(_b_.TypeError, "memoryview: a bytes-like object …")
+     }
+```
+
+Also fixed `memoryview_funcs.tobytes`: `array.tobytes(self.obj)` →
+`array.tp_funcs.tobytes(self.obj)` (same `str.encode` family pattern —
+methods live in `tp_funcs`, not direct JS properties).
+
+---
+
+## [x] `range.__len__` referenced instead of `range.mp_length` in `mp_subscript`
+**Impact: +1 test_random**, +2 test_pickle (incidental).
+
+**Symptom:** `range_obj[slice]` or `range_obj[negative_index]` raised
+`JavascriptError: range.__len__ is not a function`. `_b_.range` exposes
+`mp_length`, not `__len__`. Two calls in `py_range_slice.js:263,276` had
+the wrong name.
+
+**Fix:** `s/range\.__len__/range.mp_length/` in those two lines.
+
+---
+
+## [x] `type.tp_call` crashes when `tp_init` is `undefined` (not `$B.NULL`)
+**Impact: 0 net** but prevents one crash; converts crash into a normal
+"TypeError not raised" failure for `test_uninstantiable` (the test expects
+a specific TypeError that wasthon's bridge doesn't yet raise).
+
+**Symptom:** `JavascriptError: can't access property "call", init_func is
+undefined`. Some bridge-installed heap types skip the `finalize_type`
+wrapper_methods loop that normally fills `tp_init`. tp_call's path was
+guarded against `tp_init === $B.NULL` and against `tp_init === object.tp_init`,
+but not against the JS `undefined` case.
+
+**Fix:** add `typeof init_func == 'function'` to the same guard chain.
+
+---
+
+## [x] `_operator._compare_digest` auto-binds when used as class attribute
+**Impact: +5 tests** (test_hmac 8 → 13).
+
+**Symptom:** `class T(unittest.TestCase): compare_digest = hmac.compare_digest`
+then `self.compare_digest(a, b)` raises
+`TypeError: _compare_digest() takes 2 positional arguments but 3 were given`.
+
+**Root cause:** Brython's `_operator.py` defines `_compare_digest` as a plain
+Python function. Functions implement `__get__` and bind to the instance when
+accessed via class attribute — `self.compare_digest(a, b)` becomes
+`_compare_digest(self, a, b)` (3 args). CPython's `_compare_digest` is a C
+builtin; builtin functions skip the descriptor protocol and don't auto-bind.
+84 raw failure entries in `test_hmac.HMACCompareDigestTestCase` collapsed
+to 5 parent tests.
+
+**Fix:** wrap `_compare_digest` with a no-bind descriptor so accessing it
+via `instance.f` returns the wrapper itself, not a bound method.
+
+```python
+# _operator.py
+class _NonBindingFunction:
+    def __init__(self, f):
+        self._f = f
+        self.__name__ = getattr(f, '__name__', '<unbound>')
+    def __call__(self, *args, **kwargs):
+        return self._f(*args, **kwargs)
+    def __get__(self, obj, owner=None):
+        return self
+
+def _compare_digest_impl(a, b):
+    ...
+
+_compare_digest = _NonBindingFunction(_compare_digest_impl)
+```
+
+Note: the wasthon-side companion fix (CHANGELOG.md, "module-scope
+trampolines are builtin_function_or_method") handles the same pattern for
+C-module functions like `math.isclose` — together they cover both Python
+stdlib helpers and wasthon C bindings used as class attributes.
+
+---
+
+## [x] `re.PatternError` alias missing (CPython 3.13+)
+**Impact: +3 tests** (test_re 82 → 85). 22 distinct `'module' object has no
+attribute 'PatternError'` failures collapsed to 3 distinct tests after
+unittest's parent-test dedup.
+
+**Symptom:** `re.PatternError` raises `AttributeError`. CPython 3.13
+renamed `re.error` to `re.PatternError` (old name kept as alias). Tests
+written against 3.13+ use the new name. Two-line fix in the module export
+table:
+```js
+// libs/python_re.js (module exports)
+    error: error,
++   PatternError: error,
+```
+
+---
+
+## [x] `_b_.str.encode` is undefined — `str.tp_funcs.encode` is the real method
+**Impact: +3 tests** (test_re 85 → 88) **+ unexpected +3 on test_binascii**
+(38 → 41) — same root pattern as `str.istitle` calling `str.title`.
+
+**Symptom:** every code path that did `_b_.str.encode(s, 'latin-1')` in
+`libs/python_re.js` crashed with `JavascriptError: _b_.str.encode is not a
+function`. There are 4 such call sites — in `Pattern.tp_repr`, in `escape`,
+in the `compile` byte-pattern path, and in `_pickle`'s reconstructor.
+`str.tp_funcs.encode` is the real method; `_b_.str.encode` is undefined
+because finalize_type installs methods into `tp_dict` (as
+method_descriptors) rather than as direct JS properties on the class.
+
+**Fix:** `s/_b_\.str\.encode(/_b_.str.tp_funcs.encode(/` × 4.
+
+---
+
+## [x] `re.Pattern.tp_richcompare`'s `__ne__` branch — typo `Patttern_eq` (3 t's)
+**Impact: not separately measured** (folded into the str.encode pass).
+`p1 != p2` between compiled patterns raised `ReferenceError: Patttern_eq
+is not defined`. One-letter fix.
+
+---
+
+## [x] `re.error` — `.msg / .pattern / .pos / .lineno / .colno` not exposed to Python
+**Impact: +9 tests** (test_re 88 → 99 over two passes — first the `tp_init`
+attempt below, then the descriptor exposure).
+
+**Symptom:** `re.error("hello").msg` raised `AttributeError: 'error'
+object has no attribute 'msg'`. The 229 raw failure entries collapsed to ~9
+distinct parent tests after unittest's dedup.
+
+**Root cause:** the JS-side `error.$factory` already set `msg`, `pattern`,
+etc. on the instance as JS properties. But Brython's Python-side attribute
+lookup ignores raw JS instance props — only entries surfaced via
+`tp_funcs` + `tp_getset` are visible. Same root pattern as the Pattern fix
+above. Also needed a Python-side `tp_init` for `raise re.error("msg")`
+because Brython's `$B.$call` picks `$factory` over `tp_call`, so the
+Exception default `__init__` path never ran — but adding tp_init alone
+gained 0 tests since the JS props it set were still invisible to Python.
+
+**Fix:** add `tp_init` (for the Python construction path), `tp_funcs`
+getters for each field, and list them in `tp_getset`.
+
+```js
+// Construction path
+error.tp_init = function(self, ...rest){
+    self.args = $B.fast_tuple(rest)
+    self.msg = rest.length > 0 ? rest[0] : _b_.None
+    self.pattern = rest.length > 1 ? rest[1] : _b_.None
+    self.pos = rest.length > 2 ? rest[2] : _b_.None
+    self.lineno = 1
+    self.colno = 1
+    return _b_.None
+}
+
+// Attribute exposure
+var error_funcs = error.tp_funcs = {}
+error_funcs.msg_get      = function(self){ return self.msg     !== undefined ? self.msg     : _b_.None }
+error_funcs.msg_set      = _b_.None
+error_funcs.pattern_get  = function(self){ return self.pattern !== undefined ? self.pattern : _b_.None }
+error_funcs.pattern_set  = _b_.None
+error_funcs.pos_get      = function(self){ return self.pos     !== undefined ? self.pos     : _b_.None }
+error_funcs.pos_set      = _b_.None
+error_funcs.lineno_get   = function(self){ return self.lineno  !== undefined ? self.lineno  : 1 }
+error_funcs.lineno_set   = _b_.None
+error_funcs.colno_get    = function(self){ return self.colno   !== undefined ? self.colno   : 1 }
+error_funcs.colno_set    = _b_.None
+
+error.tp_getset = ["msg", "pattern", "pos", "lineno", "colno"]
+```
+
+Also `$factory` was emitting `args: empty_tuple` — now `args: fast_tuple([message])` to match the Exception convention.
+
+---
+
+## [x] `re.Match` — broken `tp_new`, missing `endpos / pos / re` on `$factory`
+**Impact: 0 visible test gain** but a correctness fix for any `match.pos /
+endpos / re` access.
+
+**Symptom:** `match.pos`, `match.endpos`, `match.re` returned
+`UndefinedType`. `MatchObject.tp_new` was unreachable because it
+dereferenced `self.mo.endpos` (no `self` in scope at tp_new — this is a
+ReferenceError that gets swallowed; instances came from `$factory`
+silently, with only `mo` set).
+
+**Fix:**
+1. Have `$factory` populate `endpos / pos / re` from the internal match
+   object (`mo.endpos`, `mo.start`, `mo.node.pattern`).
+2. Drop the broken `self.*` lines from `tp_new` — `$factory` already does it.
+
+---
+
+## [x] `warn(klass, ...)` in `python_re.js` calls `klass.$factory` — builtin Warning classes don't expose `$factory`
+**Impact: 0 net** (the 2 tests it unmasks still fail at the next
+assertion, which is the actual feature gap — these tests expect specific
+DeprecationWarnings from the regex parser). Real-bug fix anyway.
+
+**Symptom:** `JavascriptError: klass.$factory is not a function` from
+`python_re.js:170` when the parser tried to emit a deprecation /
+future-warning during compile (e.g. `re.compile(...)` with `\d` in a
+bytes pattern). Built-in exception classes like `DeprecationWarning`
+are made via `make_builtin_exception` and don't expose `$factory`.
+
+**Fix:** use `$B.$call(klass, message)` instead — handles both `$factory`
+and `tp_call` paths.
+
+---
+
+## [x] `re.Scanner` methods missing from tp_funcs (search/match raised AttributeError)
+**Impact: +2 tests** (test_re 90 → 92). `Scanner.match` and `Scanner.search`
+were defined directly as JS class properties; Brython's instance attribute
+lookup goes through `tp_funcs` / `tp_methods` and didn't pick them up.
+
+**Fix:** move them into the standard `tp_funcs` dict + list them in
+`tp_methods` so `set_func_names` and `finalize_type` register them.
+
+```js
+var Scanner_funcs = Scanner.tp_funcs = {}
+Scanner_funcs.match  = function(self){ /* … */ }
+Scanner_funcs.search = function(self){ /* … */ }
+Scanner.tp_methods = ["match", "search"]
+```
+
+---
+
+## [x] `array.array(typecode, initializer)` raises `bad typecode` for ANY valid typecode
+**Impact: +2 tests** (test_binascii 36 → 38; the test calls
+`array.array('B', bytes_value)` while validating `b2a_base64`-style outputs).
+The buggy line was completely broken — anyone hitting `array.array(tc, init)`
+got a `ValueError` regardless of the typecode. Empty form `array.array(tc)`
+worked, masking the regression in test suites that don't pass an initialiser.
+
+**Symptom:** `array.array('b', b' '*100)` → `ValueError: bad typecode (must
+be b, B, u, h, H, i, I, l, L, q, Q, f or d)` — even though 'b' is right there
+in the list.
+
+**Root cause:** in `libs/array.js`, `array.tp_new`:
+```js
+array.tp_new = function(cls, args, kw){
+    var [cls, ...args] = arguments     // ← BUG
+    var obj = make_array(args, kw)
+    ...
+}
+```
+The destructuring `var [cls, ...args] = arguments` **re-binds** the local
+`args` variable to `[arguments[1], arguments[2]] = [originalArgs, kw]`. So
+`make_array` is then called with `args = [[real_args], kw]`, and
+`unpack_args` returns `typecode = [real_typecode, real_initializer]` (a JS
+array). `typecodes.hasOwnProperty(arrayOfTwo)` is false → "bad typecode"
+even though the user passed a legitimate one. The empty-initializer form
+escapes because the failing destructure happens for any non-empty `args`,
+but `array.array(tc)` has args=[tc] and unpack_args runs the same way → the
+destructure path also fails… wait actually it also produces the same wrong
+shape in theory. The test discrepancy ("'B' empty: ok" vs "'B' bytes: fail")
+may be due to a separate path tracking. Either way, the line is unambiguous
+junk: the function signature already destructures `(cls, args, kw)` from
+`arguments`; re-doing it shadows the parameters.
+
+**Fix:** delete the redundant re-destructure.
+
+```js
+array.tp_new = function(cls, args, kw){
+-    var [cls, ...args] = arguments
+    var obj = make_array(args, kw)
+    obj.cls = cls
+    return obj
+}
+```
+
+---
+
+## [x] `memoryview()` rejects objects exposing only `bf_getbuffer` / `$buffer_protocol`
+**Impact: 0 tests this session** (it unblocks the path but the downstream
+`memoryview` operations on wasthon arrays still don't fully work for
+`struct.pack_into`'s writable path; counted as the wasthon-side companion to
+the bridge-level `Py_bf_getbuffer → cls.$buffer_protocol = true` patch.)
+
+**Symptom:** `memoryview(array.array('b', b'x'))` raises `TypeError: a
+bytes-like object is required, not 'array'`, even though `array` declares
+`$buffer_protocol = true` (Brython's own native types do) and implements
+`bf_getbuffer`. CPython's `memoryview()` accepts anything implementing the
+buffer protocol; Brython's tp_new only accepted PEP 688's `__buffer__`.
+
+**Fix:** widen the acceptance check.
+
+```js
+// memoryobject.js (memoryview.tp_new)
+-    if($B.$getattr(obj, '__buffer__', $B.NULL) !== $B.NULL){
++    var cls_obj = $B.get_class(obj)
++    var has_buffer = $B.$getattr(obj, '__buffer__', $B.NULL) !== $B.NULL
++                  || (cls_obj && cls_obj.bf_getbuffer)
++                  || (cls_obj && cls_obj.$buffer_protocol)
++    if(has_buffer){
+        obj.exports = obj.exports ?? 0
+        ...
+```
+
+---
+
+## [x] `weakref.ProxyType` does not forward dunder operators (`len`, `iter`, `==`, `repr`, …)
+**Impact: 0 net on test totals** (test_array's `test_weakref` also asserts
+`ReferenceError` after `s = None; gc_collect()` — Brython's weak references
+aren't actual weak references, so that assertion can't pass without a
+deeper change), but a clean correctness fix for every other use of
+`weakref.proxy(obj)`.
+
+**Symptom:** `len(proxy)` raises `TypeError: object of type 'ProxyType'
+has no len()`. Same for `iter(proxy)`, `proxy == x`, `repr(proxy)`,
+`bool(proxy)`, `proxy[i]`, etc. — Python looks up these dunders on the
+CLASS, sidestepping the proxy's `__getattr__` that was supposed to
+forward everything. CPython's weakproxy proxies every operator via its
+slot table.
+
+**Fix:** spell out the dunder forwards on `ProxyType` so the class-level
+lookup hits a real method that delegates to the wrapped object. Matches
+CPython's weakproxy slot table exactly — including the one slot that is
+*not* forwarded:
+
+```python
+# Lib/_weakref.py — inside class ProxyType
++    def __len__(self):           # forwarded
++        return len(object.__getattribute__(self, "obj"))
++    # … __iter__, __getitem__/__setitem__/__delitem__, __contains__,
++    # __eq__/__ne__/__lt__/__le__/__gt__/__ge__,
++    # __hash__, __bool__, __str__,
++    # __add__/__mul__/__rmul__ — all forward the same way.
++
++    # `__repr__` is the one slot CPython's weakproxy does NOT forward:
++    # it shows the proxy's own identity. Match that exactly.
++    def __repr__(self):
++        obj = object.__getattribute__(self, "obj")
++        return (f"<weakproxy at {id(self):#x}; to "
++                f"'{type(obj).__name__}' at {id(obj):#x}>")
+```
+
+---
+
 ## [x] `str.istitle` calls `str.title` which is undefined (only `str_funcs.title` exists)
 **Impact: 0 tests** (the only test that exercised `istitle` — `test_method_checksum`
 in `test_unicodedata` — also fails for an unrelated reason past the istitle call,
@@ -171,8 +612,3 @@ But a JS function carries a usable `.name`.
      return _b_.object.tp_getattro(self, attr)
  }
 ```
-
----
-
-## Running tally
-Local-Brython harness: **1751 → 1959 (+208)** from 2 Brython fixes, zero regression.
