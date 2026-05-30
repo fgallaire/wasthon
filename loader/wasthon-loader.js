@@ -182,6 +182,43 @@
             global.__BRYTHON__.imported[name] = modObj;
             global.__BRYTHON__.wasthon_modules = global.__BRYTHON__.wasthon_modules || {};
             global.__BRYTHON__.wasthon_modules[name] = { module: M, runtime: rt, obj: modObj };
+
+            // Patch already-imported stdlib modules that did a `from _X
+            // import Y` at startup BEFORE the wasthon C module was installed
+            // (Brython pre-loads pickle / hashlib / etc.) — the try/except
+            // ImportError fallback fixed those modules into the "no C"
+            // branch, and they don't re-import on their own. Here we
+            // forward the wasthon-installed symbols back into the stdlib
+            // module's dict so subsequent attribute access finds them.
+            try {
+                const B = global.__BRYTHON__;
+                const setattr = function(modObj_, key, val) {
+                    if (B.module_setattr) B.module_setattr(modObj_, key, val);
+                    else modObj_[key] = val;
+                };
+                const get_dict = B.get_dict || function(o){ return o; };
+                const get_from_dict = function(d, key){ return d && d[key]; };
+                const PATCHES = {
+                    '_pickle': [
+                        { mod: 'pickle', symbol: 'PickleBuffer',
+                          flag: '_HAVE_PICKLE_BUFFER' },
+                    ],
+                };
+                const patches = PATCHES[name] || [];
+                for (const p of patches) {
+                    const target = B.imported[p.mod];
+                    if (!target) continue;
+                    const targetDict = get_dict(target);
+                    const sourceDict = get_dict(modObj);
+                    const val = sourceDict ? sourceDict[p.symbol]
+                                           : modObj[p.symbol];
+                    if (val !== undefined) {
+                        setattr(target, p.symbol, val);
+                        if (p.flag) setattr(target, p.flag, true);
+                    }
+                }
+            } catch (_) { /* best-effort patch — don't fail install */ }
+
             return modObj;
         }
 

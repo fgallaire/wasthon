@@ -7,6 +7,22 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] _pickle `PickleBuffer` type — bridge previously bound to a sentinel
+      JS object (`{__wasthon_picklebuffer__: true}`) with no `tp_name`, so
+      `PyModule_AddType(m, &PyPickleBuffer_Type)` registered it under the
+      attribute `<type>` instead of `PickleBuffer`. `from _pickle import
+      PickleBuffer` (Brython's `pickle.py:42`) raised ImportError →
+      `_HAVE_PICKLE_BUFFER = False` → 109 raw test entries that touch
+      `pickle.PickleBuffer` failed. Now: build a real Brython type via
+      `make_type('PickleBuffer')`, expose `$factory`/`tp_new`,
+      `raw()`/`release()` methods that hand back the underlying buffer.
+      Companion fix in `loader/wasthon-loader.js` patches an
+      already-imported `pickle` module after install (`__BRYTHON__`
+      pre-loads `pickle` before installModule runs, so the `try: from
+      _pickle import PickleBuffer` already failed and isn't re-evaluated).
+      +1 test_pickle, zero regression — most of the 109 entries fail
+      further down on the unrelated "index out of bounds" pattern.
+
 - [x] module-scope trampolines are `builtin_function_or_method`, not bound
       functions — CPython's C-level module functions skip the descriptor
       protocol (no `tp_descr_get`), so `class T: f = math.isclose` then

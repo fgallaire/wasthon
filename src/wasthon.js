@@ -6445,8 +6445,39 @@ mergeInto(LibraryManager.library, {
             case 12: cls = rt._b_.function;  break;
             /* PickleBuffer has no Brython equivalent (protocol 5 only,
              * unsupported here). Bind to a sentinel object so the type
-             * pointer is non-NULL but no instance ever matches. */
-            case 13: cls = { __wasthon_picklebuffer__: true }; break;
+             * pointer is non-NULL but no instance ever matches. The
+             * `tp_name`/`__name__` matter: `PyModule_AddType(m, &PyPickleBuffer_Type)`
+             * uses them as the attribute name on the _pickle module, so
+             * `from _pickle import PickleBuffer` (in Brython's pickle.py)
+             * actually finds it. Without the name, it landed as
+             * `_pickle.<type>` → ImportError → `pickle.py` set
+             * `_HAVE_PICKLE_BUFFER = False` → 109 test_pickle entries that
+             * reference `pickle.PickleBuffer` fail with AttributeError. */
+            case 13: {
+                // Minimal PickleBuffer stub: a Brython type built via
+                // make_type so `from _pickle import PickleBuffer` sees a
+                // real class (a bare JS object failed Brython's import
+                // checks). Callable: `PickleBuffer(buf)` returns an
+                // instance carrying the underlying buffer object on `.obj`.
+                // Protocol-5 path (out-of-band) isn't implemented —
+                // `pickle.py` uses the simple in-band fallback here.
+                cls = rt.$B.make_type('PickleBuffer');
+                cls.__module__ = '_pickle';
+                cls.__wasthon_picklebuffer__ = true;
+                cls.$factory = function(buf){
+                    return { ob_type: cls, obj: buf };
+                };
+                cls.tp_new = function(cls_, args, kw){
+                    return { ob_type: cls_, obj: (args && args[0]) || null };
+                };
+                var pb_funcs = cls.tp_funcs = {};
+                pb_funcs.raw = function(self){ return self.obj; };
+                pb_funcs.release = function(self){ self.obj = null; return rt._b_.None; };
+                cls.tp_methods = ['raw', 'release'];
+                try { rt.$B.set_func_names(cls, '_pickle'); } catch (_) {}
+                try { rt.$B.finalize_type(cls); } catch (_) {}
+                break;
+            }
             default: return;
         }
         rt.handles.set(structPtr, cls);
