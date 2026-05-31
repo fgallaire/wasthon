@@ -542,13 +542,19 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
                 "${SQLITE_DIR}/sqlite3.o" )
     fi
 
-    # _decimal (via libmpdec) needs -sSTACK_OVERFLOW_CHECK=2 to avoid silent
-    # stack-overflow corruption that fails ~106 test_decimal tests. Apply
-    # only to the kitchen-sink bundle that ships _decimal in a depth-1
-    # importable form; wasthon (light) is intentionally untouched per
-    # bundle-size policy (drop-in replacement budget is tight).
-    STACK_FLAG=""
-    [[ "${BUNDLE_NAME}" == "wasthon-full" ]] && STACK_FLAG="-sSTACK_OVERFLOW_CHECK=2"
+    # _pickle and pyexpat are in BOTH bundles and need a bigger stack
+    # (Pickler/Unpickler walks; expat recursive state machine). emcc's
+    # default 64 KB stack is too tight — without -sSTACK_SIZE=4MB the SP
+    # write past the ceiling corrupts adjacent memory silently and shows
+    # up as RangeError: index out of bounds traps (+140 tests across
+    # test_pickle/test_pyexpat). STACK_SIZE is a runtime reservation
+    # with zero .wasm byte cost, so apply it uniformly to both bundles.
+    STACK_FLAG="-sSTACK_SIZE=4MB"
+    # -sSTACK_OVERFLOW_CHECK=2 is specific to _decimal (per-prologue
+    # guard against libmpdec stack pressure). _decimal is in the
+    # kitchen-sink bundle only, so the check is scoped there. It carries
+    # a small .wasm cost (~2%) and is not needed by the light bundle.
+    [[ "${BUNDLE_NAME}" == "wasthon-full" ]] && STACK_FLAG="${STACK_FLAG} -sSTACK_OVERFLOW_CHECK=2"
 
     emcc -O2 ${STACK_FLAG} ${EXTRA_LD_FLAGS:-} "${OBJS[@]}" \
         --js-library "${SRC}/wasthon.js" \
@@ -665,7 +671,16 @@ pyexpat)
     copy_module_and_clinic "${CPYTHON_SRC}/Modules/pyexpat.c"
     emcc -O3 -c -I . -I "${SRC}" -I "${EXPAT_DIR}" -I "${EXPAT_DIR}/lib" \
         pyexpat.c -o pyexpat.o
-    link_module "pyexpat" "PyInit_pyexpat" "pyexpat_init" \
+    # expat's XML state machine recurses deeply through xmlparse/xmlrole/
+    # xmltok — emcc's 64 KB default stack overflows on most non-trivial
+    # documents, surfacing as "index out of bounds" WASM traps. The test
+    # suite plateaus at 1 MB (clears all 22 gained tests), but parsing
+    # deeply-nested XML (DOM trees, SVG, HTML5 fragments with hundreds
+    # of nesting levels) is a legitimate use that pushes further. Bump
+    # to 4 MB for the headroom; STACK_SIZE is a runtime reservation so
+    # the .wasm file is unchanged either way.
+    EXTRA_LD_FLAGS="-sSTACK_SIZE=4MB ${EXTRA_LD_FLAGS:-}" \
+        link_module "pyexpat" "PyInit_pyexpat" "pyexpat_init" \
         pyexpat.o "${EXPAT_DIR}/lib/xmlparse.o" \
         "${EXPAT_DIR}/lib/xmlrole.o" "${EXPAT_DIR}/lib/xmltok.o"
     ;;
@@ -677,12 +692,15 @@ _decimal)
     emcc -O3 -c -DCONFIG_32 -DANSI -I . -I "${SRC}" -I libmpdec \
         -I "${CPYTHON_SRC}/Modules/_decimal" \
         _decimal.c -o _decimal.o
-    # libmpdec stack frames overflow under -O2 default checks — without
-    # -sSTACK_OVERFLOW_CHECK=2 the SP write corrupts silently, surfacing
-    # as ~106 "index out of bounds" trap failures across test_decimal.
-    # Level 2 (every-prologue guard) catches it before the corruption.
-    # Level 1 (sentinel at exit) is too late.
-    EXTRA_LD_FLAGS="-sSTACK_OVERFLOW_CHECK=2 ${EXTRA_LD_FLAGS:-}" \
+    # libmpdec stack pressure: under emcc's default flags the SP write
+    # past the ceiling corrupts memory silently. Arbitrary-precision
+    # arithmetic on big numbers (Decimal's defining feature, e.g.
+    # mpd_pow over thousands of digits, mpd_qfma at high precision) is
+    # a legitimate use case the module must support — not just a test
+    # harness corner. Bump the stack to 4MB to cover those usages, and
+    # add -sSTACK_OVERFLOW_CHECK=2 as a per-prologue guard that traps
+    # any remaining overflow at its source instead of corrupting memory.
+    EXTRA_LD_FLAGS="-sSTACK_OVERFLOW_CHECK=2 -sSTACK_SIZE=4MB ${EXTRA_LD_FLAGS:-}" \
         link_module "_decimal" "PyInit__decimal" "_decimal_init" \
         _decimal.o libmpdec/*.o
     ;;
@@ -721,7 +739,12 @@ _json)
 _pickle)
     copy_module_and_clinic "${CPYTHON_SRC}/Modules/_pickle.c"
     emcc -O3 -c -I . -I "${SRC}" _pickle.c -o _pickle.o
-    link_module "_pickle" "PyInit__pickle" "_pickle_init" _pickle.o
+    # _pickle's recursive Pickler/Unpickler walk plus the temporary
+    # PyBytes scratch buffers blow the 64 KB default stack on any pickle
+    # of moderate depth, surfacing as "index out of bounds" WASM traps
+    # (+118 test_pickle). 4 MB clears it.
+    EXTRA_LD_FLAGS="-sSTACK_SIZE=4MB ${EXTRA_LD_FLAGS:-}" \
+        link_module "_pickle" "PyInit__pickle" "_pickle_init" _pickle.o
     ;;
 
 binascii)

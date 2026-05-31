@@ -7,6 +7,42 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] stack sizing per module — `_decimal`, `_pickle`, `pyexpat` and
+      both wasthon bundles linked with `-sSTACK_SIZE=4MB`; `_decimal`
+      and the `wasthon-full` bundle additionally carry
+      `-sSTACK_OVERFLOW_CHECK=2`. The sizing rule is **"match the
+      legitimate use case, not just the tests"**: each of these three
+      modules has a stack-heavy code path that's part of its public
+      contract — arbitrary-precision arithmetic on big numbers for
+      `_decimal` (libmpdec NTT multiplication scratch buffers scale
+      with precision), deeply-nested XML for `pyexpat` (expat's
+      recursive xmlparse/xmlrole/xmltok), and deep object-graph
+      serialization for `_pickle` (recursive Pickler/Unpickler walks).
+      Under emcc's 64 KB default the SP write past the ceiling corrupts
+      adjacent memory silently and surfaces as `RangeError: index out
+      of bounds` WASM traps. The probe-bisection plateaus per test
+      suite (`pyexpat` at 1 MB, `_pickle` at 4 MB) are tighter than
+      what real workloads can hit, so we bump everyone to 4 MB for
+      headroom on legitimate inputs (DOM trees with hundreds of nesting
+      levels for XML, deeply-recursive object graphs for pickle, very
+      high `c.prec` for Decimal). `STACK_OVERFLOW_CHECK=2` is scoped to
+      `_decimal` (and the `wasthon-full` bundle that contains it) since
+      libmpdec is the single module that can still push the stack at
+      extreme inputs even with 4 MB; the per-prologue guard turns any
+      remaining overflow into a clean Python exception instead of
+      silent corruption. The light `wasthon` bundle does NOT carry the
+      check (`_decimal` is not in it, no other module needs it).
+      **Zero `.wasm` byte cost** for STACK_SIZE — runtime reservation,
+      `wasthon.wasm` measured at 1 093 468 → 1 093 471 bytes (+3 bytes
+      from the section header tag). `STACK_OVERFLOW_CHECK=2` carries a
+      small `.wasm` cost: `_decimal.wasm` +4.3%, `wasthon-full.wasm`
+      +2.1%. Cumulative impact across the 20-suite sweep:
+      **2296 → 2437 (+141)** — `test_pickle` **194 → 312 (+118)**,
+      `test_decimal` **223 → 224 (+1)** with `test_bignum`
+      (`c.prec=1_000_000` legitimate big-number test) now passing
+      uniformly in both load modes, `test_pyexpat` **11 → 33 (+22)**,
+      all other 17 suites byte-for-byte identical.
+
 - [x] link with `-sSTACK_OVERFLOW_CHECK=2` — `_decimal` (via libmpdec) allocates
       large stack frames during arithmetic on big Decimal values. With the
       Emscripten default (`STACK_OVERFLOW_CHECK=0` under `-O2`), an overflow

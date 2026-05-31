@@ -51,7 +51,7 @@ const installList = params.get('install')
 
 try {
     log('Loading wasthon-full.mjs…');
-    const bundle = await wasthonLoadBundle('../build/wasthon-full.mjs');
+    const bundle = await wasthonLoadBundle('../build/wasthon-full.mjs?t=' + Date.now());
     log('Installing: ' + (installList.join(', ') || '(none)'));
     for (const m of installList) {
         try { bundle.installModule(m); } catch (e) { log('  install failed: ' + m + ' — ' + e.message); }

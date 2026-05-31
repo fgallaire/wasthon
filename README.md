@@ -411,18 +411,32 @@ features like FTS5/RTREE/JSON1 that aren't on the query hot loop). This
 size cut is what made bundling `_sqlite3` in `wasthon-full` viable.
 
 **Link flags.** Links use `emcc -O2` with the standard runtime exports.
-One per-target deviation: `_decimal` (standalone and as part of
-`wasthon-full`) is linked with `-sSTACK_OVERFLOW_CHECK=2`. libmpdec
-allocates large scratch buffers on the stack for its NTT multiplication
-path; under emcc's default (`STACK_OVERFLOW_CHECK=0` for `-O2`) the SP
-write past the stack ceiling corrupts adjacent memory silently and shows
-up later as a generic `RangeError: index out of bounds` WASM trap
-(observed in ~106 `test_decimal` tests — anywhere a deep `Decimal`
-arithmetic chain runs). Level 2 (per-prologue guard) catches the overflow
-at its source so the C unwinds cleanly into a Python exception. Level 1
-(end-of-program sentinel) is too late. Size cost: `_decimal.wasm` +4.3%,
-`wasthon-full.wasm` +2.1% — the light `wasthon` bundle is unaffected (it
-doesn't ship `_decimal`).
+Two per-target deviations target the stack:
+
+- **`-sSTACK_SIZE=4MB`** on `_decimal`, `_pickle`, `pyexpat` and both
+  wasthon bundles. The sizing rule is **"match the legitimate use
+  case, not just the tests"**: each of these modules has a stack-heavy
+  code path that's part of its public contract — arbitrary-precision
+  arithmetic on big numbers (`_decimal`), deeply-nested XML (`pyexpat`),
+  deep object-graph serialization (`_pickle`). The test suite plateaus
+  are tighter (e.g. `pyexpat` clears all its tests at 1 MB), but real
+  workloads can push further — DOM trees with hundreds of nesting
+  levels, recursive object graphs, `c.prec` set very high — so we bump
+  everyone to 4 MB for headroom on legitimate inputs. **Zero `.wasm`
+  byte cost** — STACK_SIZE is a runtime reservation, not embedded
+  bytes. ALLOW_MEMORY_GROWTH=1 means the reservation only takes
+  effect on actual use; idle code paths pay nothing.
+- **`-sSTACK_OVERFLOW_CHECK=2`** on `_decimal` standalone and on the
+  `wasthon-full` bundle (which contains `_decimal`). libmpdec is the
+  single module that can still push the stack at extreme inputs even
+  with 4 MB; the per-prologue guard turns any remaining overflow into
+  a clean Python exception instead of silent memory corruption.
+  Level 1 (end-of-program sentinel) is too late. Size cost:
+  `_decimal.wasm` +4.3%, `wasthon-full.wasm` +~2%. NOT applied to the
+  light `wasthon` bundle (which doesn't ship `_decimal`) nor to
+  `_pickle`/`pyexpat` standalone — the 4 MB headroom alone clears
+  everything we've measured for those, and the per-prologue guard
+  carries a small runtime perf cost.
 
 The script handles all the per-module quirks: downloading missing source
 trees, compiling external libraries (libexpat, liblzma, libzstd, bzip2,
