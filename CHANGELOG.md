@@ -7,6 +7,30 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] link with `-sSTACK_OVERFLOW_CHECK=2` — `_decimal` (via libmpdec) allocates
+      large stack frames during arithmetic on big Decimal values. With the
+      Emscripten default (`STACK_OVERFLOW_CHECK=0` under `-O2`), an overflow
+      corrupts the stack silently and the next memory load returns garbage,
+      manifesting as a generic `RangeError: index out of bounds` WASM trap on
+      ~100 test_decimal tests (anywhere that constructs a Decimal in a
+      sufficiently deep call chain: `assertEqual` chains, `hashit()` helpers,
+      `convert_op` paths, …). Level 1 (`STACK_OVERFLOW_CHECK=1`) only checks at
+      exit so the corruption still propagates. Level 2 inserts a guard on
+      every function prologue, catching the overflow before it corrupts. The
+      `_decimal` C calls then unwind cleanly and Brython sees a normal Python
+      exception instead of a WASM trap. **test_decimal 117 → 223 (+106)**, zero
+      regression across the other 19 suites (sweep total **2190 → 2296**).
+      Scoped to where it's needed: applied to the `_decimal` standalone case
+      and to the `wasthon-full` bundle link only. The light `wasthon` bundle
+      and all other per-module standalone links are intentionally untouched
+      (drop-in size budget). Size delta — `_decimal.mjs` +2.0% (94→96 KB),
+      `_decimal.wasm` +4.3% (236→246 KB), `wasthon-full.mjs` +0.8% (244→246 KB),
+      `wasthon-full.wasm` +2.1% (3138→3204 KB); `wasthon.{mjs,wasm}` byte-for-
+      byte identical. Discovered via a multi-hour bridge-side investigation
+      that initially chased a phantom "module state corruption" hypothesis
+      from memory — the real cause was an emcc build-flag default, not a
+      bridge bug.
+
 - [x] `PyErr_Format` `%R` / `%S` / `%A` / `%T` / `%N` — only `%T`/`%N` were
       missing entirely (emitted as literal `%T` / `%N`), and `%R`/`%S`/`%A`
       were doing a naive `String(obj)` which renders Brython class objects

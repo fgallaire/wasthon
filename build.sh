@@ -542,7 +542,15 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
                 "${SQLITE_DIR}/sqlite3.o" )
     fi
 
-    emcc -O2 "${OBJS[@]}" \
+    # _decimal (via libmpdec) needs -sSTACK_OVERFLOW_CHECK=2 to avoid silent
+    # stack-overflow corruption that fails ~106 test_decimal tests. Apply
+    # only to the kitchen-sink bundle that ships _decimal in a depth-1
+    # importable form; wasthon (light) is intentionally untouched per
+    # bundle-size policy (drop-in replacement budget is tight).
+    STACK_FLAG=""
+    [[ "${BUNDLE_NAME}" == "wasthon-full" ]] && STACK_FLAG="-sSTACK_OVERFLOW_CHECK=2"
+
+    emcc -O2 ${STACK_FLAG} ${EXTRA_LD_FLAGS:-} "${OBJS[@]}" \
         --js-library "${SRC}/wasthon.js" \
         -sUSE_ZLIB=1 \
         -s ALLOW_MEMORY_GROWTH=1 -s ALLOW_TABLE_GROWTH=1 \
@@ -669,7 +677,13 @@ _decimal)
     emcc -O3 -c -DCONFIG_32 -DANSI -I . -I "${SRC}" -I libmpdec \
         -I "${CPYTHON_SRC}/Modules/_decimal" \
         _decimal.c -o _decimal.o
-    link_module "_decimal" "PyInit__decimal" "_decimal_init" \
+    # libmpdec stack frames overflow under -O2 default checks — without
+    # -sSTACK_OVERFLOW_CHECK=2 the SP write corrupts silently, surfacing
+    # as ~106 "index out of bounds" trap failures across test_decimal.
+    # Level 2 (every-prologue guard) catches it before the corruption.
+    # Level 1 (sentinel at exit) is too late.
+    EXTRA_LD_FLAGS="-sSTACK_OVERFLOW_CHECK=2 ${EXTRA_LD_FLAGS:-}" \
+        link_module "_decimal" "PyInit__decimal" "_decimal_init" \
         _decimal.o libmpdec/*.o
     ;;
 

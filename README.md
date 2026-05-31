@@ -410,6 +410,20 @@ in practice, since SQLite is bridge-bound and carries large cold-path
 features like FTS5/RTREE/JSON1 that aren't on the query hot loop). This
 size cut is what made bundling `_sqlite3` in `wasthon-full` viable.
 
+**Link flags.** Links use `emcc -O2` with the standard runtime exports.
+One per-target deviation: `_decimal` (standalone and as part of
+`wasthon-full`) is linked with `-sSTACK_OVERFLOW_CHECK=2`. libmpdec
+allocates large scratch buffers on the stack for its NTT multiplication
+path; under emcc's default (`STACK_OVERFLOW_CHECK=0` for `-O2`) the SP
+write past the stack ceiling corrupts adjacent memory silently and shows
+up later as a generic `RangeError: index out of bounds` WASM trap
+(observed in ~106 `test_decimal` tests — anywhere a deep `Decimal`
+arithmetic chain runs). Level 2 (per-prologue guard) catches the overflow
+at its source so the C unwinds cleanly into a Python exception. Level 1
+(end-of-program sentinel) is too late. Size cost: `_decimal.wasm` +4.3%,
+`wasthon-full.wasm` +2.1% — the light `wasthon` bundle is unaffected (it
+doesn't ship `_decimal`).
+
 The script handles all the per-module quirks: downloading missing source
 trees, compiling external libraries (libexpat, liblzma, libzstd, bzip2,
 libmpdec, HACL\*), and the emcc `EXPORTED_FUNCTIONS`/`EXPORT_NAME` for each
