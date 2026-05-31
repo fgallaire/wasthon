@@ -8738,21 +8738,65 @@ mergeInto(LibraryManager.library, {
             })(capSet, capClosure) : rt._b_.None;
 
             try {
-                /* Create a Brython property descriptor. Brython's MRO walk
-                 * for `instance.<name>` finds the property on the class and
-                 * calls its __get__ to invoke our wrapped C getter. */
-                var prop = rt._b_.property.$factory(fget, fset);
-                /* Set as JS attribute on the class so MRO lookup sees it. */
-                cls[name] = prop;
-                /* Also set in the class's tp_dict (Brython exposes class
-                 * attrs there for __dict__ inspection and some lookups). */
+                /* Build a Brython-native getset_descriptor (not a Python
+                 * `property`). Brython's $B.$getattr() fast path checks
+                 * func.ob_type in a switch (brython.js:4525-4541): a
+                 * `property` falls through every case and yields
+                 * AttributeError, whereas a getset_descriptor matches the
+                 * `case $B.getset_descriptor: return func.getter(obj)`
+                 * arm and is properly invoked. Symmetric shape to
+                 * $B.getset_descriptor.$factory at brython.js:3409. */
+                var descriptor = {
+                    ob_type: rt.$B.getset_descriptor,
+                    __doc__: rt._b_.None,
+                    d_type: cls,
+                    d_name: name,
+                    getter: fget,
+                    setter: fset,
+                };
+                /* Set in the class's tp_dict — where $B.get_from_dict()
+                 * looks for the descriptor. */
                 try {
                     var dictObj = rt.$B.get_dict(cls);
-                    if (dictObj) rt.$B.str_dict_set(dictObj, name, prop);
+                    if (!dictObj) {
+                        /* The class might not have an explicit dict yet —
+                         * init one so str_dict_set has a target. */
+                        rt.$B.init_dict(cls);
+                        dictObj = rt.$B.get_dict(cls);
+                    }
+                    if (dictObj) rt.$B.str_dict_set(dictObj, name, descriptor);
                 } catch (_) {}
+                /* Also expose via cls.tp_funcs[name+'_get'] / [name+'_set']
+                 * — Brython's getset_descriptor convention (see brython.js
+                 * line 3422 for the metatype example). Some attribute
+                 * resolution paths look here directly. */
+                cls.tp_funcs = cls.tp_funcs || {};
+                if (capGet) cls.tp_funcs[name + '_get'] = fget;
+                if (capSet) cls.tp_funcs[name + '_set'] = fset;
+                /* Also expose as JS attribute (some Brython paths fall
+                 * through to direct property access). Use defineProperty
+                 * with configurable:true to override Function.name and
+                 * similar non-writable JS Function built-ins — without
+                 * this, `cls.name = descriptor` silently fails because
+                 * Brython class objects are JS functions. */
+                try {
+                    Object.defineProperty(cls, name, {
+                        value: descriptor, writable: true,
+                        configurable: true, enumerable: true,
+                    });
+                } catch (_) {
+                    cls[name] = descriptor;
+                }
             } catch (e) {
                 /* Fall back to a plain getter function on the class. */
-                if (capGet) cls[name] = fget;
+                if (capGet) {
+                    try {
+                        Object.defineProperty(cls, name, {
+                            value: fget, writable: true,
+                            configurable: true, enumerable: true,
+                        });
+                    } catch (_) { cls[name] = fget; }
+                }
             }
         }
     },

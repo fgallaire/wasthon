@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `__wasthon_install_getsets` builds a Brython-native
+      `getset_descriptor` instead of a Python `property` — the previous
+      `property` shape didn't match any of the cases in Brython's
+      `$B.$getattr()` fast-path switch (`brython.js:4525-4541`), so
+      getsets installed for some attribute names silently fell through
+      to AttributeError. Also writes `cls.tp_funcs[name+'_get']` /
+      `[name+'_set']` per Brython's convention (see brython.js:3422),
+      and forces a tp_dict init if one wasn't allocated yet. Size cost
+      +478 bytes mjs, zero wasm. **+4 tests** silently across the
+      20-suite sweep — `test_csv` 41 → 43, `test_decimal` 224 → 226
+      (sweep total **2437 → 2441**). Hash-module attribute `name`
+      (and a few other JS-reserved names) still doesn't resolve via
+      this path on every type — that's a separate Brython class storage
+      mystery left for future investigation.
+
 - [x] stack sizing per module — `_decimal`, `_pickle`, `pyexpat` and
       both wasthon bundles linked with `-sSTACK_SIZE=4MB`; `_decimal`
       and the `wasthon-full` bundle additionally carry
