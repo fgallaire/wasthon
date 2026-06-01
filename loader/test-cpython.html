@@ -7,6 +7,7 @@
 <script src="./wasthon-loader.js"></script>
 <script src="./wasthon-io-write.js"></script>
 <script src="./wasthon-fs-mem.js"></script>
+<script src="./wasthon-dealloc.js"></script>
 </head>
 <body>
 <p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
@@ -54,6 +55,13 @@ const installList = params.get('install')
 try {
     log('Loading wasthon-full.mjs…');
     const bundle = await wasthonLoadBundle('../build/wasthon-full.mjs?t=' + Date.now());
+    // Deterministic free of compressor/decompressor C contexts at
+    // LZMAFile/BZ2File close() (the tests use `with`). On by default; ?dealloc=0
+    // to compare against the leaking baseline.
+    if (params.get('dealloc') !== '0' && typeof installWasthonDealloc === 'function') {
+        installWasthonDealloc(bundle.module);
+        log('dealloc shim = ON');
+    }
     // The writable io stack + pure-JS posix backing are a Brython upstream fix
     // not yet landed, so — like the vendored BRYTHON_FIX patches — they are
     // active only in vendored mode. In ?brython=cdn (stock Brython) we leave

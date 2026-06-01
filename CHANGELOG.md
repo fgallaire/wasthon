@@ -7,6 +7,37 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] deterministic free of heavy C resources at `close()` — Brython
+      is GC, not refcount, so a transient wasthon C instance (e.g. an
+      `LZMACompressor` reassigned/dropped in a test) never reaches
+      refcount 0, never runs `tp_dealloc`, and its malloc'd context
+      (an lzma encoder dict is ~94 MB at the default preset) leaks until
+      the WASM heap hits the 2 GB wasm32 ceiling and OOMs. A
+      FinalizationRegistry does NOT help: during a synchronous test run
+      the event loop never yields, so its (and any `__del__`) callbacks
+      never fire — Brython itself ships no FinalizationRegistry. The
+      C-side free is fine (`decref → tp_dealloc → lzma_end → free`, and
+      the freed bytes are reused — verified: create→free→create keeps the
+      heap flat); the only missing piece is a *deterministic* trigger.
+      `loader/wasthon-dealloc.js` supplies one: it wraps `$B.$import`
+      (synchronous, in place before the suite runs) to patch the close()
+      of the compression file wrappers (`lzma.LZMAFile`, `bz2.BZ2File`,
+      `compression.zstd.ZstdFile`) so they decref the compressor/
+      decompressor they drop — the tests use `with LZMAFile(...)` etc., so
+      the context is reclaimed at the `with` exit. Exposes
+      `$B.$wasthon_free(obj)` for reuse on any heavy type. **+8**
+      (`test_lzma` 59 → 66, `test_zstd` 72 → 73; full sweep 2546 → 2554,
+      zero regression). An audit of every native-resource C type
+      (sqlite3, lzma, bz2, zstd, zlib, pyexpat, _elementtree) confirmed
+      tp_dealloc (stage 1) is present everywhere and the deterministic
+      trigger (stage 2) is now wired for all the HEAVY ones that expose a
+      close()/`with`; the residue is the explicit-contract boundary
+      (objects with no close() — zlib `compressobj`, raw compressors —
+      hold only light native and leak until GC, which is acceptable). (A
+      weak-handles + FinalizationRegistry variant in the bridge was
+      prototyped and reverted — correct but inert under synchronous load:
+      its callbacks never fire while the event loop doesn't yield.)
+
 - [x] `__wasthon_install_getsets` builds a Brython-native
       `getset_descriptor` instead of a Python `property` — the previous
       `property` shape didn't match any of the cases in Brython's

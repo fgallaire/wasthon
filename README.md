@@ -688,11 +688,27 @@ Infrastructure work that pays back on existing modules:
       keeps the harness at 1750/4485, zero regression. Proven by
       `loader/test-tp-dealloc.html` (`refcounts.size` flat with dispatch on,
       +1/call with it off). Full design in `CHANGELOG.md`.
-- [ ] Python-scope-exit reclamation — there is no FinalizationRegistry hook
-      from Brython back into `wasthon_decref`, so an instance held only by a
-      Python local that goes out of scope is never DECREF'd and still leaks.
-      This (not `tp_dealloc` itself, which now exists) is what caps loop-bench
-      depth for heavy modules (LZMA/Zstd compressors, sqlite Connections).
+- [x] Deterministic free of heavy native resources at `close()`/`with`-exit —
+      Brython is tracing-GC with no refcount, so a dropped LZMA/Zstd compressor
+      (its context is ~94 MB) has no deterministic finalizer and would leak to
+      OOM. The C free itself works (`decref` → `tp_dealloc` →
+      `lzma_end`/`ZSTD_free` → memory reused); the only missing piece was a
+      deterministic trigger. The model is an explicit `close()`/`with` contract
+      (as in Pyodide), not an automatic finalizer — a synchronous run never
+      yields, so no auto-GC callback could fire promptly anyway.
+      `loader/wasthon-dealloc.js` wraps the synchronous `$B.$import` to patch
+      `lzma.LZMAFile`/`bz2.BZ2File`/`compression.zstd.ZstdFile` `.close()` so a
+      `with` block decref's the compressor it drops and reclaims the context at
+      block exit. +8 (`test_lzma` +7, `test_zstd` +1). Details in `CHANGELOG.md`.
+- [ ] Explicit-contract residual — a C instance held by a Python local that is
+      dropped or reassigned without a `close()`/`with` is never DECREF'd:
+      Brython offers no scope-exit or GC callback into `wasthon_decref`, so its
+      native context leaks. The `close()`/`with` contract above covers every
+      heavy native that exposes one (LZMA/Zstd/bz2 file wrappers; sqlite
+      `Connection.close()` frees natively); the residual — a bare
+      compressor/Connection dropped without close — is acceptable for light
+      natives and a known cap on loop-bench depth for heavy ones. (Instance /
+      `refcounts` axis; distinct from the sentinel / `handles` leak below.)
 - [ ] JS-side handle-map (sentinel) leak — internal `wrap()` calls during a C
       operation (~67 per `pickle.dumps`) add `handles` Map entries that are
       never released; this is the dominant `pickle.dumps` byte-leak and is
