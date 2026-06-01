@@ -18,6 +18,52 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] writable in-browser file I/O — `_io` is read-only and `posix` is unimplemented
+**Impact: +97 tests** (`test_csv` 43 → 93, `test_bz2` 35 → 78, `test_zstd`
+70 → 72, `test_pickle` 312 → 313, `test_hashlib` 14 → 15; full sweep
+2441 → 2538, zero regressions). A follow-up harness commit (real
+`os_helper.TESTFN`) lands another +8 (lzma +4, pickle +2, bz2 +1, sqlite3 +1).
+
+Brython cannot write a file. `posix` is entirely `NotImplementedError`, and
+the `_io` stack is read-only: `_FileIO.tp_init` does a synchronous
+`XMLHttpRequest` GET, there is no `BufferedWriter`/`BufferedRandom` (the names
+are `undefined`), and `_TextIOWrapper` has no `write`/`tell`/`truncate`. So
+anything that writes then re-reads a file — `tempfile`, `open(name,'w+')`,
+`bz2.BZ2File`, `array.tofile` — is dead.
+
+**Fix.** A writable io stack layered on the os/posix fd syscalls, exactly like
+CPython's `io`. Because it must work for stock Brython too (no wasm), it does
+I/O through an injected syscall hook rather than any fixed backend:
+
+- `_FileIO` made fd-aware (read/write/seek/tell/truncate/close over the hook),
+  honoring an int fd, a writable path, a custom `opener` (tempfile passes one),
+  and `os.PathLike`. Plain reads of paths absent from the FS keep the legacy
+  XHR path (zero regression).
+- `_TextIOWrapper` given a writable, incremental code path (encode/decode +
+  newline handling, text cache invalidated on write/seek).
+- `BufferedWriter`/`BufferedRandom` defined as pass-throughs; `io.open`/
+  `_io.open`/`builtins.open` re-dispatched to build raw → text directly (the
+  stock buffered layer is unusable — its `BufferedReader` slices `raw.$bytes`,
+  the whole-file model, undefined for an fd-backed raw; this is what `bz2`/
+  `lzma` reach via `builtins.open`).
+- a tiny pure-JS in-memory filesystem provides the hook + a real `posix`
+  (open/read/write/lseek/stat/unlink/mkdir/… with unlinked-but-open fd
+  semantics for tempfile), raising Brython `OSError` subclasses (NOT raw JS
+  throws — else `os.path.exists`'s `try/except OSError` breaks the stdlib).
+
+Two gotchas worth keeping: new/overridden type methods must be installed as
+`method_descriptor`s in the type dict (the `finalize_type` tp_methods
+convention — `set_func_names` alone is not enough); and `posix.O_TMPFILE` must
+stay undefined (its mere presence makes tempfile bit-or an undefined flag).
+
+**Not a `brython.js` source diff yet** — prototyped as runtime patches in
+wasthon's `loader/wasthon-io-write.js` (the io stack) + `loader/wasthon-fs-mem.js`
+(the JS backing), gated to vendored mode. To land upstream: fold the io stack
+into Brython's `_io`/`io.py` and ship a default in-memory posix backing so
+plain Brython gains writable browser files. (An Emscripten-MEMFS backing was
+also prototyped — identical perf, +44 KB, shares files with wasm C code like
+sqlite file DBs — kept out-of-tree for when that sharing is wanted.)
+
 ## [x] `str[bool]` returns `Undefined` instead of indexing as int (bool is a subclass of int)
 **Impact: 0 tests** on this session's sweep, but a clear correctness bug.
 `"01"[True]` and `"01"[False]` returned JS `undefined` (the `UndefinedType`
