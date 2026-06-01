@@ -144,6 +144,24 @@ import_helper = _mod('test.support.import_helper')
 import_helper.import_fresh_module = lambda name, *a, **k: __import__(name)
 import_helper.import_module = lambda name, *a, **k: __import__(name)
 os_helper = _mod('test.support.os_helper')
+# Real temp filenames + file helpers, now that wasthon has writable file I/O.
+# These used to fall through to _Flex, so open(TESTFN) raised "invalid file"
+# and every file-based test (lzma FileTestCase, array tofile/fromfile, ...)
+# errored. With a real path they exercise the actual file I/O.
+import os as _os_fs
+os_helper.TESTFN       = '/tmp/@wasthon_testfn'
+os_helper.TESTFN_ASCII = os_helper.TESTFN
+support.TESTFN         = os_helper.TESTFN
+def _fs_unlink(name):
+    try: _os_fs.unlink(name)
+    except OSError: pass
+os_helper.unlink = _fs_unlink
+support.unlink   = _fs_unlink
+os_helper.rmtree = lambda *a, **k: None
+class _FakePath:
+    def __init__(self, path): self._p = path
+    def __fspath__(self): return self._p
+os_helper.FakePath = _FakePath
 threading_helper = _mod('test.support.threading_helper')
 warnings_helper = _mod('test.support.warnings_helper')
 hashlib_helper = _mod('test.support.hashlib_helper')
