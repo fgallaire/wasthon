@@ -45,6 +45,7 @@ mergeInto(LibraryManager.library, {
         //     the real WASM pointer to the C-allocated struct, also stored
         //     in this map so JS can retrieve the Brython wrapper.
         handles: null,           // Map<int, object>
+        sentinelByObj: null,     // Map<object, int> — identity interning (reverse of handles)
         nextHandleId: 5,         // 1-4 reserved for sentinels
         freeList: [],
 
@@ -123,6 +124,7 @@ mergeInto(LibraryManager.library, {
             this.$B = B;
             this._b_ = B.builtins;
             this.handles = new Map();
+            this.sentinelByObj = new Map();
             this.moduleDefs = new Map();
             this.modules = new Map();
             this.types = new Map();
@@ -167,6 +169,24 @@ mergeInto(LibraryManager.library, {
                     this.handles.set(obj.__wasthon_ptr__, obj);
                 }
                 return obj.__wasthon_ptr__;
+            }
+            // Types get the canonical struct-backed handle (the same one
+            // ensureTypeStruct / wrapMaybeType return), so C-level pointer
+            // identity holds whether a class arrives as a type or as a plain
+            // object — e.g. _pickle's __newobj__ (`obj_class != cls`) and
+            // save_global (`actual != global`) identity checks. The metaclass
+            // test is one ref compare, instantly false for non-type wraps.
+            if (obj.__wasthon_type_handle__) return obj.__wasthon_type_handle__;
+            if (obj.ob_type === this._b_.type) return this.ensureTypeStruct(obj);
+            // Other Brython objects (functions, ptr-less instances): intern by
+            // identity so re-wrapping the same object yields the same handle.
+            if (typeof obj === 'object' || typeof obj === 'function') {
+                var ex = this.sentinelByObj.get(obj);
+                if (ex !== undefined && this.handles.get(ex) === obj) return ex;
+                var nid = this._allocSentinelId();
+                this.handles.set(nid, obj);
+                this.sentinelByObj.set(obj, nid);
+                return nid;
             }
             var id = this._allocSentinelId();
             this.handles.set(id, obj);

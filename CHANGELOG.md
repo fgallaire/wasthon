@@ -7,6 +7,24 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] handle identity — a Brython object wrapped twice got two *different*
+      C handles: `wrap()` allocated a fresh sentinel id on each call, and a
+      class additionally had a malloc'd type-struct handle (`ensureTypeStruct`,
+      cached on `__wasthon_type_handle__`). So C code comparing two handles for
+      the same object by pointer / `is` failed. `_pickle` is the headline
+      victim: `save_reduce`'s `__newobj__` check (`obj_class != cls`) raised
+      *"first argument to __newobj__() must be `<class 'X'>`, not `<class 'X'>`"*
+      — the same class name on both sides being the tell — and `save_global`'s
+      `actual != global` raised *"it's not the same object as M.N"*. Fix:
+      `wrap()` now returns the **canonical type-struct handle for types** (one
+      `obj.ob_type === type` ref-compare, instantly false for non-types) and
+      **interns every other Brython object by identity** via a reverse
+      `Map<object,handle>`, so re-wrapping the same object always yields the
+      same handle. **+19** (`test_pickle` 315 → 331, `test_array` 542 → 543,
+      `test_decimal` 226 → 228; full sweep 2596 → 2615, zero regression). This
+      unblocks the *dump* side of pickling plus identity-dependent tests in
+      array/decimal; the *load* side (NEWOBJ reconstruction) needs the next fix.
+
 - [x] deterministic free of heavy C resources at `close()` — Brython
       is GC, not refcount, so a transient wasthon C instance (e.g. an
       `LZMACompressor` reassigned/dropped in a test) never reaches
