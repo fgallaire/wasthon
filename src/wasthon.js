@@ -292,6 +292,7 @@ mergeInto(LibraryManager.library, {
             if (cls.__wasthon_type_handle__) return cls.__wasthon_type_handle__;
             if (!this._defaultTpAlloc) this._defaultTpAlloc = _wasthon_get_default_tp_alloc();
             if (!this._builtinTpIter)  this._builtinTpIter  = _wasthon_get_builtin_tp_iter();
+            if (!this._brythonTpNew)   this._brythonTpNew   = _wasthon_get_brython_tp_new();
             // PyTypeObject layout (Phase 1, 64 bytes): offset 0 = ob_refcnt,
             // 4 = tp_free, 8 = tp_dict, 12 = tp_name, 16 = tp_alloc,
             // 20 = tp_init, 24 = tp_iter, 28 = tp_as_number, 32 = tp_methods,
@@ -310,6 +311,11 @@ mergeInto(LibraryManager.library, {
             // that don't read it.
             HEAP32[(typeStructPtr + 16) >> 2] = this._defaultTpAlloc;  // tp_alloc
             HEAP32[(typeStructPtr + 24) >> 2] = this._builtinTpIter;   // tp_iter
+            // tp_new (offset 60): C code that reconstructs instances from a
+            // type struct (e.g. _pickle load_newobj `cls->tp_new(cls,args)`)
+            // needs a non-NULL tp_new. wasthon_brython_tp_new does
+            // cls.__new__(cls, *args) via Brython.
+            HEAP32[(typeStructPtr + 60) >> 2] = this._brythonTpNew;     // tp_new
             cls.__wasthon_type_handle__ = typeStructPtr;
             this.handles.set(typeStructPtr, cls);
             // Register a minimal types-map entry so callers that look up
@@ -323,6 +329,14 @@ mergeInto(LibraryManager.library, {
             var fullName = cls.tp_name || (cls.$infos && cls.$infos.__name__) || '<type>';
             var leafIdx = fullName.lastIndexOf('.');
             var shortName = leafIdx >= 0 ? fullName.slice(leafIdx + 1) : fullName;
+            // tp_name (offset 12): a C string, so paths that read tp_name
+            // (e.g. _pickle's "%.200s" on a class in errors) don't see NULL.
+            try {
+                var nlen = lengthBytesUTF8(fullName) + 1;
+                var nptr = _malloc(nlen);
+                stringToUTF8(fullName, nptr, nlen);
+                HEAP32[(typeStructPtr + 12) >> 2] = nptr;
+            } catch (e) {}
             this.types.set(typeStructPtr, {
                 brythonClass: cls,
                 shortName: shortName,
@@ -6559,6 +6573,30 @@ mergeInto(LibraryManager.library, {
         if (obj === null) return 0;
         try { return rt.wrap(rt._b_.iter(obj)); }
         catch (e) {
+            rt.forwardError(e, rt._b_.TypeError);
+            return 0;
+        }
+    },
+
+    /* tp_new for the Brython-class type-structs that ensureTypeStruct builds.
+     * C code that reconstructs an instance from such a struct calls
+     * cls->tp_new(cls, args, kwargs); for a Brython class that is
+     * cls.__new__(cls, *args). Used by _pickle's load_newobj (NEWOBJ). */
+    wasthon_brython_tp_new__deps: ['$WasthonRT'],
+    wasthon_brython_tp_new: function(typeHandle, argsHandle, kwargsHandle) {
+        var rt = WasthonRT;
+        var cls = rt.unwrap(typeHandle);
+        if (cls === null) return 0;
+        var args = argsHandle ? rt.unwrap(argsHandle) : null;
+        var callArgs = [cls];
+        if (Array.isArray(args)) {
+            for (var i = 0; i < args.length; i++) callArgs.push(args[i]);
+        }
+        try {
+            var newm = rt.$B.$getattr(cls, '__new__');
+            var inst = rt.$B.$call.apply(rt.$B, [newm].concat(callArgs));
+            return rt.wrap(inst);
+        } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }

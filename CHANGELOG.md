@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] NEWOBJ reconstruction — `ensureTypeStruct` builds a minimal type-struct
+      for a Brython class but left `tp_new` (offset 60) and `tp_name` (offset 12)
+      NULL. So once handle identity (entry below) let the *dump* side succeed,
+      *unpickling* a NEWOBJ stream still failed on *load*: `_pickle`'s
+      `load_newobj` calls `cls->tp_new(cls, args, kwargs)`, read NULL, and raised
+      *"NEWOBJ class argument '(null)' doesn't have __new__"* (the `'(null)'`
+      being the unset `tp_name`). Every object-subclass round-trip — even
+      `class MyList(list)` — failed there. Fix: `ensureTypeStruct` installs a
+      real `tp_new` (`wasthon_brython_tp_new`, a JS-library fn that does
+      `cls.__new__(cls, *args)` via Brython) plus a C-string `tp_name`. **+48**
+      (`test_pickle` 331 → 379; full sweep 2615 → 2663, zero regression). Builds
+      on the handle-identity fix below — neither alone moves pickle round-trips;
+      together they take `test_pickle` 315 → 379 (**+64**).
+
 - [x] handle identity — a Brython object wrapped twice got two *different*
       C handles: `wrap()` allocated a fresh sentinel id on each call, and a
       class additionally had a malloc'd type-struct handle (`ensureTypeStruct`,

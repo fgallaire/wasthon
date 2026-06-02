@@ -448,6 +448,15 @@ void *wasthon_get_builtin_tp_iter(void) {
     return (void *)wasthon_builtin_tp_iter;
 }
 
+/* tp_new for Brython-class type-structs (JS-library). ensureTypeStruct installs
+ * this at offset 60 so C code that reconstructs instances from such a struct —
+ * e.g. _pickle load_newobj's `cls->tp_new(cls, args, kwargs)` — works. */
+extern PyObject *wasthon_brython_tp_new(PyTypeObject *type, PyObject *args, PyObject *kwargs);
+EMSCRIPTEN_KEEPALIVE
+void *wasthon_get_brython_tp_new(void) {
+    return (void *)wasthon_brython_tp_new;
+}
+
 /* Default tp_free — CPython tp_dealloc bodies end with
  * `Py_TYPE(self)->tp_free(self)`, so every type struct needs a non-NULL
  * tp_free. The bridge installs this (PyObject_GC_Del) unless the module
