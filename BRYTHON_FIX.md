@@ -18,6 +18,72 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] name mangling skips the parameters of a function nested inside a class
+
+**Impact: +42 tests** (`test_hashlib` 15 → 57; full sweep 2554 → 2596, zero
+regressions). This was the single biggest blocker in `test_hashlib`: ~50 tests
+all died with the same opaque `JavascriptError: can't access property
+"__hashvalue__" of undefined` — and because the trigger is in the test case's
+`__init__`, every test in the class reported the identical error.
+
+Python name-mangling rewrites any identifier `__spam` (≥2 leading underscores,
+≤1 trailing) to `_Class__spam` everywhere it appears textually inside a class
+body — **including inside functions nested in a method**. Brython mangled the
+*body* references correctly (its `mangle()` walks up for any enclosing
+`ClassDef`) but mangled the *parameter binding* only when the immediately
+enclosing scope was the class itself
+(`in_class = last_scope(scopes).ast instanceof ClassDef`). For a closure built
+inside a method — exactly the late-binding idiom in `Lib/test/test_hashlib.py`:
+
+```python
+class HashLibTestCase(unittest.TestCase):
+    def __init__(self, *args, **kwargs):
+        for algorithm in algorithms:
+            def c(*args, __algorithm_name=algorithm, **kwargs):
+                return hashlib.new(__algorithm_name, *args, **kwargs)
+```
+
+the parameter was bound under `__algorithm_name` while the body read the mangled
+`_HashLibTestCase__algorithm_name`, which resolved to `undefined`. So
+`hashlib.new(undefined, …)` → `__get_builtin_constructor(undefined)` →
+`undefined in {…}` / `cache.get(undefined)` → `hash(undefined)` →
+`undefined.__hashvalue__` → the JS throw. A second, independent bug in the same
+spot: `__kwdefaults__` keys (and their lookup names) were built from the raw
+`arg.arg`, so even a dunder kw-only parameter of a method *directly* in a class
+body was inconsistent with its mangled binding.
+
+**Fix** (`brython.js`, `$B.ast.FunctionDef.to_js` + `transform_args`): mangle
+argument names from the *enclosing* scope via the same `mangle()` walk used for
+name references (a no-op when there is no enclosing class), and mangle the
+`__kwdefaults__` keys + their names to match the binding.
+
+```js
+// FunctionDef.to_js — was: mangle_arg=x=>x, upgraded to mangle only if the
+// immediate parent is the class; now walk up like body references do:
+-var ...,mangle_arg=x=> x
+-if(in_class){var class_scope=last_scope(scopes)
+-mangle_arg=x=> mangle(scopes,class_scope,x)}
++var ...,arg_mangle_scope=last_scope(scopes),mangle_arg=x=> mangle(scopes,arg_mangle_scope,x)
++if(in_class){var class_scope=last_scope(scopes)}
+
+// transform_args — key __kwdefaults__ by the mangled name:
++var mangle_arg=x=> mangle(scopes,last_scope(scopes),x)
+-kw_defaults.push(`${arg.arg}: ${v}`)
++kw_defaults.push(`${mangle_arg(arg.arg)}: ${v}`)
+-kw_default_names.push(`'${kw.arg}'`)
++kw_default_names.push(`'${mangle_arg(kw.arg)}'`)
+```
+
+Source-level for upstream: `www/src/py2js.js`, same two functions. Touches
+normal code by zero bytes — `mangle()` early-returns unless the name is
+`__x`-shaped *and* has a class ancestor; only dunder-prefixed parameters (which
+produced `undefined` before) change. Known remaining gap, separate and not
+exercised here: argument *annotation* mangling (`arg_ann`) is still gated on
+`in_class`, so a dunder parameter's annotation in a nested function is not yet
+mangled.
+
+---
+
 ## [x] writable in-browser file I/O — `_io` is read-only and `posix` is unimplemented
 **Impact: +97 tests** (`test_csv` 43 → 93, `test_bz2` 35 → 78, `test_zstd`
 70 → 72, `test_pickle` 312 → 313, `test_hashlib` 14 → 15; full sweep

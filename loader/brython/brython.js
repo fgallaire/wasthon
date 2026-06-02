@@ -15435,6 +15435,7 @@ $B.js_from_ast(this.format_spec,scopes)+
 ` + '}', ${value})`}else if(this.conversion==-1){value=`_b_.str.$factory(${value})`}
 return value}
 function transform_args(scopes){
+var mangle_arg=x=> mangle(scopes,last_scope(scopes),x)
 var has_posonlyargs=this.args.posonlyargs.length > 0,_defaults=[],nb_defaults=this.args.defaults.length,positional=this.args.posonlyargs.concat(this.args.args),ix=positional.length-nb_defaults,default_names=[],kw_defaults=[],annotations
 for(let arg of positional.concat(this.args.kwonlyargs).concat(
 [this.args.vararg,this.args.kwarg])){if(arg && arg.annotation){annotations=annotations ||{}
@@ -15447,9 +15448,9 @@ for(let arg of this.args.kwonlyargs){ix++
 if(this.args.kw_defaults[ix]===_b_.None){continue}
 if(this.args.kw_defaults[ix]===undefined){_defaults.push(`${arg.arg}: _b_.None`)}else{var v=$B.js_from_ast(this.args.kw_defaults[ix],scopes)
 _defaults.push(`${arg.arg}: `+v)
-kw_defaults.push(`${arg.arg}: ${v}`)}}
+kw_defaults.push(`${mangle_arg(arg.arg)}: ${v}`)}}
 var kw_default_names=[]
-for(var kw of this.args.kwonlyargs){kw_default_names.push(`'${kw.arg}'`)}
+for(var kw of this.args.kwonlyargs){kw_default_names.push(`'${mangle_arg(kw.arg)}'`)}
 return{default_names,_defaults,positional,has_posonlyargs,kw_defaults,kw_default_names,annotations}}
 function type_param_in_def(tp,ref,scopes){var gname=scopes[0].name,globals_name=make_scope_name(scopes,scopes[0])
 var js=''
@@ -15481,9 +15482,8 @@ if(tp.bound){if(! tp.bound.elts){js+=`$B.$call(_set_lazy_eval, locals_${ref}.${n
 return js}
 $B.ast.FunctionDef.prototype.to_js=function(scopes){compiler_check(this)
 var symtable_block=scopes.symtable.table.blocks.get(fast_id(this))
-var in_class=last_scope(scopes).ast instanceof $B.ast.ClassDef,is_async=this instanceof $B.ast.AsyncFunctionDef,mangle_arg=x=> x
-if(in_class){var class_scope=last_scope(scopes)
-mangle_arg=x=> mangle(scopes,class_scope,x)}
+var in_class=last_scope(scopes).ast instanceof $B.ast.ClassDef,is_async=this instanceof $B.ast.AsyncFunctionDef,arg_mangle_scope=last_scope(scopes),mangle_arg=x=> mangle(scopes,arg_mangle_scope,x)
+if(in_class){var class_scope=last_scope(scopes)}
 var func_name_scope=bind(this.name,scopes)
 var gname=scopes[0].name,globals_name=make_scope_name(scopes,scopes[0])
 var decorators=[],decorated=false,decs_declare=this.decorator_list.length > 0 ?
