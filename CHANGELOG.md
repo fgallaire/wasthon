@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] C-module exception types weren't recognized as exceptions —
+      `PyType_FromModuleAndSpec` ignored its `bases` argument, so a type built
+      with `PyTuple_Pack(1, PyExc_Exception)` (e.g. `_csv.Error`) inherited only
+      `object`: `issubclass(csv.Error, BaseException)` was False and unittest's
+      `assertRaises(csv.Error, …)` rejected it ("arg 1 must be an exception
+      type"). And such types, having no own `Py_tp_new` slot, fell through to the
+      raw-alloc fallback, so `raise csv.Error('x')` built an instance with no
+      `.args` ("args is undefined"). Fix: honor the bases tuple (set
+      `tp_bases`/`tp_base`, recompute the MRO via `make_mro`), and for
+      exception-subclass types without a `tp_new` slot inherit `tp_new`/`tp_init`
+      from the MRO (BaseException's, which set `.args`). Unblocks
+      `assertRaises`/`raise`/`except` for every C-module exception. +16 (test_csv,
+      together with the Brython sequence-iterator fix)
+
 - [x] `PyMapping_Check` rejected every dict — it tested `obj.__class__ ===
       _b_.dict` (undefined on Brython dict instances — they carry their type on
       the `OB_TYPE` symbol, detected via `$B.is_dict`) and then fell back to

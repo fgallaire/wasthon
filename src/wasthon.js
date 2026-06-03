@@ -7822,6 +7822,24 @@ mergeInto(LibraryManager.library, {
         rt.$B.init_dict(cls);
         cls.__module__ = rt.unwrap(moduleHandle) ?
             rt.unwrap(moduleHandle).__name__ : "";
+        /* Honor the `bases` tuple (3rd arg of PyType_FromModuleAndSpec).
+         * make_builtin_class defaulted tp_bases to [object]; without applying
+         * the real bases, a C-module exception type built via
+         * PyType_FromModuleAndSpec(module, spec, PyTuple_Pack(1, PyExc_Exception))
+         * — e.g. _csv.Error — ends up inheriting only `object`, so
+         * issubclass(Error, BaseException) is False and unittest's assertRaises
+         * rejects it ("arg 1 must be an exception type"). Set the bases and
+         * recompute the MRO via C3 (make_mro needs tp_bases set first) so
+         * BaseException lands in tp_mro. PyType_FromSpec passes basesHandle=0,
+         * so this is a no-op there. */
+        if (basesHandle) {
+            var baseTuple = rt.unwrap(basesHandle);
+            if (baseTuple && baseTuple.length) {
+                cls.tp_bases = Array.prototype.slice.call(baseTuple);
+                cls.tp_base  = cls.tp_bases[0];
+                cls.tp_mro   = rt.$B.make_mro(cls);
+            }
+        }
         /* make_builtin_class doesn't wire tp_setattro / tp_getattro to
          * object's defaults; without them, $B.$setattr finds undefined and
          * calls it as a function — boom. Inherit from object explicitly. */
@@ -7976,6 +7994,24 @@ mergeInto(LibraryManager.library, {
                 return inst;
             };
             cls.tp_new.$is_slot = true;
+        } else if (cls.tp_mro && cls.tp_mro.indexOf(rt._b_.BaseException) > -1) {
+            // Exception subclass built with exception bases (e.g. _csv.Error =
+            // PyType_FromModuleAndSpec(..., PyTuple_Pack(1, PyExc_Exception)))
+            // but with no own Py_tp_new slot. Construct it like a normal Python
+            // Exception subclass so instances get `.args`; otherwise
+            // `raise Error('x')` crashes ("args is undefined") and
+            // assertRaises(Error, ...) can't match the raised instance. Inherit
+            // tp_new/tp_init from the MRO — BaseException.tp_new is marked
+            // $is_slot (brython.js make_new), so type.tp_call invokes it with
+            // the (cls, args, kw) convention. Only reached when the bases tuple
+            // put BaseException in the MRO (FromSpec / non-exception types fall
+            // through to the raw-alloc default below — no regression).
+            for (var _mi = 1; _mi < cls.tp_mro.length; _mi++) {
+                if (cls.tp_mro[_mi].tp_new) { cls.tp_new = cls.tp_mro[_mi].tp_new; break; }
+            }
+            for (var _mj = 1; _mj < cls.tp_mro.length; _mj++) {
+                if (cls.tp_mro[_mj].tp_init) { cls.tp_init = cls.tp_mro[_mj].tp_init; break; }
+            }
         } else {
             // No Py_tp_new in spec. CPython falls back to object.__new__,
             // which allocates `type->tp_basicsize` raw bytes. We replicate
