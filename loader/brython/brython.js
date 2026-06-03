@@ -4670,10 +4670,13 @@ if(sch===$B.NULL){return false}
 return $B.$call(sch,classinfo,klass)}
 $B.iterator.tp_iter=function(self){return self}
 $B.iterator.tp_iternext=function*(self){var ob_type=$B.get_class(self.it_seq)
-var len=$B.search_in_mro(ob_type,'__len__')(self.it_seq)
 var getitem=$B.search_in_mro(ob_type,'__getitem__')
-if(self.it_index <=len){yield getitem(self.it_seq,self.it_index)
-self.it_index++}}
+var v
+try{v=getitem(self.it_seq,self.it_index)}
+catch(err){if($B.is_exc(err,_b_.IndexError)){return}
+throw err}
+self.it_index++
+yield v}
 var iterator_funcs=$B.iterator.tp_funcs={}
 iterator_funcs.__length_hint__=function(self){}
 iterator_funcs.__reduce__=function(self){}
@@ -9995,7 +9998,7 @@ float_funcs.fromhex=function(klass,s){function hex_from_char(char){return parseI
 function finished(){
 while(s[pos]&& s[pos].match(/\s/)){pos++;}
 if(pos !=s.length){throw parse_error()}
-if(negate){x=float.__neg__(x)}
+if(negate){x=float.nb_negative(x)}
 return klass===_b_.float ? x :$B.$call(klass,x)}
 function overflow_error(){$B.RAISE(_b_.OverflowError,"hexadecimal value too large to represent as a float");}
 function parse_error(){$B.RAISE(_b_.ValueError,"invalid hexadecimal floating-point string");}

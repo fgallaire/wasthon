@@ -18,6 +18,59 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `float.fromhex()` of a negative value crashes (`float.__neg__` undefined)
+
+**Impact: +0** on the harness (only `test_math`'s `testFsum` touches a negative
+`float.fromhex`, and it fails a layer later on `OverflowError`), but it's a real
+crash worth upstreaming. Already PR'd: branch `fix-fromhex-negative` on
+`fgallaire/brython`.
+
+`float.fromhex('-0x…')` negates the parsed value with `float.__neg__(x)`, but
+`float.__neg__` is undefined — Brython never exposes operator dunders as raw JS
+properties on the type constructor. The negation slot is `float.nb_negative`
+(py_float.js); `__neg__` itself lives in the type `__dict__` as a
+wrapper_descriptor generated from it (`finalize_builtin_types.js`). So any
+negative hex float raises `JavascriptError: float.__neg__ is not a function`.
+
+```python
+>>> float.fromhex('-0x1p0')
+JavascriptError: float.__neg__ is not a function   # before
+-1.0                                               # after
+```
+
+Fix (`py_float.js`): call the slot, `float.nb_negative(x)`.
+
+## [x] sequence iterator over a `__getitem__`-only object never stops, swallows non-IndexError
+
+**Impact: +16 tests** (`test_csv` 94 → 110; full sweep 2679 → 2695, zero
+regressions). Latent until wasthon's C-exception fix let `test_csv`'s write-error
+tests run far enough to hit it.
+
+`iter(obj)` on an object that defines `__getitem__` (+ `__len__`) but no
+`__iter__` returns the legacy sequence iterator (`$B.iterator`). CPython's
+`PySeqIter_Type` calls `__getitem__(i)` for i = 0, 1, 2, … and stops **only** on
+`IndexError`, propagating any other exception. Brython's `$B.iterator.tp_iternext`
+instead bounded the walk by `__len__` and evaluated `__getitem__` directly in the
+`yield`, catching nothing — so an object whose `__getitem__` raises a
+non-`IndexError` neither stopped nor propagated. `test_csv`'s `BadList`
+(`__getitem__` raising `OSError` past index 2) sent `_csv`'s writer
+`while (PyIter_Next(...))` loop spinning forever.
+
+```python
+>>> class C:
+...     def __len__(self): return 10
+...     def __getitem__(self, i):
+...         if i > 2: raise OSError
+...         return 'x'
+...
+>>> list(C())
+# hangs forever                                   # before
+OSError                                            # after
+```
+
+Fix (`$B.iterator.tp_iternext`): drop the `__len__` bound, call `__getitem__` in a
+`try`, `return` (→ StopIteration) on `IndexError`, re-`throw` everything else.
+
 ## [x] name mangling skips the parameters of a function nested inside a class
 
 **Impact: +42 tests** (`test_hashlib` 15 → 57; full sweep 2554 → 2596, zero
