@@ -3973,10 +3973,16 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(objH);
         if (obj === null || obj === undefined) return 0;
         if (Array.isArray(obj)) return 1;
-        if (obj.__class__ === rt._b_.dict || obj instanceof Map) return 1;
+        // Brython dicts identify via $B.is_dict (OB_TYPE + DICT_SUBCLASS flag),
+        // NOT obj.__class__ === _b_.dict (which is undefined on dict instances).
+        if (rt.$B.is_dict(obj) || obj instanceof Map) return 1;
         if (typeof obj === 'string') return 1;
         try {
-            return rt.$B.$hasattr(obj, '__getitem__') ? 1 : 0;
+            // $B.$hasattr does not exist; the bug made this throw → return 0,
+            // so _lzma's lzma_filter_converter rejected every filter dict with
+            // "Filter specifier must be a dict or dict-like object". Use the
+            // 3-arg $getattr-with-default presence check instead.
+            return rt.$B.$getattr(obj, '__getitem__', undefined) !== undefined ? 1 : 0;
         } catch (e) { return 0; }
     },
 

@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `PyMapping_Check` rejected every dict — it tested `obj.__class__ ===
+      _b_.dict` (undefined on Brython dict instances — they carry their type on
+      the `OB_TYPE` symbol, detected via `$B.is_dict`) and then fell back to
+      `$B.$hasattr`, **which does not exist**, so the fallback threw and `catch`
+      returned 0. `_lzma`'s `lzma_filter_converter` therefore rejected every
+      filter dict with "Filter specifier must be a dict or dict-like object".
+      Fix: detect dicts via `$B.is_dict` and probe `__getitem__` with the
+      3-arg `$getattr`-with-default. +2
+
 - [x] `PyCallable_Check` too narrow — it returned true only for JS functions
       (`typeof obj === 'function' || obj.$is_func`), so Brython **classes**
       (callable → instantiate) and **bound methods** were reported NON-callable.
