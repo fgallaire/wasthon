@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `PyCallable_Check` too narrow — it returned true only for JS functions
+      (`typeof obj === 'function' || obj.$is_func`), so Brython **classes**
+      (callable → instantiate) and **bound methods** were reported NON-callable.
+      `_pickle`'s `save_reduce` then rejected them: a `__reduce__` returning
+      `(callable, args, …)` whose callable is a class or method raised *"first
+      item of the tuple returned by __reduce__ must be callable, not
+      type/method"*. Fix: for non-function objects, fall back to Brython's
+      `callable()`. **+14** (`test_pickle` 379 → 392, `test_csv` 93 → 94; full
+      sweep 2663 → 2677, zero regression).
+
 - [x] NEWOBJ reconstruction — `ensureTypeStruct` builds a minimal type-struct
       for a Brython class but left `tp_new` (offset 60) and `tp_name` (offset 12)
       NULL. So once handle identity (entry below) let the *dump* side succeed,

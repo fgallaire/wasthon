@@ -1135,8 +1135,14 @@ mergeInto(LibraryManager.library, {
     /* Callable check + call iter. */
     PyCallable_Check__deps: ['$WasthonRT'],
     PyCallable_Check: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
-        return (typeof obj === 'function' || (obj && obj.$is_func)) ? 1 : 0;
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        if (typeof obj === 'function' || obj.$is_func) return 1;
+        // Brython classes (callable → instantiate), bound methods, and any
+        // object exposing __call__ are callable too — defer to callable().
+        try { return rt._b_.callable(obj) ? 1 : 0; }
+        catch (e) { return 0; }
     },
 
     PyCallIter_New__deps: ['$WasthonRT'],
