@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] C mapping types couldn't assign by slice (or any non-int key) — the bridge
+      wired `__getitem__` from `mp_subscript` but never wired `__setitem__` /
+      `__delitem__` from `mp_ass_subscript`, so `a[i:j] = x` / `del a[i:j]`
+      dispatched through the int-only `sq_ass_item` and raised "array indices must
+      be integers". (wasthon.h reuses slot id 26 for both `Py_nb_int` and
+      `Py_mp_ass_subscript`; disambiguated by `mp_subscript` presence.) Fix: a
+      `mas` shape (item passed as a PyObject, value NULL = delete) wired to
+      `__setitem__`/`__delitem__` with precedence — mirror of the
+      `mp_subscript`→`__getitem__` wiring. +48 (array +25, decimal SignalDict +18,
+      sqlite3 +5)
+
 - [x] C-module exception types weren't recognized as exceptions —
       `PyType_FromModuleAndSpec` ignored its `bases` argument, so a type built
       with `PyTuple_Pack(1, PyExc_Exception)` (e.g. `_csv.Error`) inherited only

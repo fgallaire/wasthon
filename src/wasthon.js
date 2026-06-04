@@ -8148,6 +8148,14 @@ mergeInto(LibraryManager.library, {
             slotDispatch[29] = ['sq_length',    ['__len__'],     'i'];
             slotDispatch[32] = ['sq_item',      ['__getitem__'], 'si'];
         }
+        // wasthon.h reuses id 26 for BOTH Py_nb_int and Py_mp_ass_subscript.
+        // A type with mp_subscript (27) is a mapping/sequence, so its slot-26
+        // is the slice-capable assignment slot (array_ass_subscr), not __int__.
+        // Without this, `a[i:j] = x` / `del a[i:j]` dispatch through the
+        // int-only sq_ass_item and raise "array indices must be integers".
+        if (slotMap[27 /* mp_subscript */]) {
+            slotDispatch[26] = ['mp_ass_subscript', ['__setitem__', '__delitem__'], 'mas'];
+        }
         Object.keys(slotDispatch).forEach(function(sidStr) {
             var sid = sidStr | 0;
             var slotPtr = slotMap[sid];
@@ -8352,6 +8360,29 @@ mergeInto(LibraryManager.library, {
                     }
                     return rc;
                 };
+            } else if (shape === 'mas') {
+                /* mp_ass_subscript: self + item (PyObject) + value → int rc.
+                 * Unlike sq_ass_item ('sis'), the item is passed as a real
+                 * PyObject — so a slice reaches array_ass_subscr's
+                 * PySlice_Check instead of being rejected as a non-integer
+                 * index. value === undefined / null / $B.NULL means delete
+                 * (Brython's __delitem__ path), passed through as NULL so the
+                 * C slot routes to its delete branch. Mirror of mp_subscript
+                 * ('b') for the assignment side. */
+                dispatch = function(self, item, value) {
+                    var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    var itemH = item && item.__wasthon_ptr__ ? item.__wasthon_ptr__ : rt.wrap(item);
+                    var valH = (value === undefined || value === null || value === rt.$B.NULL) ? 0 :
+                               (value && value.__wasthon_ptr__ ? value.__wasthon_ptr__ : rt.wrap(value));
+                    rt.pendingException = null;
+                    var rc = getWasmTableEntry(slotPtr)(selfH, itemH, valH);
+                    if (rt.pendingException) {
+                        var pe = rt.pendingException; rt.pendingException = null;
+                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
+                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                    }
+                    return rc;
+                };
             } else if (shape === 'n') {
                 // tp_iternext: returns next value, or NULL (no exception)
                 // for StopIteration. Translate NULL → StopIteration throw
@@ -8423,6 +8454,21 @@ mergeInto(LibraryManager.library, {
             cls.tp_funcs.__getitem__ = cls.mp_subscript;
             try { rt.$B.set_to_dict(cls, '__getitem__', cls.mp_subscript); }
             catch (_) {}
+        }
+
+        // Symmetric to the above: wire __setitem__/__delitem__ from
+        // mp_ass_subscript (slice-capable) over sq_ass_item (int-only), so
+        // `a[i:j] = x` and `del a[i:j]` reach the C ass-subscript slot. The
+        // forEach loop processes id 26 before id 39, so sq_ass_item would
+        // otherwise win — re-assert mp_ass_subscript here.
+        if (cls.mp_ass_subscript) {
+            cls.__setitem__ = cls.mp_ass_subscript;
+            cls.__delitem__ = cls.mp_ass_subscript;
+            cls.tp_funcs = cls.tp_funcs || {};
+            cls.tp_funcs.__setitem__ = cls.mp_ass_subscript;
+            cls.tp_funcs.__delitem__ = cls.mp_ass_subscript;
+            try { rt.$B.set_to_dict(cls, '__setitem__', cls.mp_ass_subscript); } catch (_) {}
+            try { rt.$B.set_to_dict(cls, '__delitem__', cls.mp_ass_subscript); } catch (_) {}
         }
 
         // Wire Py_tp_init (slot id 61) if the type defines one. The C
