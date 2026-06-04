@@ -76,6 +76,16 @@ try {
     for (const m of installList) {
         try { bundle.installModule(m); } catch (e) { log('  install failed: ' + m + ' — ' + e.message); }
     }
+    // test_hashlib: Brython's hashlib (VFS.hashlib.js) uses its own JS hashes,
+    // never wasthon's _md5/_sha*/_blake2. Replace it in the VFS with CPython's
+    // hashlib (OpenSSL _hashlib disabled → builtin _md5/_sha*/_blake2 fallback)
+    // so the test actually exercises the wasthon C hash modules.
+    if (testName === 'test_hashlib' && params.get('brython') !== 'cdn') {
+        const _hsrc = await (await fetch('./cpython-tests/hashlib.py?t=' + Date.now())).text();
+        window.__BRYTHON__.VFS['hashlib'] = ['.py', _hsrc, []];
+        delete window.__BRYTHON__.VFS['_hashlib'];
+        log('test_hashlib: hashlib → wasthon _md5/_sha1/_sha2/_sha3/_blake2');
+    }
     log(`Running CPython ${testName}.py…\n`);
     window.__wasthon_test_name = testName;
 
