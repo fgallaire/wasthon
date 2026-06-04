@@ -39,7 +39,7 @@ const testName = params.get('test') || 'test_struct';
 // Default mapping test_<x> → wasthon module(s); override with ?install=.
 const INSTALL_MAP = {
     test_struct: ['_struct', 'array'], test_math: ['math'], test_cmath: ['cmath'],
-    test_binascii: ['binascii'], test_csv: ['_csv'], test_decimal: ['_decimal'],
+    test_binascii: ['binascii', 'array'], test_csv: ['_csv'], test_decimal: ['_decimal'],
     test_array: ['array'], test_hmac: ['_hmac'],
     test_statistics: ['_statistics'], test_zstd: ['_zstd'],
     test_random: ['_random'],
@@ -174,6 +174,54 @@ threading_helper = _mod('test.support.threading_helper')
 warnings_helper = _mod('test.support.warnings_helper')
 hashlib_helper = _mod('test.support.hashlib_helper')
 hypothesis_helper = _mod('test.support.hypothesis_helper')
+# Faithful mime of CPython's test.support._hypothesis_stubs (Hypothesis is not
+# available in Brython): @given with NO @example examples -> skip the property
+# test; @given WITH @example -> run the explicit examples. strategies.* are
+# inert stubs (only evaluated at decoration time). Uses _make_forced_skip
+# because Brython does not reliably honor unittest.skip.
+import functools as _functools
+class _HypStrategies:
+    def __getattr__(self, _name):
+        def _strat(*a, **k): return None
+        return _strat
+def _hyp_given(*_a, **_k):
+    def _deco(f):
+        examples = getattr(f, '_examples', [])
+        if examples:
+            @_functools.wraps(f)
+            def _tf(self):
+                for _ea, _ek in examples:
+                    with self.subTest(*_ea, **_ek):
+                        f(self, *_ea, **_ek)
+        else:
+            _tf = _make_forced_skip('Hypothesis required for property test '
+                                    'with no specified examples')
+        _tf._given = True
+        return _tf
+    return _deco
+def _hyp_example(*args, **kwargs):
+    def _deco(f):
+        base = getattr(f, '__wrapped__', f)
+        if not hasattr(base, '_examples'):
+            base._examples = []
+        base._examples.append((args, kwargs))
+        if getattr(f, '_given', False):
+            f = _hyp_given()(base)
+        return f
+    return _deco
+def _hyp_assume(cond):
+    if not cond:
+        raise unittest.SkipTest('Unsatisfied assumption')
+    return True
+class _HypothesisStub:
+    given = staticmethod(_hyp_given)
+    example = staticmethod(_hyp_example)
+    strategies = _HypStrategies()
+    assume = staticmethod(_hyp_assume)
+    reject = staticmethod(lambda: _hyp_assume(False))
+    def settings(self, *a, **k): return lambda f: f
+    def register_random(self, *a, **k): pass
+hypothesis_helper.hypothesis = _HypothesisStub()
 testcase = _mod('test.support.testcase')
 # Real mixins (test_struct/test_math/test_cmath/test_decimal use these to
 # bit-compare floats including signed zero and NaN). A _flex stand-in would
