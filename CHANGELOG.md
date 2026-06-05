@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `PyArg_ParseTupleAndKeywords` didn't support the `O&` converter format —
+      it walked the format char-by-char and saw the `&` as an unknown code
+      ("format char '&' not implemented"), so every call using a converter
+      returned 0. `_lzma`'s filter-spec parser is built entirely on it
+      (`|OOO&O&O&O&O&O&O&O&` with `_PyLong_UInt32_Converter` /
+      `lzma_mode_converter` / `lzma_mf_converter`), so every filter dict was
+      rejected with "Invalid filter specifier for … filter". Fix: recognize the
+      `X&` form, consume the `&`, and call `converter(PyObject* value, void*
+      addr)` from the wasm table — a converter slot consumes two varargs entries
+      (fn ptr + output addr). +6 (test_lzma)
+
 - [x] Hash constructors gave the wrong `data`/`string` conflict message —
       wasthon's `src/hashlib.h::_Py_hashlib_data_argument` (the shim CPython
       inlines from `Modules/hashlib.h`) raised `"argument for hashlib must be

@@ -5215,7 +5215,13 @@ mergeInto(LibraryManager.library, {
         for (var i = 0; i < format.length; i++) {
             var c = format[i];
             if (c === '|') { seenPipe = true; continue; }
-            if (c !== 'O' && c !== 'i' && c !== 'I' && c !== 'k' &&
+            /* 'X&' converter form (e.g. 'O&'): the varargs supply a converter
+             * function pointer followed by its output address; the converter
+             * does the conversion+validation itself. _lzma's filter-spec parse
+             * leans on it heavily ('|OOO&O&O&...'). */
+            var isConv = (i + 1 < format.length && format[i + 1] === '&');
+            if (isConv) { i++; }
+            else if (c !== 'O' && c !== 'i' && c !== 'I' && c !== 'k' &&
                 c !== 'l' && c !== 'L' && c !== 'K' && c !== 'n' &&
                 c !== 'b' && c !== 'B' && c !== 'h' && c !== 'H' &&
                 c !== 'p' && c !== 'C' && c !== 'U') {
@@ -5242,7 +5248,23 @@ mergeInto(LibraryManager.library, {
                 }
             }
 
-            if (value !== undefined) {
+            if (value !== undefined && isConv) {
+                /* Converter slot: varargs = [converter fn ptr, output addr].
+                 * Call converter(PyObject* value, void* addr) -> int (0=fail).
+                 * On failure leave the converter's error set and bail. */
+                var convPtr = HEAP32[p >> 2];
+                var convOut = HEAP32[(p + 4) >> 2];
+                var convFn = getWasmTableEntry(convPtr);
+                var convOk = convFn(rt.wrap(value), convOut);
+                if (!convOk) {
+                    if (!rt.pendingException) {
+                        rt.setError(rt.wrap(rt._b_.TypeError),
+                            "invalid value for argument '" +
+                            (kwlist[slotIdx] || ('#' + slotIdx)) + "'");
+                    }
+                    return 0;
+                }
+            } else if (value !== undefined) {
                 /* The varargs slot at p contains a *pointer* (&v); we
                  * write the converted value to *p. The width and signedness
                  * of the store depend on the format char. */
@@ -5304,7 +5326,8 @@ mergeInto(LibraryManager.library, {
                     (kwlist[slotIdx] || ('#' + slotIdx)) + "'");
                 return 0;
             }
-            p += 4;
+            /* A converter slot consumes two varargs entries (fn ptr + addr). */
+            p += isConv ? 8 : 4;
             slotIdx++;
         }
 
