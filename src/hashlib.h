@@ -48,16 +48,34 @@
 
 /* `_Py_hashlib_data_argument` — back-compat bridge for the deprecated
  * `string` keyword. sha2module uses it to merge `data` and `string` into
- * a single effective input. */
+ * a single effective input. Mirrors CPython's Modules/hashlib.h exactly
+ * (return value and error text). */
 static inline int
 _Py_hashlib_data_argument(PyObject **res, PyObject *data, PyObject *string) {
-    if (data && string) {
+    if (data != NULL && string == NULL) {
+        // called as H(data) or H(data=...)
+        *res = data;
+        return 1;
+    }
+    else if (data == NULL && string != NULL) {
+        // called as H(string=...)
+        *res = string;
+        return 1;
+    }
+    else if (data == NULL && string == NULL) {
+        // fast path when no data is given
+        *res = NULL;
+        return 0;
+    }
+    else {
+        // called as H(data=..., string)
+        *res = NULL;
         PyErr_SetString(PyExc_TypeError,
-            "argument for hashlib must be specified as a positional argument");
+                        "'data' and 'string' are mutually exclusive "
+                        "and support for 'string' keyword parameter "
+                        "is slated for removal in a future version.");
         return -1;
     }
-    *res = data ? data : string;
-    return 0;
 }
 
 #endif

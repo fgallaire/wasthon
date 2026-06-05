@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] Hash constructors gave the wrong `data`/`string` conflict message —
+      wasthon's `src/hashlib.h::_Py_hashlib_data_argument` (the shim CPython
+      inlines from `Modules/hashlib.h`) raised `"argument for hashlib must be
+      specified as a positional argument"` for e.g. `md5(b'', string=b'')`,
+      where CPython raises `"'data' and 'string' are mutually exclusive and
+      support for 'string' keyword parameter is slated for removal in a future
+      version."`. Fix: mirror CPython's helper exactly (message text and its
+      1/0/-1 return contract). With the `_PyArg_UnpackKeywords` ordering fix in
+      place this is the last piece that flips hashlib's
+      `test_clinic_signature_errors` (696 subtests). +1
+
 - [x] `_PyArg_UnpackKeywords` diverged from CPython on keyword-error messages
       and ordering — the bridge's reimplementation raised `"f() got multiple
       values for argument 'x'"` where CPython's clinic raises `"argument for f()
