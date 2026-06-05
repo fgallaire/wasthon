@@ -9402,123 +9402,146 @@ mergeInto(LibraryManager.library, {
         }
         var totalKw = keywords.length;
 
-        // ---- Validate positional count ----
-        if (nargs < minpos) {
-            WasthonRT.setError(
-                WasthonRT.wrap(WasthonRT._b_.TypeError),
-                fname + "() takes at least " + minpos +
-                    " positional argument" + (minpos === 1 ? "" : "s") +
-                    " (" + nargs + " given)");
+        // ---- CPython _PyArg_UnpackKeywords (Python/getargs.c), faithfully:
+        // fill positional then keyword slots; on leftover keywords report
+        // "given by name and position" before "unexpected keyword", matching
+        // clinic's error ordering. ----
+        var rt = WasthonRT;
+        var TE = rt.wrap(rt._b_.TypeError);
+        var posonly = HEAP32[(parserPtr + 16) >> 2] || 0;   // parser->pos
+        var maxargs = totalKw;
+        var minposonly = Math.min(posonly, minpos);
+        var reqlimit = minkw ? (maxpos + minkw) : minpos;
+
+        // Supplied keywords arrive either as a FASTCALL kwnames tuple (values
+        // at args[nargs + j]) or as a legacy kwargs dict.
+        var kwnamesObj = kwnames !== 0 ? rt.unwrap(kwnames) : null;
+        var kwDict = kwargs !== 0 ? rt.unwrap(kwargs) : null;
+        if (kwDict === rt._b_.None) kwDict = null;
+        var nkwargs = kwDict ? rt._b_.len(kwDict)
+                             : (kwnamesObj ? (kwnamesObj.length || 0) : 0);
+
+        // findKw(name) -> {f: supplied?, v: value handle (0 if absent)}.
+        function findKw(name) {
+            if (kwnamesObj) {
+                for (var j = 0; j < kwnamesObj.length; j++) {
+                    var nm = kwnamesObj[j];
+                    if ((typeof nm === 'string' ? nm : String(nm)) === name) {
+                        return { f: true, v: HEAP32[(argsPtr + (nargs + j)*4) >> 2] };
+                    }
+                }
+                return { f: false, v: 0 };
+            }
+            if (kwDict) {
+                var has = false;
+                try { has = rt._b_.dict.$contains_string(kwDict, name); }
+                catch (_) { has = false; }
+                if (!has) return { f: false, v: 0 };
+                var value;
+                try { value = rt._b_.dict.$getitem(kwDict, name); }
+                catch (_) { return { f: false, v: 0 }; }
+                return { f: true, v: rt.wrap(value) };
+            }
+            return { f: false, v: 0 };
+        }
+        // A name is a legal keyword parameter iff it is one of the kwtuple
+        // slots keywords[posonly..] (positional-only slots are left blank).
+        function isKwName(name) {
+            for (var k = posonly; k < totalKw; k++) {
+                if (keywords[k] === name) return true;
+            }
+            return false;
+        }
+        // Enumerate a legacy kwargs dict's keys (only needed to name an
+        // unexpected keyword, so it stays off the common path).
+        function dictKeyNames() {
+            var out = [];
+            try {
+                var kl = rt.$B.$call(rt._b_.list,
+                    rt.$B.$call(rt.$B.$getattr(kwDict, 'keys')));
+                for (var k = 0, n = rt._b_.len(kl); k < n; k++) {
+                    var kk = rt.$B.$getitem(kl, k);
+                    out.push(typeof kk === 'string' ? kk : String(kk));
+                }
+            } catch (_) {}
+            return out;
+        }
+
+        // ---- Positional-count validation (CPython order). ----
+        if (!varpos && (nargs + nkwargs) > maxargs) {
+            rt.setError(TE, fname + "() takes at most " + maxargs + " " +
+                (nargs === 0 ? "keyword " : "") + "argument" +
+                (maxargs === 1 ? "" : "s") + " (" + (nargs + nkwargs) + " given)");
             return 0;
         }
-        if (nargs > maxpos && !varpos) {
-            WasthonRT.setError(
-                WasthonRT.wrap(WasthonRT._b_.TypeError),
-                fname + "() takes at most " + maxpos +
+        if (!varpos && nargs > maxpos) {
+            if (maxpos === 0) {
+                rt.setError(TE, fname + "() takes no positional arguments");
+            } else {
+                rt.setError(TE, fname + "() takes " +
+                    (minpos < maxpos ? "at most" : "exactly") + " " + maxpos +
                     " positional argument" + (maxpos === 1 ? "" : "s") +
                     " (" + nargs + " given)");
+            }
+            return 0;
+        }
+        if (nargs < minposonly) {
+            rt.setError(TE, fname + "() takes " +
+                ((varpos || minposonly < maxpos) ? "at least" : "exactly") + " " +
+                minposonly + " positional argument" + (minposonly === 1 ? "" : "s") +
+                " (" + nargs + " given)");
             return 0;
         }
 
-        // ---- Initialize buf to NULL for every slot ----
-        for (var i = 0; i < totalKw; i++) {
-            HEAP32[(bufPtr + i*4) >> 2] = 0;
-        }
-
-        // ---- Place positional args into buf ----
+        // ---- Initialize buf, then place positional args. ----
+        for (var i = 0; i < totalKw; i++) HEAP32[(bufPtr + i*4) >> 2] = 0;
         var nposCopy = Math.min(nargs, maxpos);
         for (var i = 0; i < nposCopy; i++) {
             HEAP32[(bufPtr + i*4) >> 2] = HEAP32[(argsPtr + i*4) >> 2];
         }
 
-        // ---- Process keyword args (FASTCALL pattern: kwnames is a tuple,
-        // values appended to args[]) ----
-        if (kwnames !== 0) {
-            var kwnamesObj = WasthonRT.unwrap(kwnames);
-            var nkw = kwnamesObj ? (kwnamesObj.length || 0) : 0;
-            for (var i = 0; i < nkw; i++) {
-                var nameObj = kwnamesObj[i];
-                // Brython str values are typically JS strings.
-                var name = (typeof nameObj === 'string') ? nameObj : String(nameObj);
-
-                // Find name in the keyword list (linear scan; the lists are
-                // tiny — sha2 has 3 entries — so a hash table would be overkill).
-                var foundIdx = -1;
-                for (var k = 0; k < totalKw; k++) {
-                    if (keywords[k] === name) { foundIdx = k; break; }
-                }
-                if (foundIdx < 0) {
-                    WasthonRT.setError(
-                        WasthonRT.wrap(WasthonRT._b_.TypeError),
-                        fname + "() got an unexpected keyword argument '" + name + "'");
-                    return 0;
-                }
-
-                // Refuse if a positional already supplied this slot.
-                if (HEAP32[(bufPtr + foundIdx*4) >> 2] !== 0) {
-                    WasthonRT.setError(
-                        WasthonRT.wrap(WasthonRT._b_.TypeError),
-                        fname + "() got multiple values for argument '" + name + "'");
-                    return 0;
-                }
-
-                // Value lives at args[nargs + i].
-                var valuePtr = HEAP32[(argsPtr + (nargs + i)*4) >> 2];
-                HEAP32[(bufPtr + foundIdx*4) >> 2] = valuePtr;
+        // ---- Fill keyword slots, driven by the kwtuple. ----
+        var remaining = nkwargs;
+        for (var i = Math.max(nposCopy, posonly); i < maxargs; i++) {
+            var got;
+            if (remaining) {
+                got = findKw(keywords[i]);
+            } else if (i >= reqlimit) {
+                break;
+            } else {
+                got = { f: false, v: 0 };
+            }
+            HEAP32[(bufPtr + i*4) >> 2] = got.v;
+            if (got.f) {
+                remaining--;
+            } else if (i < minpos || (maxpos <= i && i < reqlimit)) {
+                rt.setError(TE, fname + "() missing required argument '" +
+                    keywords[i] + "' (pos " + (i + 1) + ")");
+                return 0;
             }
         }
 
-        // ---- Process keyword args (legacy dict-style: kwargs is a dict) ----
-        // Some clinic callers (e.g. _lzma's LZMADecompressor) still pass a
-        // kwargs dict to _PyArg_UnpackKeywords. We can't iterate Brython
-        // dicts directly (no `.items()` / `.keys()` on the class), but we
-        // already know every legal keyword name from the parser's keywords
-        // array — just probe each by string lookup.
-        if (kwargs !== 0) {
-            var rt = WasthonRT;
-            var kw = rt.unwrap(kwargs);
-            if (kw && kw !== rt._b_.None) {
-                for (var k = 0; k < totalKw; k++) {
-                    var kname = keywords[k];
-                    var found = false;
-                    try { found = rt._b_.dict.$contains_string(kw, kname); }
-                    catch (_) { found = false; }
-                    if (!found) continue;
-                    if (HEAP32[(bufPtr + k*4) >> 2] !== 0) {
-                        rt.setError(rt.wrap(rt._b_.TypeError),
-                            fname + "() got multiple values for argument '" + kname + "'");
-                        return 0;
-                    }
-                    var value;
-                    try { value = rt._b_.dict.$getitem(kw, kname); }
-                    catch (_) { continue; }
-                    HEAP32[(bufPtr + k*4) >> 2] = rt.wrap(value);
+        // ---- Leftover keywords: duplicates-by-position, then unexpected. ----
+        if (remaining > 0) {
+            for (var i = posonly; i < nposCopy; i++) {
+                if (findKw(keywords[i]).f) {
+                    rt.setError(TE, "argument for " + fname +
+                        "() given by name ('" + keywords[i] +
+                        "') and position (" + (i + 1) + ")");
+                    return 0;
                 }
             }
-        }
-
-        // ---- Check that minkw kw-only args were supplied ----
-        // kw-only slots are at indices [maxpos .. totalKw-1]; the first minkw
-        // of them are required.
-        if (minkw > 0) {
-            var kwSuppliedRequired = 0;
-            for (var k = maxpos; k < maxpos + minkw && k < totalKw; k++) {
-                if (HEAP32[(bufPtr + k*4) >> 2] !== 0) {
-                    kwSuppliedRequired++;
-                }
+            var supplied = kwnamesObj
+                ? kwnamesObj.map(function(nm) {
+                      return typeof nm === 'string' ? nm : String(nm); })
+                : (kwDict ? dictKeyNames() : []);
+            var bad = '';
+            for (var j = 0; j < supplied.length; j++) {
+                if (!isKwName(supplied[j])) { bad = supplied[j]; break; }
             }
-            if (kwSuppliedRequired < minkw) {
-                // Find the first missing required kw-only arg for a clear msg.
-                for (var k = maxpos; k < maxpos + minkw && k < totalKw; k++) {
-                    if (HEAP32[(bufPtr + k*4) >> 2] === 0) {
-                        WasthonRT.setError(
-                            WasthonRT.wrap(WasthonRT._b_.TypeError),
-                            fname + "() missing required keyword-only argument: '" +
-                                keywords[k] + "'");
-                        return 0;
-                    }
-                }
-            }
+            rt.setError(TE, fname +
+                "() got an unexpected keyword argument '" + bad + "'");
+            return 0;
         }
 
         return bufPtr;

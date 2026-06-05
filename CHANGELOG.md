@@ -7,6 +7,22 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `_PyArg_UnpackKeywords` diverged from CPython on keyword-error messages
+      and ordering — the bridge's reimplementation raised `"f() got multiple
+      values for argument 'x'"` where CPython's clinic raises `"argument for f()
+      given by name ('x') and position (n)"`, and it checked duplicates vs
+      unknown keywords in the wrong order. Worse, its legacy kwargs-dict path
+      (METH_VARARGS|METH_KEYWORDS callers — sha3/blake2/lzma) never detected
+      unknown keywords at all: it only probed the *known* names, so a bogus
+      kwarg like `sha3_256(_=None)` was silently accepted ("TypeError not
+      raised"). Fix: rewrote it to mirror Python/getargs.c faithfully — fill
+      positional then kwtuple slots, then on leftover keywords report "given by
+      name and position" before "unexpected keyword", with unknown-keyword
+      detection on both the FASTCALL kwnames and legacy dict inputs (dict keys
+      enumerated via `list(d.keys())`). Fixes the C-module clinic
+      signature-error tests across the board. +11 (binascii +4, zstd +3,
+      struct +1, sqlite3 +1, hmac +1, pickle +1)
+
 - [x] C mapping types couldn't assign by slice (or any non-int key) — the bridge
       wired `__getitem__` from `mp_subscript` but never wired `__setitem__` /
       `__delitem__` from `mp_ass_subscript`, so `a[i:j] = x` / `del a[i:j]`
