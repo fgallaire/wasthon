@@ -3565,10 +3565,18 @@ mergeInto(LibraryManager.library, {
                 var sp = HEAP32[p >> 2];
                 args.push(sp === 0 ? null : UTF8ToString(sp));
                 p += 4;
-            } else if (c === 'i') {
+            } else if (c === 'i' || c === 'n' || c === 'l' || c === 'k' || c === 'I') {
+                // 32-bit integer in wasm32 (int / long / Py_ssize_t / size_t).
+                // Without 'n' here, array_fromfile's read("n", nbytes) dropped
+                // the size arg → f.read() slurped the whole file → EOFError.
                 args.push(HEAP32[p >> 2]);
                 p += 4;
-            } else if (c === 'd') {
+            } else if (c === 'L' || c === 'K') {
+                // 64-bit integer (long long): low + high 32-bit halves.
+                var lo = HEAP32[p >> 2] >>> 0, hi = HEAP32[(p + 4) >> 2];
+                args.push(hi * 0x100000000 + lo);
+                p += 8;
+            } else if (c === 'd' || c === 'f') {
                 // Doubles in varargs must be 8-byte aligned.
                 if (p & 7) p = (p + 7) & ~7;
                 args.push(HEAPF64[p >> 3]);

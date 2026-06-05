@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `PyObject_CallMethod` dropped every integer format code except `i` — its
+      varargs walker handled only `O`/`s`/`i`/`d`, so an `n` (Py_ssize_t),
+      `l`/`k`/`I` or `L`/`K` slot was silently skipped: no arg pushed, pointer
+      not advanced. `array.fromfile(f, n)` calls `f.read("n", nbytes)`, so the
+      size was dropped → `f.read()` slurped the whole file → `PyBytes_GET_SIZE
+      != nbytes` → "read() didn't return enough bytes". Fix: handle
+      `n`/`l`/`k`/`I` (32-bit in wasm32) and `L`/`K` (64-bit low+high halves),
+      plus `f` (a float is promoted to double in varargs). +14 (test_array)
+
 - [x] `PyArg_ParseTupleAndKeywords` didn't support the `O&` converter format —
       it walked the format char-by-char and saw the `&` as an unknown code
       ("format char '&' not implemented"), so every call using a converter
