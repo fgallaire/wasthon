@@ -18,6 +18,33 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `TextIOWrapper` only worked over a buffer exposing `.raw.$bytes`
+
+**Impact: +2** (test_bz2, test_zstd — the text-mode `OpenTest`/`OpenTestCase`
+group; the lzma/zstd siblings advance past this crash but then cascade into
+separate MemoryError / "File not open for reading" bugs).
+
+`_io._TextIOWrapper.$factory` eagerly slurps the underlying bytes with
+`$B.fast_bytes($.buffer.raw.$bytes)`, which assumes the buffer is Brython's own
+`$BufferedReader`/FileIO carrying a `.raw.$bytes` blob. Wrapping any other
+readable — `lzma.open(p,'rt')` / `bz2.open` / `ZstdFile` hand a compression file
+object straight in as the buffer, with no `.raw.$bytes` — so construction
+crashed with "`$.buffer.raw is undefined`". Fix: keep the fast path when
+`.raw.$bytes` is present, else read the bytes generically via
+`$B.$call($B.$getattr($.buffer,'read'),-1)` (which returns a bytes object with
+`.source`, exactly what `$B.decode` later consumes).
+
+```js
+// _io._TextIOWrapper.$factory
+var bytes=$B.fast_bytes($.buffer.raw.$bytes)
+// →
+var bytes
+if($.buffer.raw!==undefined && $.buffer.raw.$bytes!==undefined){bytes=$B.fast_bytes($.buffer.raw.$bytes)}
+else{bytes=$B.$call($B.$getattr($.buffer,'read'),-1)}
+```
+
+---
+
 ## [x] `float.fromhex()` of a negative value crashes (`float.__neg__` undefined)
 
 **Impact: +0** on the harness (only `test_math`'s `testFsum` touches a negative

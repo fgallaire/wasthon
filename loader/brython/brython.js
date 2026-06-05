@@ -4106,7 +4106,9 @@ $BufferedReader.tp_methods=["read"
 $B._TextIOWrapper=$B.make_builtin_class('_io._TextIOWrapper',[$B._TextIOBase])
 $B._TextIOWrapper.$factory=function(){var $=$B.args("TextIOWrapper",6,{buffer:null,encoding:null,errors:null,newline:null,line_buffering:null,write_through:null},arguments,{encoding:"utf-8",errors:_b_.None,newline:_b_.None,line_buffering:_b_.False,write_through:_b_.False})
 if($.encoding===_b_.None){$.encoding='utf-8'}
-var bytes=$B.fast_bytes($.buffer.raw.$bytes)
+var bytes
+if($.buffer.raw!==undefined && $.buffer.raw.$bytes!==undefined){bytes=$B.fast_bytes($.buffer.raw.$bytes)}
+else{bytes=$B.$call($B.$getattr($.buffer,'read'),-1)}
 var res={ob_type:$B._TextIOWrapper,$buffer:$.buffer,$bytes:bytes,$encoding:$.encoding,$errors:$.errors,$newline:$.newline}
 $B.init_dict(res)
 return res}
