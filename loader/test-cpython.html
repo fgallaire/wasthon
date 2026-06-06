@@ -86,6 +86,16 @@ try {
         delete window.__BRYTHON__.VFS['_hashlib'];
         log('test_hashlib: hashlib → wasthon _md5/_sha1/_sha2/_sha3/_blake2');
     }
+    // test_hmac: Brython's VFS.hmac.py is a pre-3.14 wrapper over its own JS
+    // hashes — never wasthon's _hmac. Replace it with CPython's hmac.py
+    // (OpenSSL _hashlib disabled → routes through the builtin _hmac, which is
+    // wasthon's HACL module) so the test actually exercises wasthon's _hmac.
+    if (testName === 'test_hmac' && params.get('brython') !== 'cdn') {
+        const _msrc = await (await fetch('./cpython-tests/hmac.py?t=' + Date.now())).text();
+        window.__BRYTHON__.VFS['hmac'] = ['.py', _msrc, []];
+        delete window.__BRYTHON__.VFS['_hashlib'];
+        log('test_hmac: hmac → wasthon _hmac');
+    }
     log(`Running CPython ${testName}.py…\n`);
     window.__wasthon_test_name = testName;
 
