@@ -158,7 +158,11 @@ function runOne(testName, idx) {
             }
             const fail = (c.failures || 0) + (c.errors || 0);
             const ran = c.ran || 0;
-            const rate = ran ? Math.round(100 * (c.passed || 0) / ran) : 0;
+            // Pass rate over RUNNABLE tests only (pass / (pass+fail)); skips are
+            // tests we deliberately don't run (no-path/env-limited), not failures
+            // to fix, so they don't belong in the denominator.
+            const runnable = (c.passed || 0) + fail;
+            const rate = runnable ? Math.round(100 * (c.passed || 0) / runnable) : 0;
             const barW = Math.round(0.8 * rate);
             const bar = `<span class="barbg"><span class="bar" style="width:${barW}px"></span></span> ${rate}%`;
             const allpass = fail === 0 && ran > 0;
@@ -186,10 +190,12 @@ async function runAll() {
         totRan += r.ran; totPass += r.passed; totFail += r.fail; totSkip += r.skipped;
     }
     const summary = document.getElementById('summary');
-    const rate = totRan ? Math.round(100 * totPass / totRan) : 0;
+    // Rate over runnable tests (pass / (pass+fail)); skips excluded.
+    const runnable = totPass + totFail;
+    const rate = runnable ? Math.round(100 * totPass / runnable) : 0;
     summary.innerHTML =
         `<b>${modsOK}/${modsRun}</b> modules fully green &nbsp;|&nbsp; ` +
-        `assertions: <b>${totPass}/${totRan}</b> pass (${rate}%), ` +
+        `assertions: <b>${totPass}/${runnable}</b> pass (${rate}%), ` +
         `${totFail} fail, ${totSkip} skip` +
         (importFails ? ` &nbsp;|&nbsp; ${importFails} import-failed (wrapper integration)` : '');
 }
