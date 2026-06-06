@@ -549,6 +549,38 @@ try:
                 return result
             return _orig_tc_run(self, result)
         unittest.TestCase.run = _tc_run_with_hang_skip
+    # Force-skip whole test CLASSES by name substring. test_hmac's OpenSSL*
+    # classes exercise the OpenSSL _hashlib backend, which wasthon does not
+    # ship (we use the self-contained HACL builtins) — so they have no path
+    # and should be skips, not failures. Intercept at TestCase.run (the only
+    # choke-point that reliably produces a skip under Brython).
+    _SKIP_CLASS_SUBSTR = {'test_hmac': ['OpenSSL']}.get(test_name, [])
+    if _SKIP_CLASS_SUBSTR:
+        _skip_why = 'OpenSSL _hashlib backend not shipped (wasthon uses HACL builtins)'
+        # Mark matching classes skipped so their setUpClass is never run
+        # (a failing setUpClass bypasses the per-test TestCase.run hook below).
+        try:
+            for _cn in dir(mod):
+                _co = getattr(mod, _cn, None)
+                if isinstance(_co, type) and any(_s in _cn for _s in _SKIP_CLASS_SUBSTR):
+                    _co.__unittest_skip__ = True
+                    _co.__unittest_skip_why__ = _skip_why
+                    def _su_skip(cls, _r=_skip_why):
+                        raise unittest.SkipTest(_r)
+                    _co.setUpClass = classmethod(_su_skip)
+        except Exception:
+            pass
+        _orig_tc_run_cls = unittest.TestCase.run
+        def _tc_run_with_class_skip(self, result=None):
+            _cn = type(self).__name__
+            if any(_s in _cn for _s in _SKIP_CLASS_SUBSTR):
+                if result is None: result = self.defaultTestResult()
+                result.startTest(self)
+                result.addSkip(self, 'OpenSSL _hashlib backend not shipped (wasthon uses HACL builtins)')
+                result.stopTest(self)
+                return result
+            return _orig_tc_run_cls(self, result)
+        unittest.TestCase.run = _tc_run_with_class_skip
 except Exception as e:
     import traceback
     log(f'IMPORT FAILED: {type(e).__name__}: {e}')
