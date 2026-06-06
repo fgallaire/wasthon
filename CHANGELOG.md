@@ -7,6 +7,19 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] `_Py_hashtable` keyed by raw pointer, breaking `_hmac`'s hash-name lookup —
+      the JS-Map-backed shim used the `key` value directly as the Map key.
+      `hmacmodule` builds a name→algorithm table by `set`ting with static string
+      literals (`e->name`, e.g. `"sha256"`) and later `get`s with
+      `PyUnicode_AsUTF8(name)` — a *different* pointer for the same text — so
+      every lookup missed and `hmac.new(key, msg, 'sha256')` raised
+      `UnknownHashError: unsupported hash type: 'sha256'` for every algorithm.
+      Fix: key the Map by string CONTENT (`UTF8ToString(key)`) in
+      `_Py_hashtable_set`/`_get`/`_get_entry`. `_Py_hashtable` is used only by
+      `hmacmodule` among the built modules, and its keys are always C strings.
+      +20 (test_hmac, once it's routed to wasthon's `_hmac` instead of Brython's
+      hmac.py)
+
 - [x] `PyObject_CallMethod` dropped every integer format code except `i` — its
       varargs walker handled only `O`/`s`/`i`/`d`, so an `n` (Py_ssize_t),
       `l`/`k`/`I` or `L`/`K` slot was silently skipped: no arg pushed, pointer
