@@ -18,6 +18,141 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `JavascriptArray` is unpicklable ("Can't pickle <class 'JavascriptArray'>")
+
+**Impact: keystone of test_array 596→620 (+24)** — unblocks the `jsobj2pyobj` /
+`reversed.__reduce__` fixes below. A list built C-side (`array.tolist()`, used by
+array's proto-`<3` `__reduce_ex__`) comes back as a `JavascriptArray`, not a
+`list`: Brython 3.14's `get_class` keys `list` off `ob_type`, and a C array has
+none. Brython's pure-Python `pickle` then has no handler for `JavascriptArray`
+and raises. Making the *list* a real list globally (`PyList_New` →
+`ob_type=list`) regressed wasthon's own `_pickle` by −159 (4136 native
+`allocation size overflow`s — `JavascriptArray.__reduce_ex__` is a far smaller,
+non-regressing surface), so instead `JavascriptArray` is made directly picklable.
+
+```python
+>>> import array, pickle
+>>> pickle.loads(pickle.dumps(array.array('i', [1, 2, 3]), 0))
+PicklingError: Can't pickle <class 'JavascriptArray'>: it's not found as builtins.JavascriptArray   # before (tolist() in the reduce)
+array('i', [1, 2, 3])                                                                              # after
+```
+
+Fix (`www/src/js_objects.js`, `JavascriptArray.tp_funcs`): add `__reduce_ex__`
+returning `(list, (tuple(items),))` — pickle it as a plain list, items in a
+tuple so it never recurses back into itself.
+
+## [x] `jsobj2pyobj` re-wraps an already-Python callable into a `JavascriptFunction`
+
+**Impact: part of test_array 596→620 (+24)** — this + `reversed.__reduce__` +
+the `JavascriptArray.__reduce_ex__` fix below (the third is what makes
+`array.tolist()` picklable under Brython's pickle; the obvious alternative,
+`PyList_New` setting `ob_type=list`, regressed wasthon's own `_pickle` −159 with
+4136 allocation-size-overflows and was abandoned). `jsobj2pyobj` (`js_objects.js`) converts a raw JS
+value to a Python one; container `$factory` runs it on every element. For a JS
+**function** it built a fresh `JavascriptFunction` wrapper — even when the
+function was already a Python callable (`ob_type` set, e.g. a
+`builtin_function_or_method` like `iter`). So an array iterator's
+`__reduce__` → `(iter, (array,), index)`, once the tuple was materialised, held
+a throwaway `JavascriptFunction` named `'tramp'` (`__module__='builtins'`)
+instead of `iter` — and `pickle` couldn't save it.
+
+```python
+>>> from browser import window
+>>> window.Array(iter)[0] is iter   # a builtin round-tripped through a JS array
+False   # before
+True    # after
+```
+
+Fix (`www/src/js_objects.js`, `jsobj2pyobj`): in the `typeof jsobj==="function"`
+branch, `if(jsobj.ob_type!==undefined){return jsobj}` — an object that already
+carries a Brython type is already Python; return it unchanged.
+
+## [x] `reversed.__reduce__` / `reversed.__setstate__` are empty stubs (unpicklable)
+
+**Impact: part of test_array 596→620** (`test_reverse_iterator_picking`; with
+the `jsobj2pyobj` + `JavascriptArray.__reduce_ex__` fixes).
+`reversed_funcs.__reduce__`/`__setstate__` (`py_builtin_functions.js`) were
+`function(self){}` — returning `undefined`, so `pickle.dumps(reversed(x))` got a
+NULL reduce ("can't pickle"). Implemented per CPython `reversed_reduce`: a
+`reversed` keeps a `counter` (= CPython's `index` + 1), so
+
+```python
+>>> class S:                       # a sequence with no __reversed__ (list/str/range have theirs)
+...     def __getitem__(self, i): return [10, 20, 30][i]
+...     def __len__(self): return 3
+...
+>>> reversed(S()).__reduce__()
+<Javascript undefined>                    # before
+(<class 'reversed'>, (<S object>,), 3)    # after
+```
+
+Fix: `__reduce__` returns `(type(self), (seq,), counter)`; `__setstate__`
+restores `counter` (clamped to `[-1, len]`) **and returns `None`** — a JS
+function that falls off the end returns `undefined`, which `pickle`'s
+`load_build` reads as a NULL result (setstate "raised"), corrupting the
+unpickle stack of any tuple that contains the `reversed`.
+
+## [x] `str.title()` uppercases the first letter instead of titlecasing it
+
+**Impact: +1** (`test_unicodedata` bug_4971). A real Brython bug worth
+upstreaming. (The larger `test_method_checksum` still fails — it also hashes
+`upper`/`lower`/predicates over every codepoint, which diverge elsewhere; that's
+a separate, deeper Unicode-data issue.)
+
+`str.title()` must map the first letter of each word through the Unicode
+**titlecase** mapping, which differs from uppercase only for the digraph letters
+(DŽ/LJ/NJ/DZ families, U+01C4–01CC and U+01F1–01F3). Brython uppercased a
+leading `Ll` char (`char.toUpperCase()`) and kept a leading `Lu`/`Lt` char
+as-is — both wrong for those 12 codepoints — and `istitle` (defined as
+`title(s) == s`) inherited the bug.
+
+```python
+>>> [c.title() for c in '\u01c4\u01c5\u01c6']   # the DŽ digraph family
+['\u01c4', '\u01c5', '\u01c4']   # before
+['\u01c5', '\u01c5', '\u01c5']   # after — all → U+01C5 (titlecase)
+```
+
+Fix (`www/src/py_string.js`, `str.title`): titlecase the first letter of each
+word via a 12-entry digraph map (else `toUpperCase()`), lowercase the rest.
+
+## [x] `str.isalnum()` missed `Other_Numeric` characters (used a fixed category list)
+
+**Impact: +0 on the sweep** (the `test_unicodedata` checksum still diverges on
+deeper Unicode-data gaps), but a real Brython bug worth upstreaming. CPython
+defines a char as alphanumeric iff `isalpha() or isdecimal() or isdigit() or
+isnumeric()`. Brython instead tested membership in a fixed category list
+`['Ll','Lu','Lm','Lt','Lo','Nd']`, which omits the characters that only
+`isnumeric()` accepts (general category `Nl`/`No` with a numeric value, e.g.
+fractions and CJK numerals).
+
+```python
+>>> '½'.isalnum()   # ½ VULGAR FRACTION ONE HALF (isnumeric → True)
+False   # before
+True    # after
+```
+
+Fix (`www/src/py_string.js`, `str.isalnum`): test each char with
+`isalpha|isdecimal|isdigit|isnumeric`, matching CPython's definition.
+
+## [x] `str.istitle()` returned True for uncased strings (`title(s) == s`)
+
+**Impact: +0 on the sweep** (same deeper-Unicode-data checksum), real Brython
+bug. `istitle` was defined as `len(s) > 0 and title(s) == s`, so any string with
+no cased characters (`'0'`, `'  '`, `'\x00'`) was wrongly titlecased — CPython
+requires **at least one cased character** in the title pattern.
+
+```python
+>>> '0'.istitle()
+True    # before
+False   # after
+```
+
+Fix (`www/src/py_string.js`, `str.istitle`): scan the string for the title
+pattern — a cased run must begin with `Lu`/`Lt`, lowercase only follows a cased
+char — and require at least one cased character (the CPython algorithm). (This
+supersedes the earlier `str.istitle` entry that only restored the missing
+`str.title` reference.)
+
 ## [x] `TextIOWrapper` only worked over a buffer exposing `.raw.$bytes`
 
 **Impact: +2** (test_bz2, test_zstd — the text-mode `OpenTest`/`OpenTestCase`

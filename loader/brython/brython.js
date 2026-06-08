@@ -4884,9 +4884,20 @@ var res={ob_type:cls,seq,len:seqlen,
 counter:seqlen,getitem:method}
 return res}
 var reversed_funcs=_b_.reversed.tp_funcs={}
-reversed_funcs.__length_hint__=function(self){}
-reversed_funcs.__reduce__=function(self){}
-reversed_funcs.__setstate__=function(self){}
+reversed_funcs.__length_hint__=function(self){var n=self.counter
+return n<0 ? 0 : n}
+reversed_funcs.__reduce__=function(self){
+check_nb_args_no_kw('__reduce__',1,arguments)
+var cls=self.ob_type
+if(self.seq===undefined){return $B.fast_tuple([cls,$B.fast_tuple([$B.fast_tuple([])])])}
+return $B.fast_tuple([cls,$B.fast_tuple([self.seq]),self.counter])}
+reversed_funcs.__setstate__=function(self,state){
+var n=typeof state==='bigint' ? Number(state):state
+if(typeof n!=='number'){n=Number(n)}
+if(n<-1){n=-1}
+if(n>self.len){n=self.len}
+self.counter=n
+return _b_.None}
 _b_.reversed.tp_methods=["__length_hint__","__reduce__","__setstate__"]
 $B.set_func_names(reversed,"builtins")
 _b_.round=function(){var $=$B.args('round',2,{number:null,ndigits:null},arguments,{ndigits:None},null,null)
@@ -8737,7 +8748,10 @@ str_funcs.isalnum=function(self){
 $B.check_nb_args_no_kw('str.isalnum',1,arguments)
 var _self=to_string(self);
 if(_self.length==0){return false}
-for(var char of _self){if(!unicode_categories_contain_character(alnum_categories,_b_.ord(char))){return false}}
+// CPython: isalnum == isalpha or isdecimal or isdigit or isnumeric (the
+// category set missed Numeric chars like ² ¼ — No/Nl with a Numeric_Type).
+for(var char of _self){if(! (str_funcs.isalpha(char)||str_funcs.isdecimal(char)||
+str_funcs.isdigit(char)||str_funcs.isnumeric(char))){return false}}
 return true}
 str_funcs.isalpha=function(self){
 $B.check_nb_args_no_kw('str.isalpha',1,arguments)
@@ -8800,8 +8814,20 @@ $B.unicode_bidi_whitespace.indexOf(cp)==-1){return false}}
 return _self.length > 0}
 str_funcs.istitle=function(self){
 $B.check_nb_args_no_kw('str.istitle',1,arguments)
-var _self=to_string(self)
-return _self.length > 0 && str_funcs.title(_self)==_self}
+// CPython: titlecased iff there is at least one cased char, uppercase/titlecase
+// chars start a word (don't follow a cased char) and lowercase chars follow a
+// cased char. (Was `title(s)==s`, which wrongly returns true for no-cased input
+// like '0' or ' '.)
+var _self=to_string(self),cased=false,prev_cased=false
+for(var ch of _self){var cp=_b_.ord(ch)
+if($B.in_unicode_category('Lu',cp)||$B.in_unicode_category('Lt',cp)){
+if(prev_cased){return false}
+prev_cased=true;cased=true}
+else if($B.in_unicode_category('Ll',cp)){
+if(! prev_cased){return false}
+prev_cased=true;cased=true}
+else{prev_cased=false}}
+return cased}
 str_funcs.isupper=function(self){
 $B.check_nb_args_no_kw('str.isupper',1,arguments)
 var is_upper=false,cp,_self=to_string(self)
@@ -9050,12 +9076,17 @@ for(var char of _self){cp=_b_.ord(char)
 if($B.in_unicode_category('Ll',cp)){res+=char.toUpperCase()}else if($B.in_unicode_category('Lu',cp)){res+=char.toLowerCase()}else{res+=char}}
 return res}
 str_funcs.title=function(self){$B.check_nb_args_no_kw('str.title',1,arguments)
+// First letter of each word takes the Unicode TITLECASE mapping, not upper.
+// For all but the digraph letters (DŽ/LJ/NJ/DZ families) titlecase==upper, so
+// only those need an explicit table; the rest fall back to toUpperCase().
+var TT={0x1C4:0x1C5,0x1C5:0x1C5,0x1C6:0x1C5,0x1C7:0x1C8,0x1C8:0x1C8,0x1C9:0x1C8,
+0x1CA:0x1CB,0x1CB:0x1CB,0x1CC:0x1CB,0x1F1:0x1F2,0x1F2:0x1F2,0x1F3:0x1F2}
 var state,cp,res="",_self=to_string(self)
 for(var char of _self){cp=_b_.ord(char)
-if($B.in_unicode_category('Ll',cp)){if(! state){res+=char.toUpperCase()
-state="word"}else{res+=char}}else if($B.in_unicode_category('Lu',cp)||
-$B.in_unicode_category('Lt',cp)){res+=state ? char.toLowerCase():char
-state="word"}else{state=null
+if($B.in_unicode_category('Ll',cp)||$B.in_unicode_category('Lu',cp)||
+$B.in_unicode_category('Lt',cp)){if(! state){res+=TT[cp]!==undefined ?
+String.fromCodePoint(TT[cp]):char.toUpperCase()
+state="word"}else{res+=char.toLowerCase()}}else{state=null
 res+=char}}
 return res}
 str_funcs.translate=function(self,table){$B.check_nb_args_no_kw('str.translate',2,arguments)
@@ -11477,6 +11508,7 @@ let pyobj=jsobj[PYOBJ]
 if(pyobj !==undefined){return pyobj}
 if(jsobj instanceof Promise ||typeof jsobj.then=="function"){return jsobj}
 if(typeof jsobj==="function"){
+if(jsobj.ob_type!==undefined){return jsobj}
 _this=_this===undefined ? null :_this
 if(_this===null){const pyobj=jsobj[PYOBJFCT];
 if(pyobj !==undefined){return pyobj}}else{const pyobjfcts=_this[PYOBJFCTS]
@@ -11850,7 +11882,15 @@ js_array_funcs.extend=function(self){var $=$B.args("extend",2,{self:null,t:null}
 var self=$.self,t=$.t
 for(var item of $B.make_js_iterator(t)){self[self.length]=$B.pyobj2jsobj(item)}
 return _b_.None}
-js_array.tp_methods=["append","extend"]
+js_array_funcs.__reduce_ex__=function(self,protocol){
+// A JavascriptArray (e.g. a list built C-side via PyList_New, like
+// array.tolist()) is unpicklable by default ("cannot pickle
+// 'JavascriptArray'"). Pickle it as a plain list: (list, (items_tuple,)).
+// Items go in a tuple so pickling never recurses back into this method.
+var items=new Array(self.length)
+for(var i=0;i < self.length;i++){items[i]=jsobj2pyobj(self[i])}
+return $B.fast_tuple([_b_.list,$B.fast_tuple([$B.fast_tuple(items)])])}
+js_array.tp_methods=["append","extend","__reduce_ex__"]
 $B.set_func_names(js_array,'javascript')
 $B.get_jsobj_class=function(obj){if(typeof obj=='function'){return $B.JSObj}
 var proto=Object.getPrototypeOf(obj)
