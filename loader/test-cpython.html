@@ -44,7 +44,7 @@ const INSTALL_MAP = {
     test_hmac: ['_hmac', '_md5', '_sha1', '_sha2', '_sha3', '_blake2'],
     test_statistics: ['_statistics'], test_zstd: ['_zstd'],
     test_random: ['_random'],
-    test_zlib: ['zlib'], test_bz2: ['_bz2'], test_lzma: ['_lzma'],
+    test_zlib: ['zlib', 'binascii'], test_bz2: ['_bz2'], test_lzma: ['_lzma'],
     test_unicodedata: ['unicodedata'], test_pyexpat: ['pyexpat'],
     test_pickle: ['_pickle'], test_re: ['_sre'], test_sqlite3: ['_sqlite3'],
     test_hashlib: ['_md5','_sha1','_sha2','_sha3','_blake2'],
@@ -151,6 +151,7 @@ support = _mod('test.support')
 
 # Explicit overrides — skip what can't/shouldn't run in-browser:
 support.cpython_only        = _skip      # refcount / impl detail
+support.refcount_test       = _skip      # @refcount_test loops create+leak C ctx (no refcount in Brython) -> OOM cascade
 support.requires_resource   = lambda *a, **k: _skip
 support.bigmemtest          = lambda *a, **k: _skip
 support.requires_resource   = lambda *a, **k: _skip
