@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyObject_RichCompare` called the comparison method as a bare `fn(b)`**
+      (+4, test_array 686 — `test_cmp` / `test_nan` for the `f`/`d` typecodes).
+      A Brython bound method needs `$B.$call`'s frame setup; `fn(b)` threw, the
+      reflected branch threw too, and the bridge reported "unorderable types".
+      So comparing two *distinct* float/double arrays element-wise (array's C
+      `array_richcompare` calls `PyObject_RichCompare` on the first differing
+      pair) failed, even though `1.0 < 2.0` worked. Delegate to Brython's full
+      protocol `$B.rich_comp(op, a, b)` (call → reflected-on-NotImplemented →
+      identity fallback for ==/!= → TypeError for unorderable). Verified no
+      regression across the full 20-suite sweep.
+
 - [x] **`PyLong_AsUnsignedLong`/`…LongLong` masked instead of raising
       `OverflowError`** (+4, test_array 678→682 — the unsigned `I`/`L`/`Q`
       `test_overflow` typecodes). CPython raises `OverflowError` for a negative

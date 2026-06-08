@@ -5563,21 +5563,18 @@ mergeInto(LibraryManager.library, {
         var a = rt.unwrap(aH);
         var b = rt.unwrap(bH);
         var ops = ['__lt__', '__le__', '__eq__', '__ne__', '__gt__', '__ge__'];
+        // Delegate to Brython's full rich-comparison protocol ($B.rich_comp:
+        // call op, try the reflected op on NotImplemented, identity fallback for
+        // ==/!=, raise TypeError for unorderable). The old code called the bound
+        // method as a bare `fn(b)` — which throws for Brython methods needing
+        // $call's frame setup (e.g. float.__lt__), so comparing two distinct
+        // float/double arrays element-wise died with "unorderable types"
+        // (test_array test_cmp / test_nan).
         try {
-            var fn = rt.$B.$getattr(a, ops[op]);
-            var r = fn(b);
-            return rt.wrap(r);
+            return rt.wrap(rt.$B.rich_comp(ops[op], a, b));
         } catch (e) {
-            try {
-                var rev = ops[[1,0,3,2,5,4][op]];
-                var fn2 = rt.$B.$getattr(b, rev);
-                var r2 = fn2(a);
-                return rt.wrap(r2);
-            } catch (e2) {
-                rt.setError(rt.wrap(rt._b_.TypeError),
-                    "unorderable types");
-                return 0;
-            }
+            rt.forwardError(e, rt._b_.TypeError);
+            return 0;
         }
     },
 
