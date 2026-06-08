@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyUnicode_AsWideChar(s, NULL, 0)` dropped the trailing-NUL count**
+      (+10, test_array 660→670 — the `'u'` wchar_t typecode paths). CPython's
+      size-query form (`buf == NULL`) returns the count *including* the trailing
+      NUL, i.e. `len + 1`; the bridge returned `len`. array's `u_setitem`
+      checks `PyUnicode_AsWideChar(v, NULL, 0) != 2` to reject non-single-char
+      items, so every `array('u', …).append(ch)` / item assignment raised
+      "string %R cannot be converted to a single wchar_t character"; and
+      `array_fromunicode` sizes its copy as `AsWideChar(ustr, NULL, 0) - 1`, so
+      `a.fromunicode('foo')` stored `'fo'`. Return `len + 1` in the NULL-buffer
+      branch (the copy branch already excludes the NUL, per CPython). Verified
+      no regression across the full 20-suite sweep. (The remaining 6 `'u'`/`'w'`
+      failures are a separate bug — unicode array reconstruction in
+      `_array_reconstructor` yields length-0 items during unpickling.)
+
 - [x] **Python subclasses of a C-type weren't picklable** (+26, test_array
       634→660 — the whole test_pickle / test_pickle_for_empty cluster except
       the 'u'/'w' wchar_t typecodes, which fail in a separate bug). Three

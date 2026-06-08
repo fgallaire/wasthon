@@ -6231,15 +6231,22 @@ mergeInto(LibraryManager.library, {
     PySys_Audit: function(eventPtr, formatPtr) { return 0; },
 
     /* PyUnicode_AsWideChar(unicode, buf, n) — copies the unicode's code
-     * points as wchar_t into buf, up to n. Returns number of chars copied
-     * (or required if n is too small). */
+     * points as wchar_t into buf, up to n (excluding a trailing NUL). Returns
+     * the number of chars copied. When buf is NULL it instead returns the size
+     * required to store the contents INCLUDING the trailing NUL (i.e. len + 1)
+     * — CPython's buffer-sizing query. array's u_setitem relies on this:
+     * `AsWideChar(v, NULL, 0) != 2` rejects non-single-char items, and
+     * array_fromunicode sizes the copy as `AsWideChar(ustr, NULL, 0) - 1`.
+     * Returning len here dropped the trailing-NUL count → u.append(ch) raised
+     * "cannot be converted to a single wchar_t character" and
+     * u.fromunicode('foo') stored 'fo'. */
     PyUnicode_AsWideChar__deps: ['$WasthonRT'],
     PyUnicode_AsWideChar: function(uH, bufPtr, n) {
         var rt = WasthonRT;
         var s = rt.asJSStr(rt.unwrap(uH));
         if (s === null) return -1;
         var len = s.length;
-        if (bufPtr === 0) return len;
+        if (bufPtr === 0) return len + 1;
         var copy = Math.min(len, n);
         for (var i = 0; i < copy; i++) {
             HEAP32[(bufPtr + i*4) >> 2] = s.charCodeAt(i);
