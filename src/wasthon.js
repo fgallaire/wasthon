@@ -8098,6 +8098,15 @@ mergeInto(LibraryManager.library, {
         // `struct.pack_into` against array.array writable buffers.
         if (slotMap[1 /* Py_bf_getbuffer */]) {
             cls.$buffer_protocol = true;
+            // Buffer-export safety: the C struct tracks `ob_exports` (count of
+            // live exported buffers); its resize ops raise BufferError when it's
+            // > 0. Brython's memoryview() bumps a disconnected JS `obj.exports`
+            // instead, so the C field stays 0 and mutations never raise. Record
+            // the field's struct offset so the method trampoline can re-sync it
+            // from a live-memoryview frame scan (see make_trampoline). array is
+            // the only wasthon C type exporting a buffer; ob_exports sits after
+            // VAR_HEAD(8) + ob_item + allocated + ob_descr + weakreflist = 24.
+            cls.$wasthon_buf_exports_off = 24;
         }
 
         // Wire Py_tp_new (slot id 65) so Brython can instantiate the type.
@@ -9375,6 +9384,25 @@ mergeInto(LibraryManager.library, {
                 var self = jsArgs[0];
                 if (self && self.__wasthon_ptr__) {
                     selfHandle = self.__wasthon_ptr__;
+                    // Buffer-export safety (array): sync the C struct's
+                    // ob_exports from a live-memoryview scan before the C method
+                    // runs, so resize ops (append/extend/pop/imul/setitem/
+                    // delitem…) raise BufferError while a memoryview is alive and
+                    // succeed once it leaves scope. Mirrors Brython's own
+                    // check_exports (frame-locals scan — no GC needed). Gated to
+                    // types that recorded an ob_exports offset; the scan only
+                    // runs once memoryview() has bumped self.exports.
+                    // Brython's memoryview() keeps a net export count on the
+                    // source object — obj.exports++ on create (py_buffer.js
+                    // memoryview.$factory) and --on release / __exit__
+                    // (memoryview_funcs.release). Sync it into the C struct so
+                    // array's resize ops raise BufferError exactly while a
+                    // memoryview is live (`m = memoryview(a)` AND
+                    // `with memoryview(a):`) and succeed once it is released.
+                    var bufOff = self.ob_type && self.ob_type.$wasthon_buf_exports_off;
+                    if (bufOff !== undefined && typeof self.exports === 'number') {
+                        HEAP32[(self.__wasthon_ptr__ + bufOff) >> 2] = self.exports;
+                    }
                 } else {
                     selfHandle = rt.wrap(self);
                 }

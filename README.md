@@ -519,9 +519,10 @@ Recent ports:
       bundling sqlite in `wasthon-full` viable. Bench validation is still
       blocked on handle reclamation: `tp_dealloc` dispatch has since landed,
       but a loop-bench `con = connect()` drops the Connection at Python
-      scope exit, where there is no FinalizationRegistry hook to DECREF it —
-      so it still leaks. A proper compare-loop bench waits on that
-      scope-exit reclamation. Bridge growth from this port — chief
+      scope exit, outside the explicit `close()`/`with` contract, so its
+      native context leaks (the documented scope-exit residual — not an
+      auto-finalizer, which a synchronous run can't fire promptly anyway).
+      A proper compare-loop bench waits on that scope-exit reclamation. Bridge growth from this port — chief
       among them: `forwardError` helper preserves the original Brython
       exception class through C boundaries (replaces ~30 sites of
       `setError(RuntimeError, e.message)` flattening); `Py_tp_call`
@@ -700,6 +701,15 @@ Infrastructure work that pays back on existing modules:
       `lzma.LZMAFile`/`bz2.BZ2File`/`compression.zstd.ZstdFile` `.close()` so a
       `with` block decref's the compressor it drops and reclaims the context at
       block exit. +8 (`test_lzma` +7, `test_zstd` +1). Details in `CHANGELOG.md`.
+- [x] Buffer-export safety, without a GC — `memoryview(a)` must make array
+      mutations raise `BufferError` while the view lives (and succeed once it's
+      released). No finalizer needed: the bridge syncs the export count Brython
+      already maintains (`obj.exports`, `++` on create / `--` on
+      `release`/`__exit__`) into the C struct's `ob_exports`, which array's
+      resize ops check. Same "connect two already-correct halves" move as the
+      `close()`/`with` contract above — Brython's bookkeeping + CPython's C
+      check, no tracing GC. +28 (`test_array` `test_buffer` + `test_clear`).
+      Details in `CHANGELOG.md`.
 - [ ] Explicit-contract residual — a C instance held by a Python local that is
       dropped or reassigned without a `close()`/`with` is never DECREF'd:
       Brython offers no scope-exit or GC callback into `wasthon_decref`, so its

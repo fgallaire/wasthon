@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Buffer-export safety: array mutations didn't raise `BufferError` while a
+      memoryview was live** (+28, test_array 700→728 — `test_buffer` ×14 +
+      `test_clear` ×14). array's C resize ops (append/extend/pop/`*=`/slice
+      set/del…) check the struct's `ob_exports` and raise `BufferError` when
+      it's > 0, but nothing kept that field set: Brython's `memoryview()` bumps a
+      *JS* `obj.exports` on the source (and `--`s it on `release`/`__exit__` — its
+      own deterministic net count, no GC needed), disconnected from the C struct.
+      The method trampoline now syncs `self.exports` into the C struct's
+      `ob_exports` (offset recorded on any buffer-protocol type — array is the
+      only one) before each call, so resize ops raise exactly while a memoryview
+      is alive — both `m = memoryview(a)` and `with memoryview(a):` — and succeed
+      once it's released. Pure deterministic Stage-1/2 (NOT the rejected
+      tracing-GC door); leans on Brython's existing export accounting. Verified
+      no regression across the full sweep.
+
 - [x] **`PyIter_Next` flattened a Python iterator's exception to `RuntimeError`**
       (+15: test_array 686→700, test_csv 110→111). When a C consumer iterates a
       Python iterable whose `__next__` raises (e.g.
