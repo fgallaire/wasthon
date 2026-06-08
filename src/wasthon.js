@@ -2605,7 +2605,14 @@ mergeInto(LibraryManager.library, {
             rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
             return -1;
         }
-        return (typeof n === 'bigint' ? Number(n) : n) | 0;
+        var v = (typeof n === 'bigint' ? Number(n) : n);
+        // Py_ssize_t is 32-bit in wasm32 — clamp to its range instead of `| 0`
+        // wrapping, which turned a large positive (e.g. sys.maxsize) into a
+        // negative garbage value (zlib decompress(data, sys.maxsize) →
+        // "max_length must be non-negative").
+        if (v > 2147483647) return 2147483647;
+        if (v < -2147483648) return -2147483648;
+        return v | 0;
     },
 
     PyLong_AsSize_t__deps: ['$WasthonRT'],
@@ -7603,7 +7610,11 @@ mergeInto(LibraryManager.library, {
             src = obj.source;
         } else if (obj instanceof Uint8Array) {
             src = obj;
-        } else if (Array.isArray(obj)) {
+        } else if (Array.isArray(obj) && obj.ob_type === undefined) {
+            // Raw JS array (JS-side helper) only — NOT a Brython list/tuple
+            // (those carry ob_type). A list/tuple is not bytes-like, so e.g.
+            // zlib.adler32([]) / crc32(()) must raise TypeError, not treat the
+            // sequence as a buffer.
             src = obj;
         } else {
             // Other buffer-protocol objects (memoryview, array.array, …) don't

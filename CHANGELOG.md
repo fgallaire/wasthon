@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] Two bridge gaps surfaced pushing `test_zlib` toward 100% (+2). (1)
+      `PyLong_AsSsize_t` did `n | 0`, wrapping a large positive to a negative
+      32-bit value — so `zlib.decompressobj().decompress(data, sys.maxsize)`
+      saw `max_length < 0` → "max_length must be non-negative". Clamp to the
+      wasm32 `Py_ssize_t` range `[-2³¹, 2³¹-1]` instead. (2) The buffer-protocol
+      reader (`wasthon_get_buffer_data`) accepted any `Array.isArray` value as a
+      buffer, including Brython `list`/`tuple` (they carry `ob_type`) — so
+      `zlib.adler32([])` / `crc32(())` treated the sequence as bytes instead of
+      raising `TypeError`. Restrict that branch to raw JS arrays (no `ob_type`).
+      Both verified non-regressing across 10 buffer-heavy suites.
+
 - [x] **C-module types/functions weren't picklable** — four linked bridge gaps,
       surfaced by `test_array`'s pickle cluster (array `__reduce_ex__(>=3)` embeds
       `array._array_reconstructor`). Together: +14 (test_array 582→596) and the
