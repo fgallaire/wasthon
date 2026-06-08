@@ -7,6 +7,41 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **C-module types/functions weren't picklable** — four linked bridge gaps,
+      surfaced by `test_array`'s pickle cluster (array `__reduce_ex__(>=3)` embeds
+      `array._array_reconstructor`). Together: +14 (test_array 582→596) and the
+      documented "function pickling" lead resolved for the common case.
+      1. **Type `__module__` defaulted to `builtins`.** `PyType_FromModuleAndSpec`
+         set the class `__module__` only as a raw JS property, but Brython's
+         `type.__module__` getter reads `get_from_dict` and falls back to
+         `'builtins'` when absent — so `pickle` saved `array.array` as
+         `builtins.array` and `loads` failed ("not found as builtins.array").
+         Fix: derive `__module__` from the dotted spec-name prefix (CPython's
+         `PyType_FromMetaclass` sets `tp_dict['__module__'] = name[:lastdot]`)
+         and write it into the type dict, not just a JS property.
+      2. **Function `__module__` defaulted to `builtins`.** `make_trampoline`
+         read `modObj.__name__` as a raw JS property, but Brython modules keep
+         `__name__` in their dict (`module_setattr`) — so every C-module function
+         (`array._array_reconstructor`, `struct.pack`, …) reported
+         `__module__='builtins'` and was unpicklable. Fix: read the module name
+         via `get_from_dict`.
+      3. **Trampolines re-wrapped on entering a container.** A C-function
+         trampoline placed in a tuple/list/dict (e.g. a reduce tuple) was run
+         through Brython's `jsobj2pyobj` by the container `$factory`, which —
+         not recognising the bare JS function — wrapped it in a fresh
+         `JavascriptFunction` named `'tramp'` with `__module__='builtins'`,
+         losing identity and name (so `reduce_ex(3)[0] is _array_reconstructor`
+         was False and pickle saw an unpicklable `<JavascriptFunction>`). Fix:
+         tag trampolines with `$B.PYOBJ` so `jsobj2pyobj` returns them unchanged.
+      4. **Buffer protocol read `.source` instead of the live C buffer.**
+         `wasthon_get_buffer_data` copied `.source` (the zero placeholder) for a
+         bytes whose content a C producer wrote straight into `__wasthon_cstr__`
+         (pickle's `_Unpickler_ReadInto`) before the post-call `syncBytes` fold —
+         so the reconstructor's `items` `Py_buffer` read zeros and unpickled
+         arrays came back all-`0`. Fix: when `__wasthon_cstr_size__` is set (the
+         writable-producer signature), expose the live `__wasthon_cstr__` buffer.
+         Guarded to immutable producer-buffers (bytearray's `w*` path excluded).
+
 - [x] `_Py_hashtable` keyed by raw pointer, breaking `_hmac`'s hash-name lookup —
       the JS-Map-backed shim used the `key` value directly as the Map key.
       `hmacmodule` builds a name→algorithm table by `set`ting with static string

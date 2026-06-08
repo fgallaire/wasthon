@@ -7566,6 +7566,35 @@ mergeInto(LibraryManager.library, {
             return -1;
         }
 
+        // A bytes from PyBytes_FromStringAndSize(NULL,n) is a writable C
+        // buffer: a producer writes content straight into __wasthon_cstr__
+        // while .source stays the zero placeholder until the post-call
+        // syncBytes pass folds it. The buffer protocol can run DURING that C
+        // call (e.g. pickle's _Unpickler_ReadInto fills the buffer, then
+        // array._array_reconstructor reads its `items` Py_buffer in the SAME
+        // load) — before syncBytes — so reading .source returned zeros and
+        // unpickled arrays came back all-0. Expose the live buffer instead.
+        // __wasthon_cstr_size__ is set ONLY on this producer path, so it
+        // precisely selects the case where __wasthon_cstr__ is authoritative;
+        // _PyBytes_Resize/syncBytes clear __wasthon_cstr__ once folded, so a
+        // truthy pointer is always live. bytearray excluded (w* writeback).
+        if (obj.__wasthon_cstr__ &&
+                obj.__wasthon_cstr_size__ !== undefined &&
+                obj.__wasthon_cstr_size__ !== null &&
+                obj.__class__ !== WasthonRT._b_.bytearray) {
+            var clen = obj.__wasthon_cstr_size__;
+            var cbuf = _malloc(clen || 1);
+            if (cbuf === 0 && clen !== 0) {
+                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.MemoryError),
+                    "buffer allocation failed");
+                return -1;
+            }
+            if (clen) HEAPU8.copyWithin(cbuf, obj.__wasthon_cstr__, obj.__wasthon_cstr__ + clen);
+            HEAP32[outBufPtrPtr >> 2] = cbuf;
+            HEAP32[outLenPtr >> 2] = clen;
+            return 0;
+        }
+
         // Source of bytes: Brython bytes/bytearray store an Array<int> in .source;
         // memoryview wraps another buffer-protocol object; raw Uint8Array is
         // accepted for completeness (e.g. when called from JS-side helpers).
@@ -7858,8 +7887,18 @@ mergeInto(LibraryManager.library, {
         // constants like SALT_SIZE) can write to.
         var cls = rt.$B.make_builtin_class(shortName);
         rt.$B.init_dict(cls);
-        cls.__module__ = rt.unwrap(moduleHandle) ?
-            rt.unwrap(moduleHandle).__name__ : "";
+        /* __module__ from the dotted spec name prefix (CPython's
+         * PyType_FromMetaclass sets tp_dict['__module__'] = name[:lastdot]),
+         * else the module's __name__. Without the dotted form, types like
+         * `array.array` got __module__='builtins' and pickle couldn't locate
+         * them ("not found as builtins.array"). Set it BOTH as a JS property
+         * (read by add_function_infos for bound-method __module__) AND in the
+         * type's tp_dict — `type.__module__`'s getter reads get_from_dict and
+         * falls back to 'builtins' when the key is absent. */
+        var moduleName = (dotIdx >= 0) ? fullName.slice(0, dotIdx)
+            : (rt.unwrap(moduleHandle) ? rt.unwrap(moduleHandle).__name__ : "");
+        cls.__module__ = moduleName;
+        rt.$B.set_to_dict(cls, '__module__', moduleName);
         /* Honor the `bases` tuple (3rd arg of PyType_FromModuleAndSpec).
          * make_builtin_class defaulted tp_bases to [object]; without applying
          * the real bases, a C-module exception type built via
@@ -9391,11 +9430,31 @@ mergeInto(LibraryManager.library, {
         var modName = 'builtins';
         try {
             var modObj = moduleHandle ? rt.handles.get(moduleHandle) : null;
-            if (modObj && modObj.__name__) modName = modObj.__name__;
+            if (modObj) {
+                // Brython modules keep __name__ in their dict (module_setattr),
+                // NOT as a raw JS property — reading modObj.__name__ directly
+                // gave undefined, so every C-module function got
+                // __module__='builtins' and pickle couldn't locate it
+                // (e.g. array._array_reconstructor → "not found as
+                // builtins._array_reconstructor"). Read it from the dict.
+                var nm = rt.$B.get_from_dict(modObj, '__name__', rt.$B.NULL);
+                if (nm !== rt.$B.NULL && nm) modName = nm;
+                else if (modObj.__name__) modName = modObj.__name__;
+            }
         } catch (_) {}
         var qn = methName || '';
         tramp.$function_infos = [modName, qn, qn];
         tramp.m_module = modName;
+        /* Mark the trampoline as an already-built Python object. Without this,
+         * Brython's jsobj2pyobj (run by tuple/list/dict $factory on every
+         * element) sees a bare JS function, fails to recognise it, and wraps
+         * it in a fresh JavascriptFunction named after the JS function
+         * ('tramp') with __module__='builtins' — losing identity and the real
+         * name. That broke pickling of any C function placed in a reduce
+         * tuple: array.__reduce_ex__(>=3) embeds array._array_reconstructor,
+         * which became an unpicklable '<JavascriptFunction>' instead of the
+         * builtin. PYOBJ makes jsobj2pyobj return the trampoline unchanged. */
+        try { tramp[rt.$B.PYOBJ] = tramp; } catch (_) {}
         return tramp;
     },
 
