@@ -5487,7 +5487,7 @@ mergeInto(LibraryManager.library, {
         var a = rt.unwrap(aH);
         var b = rt.unwrap(bH);
         if (a === b) return 1;
-        try { return rt.$B.$issubclass(a, b) ? 1 : 0; }
+        try { return rt._b_.issubclass(a, b) ? 1 : 0; }
         catch (e) { return 0; }
     },
 
@@ -8090,8 +8090,18 @@ mergeInto(LibraryManager.library, {
                      * unconditionally for cls !== object. Without this,
                      * Brython's random.py:171 `self.gauss_next = None` on
                      * a Random(_random.Random) subclass crashes with
-                     * "no __dict__ for setting new attributes". */
-                    rt.$B.set_dict(inst, rt.$B.obj_dict({}));
+                     * "no __dict__ for setting new attributes".
+                     * Use init_dict (stores a real empty_dict), NOT
+                     * obj_dict({}): $B.obj_dict is the identity function
+                     * (returns the raw JS object), so self.__dict__ came back
+                     * as a bare JSObject — unpicklable. pickle's reduce embeds
+                     * __dict__ as the instance state, so
+                     * `pickle.dumps(ArraySubclass(...))` died with "cannot
+                     * pickle 'JSObject' object". empty_dict matches Brython's
+                     * canonical object.tp_new (py_object.js:2297). Fixes
+                     * array's subclass pickle cluster (test_pickle /
+                     * test_pickle_for_empty_array across typecodes). */
+                    rt.$B.init_dict(inst);
                 }
                 return inst;
             };
@@ -9444,6 +9454,62 @@ mergeInto(LibraryManager.library, {
                 var s = rt.asJSStr(result);
                 rt.handles.set(resultHandle, s);
                 result = s;
+            }
+            /* Subclass-aware pickle reduce. A C-type's __reduce__/__reduce_ex__
+             * embeds Py_TYPE(self) as the reconstruction class, but for a
+             * Brython subclass instance Py_TYPE (the C struct's ob_type) is the
+             * PARENT C-type — the bridge keeps __wasthon_type__ = parent so the
+             * C side's PyObject_TypeCheck works. So the reduce names the BASE
+             * class; unpickling then rebuilds a base instance, losing the
+             * subclass identity and its __dict__ state ("'array' object has no
+             * attribute '__dict__'"). Patch the result to name the instance's
+             * actual class (self.ob_type) wherever it currently names a strict
+             * base of it — both the (cls, args, state) shape (proto 0-2) and the
+             * (reconstructor, (cls, ...), state) shape (proto 3+). The load side
+             * already accepts the subclass (PyType_IsSubtype → $issubclass). */
+            if (!moduleScope && result &&
+                    (methName === '__reduce_ex__' || methName === '__reduce__')) {
+                var rself = jsArgs[0];
+                var subcls = rself && rself.ob_type;
+                if (subcls && typeof result.length === 'number' && result.length >= 2) {
+                    var isStrictBase = function(t) {
+                        return t && t !== subcls && rt.$B.is_type && rt.$B.is_type(t) &&
+                               rt._b_.issubclass(subcls, t);
+                    };
+                    if (isStrictBase(result[0])) {
+                        result[0] = subcls;                 // proto 0-2: cls is the callable
+                    } else {
+                        var rargs = result[1];
+                        if (rargs && typeof rargs.length === 'number' && isStrictBase(rargs[0])) {
+                            // Reconstructor-function form. The plain swap
+                            // (rargs[0]=subcls) is right when the reconstructor can
+                            // build a subtype (copyreg.__newobj__ →
+                            // subcls.__new__(subcls)). But a binary C reconstructor
+                            // (array._array_reconstructor) cannot allocate a Brython
+                            // subtype on the C side ("index out of bounds"). For
+                            // protocol >= 3, fall back to the type's own protocol-2
+                            // reduce — the constructor form — which reconstructs by
+                            // CALLING the class through the bridge tp_new path (it
+                            // honours subtypes). Only at proto >= 3: proto <= 2 uses
+                            // the constructor form via the branch above, so the
+                            // recursive proto-2 call cannot re-enter here → no loop.
+                            var cur = (methName === '__reduce_ex__' && posArgs.length > 0)
+                                      ? posArgs[0] : 0;
+                            var done = false;
+                            if (cur >= 3) {
+                                try {
+                                    var alt = rt.$B.$call(rt.$B.$getattr(rself, '__reduce_ex__'), 2);
+                                    if (alt && typeof alt.length === 'number' &&
+                                            alt.length >= 2 && rt.$B.is_type(alt[0])) {
+                                        result = alt;   // already subclass-aware (recursion swapped it)
+                                        done = true;
+                                    }
+                                } catch (e) {}
+                            }
+                            if (!done) rargs[0] = subcls;
+                        }
+                    }
+                }
             }
             return result;
         };

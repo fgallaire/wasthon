@@ -7,6 +7,34 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Python subclasses of a C-type weren't picklable** (+26, test_array
+      634→660 — the whole test_pickle / test_pickle_for_empty cluster except
+      the 'u'/'w' wchar_t typecodes, which fail in a separate bug). Three
+      linked bridge gaps, found by probing `pickle.dumps(ArraySubclass(...))`:
+      1. **Instance `__dict__` was a raw JS object.** The subclass `__dict__`
+         was attached with `set_dict(inst, obj_dict({}))`, but `$B.obj_dict`
+         is the identity function — so `inst.__dict__` came back as a bare
+         `JSObject`, and pickle (which embeds `__dict__` as the instance
+         state) died with "cannot pickle 'JSObject' object". Use `init_dict`
+         (a real `empty_dict`), matching Brython's canonical `object.tp_new`.
+      2. **`PyType_IsSubtype` always returned 0 for real subtypes.** It called
+         `$B.$issubclass`, which doesn't exist in the vendored Brython, so the
+         `try` threw and the `catch` returned 0 — the load-side subtype check
+         (`_array_reconstructor`) rejected every subclass. Use `_b_.issubclass`.
+      3. **The reduce named the base class, not the subclass.** A C-type's
+         `__reduce__`/`__reduce_ex__` embeds `Py_TYPE(self)`, but the bridge
+         keeps the C struct's `ob_type` = parent (so C `PyObject_TypeCheck`
+         works), so the reduce named the base and unpickling rebuilt a base
+         instance ("'array' object has no attribute '__dict__'"). The
+         trampoline now rewrites a subclass instance's reduce to name
+         `self.ob_type`: the simple `(cls, args, state)` / `__newobj__` forms
+         get the class swapped in place; a binary C reconstructor that can't
+         allocate a Brython subtype (array's `_array_reconstructor`, which
+         crashed with "index out of bounds") falls back, at protocol >= 3, to
+         the type's own protocol-2 constructor-form reduce — reconstructing by
+         calling the class through the bridge tp_new path. Verified no
+         regression across the full 20-suite sweep.
+
 - [x] **Python subclasses of a C-type rejected constructor kwargs** (+14,
       test_array 620→634). `ArraySubclassWithKwargs('b', newarg=1)` raised
       `TypeError: array.array() takes no keyword arguments`. CPython's
