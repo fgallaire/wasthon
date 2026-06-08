@@ -7,6 +7,22 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyArg_Parse` masked integers instead of range-checking, and choked on
+      `__index__` objects** (+8, test_array 670→678 — the signed `test_overflow`
+      typecodes plus other `Intable` paths). Two gaps in the single-object
+      parser: (1) the signed integer formats (`b`,`h`,`i`,`l`,`L`) wrote
+      `num & 0xff` / `num | 0` etc. — silently truncating — so
+      `array('i').append(2**31)` never raised. CPython's getargs.c range-checks
+      the signed formats and raises `OverflowError` (the unsigned/bitfield
+      `B`,`H`,`I`,`k`,`K` legitimately mask); do the same. (2) An argument with
+      `__index__`/`__int__` was coerced by calling the Brython method as a bare
+      JS `idx()`, which throws (a Brython bound method needs `$B.$call`'s frame
+      setup) — the `catch` then reported a bogus "cannot convert", so every
+      `__index__` object (array's `Intable` test helper, and anything similar
+      across modules) was rejected. Call via `$B.$call`. Verified no regression
+      across the full 20-suite sweep. (`'I'`/`'L'`/`'Q'` overflow is a separate
+      fix — `PyLong_AsUnsignedLong`/`…LongLong` still mask.)
+
 - [x] **`PyUnicode_AsWideChar(s, NULL, 0)` dropped the trailing-NUL count**
       (+10, test_array 660→670 — the `'u'` wchar_t typecode paths). CPython's
       size-query form (`buf == NULL`) returns the count *including* the trailing

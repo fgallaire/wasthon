@@ -1530,7 +1530,12 @@ mergeInto(LibraryManager.library, {
                           rt.$B.$getattr(arg, '__int__', null) ||
                           rt.$B.$getattr(arg, '__float__', null);
                 if (idx) {
-                    var iv = idx();
+                    // $call, not idx(): a Brython bound method needs Brython's
+                    // calling convention (frame setup); a bare idx() throws,
+                    // which the catch turned into a bogus "cannot convert" —
+                    // so every __index__/__int__ object (e.g. array's Intable)
+                    // was rejected by PyArg_Parse.
+                    var iv = rt.$B.$call(idx);
                     if (typeof iv === 'bigint') n = iv;
                     else if (iv && typeof iv.value === 'number') n = iv.value;
                     else n = Number(iv);
@@ -1549,18 +1554,48 @@ mergeInto(LibraryManager.library, {
         }
 
         var num = (typeof n === 'bigint') ? Number(n) : n;
+        // CPython getargs.c range-checks the SIGNED integer formats and raises
+        // OverflowError; the unsigned/bitfield formats (B,H,I,k,K,n) mask. array's
+        // h/i/l/q/B setitems rely on this — e.g. array('i').append(2**31) must
+        // raise OverflowError (test_array test_overflow). `n` is the exact value
+        // (possibly a bigint), so compare it, not the masked store.
+        var oflow = function() {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "PyArg_Parse: integer out of range for format '" + c + "'");
+            return 0;
+        };
         switch (c) {
-            case 'b': case 'B':
+            case 'B':
                 HEAPU8[outPtr] = num & 0xff;
                 break;
-            case 'h': case 'H':
+            case 'b':   // getargs 'b' == unsigned char [0, UCHAR_MAX]
+                if (num < 0 || num > 255) return oflow();
+                HEAPU8[outPtr] = num & 0xff;
+                break;
+            case 'H':
                 HEAP16[outPtr >> 1] = num & 0xffff;
                 break;
-            case 'i': case 'I': case 'l': case 'k': case 'n':
+            case 'h':   // signed short
+                if (num < -32768 || num > 32767) return oflow();
+                HEAP16[outPtr >> 1] = num & 0xffff;
+                break;
+            case 'I': case 'k': case 'n':
                 HEAP32[outPtr >> 2] = num | 0;
                 break;
-            case 'L': case 'K': case 'q': case 'Q': {
+            case 'i': case 'l':   // signed int / long (long is 32-bit on wasm32)
+                if (num < -2147483648 || num > 2147483647) return oflow();
+                HEAP32[outPtr >> 2] = num | 0;
+                break;
+            case 'K': case 'q': case 'Q': {
+                var bigU = (typeof n === 'bigint') ? n : BigInt(Math.trunc(num));
+                if (bigU < 0n) bigU = (1n << 64n) + bigU;
+                HEAP32[outPtr >> 2] = Number(bigU & 0xffffffffn);
+                HEAP32[(outPtr + 4) >> 2] = Number((bigU >> 32n) & 0xffffffffn);
+                break;
+            }
+            case 'L': {   // signed long long [-2**63, 2**63-1]
                 var big = (typeof n === 'bigint') ? n : BigInt(Math.trunc(num));
+                if (big < -(1n << 63n) || big > (1n << 63n) - 1n) return oflow();
                 if (big < 0n) big = (1n << 64n) + big;
                 HEAP32[outPtr >> 2] = Number(big & 0xffffffffn);
                 HEAP32[(outPtr + 4) >> 2] = Number((big >> 32n) & 0xffffffffn);
