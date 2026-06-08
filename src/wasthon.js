@@ -724,13 +724,14 @@ mergeInto(LibraryManager.library, {
             try {
                 if (rt.$B.is_exc && rt.$B.is_exc(e, rt._b_.StopIteration)) return 0;
             } catch (_) {}
-            // Other exceptions: forward to pendingException via class lookup.
-            var excCls = (e && e.__class__) ? e.__class__ : rt._b_.RuntimeError;
-            var msg;
-            if (e && e.args && e.args.length > 0) msg = String(e.args[0]);
-            else if (e && e.message) msg = e.message;
-            else msg = String(e);
-            rt.setError(rt.wrap(excCls), msg);
+            // Other exceptions: forward the ORIGINAL exception. forwardError
+            // recovers the class via get_class when `__class__` is absent on
+            // the raised object (a bare `e.__class__` check fell back to
+            // RuntimeError — so an error from a Python iterator's __next__,
+            // e.g. array(tc, BadIter()), surfaced as RuntimeError instead of
+            // the real type; test_constructor_with_iterable_argument asserts
+            // the original error propagates).
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },

@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyIter_Next` flattened a Python iterator's exception to `RuntimeError`**
+      (+15: test_array 686→700, test_csv 110→111). When a C consumer iterates a
+      Python iterable whose `__next__` raises (e.g.
+      `array(tc, BadIterator())`), the bridge recovered the exception class from
+      a bare `e.__class__`, which is absent on a freshly-raised Brython
+      exception — so the real type was lost and a generic `RuntimeError`
+      surfaced, failing `test_constructor_with_iterable_argument`'s
+      `assertRaises(ValueError, …)`. Forward via `rt.forwardError` (which falls
+      back to `$B.get_class(e)`), keeping the `StopIteration`→NULL contract.
+      General — helps any module iterating a raising Python iterator (csv +1).
+      Verified no regression across the full 20-suite sweep.
+
 - [x] **`PyObject_RichCompare` called the comparison method as a bare `fn(b)`**
       (+4, test_array 686 — `test_cmp` / `test_nan` for the `f`/`d` typecodes).
       A Brython bound method needs `$B.$call`'s frame setup; `fn(b)` threw, the
