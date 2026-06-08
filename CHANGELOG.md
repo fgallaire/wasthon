@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyLong_AsUnsignedLong`/`…LongLong` masked instead of raising
+      `OverflowError`** (+4, test_array 678→682 — the unsigned `I`/`L`/`Q`
+      `test_overflow` typecodes). CPython raises `OverflowError` for a negative
+      value or one exceeding `ULONG_MAX`/`ULLONG_MAX` (the wrap-around variant is
+      `PyLong_AsUnsignedLongMask`); the bridge instead did `>>> 0` / `abs()`, so
+      array's `II`/`LL`/`QQ_setitem` — which call these then compare against the
+      max — never saw an out-of-range value. Range-check and raise. Verified no
+      regression (struct, which packs `I`/`L`/`Q` through the same calls,
+      unchanged).
+
 - [x] **`PyArg_Parse` masked integers instead of range-checking, and choked on
       `__index__` objects** (+8, test_array 670→678 — the signed `test_overflow`
       typecodes plus other `Intable` paths). Two gaps in the single-object

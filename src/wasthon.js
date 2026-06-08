@@ -2619,7 +2619,21 @@ mergeInto(LibraryManager.library, {
             rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
             return 0xFFFFFFFF;
         }
-        return (typeof n === 'bigint' ? Number(n) : n) >>> 0;
+        // CPython raises OverflowError for negative or > ULONG_MAX (the masking
+        // variant is PyLong_AsUnsignedLongMask). array's II/LL_setitem and
+        // struct rely on this to reject out-of-range unsigned items.
+        var b = (typeof n === 'bigint') ? n : BigInt(Math.trunc(n));
+        if (b < 0n) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "can't convert negative value to unsigned int");
+            return 0xFFFFFFFF;
+        }
+        if (b > 0xFFFFFFFFn) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "Python int too large to convert to C unsigned long");
+            return 0xFFFFFFFF;
+        }
+        return Number(b) >>> 0;
     },
 
     PyLong_AsUnsignedLongMask__deps: ['$WasthonRT'],
@@ -2673,9 +2687,25 @@ mergeInto(LibraryManager.library, {
     PyLong_AsUnsignedLongLong: function(handle) {
         var rt = WasthonRT;
         var n = rt.coerceInt(rt.unwrap(handle));
-        if (n === undefined) return 0n;
-        if (typeof n === 'bigint') return n < 0n ? 0n : n;
-        return BigInt(Math.trunc(Math.abs(n)));
+        if (n === undefined) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
+            return 0xFFFFFFFFFFFFFFFFn;
+        }
+        // CPython raises OverflowError for negative or > ULLONG_MAX (the prior
+        // code clamped negatives to 0 and abs()'d — wrong). array QQ_setitem
+        // relies on this to reject out-of-range unsigned long long items.
+        var b = (typeof n === 'bigint') ? n : BigInt(Math.trunc(n));
+        if (b < 0n) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "can't convert negative value to unsigned long long");
+            return 0xFFFFFFFFFFFFFFFFn;
+        }
+        if (b > 0xFFFFFFFFFFFFFFFFn) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "int too large to convert to C unsigned long long");
+            return 0xFFFFFFFFFFFFFFFFn;
+        }
+        return b;
     },
 
     PyLong_FromLongLong__deps: ['$WasthonRT'],
