@@ -8039,7 +8039,21 @@ mergeInto(LibraryManager.library, {
         if (tpNewPtr) {
             cls.tp_new = function(brythonCls, args, kw) {
                 var argsH = rt.wrap(args || []);
-                var kwH   = (kw && rt._b_.dict.mp_length(kw) > 0) ? rt.wrap(kw) : 0;
+                // For a Python subclass of a C-type, don't forward kwargs to the
+                // C tp_new. CPython's array_new (and most C tp_new) only reject
+                // kwargs when `type` is the exact base
+                // (`if (type == state->ArrayType && !_PyArg_NoKeywords(...))`),
+                // letting a subtype's __init__ consume them. We always invoke the
+                // C tp_new with the parent typeHandle (the instance identity is
+                // patched to brythonCls afterwards, below), so that base-only
+                // guard would wrongly fire on a subclass — strip the kwargs here;
+                // Brython still delivers them to the subclass __init__/tp_init.
+                // Fixes array test_subclass_with_kwargs (ArraySubclassWithKwargs
+                // 'b', newarg=1) across all typecodes; base instantiation
+                // (brythonCls === cls) still forwards kwargs so
+                // `array.array(spam=42)` keeps raising TypeError.
+                var isSubclass = brythonCls && brythonCls !== cls;
+                var kwH   = (!isSubclass && kw && rt._b_.dict.mp_length(kw) > 0) ? rt.wrap(kw) : 0;
                 rt.pendingException = null;
                 var resultH = getWasmTableEntry(tpNewPtr)(typeHandle, argsH, kwH);
                 if (rt.pendingException) {

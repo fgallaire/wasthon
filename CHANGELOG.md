@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Python subclasses of a C-type rejected constructor kwargs** (+14,
+      test_array 620→634). `ArraySubclassWithKwargs('b', newarg=1)` raised
+      `TypeError: array.array() takes no keyword arguments`. CPython's
+      `array_new` only rejects kwargs for the *exact* base type
+      (`if (type == state->ArrayType && !_PyArg_NoKeywords(...))`); a subtype's
+      kwargs are left for its `__init__`. The bridge's heap-type `cls.tp_new`
+      wrapper always calls the C tp_new with the parent `typeHandle` (it patches
+      the instance's `ob_type` to the subclass *after* the call), so that
+      base-only guard wrongly fired on every subclass. Fix: when instantiating a
+      subclass (`brythonCls !== cls`), don't forward kwargs to the C tp_new —
+      Brython still delivers them to the subclass `__init__`/`tp_init`. Base
+      instantiation is unchanged, so `array.array(spam=42)` still raises.
+      Verified +14 with zero regression across array/decimal/sqlite3/csv/pyexpat/struct.
+
 - [x] Two bridge gaps surfaced pushing `test_zlib` toward 100% (+2). (1)
       `PyLong_AsSsize_t` did `n | 0`, wrapping a large positive to a negative
       32-bit value — so `zlib.decompressobj().decompress(data, sys.maxsize)`
