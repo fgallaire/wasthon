@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **C types had no `__new__`, and `__slots__` subclasses still got a
+      `__dict__`** (+12, test_array 728→740 — `test_subclassing` ×14). Two gaps
+      in C-type subclassing: (1) `array.array.__new__` resolved to
+      `object.__new__` (the C `tp_new` was wired as `cls.tp_new` for
+      instantiation but never exposed as the `__new__` attribute), so an
+      explicit `array.array.__new__(cls, typecode, data)` hit object's
+      one-arg-only `__new__`. Expose it by mirroring Brython's `make_new`
+      (a `__new__` that forwards to `cls.tp_new`). (2) The subclass `__dict__`
+      was attached unconditionally; the canonical `object.tp_new` skips it when
+      the subclass defines `__slots__`, so a `__slots__`-only subclass must have
+      NO `__dict__` and `setattr(a, 'color')` must raise `AttributeError`. Gate
+      `init_dict` on the absence of `__slots__` (subclasses without slots, e.g.
+      random.Random, keep their `__dict__` — unchanged). Verified no regression.
+
 - [x] **Buffer-export safety: array mutations didn't raise `BufferError` while a
       memoryview was live** (+28, test_array 700→728 — `test_buffer` ×14 +
       `test_clear` ×14). array's C resize ops (append/extend/pop/`*=`/slice

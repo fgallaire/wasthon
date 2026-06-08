@@ -8179,12 +8179,33 @@ mergeInto(LibraryManager.library, {
                      * pickle 'JSObject' object". empty_dict matches Brython's
                      * canonical object.tp_new (py_object.js:2297). Fixes
                      * array's subclass pickle cluster (test_pickle /
-                     * test_pickle_for_empty_array across typecodes). */
-                    rt.$B.init_dict(inst);
+                     * test_pickle_for_empty_array across typecodes).
+                     * Only when the subclass has no __slots__ — matching the
+                     * canonical object.tp_new, so a `__slots__`-only subclass
+                     * (test_subclassing's ExaggeratingArray) gets NO __dict__
+                     * and `setattr(a, 'color')` raises AttributeError. */
+                    if (rt.$B.get_from_dict(brythonCls, '__slots__', rt.$B.NULL) === rt.$B.NULL) {
+                        rt.$B.init_dict(inst);
+                    }
                 }
                 return inst;
             };
             cls.tp_new.$is_slot = true;
+            // Expose the C tp_new as __new__ in the class dict so an explicit
+            // `Type.__new__(cls, *args)` (e.g. test_subclassing's
+            // `array.array.__new__(cls, typecode, data)`) dispatches to it
+            // instead of inheriting object.__new__, which rejects the extra
+            // args ("object.__new__() takes exactly one argument"). Mirrors
+            // Brython's make_new (finalize_builtin_types).
+            var newFunc = function() {
+                var na = rt.$B.args('__new__', 1, {cls: null}, arguments, null, 'args', 'kw');
+                return cls.tp_new(na.cls, na.args, na.kw);
+            };
+            newFunc.ob_type = rt.$B.builtin_function_or_method;
+            newFunc.m_self = cls;
+            newFunc.ml = { ml_name: '__new__' };
+            rt.$B.set_function_infos(newFunc, { __name__: '__new__', __qualname__: '__new__' });
+            rt.$B.set_to_dict(cls, '__new__', newFunc);
         } else if (cls.tp_mro && cls.tp_mro.indexOf(rt._b_.BaseException) > -1) {
             // Exception subclass built with exception bases (e.g. _csv.Error =
             // PyType_FromModuleAndSpec(..., PyTuple_Pack(1, PyExc_Exception)))
