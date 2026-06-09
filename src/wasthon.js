@@ -1464,15 +1464,87 @@ mergeInto(LibraryManager.library, {
             return 1;
         }
         if (c === 'w' && fmt[1] === '*') {
-            // 'w*' — writable buffer view. Used by _struct.pack_into.
-            // Materialize the Brython bytearray's bytes into linear memory
-            // (where C can write); paired with PyBuffer_Release for
-            // write-back. Py_buffer layout on wasm32 = 12 * 4 = 48 bytes.
-            var src = arg && (arg.source || (arg instanceof Uint8Array ? arg : null));
+            // 'w*' — writable buffer view. Used by _struct.pack_into, whose
+            // canonical target is `memoryview(array.array('b', b' '*100))`.
+            var vp = outPtr;                                        // &Py_buffer
+
+            // A memoryview is the usual pack_into target; Brython keeps the real
+            // object in `.obj`. Unwrap to it. A non-contiguous view (e.g.
+            // writable_buf[::2]) cannot host a linear write — reject it, matching
+            // CPython's getbuffer(PyBUF_WRITABLE) "not C-contiguous" TypeError.
+            var target = arg, targetH = argH;
+            if (arg && (arg.ob_type === rt._b_.memoryview ||
+                        arg.__class__ === rt._b_.memoryview)) {
+                if (arg.contiguous === false || arg.c_contiguous === false) {
+                    rt.setError(rt.wrap(rt._b_.TypeError),
+                        "memoryview: underlying buffer is not C-contiguous");
+                    return 0;
+                }
+                target = arg.obj;
+                targetH = rt.wrap(target);
+            }
+
+            // (a) A wasthon buffer-protocol C object (array.array) already keeps
+            // its storage in WASM linear memory, so point the Py_buffer straight
+            // at ob_item — C writes land in the real array, with no copy and no
+            // write-back. wasthon arrayobject keeps ob_item just past VAR_HEAD,
+            // at offset 8 (verified by dumping the struct). The exported byte
+            // length is len()*itemsize (== CPython array_buffer_getbuf view->len).
+            if (target && target.__wasthon_ptr__) {
+                var wk = target.__class__;
+                var wbuf = wk && (wk.$buffer_protocol || (wk.__mro__ &&
+                    wk.__mro__.some(function(b){ return b && b.$buffer_protocol; })));
+                if (wbuf) {
+                    var aptr = target.__wasthon_ptr__;
+                    var obItem = HEAP32[(aptr + 8) >> 2];          // ob_item @ 8
+                    // Byte length from Python len()*itemsize (== view->len in
+                    // array_buffer_getbuf); avoids reading the raw ob_size word.
+                    var nel = rt._b_.len(target);
+                    nel = (typeof nel === 'bigint') ? Number(nel)
+                        : (nel && nel.value !== undefined ? nel.value : Number(nel));
+                    var itsz = rt.$B.$getattr(target, 'itemsize');
+                    itsz = (typeof itsz === 'bigint') ? Number(itsz)
+                         : (itsz && itsz.value !== undefined ? itsz.value : Number(itsz));
+                    HEAP32[(vp +  0) >> 2] = obItem;               // buf (borrowed)
+                    HEAP32[(vp +  4) >> 2] = targetH;              // obj
+                    HEAP32[(vp +  8) >> 2] = nel * itsz;           // len
+                    HEAP32[(vp + 12) >> 2] = 1;                    // itemsize
+                    HEAP32[(vp + 16) >> 2] = 0;                    // readonly (writable)
+                    HEAP32[(vp + 20) >> 2] = 1;                    // ndim
+                    HEAP32[(vp + 24) >> 2] = 0;                    // format
+                    HEAP32[(vp + 28) >> 2] = 0;                    // shape
+                    HEAP32[(vp + 32) >> 2] = 0;                    // strides
+                    HEAP32[(vp + 36) >> 2] = 0;                    // suboffsets
+                    HEAP32[(vp + 40) >> 2] = 0;                    // internal
+                    // Mark the view borrowed so PyBuffer_Release neither copies
+                    // back nor frees ob_item (it belongs to the array).
+                    (rt._wasthonBorrowedViews ||
+                        (rt._wasthonBorrowedViews = new Set())).add(vp);
+                    return 1;
+                }
+            }
+
+            // (b) A Brython bytearray (writable) or raw Uint8Array: materialize
+            // its bytes into linear memory (where C can write); paired with
+            // PyBuffer_Release for write-back. A writable buffer is anything
+            // exposing `.source` EXCEPT immutable bytes; str / list / None have
+            // no `.source`. (Identity vs rt._b_.bytearray is unreliable across
+            // realms — compare the class NAME.) Py_buffer = 48 bytes.
+            var tn = "?"; try {
+                tn = rt.$B.class_name ? rt.$B.class_name(target) :
+                     (target && target.__class__ && target.__class__.__name__);
+            } catch (e) {}
+            var src = null;
+            if (target && target.source !== undefined &&
+                    target.source !== null && tn !== 'bytes') {
+                src = target.source;
+            } else if (target instanceof Uint8Array) {
+                src = target;
+            }
             if (!src) {
                 rt.setError(rt.wrap(rt._b_.TypeError),
-                    "PyArg_Parse: 'w*' expects a writable buffer (got " +
-                    (typeof arg) + ")");
+                    "argument must be read-write bytes-like object, not " +
+                    (target === null || target === undefined ? 'None' : tn));
                 return 0;
             }
             var blen = src.length;
@@ -1482,9 +1554,8 @@ mergeInto(LibraryManager.library, {
                 return 0;
             }
             HEAPU8.set(src, bbuf);
-            var vp = outPtr;                                        // &Py_buffer
             HEAP32[(vp +  0) >> 2] = bbuf;                          // buf
-            HEAP32[(vp +  4) >> 2] = argH;                          // obj (handle)
+            HEAP32[(vp +  4) >> 2] = targetH;                      // obj (handle)
             HEAP32[(vp +  8) >> 2] = blen;                          // len
             HEAP32[(vp + 12) >> 2] = 1;                             // itemsize
             HEAP32[(vp + 16) >> 2] = 0;                             // readonly (writable)
@@ -1696,10 +1767,46 @@ mergeInto(LibraryManager.library, {
     PyNumber_AsSsize_t: function(handle, excH) {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
-        if (typeof obj === 'number') return obj | 0;
-        if (typeof obj === 'bigint') return Number(obj) | 0;
-        if (excH) rt.setError(excH, "cannot convert to Py_ssize_t");
-        return -1;
+        // Mirror CPython's PyNumber_AsSsize_t(o, exc): coerce via __index__,
+        // then range-check against Py_ssize_t. On overflow, raise `exc` if the
+        // caller supplied one (struct.pack_into passes IndexError), else
+        // OverflowError. An object WITHOUT __index__ (None, float, str) is a
+        // TypeError regardless of `exc` — not the overflow path.
+        var big;
+        if (typeof obj === 'number' && Number.isInteger(obj)) {
+            big = BigInt(obj);
+        } else if (typeof obj === 'bigint') {
+            big = obj;
+        } else {
+            var idx = null;
+            try { idx = rt.$B.$getattr(obj, '__index__', null); } catch (e) { idx = null; }
+            if (!idx) {
+                var nm = "?"; try {
+                    nm = rt.$B.class_name ? rt.$B.class_name(obj) : typeof obj;
+                } catch (e) {}
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                    "'" + nm + "' object cannot be interpreted as an integer");
+                return -1;
+            }
+            try {
+                var iv = rt.$B.$call(idx);
+                big = (typeof iv === 'bigint') ? iv
+                    : (iv && iv.value !== undefined) ? BigInt(iv.value) : BigInt(iv);
+            } catch (e) {
+                if (rt.forwardError) rt.forwardError(e, rt._b_.TypeError);
+                else rt.setError(rt.wrap(rt._b_.TypeError), "__index__ returned non-int");
+                return -1;
+            }
+        }
+        // Py_ssize_t is 32-bit on wasm32 (intptr_t).
+        if (big < -2147483648n || big > 2147483647n) {
+            if (excH) rt.setError(excH,
+                "cannot fit 'int' into an index-sized integer");
+            else rt.setError(rt.wrap(rt._b_.OverflowError),
+                "Python int too large to convert to C ssize_t");
+            return -1;
+        }
+        return Number(big);
     },
 
     _PyLong_GetZero__deps: ['$WasthonRT'],
@@ -7735,6 +7842,15 @@ mergeInto(LibraryManager.library, {
     wasthon_buffer_release__deps: ['$WasthonRT'],
     wasthon_buffer_release: function(viewPtr) {
         if (viewPtr === 0) return;
+        // A view borrowed from a wasthon buffer object's own storage
+        // (array.array ob_item, via the 'w*' path): C wrote straight into the
+        // array, so there is nothing to copy back and the pointer is owned by
+        // the array — it must not be freed.
+        if (WasthonRT._wasthonBorrowedViews &&
+                WasthonRT._wasthonBorrowedViews.has(viewPtr)) {
+            WasthonRT._wasthonBorrowedViews.delete(viewPtr);
+            return;
+        }
         var bufPtr   = HEAP32[viewPtr >> 2];
         var objH     = HEAP32[(viewPtr + 4) >> 2];
         var len      = HEAP32[(viewPtr + 8) >> 2];

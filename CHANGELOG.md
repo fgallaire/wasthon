@@ -7,6 +7,27 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`struct.pack_into` couldn't write into an `array.array` / `memoryview`
+      buffer** (+2: test_struct 26→28 — `test_pack_into` / `test_pack_into_fn` —
+      jointly with the companion `memoryview` slice-contiguity fix in
+      `BRYTHON_FIX.md`). Two bridge gaps on `pack_into`'s path, both surfaced by
+      `pack_into(memoryview(array.array('b', b' '*100)), off, v)`:
+      (1) `PyArg_Parse`'s `'w*'` (writable buffer) only accepted a Brython
+      bytearray's `.source` — but the canonical target is a `memoryview` over an
+      `array.array`, which has neither `.source` nor a JS `Uint8Array`. Unwrap a
+      `memoryview` to its underlying object, and for a wasthon buffer-protocol C
+      type (array) point the `Py_buffer` straight at the object's `ob_item` (its
+      storage already lives in linear memory) — C writes land in the real array
+      with no copy and no write-back; a JS `Set` marks the view borrowed so
+      `PyBuffer_Release` neither copies back nor frees `ob_item`. A non-contiguous
+      view (`buf[::2]`) and immutable `bytes` are rejected (TypeError), matching
+      CPython's `getbuffer(PyBUF_WRITABLE)`. (2) `PyNumber_AsSsize_t` (which
+      parses the offset) truncated via `Number(x)|0` and raised a blanket
+      `IndexError`; make it faithful — coerce through `__index__`, raise
+      `TypeError` for a non-index object (None/float), and on Py_ssize_t overflow
+      raise the caller's `exc` (`pack_into` passes `IndexError`) or
+      `OverflowError`. Shared primitive — array calls it too.
+
 - [x] **C types' `tp_init` wasn't exposed as `__init__`** (+5: test_struct
       24→26, test_sqlite3 310→313). Sibling of the `__new__` gap below: the
       bridge wired the C init slot as `cls.tp_init` (used by Brython's
