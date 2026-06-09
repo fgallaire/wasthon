@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **C types' `tp_init` wasn't exposed as `__init__`** (+5: test_struct
+      24→26, test_sqlite3 310→313). Sibling of the `__new__` gap below: the
+      bridge wired the C init slot as `cls.tp_init` (used by Brython's
+      `type.tp_call` at instantiation) but never set the `__init__` *attribute*,
+      so an explicit `inst.__init__(args)` — `Struct.__init__('>hh')`
+      re-initialization — and a subclass's `super().__init__(args)` both fell
+      through to `object.__init__`, which rejects the extra args ("object.
+      __init__() takes exactly one argument"). Expose it by mirroring Brython's
+      `wrap('__init__')`: a `wrapper_descriptor` over `cls.tp_init` in the class
+      dict. Shared primitive — landed across struct and sqlite3.
+
 - [x] **C types had no `__new__`, and `__slots__` subclasses still got a
       `__dict__`** (+12, test_array 728→740 — `test_subclassing` ×14). Two gaps
       in C-type subclassing: (1) `array.array.__new__` resolved to

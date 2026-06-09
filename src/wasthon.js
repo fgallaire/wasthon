@@ -8739,6 +8739,14 @@ mergeInto(LibraryManager.library, {
                     throw rt.$B.$call(exc, typeof msg === 'string' ? msg : String(msg));
                 }
             };
+            // Expose the C tp_init as the __init__ attribute, so an explicit
+            // `inst.__init__(args)` (Struct reinit `s.__init__('>hh')`) and a
+            // subclass's `super().__init__(args)` dispatch to it instead of
+            // falling through to object.__init__, which rejects the extra args
+            // ("object.__init__() takes exactly one argument"). Mirrors Brython's
+            // wrap('__init__') in finalize_builtin_types.
+            rt.$B.set_to_dict(cls, '__init__', rt.$B.wrapper_descriptor.$factory(
+                cls, '__init__', cls.tp_init));
         } else if (tpNewPtr) {
             // tp_new fully initialised; alias to object so Brython skips init.
             cls.tp_init = rt._b_.object.tp_init;
