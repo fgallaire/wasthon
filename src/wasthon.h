@@ -572,8 +572,13 @@ int        PyDict_GetItemRef(PyObject *dict, PyObject *key, PyObject **result);
 /* Generic setattr counterpart. */
 int       PyObject_GenericSetAttr(PyObject *o, PyObject *name, PyObject *value);
 
-/* PyObject_TypeCheck — isinstance via direct type comparison. */
-#define PyObject_TypeCheck(op, t)  (Py_TYPE(op) == (t))
+/* PyObject_TypeCheck — exact match or subtype, like CPython's
+ * (Py_IS_TYPE(ob, type) || PyType_IsSubtype(Py_TYPE(ob), type)).
+ * Exact-only "worked" while subclass instances carried their parent's
+ * type handle; once Py_TYPE became faithful for subclasses, the
+ * sqlite3 cursor/row factory guards needed the real subtype walk. */
+#define PyObject_TypeCheck(op, t) \
+    (Py_TYPE(op) == (t) || PyType_IsSubtype(Py_TYPE(op), (t)))
 
 /* _PyObject_SIZE — sizeof for variable-size objects. _struct stack-allocs
  * format arrays; for our bridge the size doesn't really matter. */

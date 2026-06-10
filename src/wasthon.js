@@ -8417,17 +8417,24 @@ mergeInto(LibraryManager.library, {
                 }
                 var instancePtr = _malloc(size);
                 HEAPU8.fill(0, instancePtr, instancePtr + size);
+                /* Py_TYPE(inst) must be the INSTANTIATED class, not the
+                 * ancestor that supplied the layout — CPython's object_new
+                 * calls tp_alloc(type, 0) with the subtype. _decimal's
+                 * SignalDict = type('SignalDict', (MutableMapping,
+                 * SignalDictMixin), {}) is exact-type-checked
+                 * (Py_IS_TYPE(v, state->PyDecSignalDict_Type)) in
+                 * signaldict_richcompare; with the Mixin's handle here the
+                 * assert aborted on every flags/traps comparison. For the
+                 * defining class itself this is the same handle as before
+                 * (its own type struct). PyObject_TypeCheck (sqlite3 Cursor
+                 * clinic guards, etc.) still passes via its subtype walk. */
                 var inst = {
                     __class__: brythonCls,
                     ob_type: brythonCls,
                     __wasthon_ptr__: instancePtr,
-                    /* Without this, Py_TYPE(inst) (wasthon_get_type_of)
-                     * can't return the type-struct pointer, so
-                     * PyObject_TypeCheck(inst, &XxxType) — used by clinic
-                     * __init__ guards like sqlite3 Cursor(connection) —
-                     * always fails. Mirror what wasthon_object_gc_new does
-                     * for types that DO have a Py_tp_new slot. */
-                    __wasthon_type__: typeStructForInst || typeHandle,
+                    __wasthon_type__: brythonCls.__wasthon_type_handle__ ||
+                                      rt.ensureTypeStruct(brythonCls) ||
+                                      typeStructForInst || typeHandle,
                 };
                 rt.bindInstance(instancePtr, inst);
                 return inst;

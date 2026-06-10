@@ -7,6 +7,22 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Subclass instances lied about their C type — SignalDict comparisons
+      aborted** (+4: test_decimal 284→288). The no-tp_new default allocator
+      stamped instances with the handle of the ANCESTOR that supplied the
+      layout, where CPython's `object_new` honors the instantiated subtype
+      (`tp_alloc(type, 0)`). `_decimal`'s SignalDict —
+      `type('SignalDict', (MutableMapping, SignalDictMixin), {})` — is
+      exact-type-checked (`Py_IS_TYPE(v, state->PyDecSignalDict_Type)`) in
+      `signaldict_richcompare`, so every `context.flags == …` comparison
+      aborted on the assert. Stamp `__wasthon_type__` with the instantiated
+      class's own type struct. That honesty exposed the COMPENSATING bug:
+      `PyObject_TypeCheck` was an exact pointer compare (it only passed for
+      subclasses BECAUSE they carried the parent's handle) — sqlite3's
+      cursor/row factory guards (`cursor(factory=MyCursor)`) broke (−2).
+      Make it faithful: exact match OR `PyType_IsSubtype` walk, like
+      CPython's. sqlite3 314 restored, zero regression elsewhere.
+
 - [x] **C-created str placeholders were opaque to Python callees** (+8:
       test_decimal 276→284). A PyUnicode built C-side (`PyUnicode_New` +
       memcpy) is a lazy linear-memory placeholder, materialized on demand by
