@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **type→module lookup didn't follow inheritance (and MRO walks read the
+      wrong field)** (+2: test_decimal 274→276, unlocks classmethods on
+      subclasses — `MyDecimal.from_float(0.5)` now returns a MyDecimal).
+      Two halves of one defect: (1) `PyType_GetModuleByDef` /
+      `wasthon_type_get_module` (which backs `PyType_GetModule` /
+      `_PyType_GetModuleState`) only checked `__wasthon_module__` on the type
+      itself, where CPython walks tp_mro — a Python subclass of a C type owns
+      no module entry, so `get_module_state_by_def` returned NULL and
+      `_decimal` asserted. Add the MRO walk. (2) Brython 3.14 stores a class's
+      MRO as `tp_mro` (`$B.get_mro` reads `tp_mro ?? __mro__`); the bridge's
+      walks — including the pre-existing `PyType_GetBaseByToken` — read only
+      `__mro__`, which exists just on a few legacy builtins, so every walk was
+      a no-op exactly for the subclasses that needed it. Read
+      `tp_mro || __mro__`.
+
 - [x] **METH_CLASS methods were installed as plain methods — the value arrived
       as `cls`** (+4: test_decimal 270→274). The bridge installed every
       PyMethodDef entry the same way, so a C classmethod like

@@ -1411,8 +1411,11 @@ mergeInto(LibraryManager.library, {
             if (resultPtr !== 0) HEAP32[resultPtr >> 2] = 0;
             return 0;
         }
-        // Walk MRO. Brython exposes it as cls.__mro__ (an array of classes).
-        var mro = cls.__mro__;
+        // Walk MRO. Brython 3.14 stores it as cls.tp_mro (classes built by
+        // make_class / type()); __mro__ only exists on a few legacy builtins
+        // ($B.get_mro reads tp_mro ?? __mro__). Reading only __mro__ made the
+        // walk a no-op for every Python-defined subclass of a C type.
+        var mro = cls.tp_mro || cls.__mro__;
         if (mro) {
             // Include cls itself first.
             if (cls.__wasthon_type_token__ === token) {
@@ -1826,13 +1829,26 @@ mergeInto(LibraryManager.library, {
 
     /* PyType_GetModuleByDef — looks up the module that owns a type, given
      * a module def. Used in the per-module state pattern. We already track
-     * type→module via __wasthon_module__; def matching is loose. */
+     * type→module via __wasthon_module__; def matching is loose. CPython
+     * walks tp_mro — a Python SUBCLASS of a C type (test_decimal subclasses
+     * Decimal/Context everywhere) has no __wasthon_module__ of its own, so
+     * without the walk get_module_state_by_def(Py_TYPE(self)) returned NULL
+     * and _decimal's `assert(mod != NULL)` aborted the whole suite. */
     PyType_GetModuleByDef__deps: ['$WasthonRT'],
     PyType_GetModuleByDef: function(typeHandle, defHandle) {
         var rt = WasthonRT;
         var t = rt.unwrap(typeHandle);
-        if (!t || !t.__wasthon_module__) return 0;
-        return t.__wasthon_module__;
+        if (!t) return 0;
+        if (t.__wasthon_module__) return t.__wasthon_module__;
+        var mro = t.tp_mro || t.__mro__;
+        if (mro) {
+            for (var i = 0; i < mro.length; i++) {
+                if (mro[i] && mro[i].__wasthon_module__) {
+                    return mro[i].__wasthon_module__;
+                }
+            }
+        }
+        return 0;
     },
 
     /* PyType_GenericNew — default tp_new that allocates via tp_alloc. */
@@ -7918,9 +7934,21 @@ mergeInto(LibraryManager.library, {
 
     wasthon_type_get_module__deps: ['$WasthonRT'],
     wasthon_type_get_module: function(typeHandle) {
+        // Same MRO walk as PyType_GetModuleByDef (this one backs C's
+        // PyType_GetModule / _PyType_GetModuleState): a Python subclass of a
+        // C type carries no __wasthon_module__ of its own.
         var t = WasthonRT.unwrap(typeHandle);
-        if (!t || !t.__wasthon_module__) return 0;
-        return t.__wasthon_module__;
+        if (!t) return 0;
+        if (t.__wasthon_module__) return t.__wasthon_module__;
+        var mro = t.tp_mro || t.__mro__;
+        if (mro) {
+            for (var i = 0; i < mro.length; i++) {
+                if (mro[i] && mro[i].__wasthon_module__) {
+                    return mro[i].__wasthon_module__;
+                }
+            }
+        }
+        return 0;
     },
 
     /* --------------------------------------------------------------- *
