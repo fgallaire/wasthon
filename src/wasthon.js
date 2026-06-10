@@ -9477,6 +9477,26 @@ mergeInto(LibraryManager.library, {
                 // `class T: helper = somemodule.somefunc`.
                 trampoline.ob_type = rt.$B.builtin_function_or_method;
                 rt.$B.module_setattr(target, name, trampoline);
+            } else if (flags & 0x0010 /* METH_CLASS */) {
+                // C classmethod (Decimal.from_float, …): install a real
+                // Brython classmethod descriptor so the CLASS is bound as
+                // the first argument. It was installed as a plain method, so
+                // `Decimal.from_float(2.5)` reached the trampoline with the
+                // FLOAT as `self` → the C function cast it to PyTypeObject*
+                // → get_module_state_by_def asserted (mod != NULL) and the
+                // value arg was NULL.
+                target.tp_funcs = target.tp_funcs || {};
+                target.tp_funcs[name] = trampoline;
+                trampoline.ob_type = rt.$B.builtin_method;
+                try {
+                    var cmDict = rt.$B.get_dict(target);
+                    if (cmDict) {
+                        rt.$B.str_dict_set(cmDict, name, {
+                            ob_type: rt._b_.classmethod,
+                            cm_callable: trampoline,
+                        });
+                    }
+                } catch (_) {}
             } else {
                 target.tp_funcs = target.tp_funcs || {};
                 target.tp_funcs[name] = trampoline;
@@ -9630,19 +9650,15 @@ mergeInto(LibraryManager.library, {
                 } else if (flags & METH_O_) {
                     // METH_O: exactly one positional argument. CPython
                     // raises TypeError on 0 or >1 positional args.
-                    // EXCEPTION: METH_CLASS routes the cls binding through
-                    // a path where Brython presents the value via `self`
-                    // and leaves nargs=0 for the trampoline (e.g.
-                    // `Decimal.from_float(42.5)`). Skip the count check
-                    // when METH_CLASS is set — the C function still gets
-                    // both `cls` and the value via the existing dispatch.
-                    if (!(flags & METH_CLASS) &&
-                            (nargs !== 1 || kwNames.length > 0)) {
+                    // (METH_CLASS is bound via a real classmethod descriptor
+                    // at install time, so `cls` arrives as `self` and the
+                    // value as the single positional — no exemption needed.)
+                    if (nargs !== 1 || kwNames.length > 0) {
                         throw rt.$B.$call(rt._b_.TypeError,
                             methName + "() takes exactly one argument (" +
                             (nargs + kwNames.length) + " given)");
                     }
-                    resultHandle = fn(selfHandle, nargs > 0 ? rt.wrap(posArgs[0]) : 0);
+                    resultHandle = fn(selfHandle, rt.wrap(posArgs[0]));
                 } else if (flags & KEYWORDS) {
                     // METH_VARARGS | METH_KEYWORDS (legacy):
                     //   fn(self, args_tuple, kwargs_dict)

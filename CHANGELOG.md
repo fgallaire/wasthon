@@ -7,6 +7,19 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **METH_CLASS methods were installed as plain methods — the value arrived
+      as `cls`** (+4: test_decimal 270→274). The bridge installed every
+      PyMethodDef entry the same way, so a C classmethod like
+      `Decimal.from_float(2.5)` reached the trampoline with the FLOAT as
+      `self`: the C function cast it to `PyTypeObject*`
+      (`get_module_state_by_def` → `assert(mod != NULL)` → abort, killing the
+      whole from_float family) and got NULL as the value. Install METH_CLASS
+      entries as real Brython classmethod descriptors
+      (`{ob_type: classmethod, cm_callable: trampoline}` in the class dict) so
+      the descriptor protocol binds the CLASS as first arg; drop the METH_O
+      "skip the count check when METH_CLASS" exemption, which was a workaround
+      for the missing binding.
+
 - [x] **C numeric types had no reflected operators — `5 + Decimal(2)` raised
       TypeError** (+18: test_decimal 252→270). CPython has ONE slot per binary
       op, tried for both operands with the arguments in the ORIGINAL order; the
