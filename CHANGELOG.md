@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **C-created str placeholders were opaque to Python callees** (+8:
+      test_decimal 276→284). A PyUnicode built C-side (`PyUnicode_New` +
+      memcpy) is a lazy linear-memory placeholder, materialized on demand by
+      `asJSStr`. The C→Python call primitives (`PyObject_CallOneArg`,
+      `PyObject_CallMethod` 'O', `PyObject_CallFunctionObjArgs`) passed the raw
+      placeholder through to Brython — `_decimal`'s `pydec_format` fallback
+      (`_pydecimal.Decimal(dec_str(self))`, used for 'z'/locale format specs)
+      died with "Cannot convert <Javascript object: [object Object]> to
+      Decimal", killing the whole format-fallback family. Materialize via a
+      shared `toBrythonArg` at the call boundary.
+
 - [x] **type→module lookup didn't follow inheritance (and MRO walks read the
       wrong field)** (+2: test_decimal 274→276, unlocks classmethods on
       subclasses — `MyDecimal.from_float(0.5)` now returns a MyDecimal).

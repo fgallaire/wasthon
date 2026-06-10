@@ -445,6 +445,19 @@ mergeInto(LibraryManager.library, {
             }
             return null;
         },
+
+        // Argument crossing C→Brython through a call primitive: a PyUnicode
+        // placeholder (linear-memory buffer from PyUnicode_New, populated by
+        // C memcpy) is opaque to Python code — _pydecimal.Decimal(u) saw
+        // "<Javascript object: [object Object]>". Materialize it to a real
+        // JS string; everything else passes through.
+        toBrythonArg: function(obj) {
+            if (obj && obj.__wasthon_unicode_buf__) {
+                var s = this.asJSStr(obj);
+                if (s !== null) return s;
+            }
+            return obj;
+        },
     },
 
     /* --------------------------------------------------------------- *
@@ -3722,7 +3735,7 @@ mergeInto(LibraryManager.library, {
     PyObject_CallOneArg: function(fnHandle, argHandle) {
         var rt = WasthonRT;
         var fn = rt.unwrap(fnHandle);
-        var arg = rt.unwrap(argHandle);
+        var arg = rt.toBrythonArg(rt.unwrap(argHandle));
         if (!fn) return 0;
         try { return rt.wrap(rt.$B.$call(fn, arg)); }
         catch (e) {
@@ -3762,7 +3775,7 @@ mergeInto(LibraryManager.library, {
             var c = fmt[i];
             if (c === '(' || c === ')' || c === ',' || c === ' ') continue;
             if (c === 'O') {
-                args.push(rt.unwrap(HEAP32[p >> 2]));
+                args.push(rt.toBrythonArg(rt.unwrap(HEAP32[p >> 2])));
                 p += 4;
             } else if (c === 's') {
                 var sp = HEAP32[p >> 2];
@@ -4713,7 +4726,7 @@ mergeInto(LibraryManager.library, {
         for (var p = varargs; ; p += 4) {
             var h = HEAP32[p >> 2];
             if (h === 0) break;
-            args.push(rt.unwrap(h));
+            args.push(rt.toBrythonArg(rt.unwrap(h)));
         }
         try { return rt.wrap(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
