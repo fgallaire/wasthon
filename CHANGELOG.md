@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **C numeric types had no reflected operators — `5 + Decimal(2)` raised
+      TypeError** (+18: test_decimal 252→270). CPython has ONE slot per binary
+      op, tried for both operands with the arguments in the ORIGINAL order; the
+      slot impl (e.g. `dec_add`) converts whichever side isn't its own type.
+      Brython instead resolves `int + Decimal` by looking up `__radd__` on the
+      right operand — which the bridge never installed, so every
+      `int/float OP Decimal` (`+ - * / // % ** divmod`, the whole
+      CArithmeticOperatorsTest/PyArithmeticOperatorsTest families) raised
+      "unsupported operand type(s)". Install `__radd__` & co for each wired
+      `nb_*` binary/ternary slot as the SAME C slot with swapped operands
+      (`__rOP__(self, other)` = `slot(other, self)` — original order
+      preserved). Inplace slots excluded; `sq_repeat`'s existing
+      `__rmul__` ('si' shape) untouched.
+
 - [x] **Every float→Decimal conversion raised "Cannot pass NaN to
       float.as_integer_ratio"** (+4: test_decimal 248→252). `_decimal` caches
       `float.as_integer_ratio` at module init (via the bridge's

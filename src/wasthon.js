@@ -8775,6 +8775,41 @@ mergeInto(LibraryManager.library, {
                 try { rt.$B.set_to_dict(cls, dunders[di], dispatch); }
                 catch (_) {}
             }
+
+            // Reflected dunders for the numeric binary slots. CPython has ONE
+            // slot per op, tried for both operands with the arguments in the
+            // ORIGINAL order — the slot impl (e.g. dec_add) converts whichever
+            // side isn't its own type. Brython instead looks up __radd__ & co
+            // on the right operand, so without these `5 + Decimal(2)` raised
+            // "unsupported operand type(s) for +: 'int' and 'Decimal'".
+            // __rOP__(self, other) == slot(other, self) — original order.
+            var reflectedOf = {
+                '__add__': '__radd__',       '__sub__': '__rsub__',
+                '__mul__': '__rmul__',       '__mod__': '__rmod__',
+                '__divmod__': '__rdivmod__', '__floordiv__': '__rfloordiv__',
+                '__truediv__': '__rtruediv__', '__lshift__': '__rlshift__',
+                '__rshift__': '__rrshift__', '__and__': '__rand__',
+                '__xor__': '__rxor__',       '__or__': '__ror__',
+                '__pow__': '__rpow__',
+            };
+            if (brythonName.indexOf('nb_') === 0 &&
+                    brythonName.indexOf('inplace') < 0 &&
+                    (shape === 'b' || shape === 't')) {
+                var refl = reflectedOf[dunders[0]];
+                if (refl) {
+                    var rdispatch = (shape === 't')
+                        ? function(self, other, modulo) {
+                              return dispatch(other, self, modulo);
+                          }
+                        : function(self, other) {
+                              return dispatch(other, self);
+                          };
+                    cls[refl] = rdispatch;
+                    cls.tp_funcs[refl] = rdispatch;
+                    try { rt.$B.set_to_dict(cls, refl, rdispatch); }
+                    catch (_) {}
+                }
+            }
         });
 
         // Wire __getitem__ from mp_subscript whenever it's defined. Mirrors
