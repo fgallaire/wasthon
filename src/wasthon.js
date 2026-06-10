@@ -6929,9 +6929,13 @@ mergeInto(LibraryManager.library, {
                     "cannot convert " + asNum + " to integer ratio");
                 return 0;
             }
-            // Brython exposes float.as_integer_ratio via _b_.float
+            // Brython exposes float.as_integer_ratio via _b_.float. Its float
+            // funcs expect a BOXED float ({value: x}); a raw JS number makes
+            // isnan() read `raw.value` = undefined → isNaN(undefined) = true →
+            // bogus "Cannot pass NaN to float.as_integer_ratio" for ANY value
+            // (this broke every float→Decimal conversion).
             var fn = rt.$B.$getattr(rt._b_.float, 'as_integer_ratio');
-            return rt.wrap(rt.$B.$call(fn, asNum));
+            return rt.wrap(rt.$B.$call(fn, rt.$B.fast_float(asNum)));
         } catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;

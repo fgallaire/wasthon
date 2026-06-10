@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Every float→Decimal conversion raised "Cannot pass NaN to
+      float.as_integer_ratio"** (+4: test_decimal 248→252). `_decimal` caches
+      `float.as_integer_ratio` at module init (via the bridge's
+      `PyFloat_Type.tp_methods`) and calls it during `Decimal(2.5)` /
+      `Decimal.from_float` / float comparisons. The bridge's implementation
+      forwarded a RAW JS number to Brython's method — but Brython's float funcs
+      expect a BOXED float (`{value: x}`), so `isnan()` read `raw.value` =
+      undefined and `isNaN(undefined)` is true: every value, NaN or not, took
+      the NaN-rejection path. Box with `$B.fast_float` before the call. (The
+      2026-06-06 dead-end had correctly ruled out `nb_absolute`; the broken
+      half was `as_integer_ratio`, one call later.)
+
 - [x] **`struct.pack_into` couldn't write into an `array.array` / `memoryview`
       buffer** (+2: test_struct 26→28 — `test_pack_into` / `test_pack_into_fn` —
       jointly with the companion `memoryview` slice-contiguity fix in
