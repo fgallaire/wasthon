@@ -9422,7 +9422,25 @@ mergeInto(LibraryManager.library, {
                             if (h === 0) {
                                 throw rt.$B.$call(rt._b_.AttributeError, n);
                             }
-                            return rt.unwrap(h);
+                            var v = rt.unwrap(h);
+                            // A bytes member filled C-side (PyBytes_FromStringAndSize(NULL,n)
+                            // + memcpy, e.g. zlib's unused_data in save_unconsumed_input) is
+                            // a writable placeholder: content lives in linear memory while
+                            // .source still holds the zero fill. The post-call syncBytes pass
+                            // only folds RETURN values, not struct members read later through
+                            // this descriptor — dco.unused_data came back as b'\x00' * n.
+                            // Fold here; PyBytes_AsString re-allocates from .source if C
+                            // touches the bytes again.
+                            if (v && v.__wasthon_cstr__ && v.source &&
+                                    typeof v.source.length === 'number') {
+                                var bsrc = v.source, bptr = v.__wasthon_cstr__;
+                                for (var bi = 0, blen = bsrc.length; bi < blen; bi++) {
+                                    bsrc[bi] = HEAPU8[bptr + bi];
+                                }
+                                _free(bptr);
+                                v.__wasthon_cstr__ = 0;
+                            }
+                            return v;
                         }
                         case 5: {                                              /* Py_T_STRING */
                             var sp = HEAP32[addr >> 2];
