@@ -356,7 +356,14 @@ def read_stringnl(f, decode=True, stripquotes=True, *, encoding='latin-1'):
             raise ValueError("no string quotes around %r" % data)
 
     if decode:
-        data = codecs.escape_decode(data)[0].decode(encoding)
+        # Brython's codecs lacks the CPython-internal escape_decode (or
+        # returns None); decode backslash escapes via unicode_escape.
+        try:
+            data = codecs.escape_decode(data)[0].decode(encoding)
+        except (AttributeError, TypeError):
+            data = (data.decode("latin-1").encode("latin-1")
+                    .decode("unicode_escape").encode("latin-1")
+                    .decode(encoding))
     return data
 
 stringnl = ArgumentDescriptor(

@@ -177,7 +177,44 @@ support.TestFailed          = _TestFailed
 
 # Sub-helpers as flexible modules with targeted overrides.
 import_helper = _mod('test.support.import_helper')
-import_helper.import_fresh_module = lambda name, *a, **k: __import__(name)
+# Faithful import_fresh_module: honors fresh= and blocked= (CPython blocks an
+# import by setting sys.modules[name] = None, which Brython honors too).
+# The old stub (lambda: __import__(name)) ignored blocked, so e.g.
+# import_fresh_module('statistics', blocked=['_statistics']) returned the
+# C-accelerated module and test_py_functions-style asserts failed.
+# Deviation from CPython: fresh= names are NOT removed from sys.modules —
+# wasthon-installed C modules have no import finder, so once popped they can
+# never be re-imported (the re-executed parent would silently fall back to
+# its pure-Python path). Leaving them in place gives the intended result:
+# the parent re-executes and re-binds the existing C module.
+def _import_fresh_module(name, fresh=(), blocked=(), **kw):
+    import sys as _ifm_sys, importlib as _ifm_il
+    _names = set([name]) | set(blocked)
+    _saved = {}
+    for _n in _names:
+        for _m in list(_ifm_sys.modules):
+            if _m == _n or _m.startswith(_n + '.'):
+                _saved[_m] = _ifm_sys.modules.pop(_m)
+    for _b in blocked:
+        _ifm_sys.modules[_b] = None
+    try:
+        return _ifm_il.import_module(name)
+    except ImportError:
+        return None
+    finally:
+        for _n in _names:
+            for _m in list(_ifm_sys.modules):
+                if _m == _n or _m.startswith(_n + '.'):
+                    del _ifm_sys.modules[_m]
+        _ifm_sys.modules.update(_saved)
+import_helper.import_fresh_module = _import_fresh_module
+# test_hmac: keep the legacy ignore-blocked stub. Its blocked=['_hashlib',
+# '_hmac'] variants model OpenSSL-fallback paths wasthon doesn't ship
+# (skip-by-design); faithful blocking forces pure-Python fallbacks through
+# paths that fail for unrelated Brython reasons (measured -14). The stub
+# returns the harness-routed wasthon hmac, which is what we want to test.
+if test_name == 'test_hmac':
+    import_helper.import_fresh_module = lambda name, *a, **k: __import__(name)
 import_helper.import_module = lambda name, *a, **k: __import__(name)
 os_helper = _mod('test.support.os_helper')
 # Real temp filenames + file helpers, now that wasthon has writable file I/O.
