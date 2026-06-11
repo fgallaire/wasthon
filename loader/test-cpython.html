@@ -81,7 +81,11 @@ try {
     // never wasthon's _md5/_sha*/_blake2. Replace it in the VFS with CPython's
     // hashlib (OpenSSL _hashlib disabled → builtin _md5/_sha*/_blake2 fallback)
     // so the test actually exercises the wasthon C hash modules.
-    if (testName === 'test_hashlib' && params.get('brython') !== 'cdn') {
+    // test_hmac included: with a STRING digestmod, CPython's hmac.py falls
+    // back to hashlib.new() — without this swap that's Brython's CryptoJS
+    // hashlib, which chokes on wasthon-created bytes ("expected bytes, got
+    // Javascript Object", ×12).
+    if ((testName === 'test_hashlib' || testName === 'test_hmac') && params.get('brython') !== 'cdn') {
         const _hsrc = await (await fetch('./cpython-tests/hashlib.py?t=' + Date.now())).text();
         window.__BRYTHON__.VFS['hashlib'] = ['.py', _hsrc, []];
         delete window.__BRYTHON__.VFS['_hashlib'];
