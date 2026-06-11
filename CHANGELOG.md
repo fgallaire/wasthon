@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Python functions were unpicklable — `Py_TYPE(func)` never equaled
+      `&PyFunction_Type`** (+64: test_pickle 399→463, the biggest single fix of
+      the campaign). The builtin-type binding mapped `BT_FUNCTION` to
+      `_b_.function`, which DOESN'T EXIST in Brython (the Python-function class
+      lives at `$B.function`) — the binding registered `undefined`, the type
+      comparison in `_pickle`'s save() was dead code, and every module-level
+      function degraded to the instance-reduce path ("cannot pickle 'function'
+      object", ×87 in the failure histogram). Bind `$B.function`;
+      `_pickle.dumps(module_func)` now emits the global ref and loads back BY
+      IDENTITY.
+
 - [x] **`$getattr` can return a raw getset_descriptor — resolve it at the C
       boundary** (+0, enabler of the entry above). `PyObject_GetOptionalAttr`
       (via the 3-arg default form) and `PyObject_GetAttr` could hand C an

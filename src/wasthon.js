@@ -6873,7 +6873,15 @@ mergeInto(LibraryManager.library, {
             case 9: cls = rt._b_.bytearray; break;
             case 10: cls = rt._b_.set;       break;
             case 11: cls = rt._b_.frozenset; break;
-            case 12: cls = rt._b_.function;  break;
+            case 12:
+                // Brython's Python-function class lives at $B.function
+                // (NOT _b_.function, which doesn't exist — the binding was
+                // mapping `undefined`, so Py_TYPE(some_python_function)
+                // never equaled &PyFunction_Type and _pickle's
+                // `type == &PyFunction_Type` save_global branch was dead:
+                // every module-level function was unpicklable).
+                cls = rt.$B.function || rt._b_.function;
+                break;
             /* PickleBuffer has no Brython equivalent (protocol 5 only,
              * unsupported here). Bind to a sentinel object so the type
              * pointer is non-NULL but no instance ever matches. The
