@@ -4979,6 +4979,17 @@ mergeInto(LibraryManager.library, {
     PyUnicode_Decode: function(sPtr, size, encodingPtr, errorsPtr) {
         var rt = WasthonRT;
         var enc = encodingPtr ? UTF8ToString(encodingPtr).toLowerCase() : 'utf-8';
+        // Python encoding names are not WHATWG TextDecoder labels: pyexpat
+        // hands us 'iso8859' (a CPython alias of latin-1), Python spells
+        // others with underscores. Normalize before TextDecoder.
+        var encMap = {
+            'iso8859': 'iso-8859-1', 'latin': 'iso-8859-1',
+            'latin1': 'iso-8859-1', 'latin_1': 'iso-8859-1',
+            'l1': 'iso-8859-1', 'cp819': 'iso-8859-1', '8859': 'iso-8859-1',
+            'us_ascii': 'ascii', 'utf_8': 'utf-8', 'utf8': 'utf-8',
+            'utf_16': 'utf-16', 'utf_16_le': 'utf-16le', 'utf_16_be': 'utf-16be',
+        };
+        enc = encMap[enc] || enc.replace(/_/g, '-');
         try {
             var bytes = HEAPU8.slice(sPtr, sPtr + size);
             var s = new TextDecoder(enc, { fatal: false }).decode(bytes);

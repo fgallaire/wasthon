@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyUnicode_Decode` passed raw Python encoding names to TextDecoder**
+      (+6: test_pyexpat 33→39). pyexpat decodes with 'iso8859' (a CPython
+      alias of latin-1) and Python spells encodings with underscores; WHATWG
+      TextDecoder rejects both forms ("The given encoding 'iso8859' is not
+      supported") — every non-UTF-8 XML document failed. Normalize via an
+      alias map + underscore→dash before constructing the decoder.
+
 - [x] **`PyTuple_CheckExact` rejected every real Brython tuple** (+7:
       test_zstd 78→85, 66%→72%). It tested `obj.__class__ === tuple`, but a
       Brython 3.14 tuple (`fast_tuple`) carries `ob_type`, not an own
