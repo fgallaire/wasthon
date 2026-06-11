@@ -5414,9 +5414,13 @@ mergeInto(LibraryManager.library, {
 
         /* Strip trailing function name marker (":fname" or ";errmsg") which
          * is the standard PyArg_ParseTuple convention for embedding a name
-         * to use in error messages. We don't surface that name today. */
+         * to use in error messages. */
+        var fname = '';
         var sep = format.search(/[:;]/);
-        if (sep >= 0) format = format.slice(0, sep);
+        if (sep >= 0) {
+            if (format[sep] === ':') fname = format.slice(sep + 1);
+            format = format.slice(0, sep);
+        }
 
         // Count slots (non-'|' chars).
         var totalSlots = 0;
@@ -5462,6 +5466,16 @@ mergeInto(LibraryManager.library, {
         else if (args && typeof args.length === 'number') posArgs = Array.from(args);
         else if (args === null || args === undefined) posArgs = [];
         else posArgs = [];
+
+        // CPython rejects more positional args than format slots; this
+        // parser silently ignored the extras, so e.g.
+        // zlib._ZlibDecompressor(-15, b"x", 5) succeeded instead of raising.
+        if (posArgs.length > totalSlots) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                (fname || 'function') + "() takes at most " + totalSlots +
+                " arguments (" + posArgs.length + " given)");
+            return 0;
+        }
 
         // Walk format, populating out pointers.
         var slotIdx = 0;
@@ -5551,13 +5565,43 @@ mergeInto(LibraryManager.library, {
                         }
                         HEAP32[outPtr >> 2] = s.codePointAt(0) || s.charCodeAt(0);
                     } else {
-                        /* numeric: convert to JS Number then store width-appropriate */
+                        /* numeric (all remaining codes are integer formats):
+                         * CPython getargs accepts int/bool/__index__ and
+                         * rejects str/float/None with TypeError. The old
+                         * Number(value)||0 parsed _ZlibDecompressor("ASDA")
+                         * as wbits=0. */
                         var n;
-                        if (typeof value === 'number') n = value;
-                        else if (typeof value === 'bigint') n = Number(value);
-                        else if (value === true) n = 1;
-                        else if (value === false) n = 0;
-                        else { n = Number(value); if (isNaN(n)) n = 0; }
+                        if (typeof value === 'number' && Number.isInteger(value)) {
+                            n = value;
+                        } else if (typeof value === 'bigint') {
+                            n = Number(value);
+                        } else if (value === true) {
+                            n = 1;
+                        } else if (value === false) {
+                            n = 0;
+                        } else {
+                            var idxFn = null;
+                            try { idxFn = rt.$B.$getattr(value, '__index__', null); }
+                            catch (_) { idxFn = null; }
+                            if (idxFn) {
+                                try {
+                                    var iv = rt.$B.$call(idxFn);
+                                    n = (typeof iv === 'bigint') ? Number(iv)
+                                      : (iv && iv.value !== undefined ? iv.value
+                                                                      : Number(iv));
+                                } catch (e) {
+                                    rt.forwardError(e, rt._b_.TypeError);
+                                    return 0;
+                                }
+                            } else {
+                                var tn;
+                                try { tn = rt.$B.class_name ? rt.$B.class_name(value) : typeof value; }
+                                catch (_) { tn = typeof value; }
+                                rt.setError(rt.wrap(rt._b_.TypeError),
+                                    "'" + tn + "' object cannot be interpreted as an integer");
+                                return 0;
+                            }
+                        }
                         switch (c) {
                             case 'i': case 'I': case 'l':
                                 HEAP32[outPtr >> 2] = n | 0; break;

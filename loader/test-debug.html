@@ -411,7 +411,7 @@ def _t_scan_unicode_escape():
 check("_json.scanstring \\\\uXXXX", _t_scan_unicode_escape)
 def _t_make_encoder():
     enc = _json.make_encoder(None, None, _json.encode_basestring_ascii, None, ': ', ', ',
-                             False, False, False, True)
+                             False, False, False)
     return callable(enc)
 check("_json.make_encoder returns callable", _t_make_encoder)
 

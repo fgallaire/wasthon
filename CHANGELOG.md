@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyArg_ParseTupleAndKeywords` coerced anything to int and ignored
+      excess positional args** (+1: test_zlib 55→56, +1 test_lzma). Two more
+      legacy-parser gaps, siblings of the unknown-kwargs one: integer formats
+      went through `Number(value)||0` — `_ZlibDecompressor("ASDA")` parsed as
+      `wbits=0` — now int/bool/`__index__` only, TypeError otherwise (CPython
+      getargs); and surplus positionals were dropped —
+      `_ZlibDecompressor(-15, b"x", 5)` succeeded — now "takes at most N
+      arguments (M given)". Requires the `tp_call` marker fix above: the
+      untagged kwargs payload used to ride along as a positional.
+
 - [x] **`tp_call` mishandled Brython's kwargs marker** (+0, enabler of the
       parser-validation entries below; sqlite3's whole statement path —
       `connection(sql)` — depended on the bug staying hidden). The wrapper only
