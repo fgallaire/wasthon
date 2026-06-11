@@ -8998,14 +8998,32 @@ mergeInto(LibraryManager.library, {
             cls.tp_call = _tpCallWrap = function(self) {
                 var jsArgs = Array.from(arguments).slice(1);
                 var kw = null;
+                // Brython's kw marker is any trailing {$kw: ...} payload; the
+                // $nat tag is not always present (a bare call through $B.$call
+                // appends {$kw:[{}]}). Counted as positional, it made
+                // connection(sql) arrive as 2 args — latent while the arg
+                // parser ignored extras, fatal once it validates the count.
                 if (jsArgs.length > 0 && jsArgs[jsArgs.length - 1] &&
-                        jsArgs[jsArgs.length - 1].$nat === 'kw') {
+                        jsArgs[jsArgs.length - 1].$kw !== undefined) {
                     kw = jsArgs.pop();
                 }
                 var selfH = self && self.__wasthon_ptr__
                     ? self.__wasthon_ptr__ : rt.wrap(self);
                 var argsH = rt.wrap(jsArgs);
-                var kwH   = kw ? rt.wrap(kw) : 0;
+                // Flatten the marker to a real dict; an empty payload (the
+                // common bare-call case) must arrive as NULL — C callables
+                // like connection_call reject any non-NULL kwargs.
+                var kwH = 0;
+                if (kw) {
+                    var kwPairs = rt.flattenKwArray(kw.$kw);
+                    if (kwPairs.length > 0) {
+                        var kwDict = rt.$B.empty_dict();
+                        for (var ki = 0; ki < kwPairs.length; ki++) {
+                            rt._b_.dict.$setitem(kwDict, kwPairs[ki][0], kwPairs[ki][1]);
+                        }
+                        kwH = rt.wrap(kwDict);
+                    }
+                }
                 rt.pendingException = null;
                 var resH = getWasmTableEntry(tpCallPtr)(selfH, argsH, kwH);
                 if (resH === 0 || rt.pendingException) {

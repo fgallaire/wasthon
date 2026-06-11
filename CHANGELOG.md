@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`tp_call` mishandled Brython's kwargs marker** (+0, enabler of the
+      parser-validation entries below; sqlite3's whole statement path —
+      `connection(sql)` — depended on the bug staying hidden). The wrapper only
+      popped the trailing kwargs payload when tagged `$nat='kw'`; a bare call
+      through `$B.$call` appends an untagged `{$kw:[{}]}`, which then counted
+      as a POSITIONAL arg (latent while the parsers ignored extras) and, once
+      popped, was forwarded raw as non-NULL kwargs ("takes no keyword
+      arguments"). Detect any `{$kw:…}` shape and flatten to a real dict; an
+      empty payload arrives as NULL.
+
 - [x] **`PyObject_GetOptionalAttr` swallowed non-AttributeError exceptions**
       (+1: test_csv 118→119). The contract is 1=found / 0=missing /
       -1=error-propagates; the bridge returned 0 for ANY exception, so a
