@@ -118,6 +118,7 @@ class _Flex:
         return self
     def __getattr__(self, n): return self
     def __iter__(self): return iter(())
+    def __contains__(self, x): return False   # Brython has no in->__iter__ fallback
     def __int__(self): return 0
     def __index__(self): return 0
     def __bool__(self): return False
@@ -402,6 +403,11 @@ if test_name == 'test_hashlib':
 # script without ever emitting our \`=== done ===\`. Skip the known triggers
 # so the rest of the suite can complete and produce a score.
 _KNOWN_HANGS = {
+    # test_failed_import_during_compiling spawns a CPython subprocess
+    # (script_helper.assert_python_failure) to re-compile a \N escape with
+    # unicodedata missing — no subprocess exists in the browser, the helper
+    # is a _Flex stub, so the test can only fail. Env-limited skip.
+    'test_unicodedata': ['test_failed_import_during_compiling'],
     'test_pickle': ['test_bad_object_dict_items', 'test_complex_newobj',
                     'test_float', 'test_framing_large_objects',
                     'test_framed_write_sizes_with_delayed_writer',
