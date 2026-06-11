@@ -7,6 +7,35 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Unpickled lists reported type JavascriptArray** (+31: test_pickle
+      574, +3: sqlite3 328). `get_class` short-circuits `Array.isArray` to
+      JavascriptArray BEFORE reading `__class__`; native Brython lists carry
+      the `OB_TYPE` Symbol. PyList_New now sets that Symbol, so
+      `assertIs(type(loads(dumps([1])))), list)` holds — and sqlite3's
+      fetchall rows too. (This was the −159/−238 minefield: re-measured
+      −238 on 2026-06-12, root-caused to the handle-map resize cascade,
+      harmless now that scopes keep the map flat.)
+
+- [x] **Handle scopes — the JS-side sentinel handle-map leak is fixed**
+      (+2 decimal immediately; the enabler for the two entries below and for
+      every formerly-impossible fix that adds wraps). The bridge gains the
+      third handle lifetime it was missing — **call-scoped** — between
+      "immortal" (no scope active: module init, loader-time) and
+      "refcounted" (instances). The JNI local-reference / HPy model, ported
+      from Florent's release-day prototype: every JS→C entry point (method
+      trampoline, slot dispatch shapes, tp_new/tp_init/tp_call/tp_getattro,
+      both getset families) pushes a scope; sentinel handles wrapped during
+      the call are released at pop unless C took a reference (Py_INCREF
+      promotes, new-reference APIs seed refcount 1 via wrapNewRef, steal
+      APIs consume). Module init stays unscoped (immortal, as before). A
+      real intern pool backs PyUnicode_InternFromString/_Py_ID (lazy C
+      statics). Proof: loader/test-scopes.html A/B — handles.size
+      +0.00/call over 2000 pickle.dumps of a rich graph vs +105.00/call
+      without scopes. This was "the monster": the handle map hitting its
+      internal resize limit (~2^25 entries → one >2GB allocation →
+      "allocation size overflow" cascading over ~270 pickle tests), which
+      made two correct fixes measure −238/−266 and hid ~46 pickle passes.
+
 - [x] **`PyErr_WarnEx` swallowed every C-module warning** (+1: sqlite3
       314→315). It returned 0 without emitting anything; now routes through
       Brython's `warnings.warn` (and returns -1 with the exception set when

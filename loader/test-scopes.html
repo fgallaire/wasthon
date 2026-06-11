@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — handle scopes A/B proof</title>
+<script src="./brython-src.js"></script>
+<script src="./wasthon-loader.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 980px; margin: 1.5rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.05rem; margin: 1.4em 0 0.2em; }
+  table { border-collapse: collapse; margin-top: 0.4em; font-family: monospace; font-size: 12px; }
+  td, th { border: 1px solid #ccc; padding: 0.2em 0.6em; text-align: right; }
+  th { background: #eee; }
+  .ok { color: #0a0; }
+  .leak { color: #c00; font-weight: bold; }
+  pre { background: #f4f4f4; padding: 0.8em; font-size: 12px; line-height: 1.4; white-space: pre-wrap; }
+  .note { color: #555; font-size: 0.9em; }
+  .on { color: #0a0; font-weight: bold; }
+  .off { color: #c00; font-weight: bold; }
+  #summary { margin-top: 1.2em; padding: 0.8em 1em; border: 2px solid #ccc; font-family: monospace;
+             font-size: 13px; white-space: pre-wrap; }
+  #summary.pass { border-color: #0a0; background: #f0fbf0; }
+  #summary.fail { border-color: #c00; background: #fdf2f2; }
+</style>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>wasthon — handle scopes A/B proof</h1>
+<p class="note">
+  One page, two phases on the same module, identical workload — a tight loop of
+  <code>_pickle.dumps(obj)</code> on a <em>rich object graph</em>. Each
+  <code>dumps()</code> makes dozens of internal <code>wrap()</code> calls
+  (borrowed wraps, temporaries, args) — the JS-side sentinel handle-map leak
+  that <code>tp_dealloc</code> structurally couldn't touch.
+  <br><br>
+  <span class="on">Phase A</span>: handle scopes active — every JS→C entry
+  pushes a scope; sentinel handles die at return unless C took a reference.
+  <span class="off">Phase B</span>: <code>runtime.noScopeFree = true</code> —
+  wraps are never scope-tracked, reproducing the bridge before handle scopes
+  existed.
+  <br><br>
+  The deterministic, GC-independent signal is <strong><code>handles.size</code></strong>
+  (live entries in the handle table). Phase A ⇒ flat; Phase B ⇒ climbs by
+  tens per <code>dumps()</code>. Tune with <code>?iters=5000</code>.
+</p>
+
+<div id="status">Loading…</div>
+<div id="summary" style="display:none"></div>
+
+<h2 class="on">Phase A — handle scopes enabled</h2>
+<table id="samplesA">
+  <thead><tr>
+    <th>iter</th><th>handles.size</th><th>Δ handles</th>
+    <th>refcounts.size</th><th>scopes depth</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<h2 class="off">Phase B — handle scopes disabled (<code>noScopeFree=true</code>)</h2>
+<table id="samplesB">
+  <thead><tr>
+    <th>iter</th><th>handles.size</th><th>Δ handles</th>
+    <th>refcounts.size</th><th>scopes depth</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<pre id="log"></pre>
+
+<script type="module">
+const log = (...args) => {
+    document.getElementById('log').textContent += args.map(a =>
+        typeof a === 'string' ? a : String(a)).join(' ') + '\n';
+};
+window.__hs_log = log;
+
+const params = new URLSearchParams(location.search);
+const iters = parseInt(params.get('iters') || '2000', 10);
+window.__hs_iters = iters;
+
+window.__hs_sample = (phase, iter, hs, dhs, rcs, depth) => {
+    const tbody = document.querySelector('#samples' + phase + ' tbody');
+    const klass = (phase === 'B' && dhs > 0) ? 'leak' : 'ok';
+    const row = tbody.insertRow();
+    row.innerHTML =
+        `<td>${iter}</td>` +
+        `<td>${hs}</td>` +
+        `<td class="${klass}">${dhs >= 0 ? '+' : ''}${dhs}</td>` +
+        `<td>${rcs}</td>` +
+        `<td>${depth}</td>`;
+};
+
+window.__hs_status = (txt) => { document.getElementById('status').textContent = txt; };
+window.__hs_summary = (txt, pass) => {
+    const el = document.getElementById('summary');
+    el.style.display = '';
+    el.className = pass ? 'pass' : 'fail';
+    el.textContent = txt;
+};
+
+try {
+    log('Loading wasthon-full.mjs…');
+    const bundle = await wasthonLoadBundle('../build/wasthon-full.mjs?t=' + Date.now());
+    const rt = bundle.runtime;
+
+    // Probes + the A/B switch, exposed to Brython. handles.size /
+    // refcounts.size are exact counts (no GC dependence).
+    window.__hs_handles = () => rt.handles.size;
+    window.__hs_refcounts = () => rt.refcounts.size;
+    window.__hs_depth = () => rt.scopes.length;
+    window.__hs_set_noscopes = (v) => { rt.noScopeFree = !!v; return rt.noScopeFree; };
+
+    bundle.installModule('_pickle');
+    log('_pickle installed. Running both phases…\n');
+
+    const py = document.createElement('script');
+    py.type = 'text/python';
+    py.textContent = `
+import _pickle
+from browser import window
+
+log = window.__hs_log
+sample = window.__hs_sample
+status = window.__hs_status
+summary = window.__hs_summary
+h_size = window.__hs_handles
+rc_size = window.__hs_refcounts
+depth = window.__hs_depth
+set_noscopes = window.__hs_set_noscopes
+
+ITERS = int(window.__hs_iters)
+STEP = max(1, ITERS // 20)
+
+# Rich graph on purpose: this is the workload whose internal wrap() churn
+# (~tens of handles per dumps) used to overflow the handles Map — the
+# documented sentinel handle-map leak.
+obj = [1, 'hello', {'a': 1, 'b': 2}, (1, 2, 3), b'bytes',
+       {'nested': [(i, str(i)) for i in range(10)]}]
+
+
+def run_phase(phase, no_scopes, label):
+    set_noscopes(no_scopes)
+    status(f'Phase {phase} ({label}): warming up…')
+    for _ in range(100):
+        _pickle.dumps(obj)
+    h0 = h_size()
+    log(f'[Phase {phase}] {label}: baseline handles.size={h0} '
+        f'refcounts.size={rc_size()} scopes depth={depth()}')
+    status(f'Phase {phase} ({label}): running {ITERS} dumps()…')
+    for i in range(1, ITERS + 1):
+        _pickle.dumps(obj)
+        if i % STEP == 0:
+            sample(phase, i, h_size(), h_size() - h0, rc_size(), depth())
+    growth = h_size() - h0
+    log(f'[Phase {phase}] final handles.size={h_size()} (grew {growth}) '
+        f'| per dumps(): +{growth/ITERS:.2f} handles')
+    return growth
+
+
+a = run_phase('A', False, 'scopes enabled')
+b = run_phase('B', True, 'scopes DISABLED')
+set_noscopes(False)  # leave the module in the normal state
+
+# Phase A must stay flat; phase B must climb by many handles per call.
+a_flat = a < ITERS * 0.05
+b_leaks = b > ITERS * 2
+ok = a_flat and b_leaks
+verdict = (
+    f'handle scopes A/B over {ITERS} dumps() each:\\n'
+    f'  Phase A (enabled):  handles.size grew {a:>8}  (+{a/ITERS:.2f}/call)\\n'
+    f'  Phase B (disabled): handles.size grew {b:>8}  (+{b/ITERS:.2f}/call)\\n'
+)
+if ok:
+    verdict += (f'\\nPROVEN: with handle scopes, the handle table stays flat across '
+                f'{ITERS} dumps() of a rich object graph. Disable them and the '
+                f'sentinel handle-map leak returns — {b} entries pinned forever.')
+else:
+    verdict += '\\nUNEXPECTED: phase A should be flat and phase B should climb steeply.'
+status('Done.')
+summary(verdict, ok)
+log('\\n' + verdict)
+# test-all.html runner convention.
+if not ok:
+    log('=== SOME FAILED ===')
+log('=== done ===')
+`;
+    document.body.appendChild(py);
+    brython({ debug: 1 });
+} catch (e) {
+    log('FATAL: ' + e.message);
+    document.getElementById('status').textContent = 'FATAL: ' + e.message;
+    console.error(e);
+}
+</script>
+</body>
+</html>

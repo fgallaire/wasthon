@@ -187,15 +187,14 @@ the same hardware op). `prod` loses because iteration crosses the bridge
 per element — canonical case of the work-density anti-pattern (each
 multiplication walks JS → bridge → C → bridge → JS).
 
-**`cmath`** (complex math) — smoke 8/8, bench is noisy across runs because
-each iteration leaks a Brython complex wrapper into the bridge's handle
-map (the sentinel handle-map leak — distinct from instance `tp_dealloc`,
-which is now implemented but structurally cannot touch these borrowed
-wraps). Across reruns the directional pattern is consistent: complex→complex
-ops (sqrt/exp/log/sin/cos) tend to win **2-3.5×** while scalar-returning ops
-(`phase`, `polar`) lose. Won't commit to exact speedup numbers until that
-handle-map leak is addressed; the noise floor
-right now is ~50% on cmath bench results. Brython's bundled `cmath.py` is
+**`cmath`** (complex math) — smoke 8/8. Historically the bench was noisy
+across runs because each iteration used to leak a Brython complex wrapper
+into the bridge's handle map (the sentinel handle-map leak — since fixed
+by handle scopes, see *What's next*). Across reruns the directional pattern
+is consistent: complex→complex ops (sqrt/exp/log/sin/cos) tend to win
+**2-3.5×** while scalar-returning ops (`phase`, `polar`) lose. Exact
+speedup numbers await a bench rerun now that the leak is gone (the
+historical noise floor was ~50% on cmath bench results). Brython's bundled `cmath.py` is
 broken at import time — wasthon's port is the first working complex math
 for Brython users regardless.
 
@@ -438,7 +437,7 @@ Three per-target deviations target the stack and the heap ceiling:
   everything we've measured for those, and the per-prologue guard
   carries a small runtime perf cost.
 - **`-sMAXIMUM_MEMORY=4GB`** on `_lzma` standalone and both wasthon
-  bundles — **a temporary fix**. The default 2GB growth ceiling was the
+  bundles. The default 2GB growth ceiling was the
   real wall behind most of test_lzma's out-of-memory failures: liblzma's
   preset-6 encoder allocates ~94 MB per instance, and the *cumulative*
   heap pressure of a long-running page (the bridge's known handle-map /
@@ -448,10 +447,13 @@ Three per-target deviations target the stack and the heap ceiling:
   virtual-address-space reservation, not an allocation, so it costs
   nothing on 64-bit hosts (32-bit user agents may fail to instantiate —
   considered acceptable in 2026). This buys headroom, it does not fix
-  the retention: once the per-call arena work lands, the ceiling should
-  be re-evaluated (and possibly lowered back to 2GB, which would also
-  spare hand-written JS the unsigned-pointer discipline required above
-  the 2GB address boundary).
+  the retention. Re-evaluated once the per-call arena work landed
+  (handle scopes, 2026-06-12): with retention gone, a 2GB build still
+  measures −18 on test_lzma and times out test_pickle — the ceiling is
+  real allocation appetite (liblzma's larger presets, pickle's biggest
+  payloads), not bridge retention. 4GB is the permanent setting; the
+  price is the unsigned-pointer discipline required of hand-written JS
+  above the 2GB address boundary.
 
 The script handles all the per-module quirks: downloading missing source
 trees, compiling external libraries (libexpat, liblzma, libzstd, bzip2,
@@ -593,12 +595,11 @@ Recent ports:
       `_PyLong_Lshift`/`_Rshift` were declared `size_t` in our header but
       CPython 3.14 uses `int64_t` — emcc ABI mismatch produced garbage
       shift values for the new BigInt-aware code paths.
-- [x] `cmath` — complex math. 8/8 smoke. Bench is too noisy across reruns
-      to claim exact speedups (50%+ variance, occasional FAIL from
-      handle-map pressure) — directionally: complex→complex ops win
-      ~2-3.5×, scalar-returning ops lose. Will solidify once the sentinel
-      handle-map leak is addressed (instance `tp_dealloc` has landed but
-      doesn't cover these borrowed complex wraps). Exposed the emcc wasm32
+- [x] `cmath` — complex math. 8/8 smoke. Bench numbers pending a rerun:
+      the old 50%+ variance came from handle-map pressure — the sentinel
+      handle-map leak behind that noise is now fixed (handle scopes — see
+      *What's next*); directionally: complex→complex ops win ~2-3.5×,
+      scalar-returning ops lose. Exposed the emcc wasm32
       ABI pattern for passing/returning
       small structs (Py_complex) by value via sret. Brython's own
       `cmath.py` is broken at import time — wasthon's is the first
@@ -734,11 +735,25 @@ Infrastructure work that pays back on existing modules:
       compressor/Connection dropped without close — is acceptable for light
       natives and a known cap on loop-bench depth for heavy ones. (Instance /
       `refcounts` axis; distinct from the sentinel / `handles` leak below.)
-- [ ] JS-side handle-map (sentinel) leak — internal `wrap()` calls during a C
-      operation (~67 per `pickle.dumps`) add `handles` Map entries that are
-      never released; this is the dominant `pickle.dumps` byte-leak and is
-      orthogonal to `tp_dealloc`. Part of the stated motivation for the
-      WasmGC pivot.
+- [x] JS-side handle-map (sentinel) leak — FIXED by **handle scopes** (the
+      JNI local-reference / HPy model). Every JS→C entry point (method
+      trampoline, slot dispatch, tp_new/tp_init/tp_call, getsets) pushes a
+      scope; sentinel handles wrapped during the C call are released at
+      return unless C took a reference — Py_INCREF promotes, new-reference
+      APIs seed refcount 1 (`wrapNewRef`, the instance-era refcount-convention
+      audit extended to sentinels), steal APIs consume. Module init stays
+      unscoped (immortal, as before); a real intern pool backs
+      `PyUnicode_InternFromString`/`_Py_ID` (lazy C statics). Proven by
+      `loader/test-scopes.html` (`noScopeFree` A/B): `handles.size` grows
+      **+0.00/call** across 2000 `pickle.dumps` of a rich graph vs
+      **+105/call** without scopes. This was the dominant `pickle.dumps`
+      byte-leak — and, it turned out, an invisible cap on the test suite
+      itself: the map's internal resize blew up ("allocation size overflow")
+      once enough state accumulated, making correct fixes measure as huge
+      regressions. Landing scopes immediately unlocked +46 pickle passes.
+      It also removes the main motivation for a WasmGC pivot (which is
+      structurally closed to linear-memory C anyway — externref can't live
+      in C structs).
 
 Eventually:
 

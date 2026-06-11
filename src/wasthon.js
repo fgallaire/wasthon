@@ -45,9 +45,27 @@ mergeInto(LibraryManager.library, {
         //     the real WASM pointer to the C-allocated struct, also stored
         //     in this map so JS can retrieve the Brython wrapper.
         handles: null,           // Map<int, object>
-        sentinelByObj: null,     // Map<object, int> — identity interning (reverse of handles)
+        sentinelByObj: null,     // WeakMap<object, int> — identity interning (reverse of handles)
         nextHandleId: 5,         // 1-4 reserved for sentinels
         freeList: [],
+
+        // Handle scopes — the third handle lifetime, between "immortal"
+        // (no scope active: module init, loader-time) and "refcounted"
+        // (instances + sentinels C explicitly owns via Py_INCREF / a
+        // new-reference API). Every JS→C entry point (method trampoline,
+        // slot dispatch, tp_new/tp_init/tp_call, getset) pushes a scope;
+        // sentinel handles allocated while it is active are owned by it
+        // and released at pop — the JNI local-reference model. A handle
+        // escapes its scope by acquiring a refcount (wrapNewRef / C-side
+        // Py_INCREF / a no-steal store API), in which case the pop hands
+        // ownership to the refcount and the handle lives until it drops
+        // to zero. This kills the borrowed-wrap accumulation (~67 handle
+        // map entries per pickle.dumps) that tp_dealloc structurally
+        // couldn't touch.
+        scopes: [],              // stack of arrays of handle ids
+        scopeOf: null,           // Map<handle, scopeArr> — owning scope of a live sentinel
+        internPool: null,        // Map<string, handle> — pinned interned strings (content-keyed)
+        noScopeFree: false,      // A/B harness switch: true = pre-scope behaviour (leak)
 
         // Sentinel handle IDs (filled at init).
         SLOT_NONE: 1,
@@ -80,16 +98,29 @@ mergeInto(LibraryManager.library, {
         // wasthon_incref / wasthon_decref library functions and by JS-side
         // library bridges that must take ownership of a value (e.g. the
         // "no-steal" APIs PyModule_AddObjectRef, PyDict_SetItem, etc.).
+        //
+        // Counting eligibility: a handle is countable iff it is currently
+        // scope-owned (scopeOf) or already counted (refcounts). Everything
+        // else — singletons, type structs, immortal init-era sentinels —
+        // stays a no-op, preserving the old "tolerant" behaviour exactly
+        // where strict accounting hasn't been established.
         incref: function(handle) {
             var rc = this.refcounts;
-            if (rc.has(handle)) rc.set(handle, rc.get(handle) + 1);
+            if (rc.has(handle)) { rc.set(handle, rc.get(handle) + 1); return; }
+            // First C-owned reference on a scope-owned sentinel: count it.
+            // The owning scope keeps the binding — pop transfers ownership
+            // to the refcount instead of releasing (see popScope) — so a
+            // balanced INCREF/DECREF by a nested call never steals a handle
+            // out from under the scope that created it.
+            if (this.scopeOf.has(handle)) rc.set(handle, 1);
         },
-        // Wrap a value that is a "new reference" handed from a Python-side
-        // callee to C (the result of PyObject_Call / Vectorcall / etc.).
-        // Brython held the instance via JS without touching the wasthon
-        // refcount; the C caller owns the returned ref and will DECREF it.
-        // INCREF so that DECREF doesn't free an object Brython still holds.
-        // No-op for sentinels (not in refcounts).
+        // Wrap a value as a "new reference" (the convention of most C-API
+        // returns: constructors, PyObject_Call / Vectorcall results, …).
+        // The C caller owns one reference and is expected to either DECREF
+        // it (handle dies with the scope, or earlier) or keep it — e.g.
+        // `self->write = PyObject_GetAttr(file, ...)` stores the new ref in
+        // a C struct with no further INCREF, so the handle must survive the
+        // creating scope. Seeding refcount 1 makes both work.
         wrapNewRef: function(value) {
             var h = this.wrap(value);
             this.incref(h);
@@ -108,11 +139,119 @@ mergeInto(LibraryManager.library, {
             if (this.noFree) { rc.set(handle, 0); return; }
             rc.delete(handle);
             var inst = this.handles.get(handle);
-            if (!inst || !inst.__wasthon_type__) return;
+            if (!inst || !inst.__wasthon_type__) {
+                // Sentinel reached zero: C no longer owns it. If a scope
+                // still owns it, leave it — the pop releases it. Otherwise
+                // (created in a scope that already popped, ownership was
+                // transferred to the refcount) hand it to the current scope
+                // so it stays valid for the remainder of the enclosing
+                // call, or release immediately if none is active.
+                if (!this.scopeOf.has(handle)) {
+                    var sc = this.scopes.length ?
+                             this.scopes[this.scopes.length - 1] : null;
+                    if (sc) { sc.push(handle); this.scopeOf.set(handle, sc); }
+                    else this.releaseSentinel(handle);
+                }
+                return;
+            }
             var tp_dealloc = HEAP32[(inst.__wasthon_type__ + 40) >> 2];
             if (!tp_dealloc) return;
+            // The C dealloc body may create handles (Py_CLEAR recursion,
+            // error formatting); scope them like any other C entry.
+            this.pushScope();
             try { getWasmTableEntry(tp_dealloc)(handle); }
             catch (e) { /* defensive */ }
+            finally { this.popScope(); }
+        },
+
+        /* ---- Handle scopes (see field comment above) ---- */
+        pushScope: function() {
+            var s = [];
+            this.scopes.push(s);
+            return s;
+        },
+        popScope: function() {
+            var s = this.scopes.pop();
+            if (!s) return;
+            var so = this.scopeOf;
+            for (var i = 0; i < s.length; i++) {
+                var h = s[i];
+                if (so.get(h) !== s) continue;      // promoted away or duplicate
+                so.delete(h);
+                // C still owns references — ownership transfers to the
+                // refcount; the handle dies when it drops to zero.
+                if (this.refcounts.has(h)) continue;
+                this.releaseSentinel(h);
+            }
+        },
+        // Release one sentinel handle: drop the table entry, the identity-
+        // interning entry, and recycle the id.
+        releaseSentinel: function(h) {
+            var obj = this.handles.get(h);
+            this.handles.delete(h);
+            if (obj !== undefined &&
+                    (typeof obj === 'object' || typeof obj === 'function')) {
+                if (this.sentinelByObj.get(obj) === h) this.sentinelByObj.delete(obj);
+            }
+            if (h < 0x10000) this.freeList.push(h);
+        },
+        // Record a freshly allocated sentinel id in the current scope.
+        // No scope active (module init, loader-time) → immortal, exactly
+        // the pre-scope behaviour.
+        _scopeTrack: function(h) {
+            if (this.noScopeFree) return;
+            var s = this.scopes.length ? this.scopes[this.scopes.length - 1] : null;
+            if (s) { s.push(h); this.scopeOf.set(h, s); }
+        },
+        // Wrap a JS function (a JS→C entry point called from Brython) so
+        // its whole execution runs under a fresh handle scope.
+        // The wrapper inherits fn's `name`: Brython's method machinery
+        // derives __name__/__qualname__ from the JS function name (the
+        // slot closures get "dispatch" by inference from their `var`
+        // assignment), and an anonymous wrapper turns explicit dunder
+        // access (`a.__add__`) into a nameless JavascriptFunction whose
+        // __qualname__ read raises AttributeError — took test_array from
+        // 90% to 77%.
+        scoped: function(fn) {
+            var rt = this;
+            var wrapper = function() {
+                rt.pushScope();
+                try { return fn.apply(this, arguments); }
+                finally { rt.popScope(); }
+            };
+            if (fn.name) {
+                try {
+                    Object.defineProperty(wrapper, 'name',
+                        { value: fn.name, configurable: true });
+                } catch (_) {}
+            }
+            return wrapper;
+        },
+        // Wrap an object whose handle is stored in C linear memory for
+        // cross-call use by the bridge itself (type-struct tp_dict,
+        // T_OBJECT member writes): lift it out of any owning scope so it
+        // is never released.
+        wrapPinned: function(obj) {
+            var h = this.wrap(obj);
+            this.scopeOf.delete(h);
+            return h;
+        },
+        // Consume the reference a C function's return value hands to its
+        // caller (CPython contract: the caller owns the result and must
+        // release it). The JS dispatchers are that caller — once the
+        // result is unwrapped to a JS object, the handle ref is dropped.
+        // Instances are exempt: their refcount-1 belongs to the Brython
+        // wrapper that now holds the struct pointer.
+        consumeResultRef: function(h) {
+            if (!h) return;
+            var o = this.handles.get(h);
+            if (o && o.__wasthon_ptr__) return;
+            this.decref(h);
+        },
+        unwrapResult: function(h) {
+            var v = this.unwrap(h);
+            this.consumeResultRef(h);
+            return v;
         },
 
         init: function() {
@@ -124,11 +263,17 @@ mergeInto(LibraryManager.library, {
             this.$B = B;
             this._b_ = B.builtins;
             this.handles = new Map();
-            this.sentinelByObj = new Map();
+            // WeakMap: a released sentinel whose handle was re-bound (e.g.
+            // unicode placeholder materialization) leaves a stale entry —
+            // let it die with the object instead of accumulating.
+            this.sentinelByObj = new WeakMap();
             this.moduleDefs = new Map();
             this.modules = new Map();
             this.types = new Map();
             this.refcounts = new Map();
+            this.scopes = [];
+            this.scopeOf = new Map();
+            this.internPool = new Map();
 
             this.handles.set(this.SLOT_NONE,  this._b_.None);
             this.handles.set(this.SLOT_TRUE,  this._b_.True);
@@ -186,10 +331,12 @@ mergeInto(LibraryManager.library, {
                 var nid = this._allocSentinelId();
                 this.handles.set(nid, obj);
                 this.sentinelByObj.set(obj, nid);
+                this._scopeTrack(nid);
                 return nid;
             }
             var id = this._allocSentinelId();
             this.handles.set(id, obj);
+            this._scopeTrack(id);
             return id;
         },
 
@@ -306,7 +453,9 @@ mergeInto(LibraryManager.library, {
                 this.$B.init_dict(cls);
                 dictObj = this.$B.get_dict(cls);
             }
-            HEAP32[(typeStructPtr +  8) >> 2] = this.wrap(dictObj);
+            // Pinned: the handle lives in the type struct for the type's
+            // whole life — a scope must never release it.
+            HEAP32[(typeStructPtr +  8) >> 2] = this.wrapPinned(dictObj);
             // tp_name (offset 12): leaving 0 (NULL) is fine for callers
             // that don't read it.
             HEAP32[(typeStructPtr + 16) >> 2] = this._defaultTpAlloc;  // tp_alloc
@@ -346,7 +495,10 @@ mergeInto(LibraryManager.library, {
         },
 
         /* Wrap a Brython object as a handle, but if it's a type class give
-         * it a struct-backed handle so C code can dereference its fields. */
+         * it a struct-backed handle so C code can dereference its fields.
+         * Every caller is a new-reference API (PyObject_Call*, GetAttr*),
+         * so the non-type fallback seeds a refcount — C code may store the
+         * result in a struct with no further INCREF (ownership transfer). */
         wrapMaybeType: function(obj) {
             if (obj && this.$B && this._b_ && this._b_.type) {
                 try {
@@ -355,7 +507,7 @@ mergeInto(LibraryManager.library, {
                     }
                 } catch (_) {}
             }
-            return this.wrap(obj);
+            return this.wrapNewRef(obj);
         },
 
         setError: function(excHandle, msg) {
@@ -487,23 +639,23 @@ mergeInto(LibraryManager.library, {
             var bytesObj = rt._b_.bytes.$factory(src);
             bytesObj.__wasthon_cstr__ = ptr;
             bytesObj.__wasthon_cstr_size__ = size;
-            return rt.wrap(bytesObj);
+            return rt.wrapNewRef(bytesObj);
         }
         // Initial-content path: copy from C buffer to JS Array in one pass
         // (skips the Uint8Array → Array.from intermediate).
         var arr = new Array(size);
         for (var i = 0; i < size; i++) arr[i] = HEAPU8[strPtr + i];
-        return rt.wrap(rt._b_.bytes.$factory(arr));
+        return rt.wrapNewRef(rt._b_.bytes.$factory(arr));
     },
 
     PyUnicode_FromStringAndSize__deps: ['$WasthonRT'],
     PyUnicode_FromStringAndSize: function(uPtr, size) {
         if (uPtr === 0) {
-            return WasthonRT.wrap("");
+            return WasthonRT.wrapNewRef("");
         }
         // Decode as UTF-8 (CPython semantics for char* + len).
         var s = UTF8ToString(uPtr, size);
-        return WasthonRT.wrap(s);
+        return WasthonRT.wrapNewRef(s);
     },
 
     /* PyUnicode_AsUTF8String — encode a str as UTF-8 bytes. Returns a new
@@ -517,7 +669,7 @@ mergeInto(LibraryManager.library, {
             return 0;
         }
         var bytes = new TextEncoder().encode(s);
-        return rt.wrap(rt._b_.bytes.$factory(Array.from(bytes)));
+        return rt.wrapNewRef(rt._b_.bytes.$factory(Array.from(bytes)));
     },
 
     /* PyUnicode_AsUTF8AndSize(s, *size_out) — same as PyUnicode_AsUTF8 but
@@ -541,17 +693,17 @@ mergeInto(LibraryManager.library, {
      * Python str. We ignore the errors argument (strict-mode behaviour). */
     PyUnicode_DecodeUTF8__deps: ['$WasthonRT'],
     PyUnicode_DecodeUTF8: function(strPtr, size, errorsPtr) {
-        if (strPtr === 0) return WasthonRT.wrap("");
-        return WasthonRT.wrap(UTF8ToString(strPtr, size));
+        if (strPtr === 0) return WasthonRT.wrapNewRef("");
+        return WasthonRT.wrapNewRef(UTF8ToString(strPtr, size));
     },
 
     /* PyUnicode_DecodeASCII — same as UTF8 decode for 0x00-0x7F. */
     PyUnicode_DecodeASCII__deps: ['$WasthonRT'],
     PyUnicode_DecodeASCII: function(strPtr, size, errorsPtr) {
-        if (strPtr === 0) return WasthonRT.wrap("");
+        if (strPtr === 0) return WasthonRT.wrapNewRef("");
         var s = "";
         for (var i = 0; i < size; i++) s += String.fromCharCode(HEAPU8[strPtr + i]);
-        return WasthonRT.wrap(s);
+        return WasthonRT.wrapNewRef(s);
     },
 
     /* PyUnicode_DecodeLatin1 — each byte maps to its codepoint 1:1. Same
@@ -560,10 +712,10 @@ mergeInto(LibraryManager.library, {
      * this when the Unpickler's `encoding` is 'latin-1'. */
     PyUnicode_DecodeLatin1__deps: ['$WasthonRT'],
     PyUnicode_DecodeLatin1: function(strPtr, size, errorsPtr) {
-        if (strPtr === 0) return WasthonRT.wrap("");
+        if (strPtr === 0) return WasthonRT.wrapNewRef("");
         var s = "";
         for (var i = 0; i < size; i++) s += String.fromCharCode(HEAPU8[strPtr + i]);
-        return WasthonRT.wrap(s);
+        return WasthonRT.wrapNewRef(s);
     },
 
     /* PyUnicode_AsEncodedString(s, encoding, errors) — encode str via the
@@ -586,7 +738,7 @@ mergeInto(LibraryManager.library, {
             return _PyUnicode_AsUTF8String(sH);
         }
         try {
-            return rt.wrap(rt.$B.$call(rt.$B.$getattr(s, 'encode'),
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(s, 'encode'),
                                        enc, errors));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.UnicodeEncodeError),
@@ -602,7 +754,7 @@ mergeInto(LibraryManager.library, {
     PyUnicode_DecodeRawUnicodeEscape__deps: ['$WasthonRT'],
     PyUnicode_DecodeRawUnicodeEscape: function(strPtr, size, errorsPtr) {
         var rt = WasthonRT;
-        if (strPtr === 0) return rt.wrap("");
+        if (strPtr === 0) return rt.wrapNewRef("");
         var n = size | 0, out = "";
         for (var i = 0; i < n; i++) {
             var c = HEAPU8[strPtr + i];
@@ -625,7 +777,7 @@ mergeInto(LibraryManager.library, {
             // Latin-1 pass-through (including any unmatched backslash).
             out += String.fromCharCode(c);
         }
-        return rt.wrap(out);
+        return rt.wrapNewRef(out);
     },
 
     /* PyUnicode_FromEncodedObject(obj, encoding, errors) — decode bytes via
@@ -644,7 +796,7 @@ mergeInto(LibraryManager.library, {
         var enc = encPtr === 0 ? "utf-8" : UTF8ToString(encPtr);
         var errors = errPtr === 0 ? "strict" : UTF8ToString(errPtr);
         try {
-            return rt.wrap(rt.$B.$call(rt.$B.$getattr(obj, 'decode'),
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(obj, 'decode'),
                                        enc, errors));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
@@ -708,7 +860,7 @@ mergeInto(LibraryManager.library, {
                     out.push(0x5C); out.push(d); break;
             }
         }
-        return rt.wrap(rt._b_.bytes.$factory(out));
+        return rt.wrapNewRef(rt._b_.bytes.$factory(out));
     },
 
     /* PyObject_GetIter(o) — iter(o). */
@@ -717,7 +869,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
         if (obj === null) return 0;
-        try { return rt.wrap(rt._b_.iter(obj)); }
+        try { return rt.wrapNewRef(rt._b_.iter(obj)); }
         catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -730,7 +882,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var iter = rt.unwrap(iterH);
         if (iter === null) return 0;
-        try { return rt.wrap(rt._b_.next(iter)); }
+        try { return rt.wrapNewRef(rt._b_.next(iter)); }
         catch (e) {
             // StopIteration: return NULL with NO exception set (CPython contract).
             // Brython's $B.is_exc handles all the type-check edge cases.
@@ -768,7 +920,7 @@ mergeInto(LibraryManager.library, {
     PyNumber_Float: function(objH) {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
-        try { return rt.wrap(rt._b_.float.$factory(obj)); }
+        try { return rt.wrapNewRef(rt._b_.float.$factory(obj)); }
         catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -841,32 +993,42 @@ mergeInto(LibraryManager.library, {
 
     PyUnicode_FromString__deps: ['$WasthonRT'],
     /* PyUnicode_InternFromString — like FromString, but the result is
-     * interned. We don't have a separate intern pool; Brython hashes
-     * strings by content, so identity isn't required to be unique.
-     * Equivalent behaviour for non-identity-sensitive callers. */
-    PyUnicode_InternFromString__deps: ['$WasthonRT', 'PyUnicode_FromString'],
+     * interned: a real content-keyed pool of pinned handles. Interned
+     * strings are immortal in CPython 3.12+, and C code stores the result
+     * in lazy statics (`static PyObject *str_x`) with no INCREF — so the
+     * handle must never be scope-released, and re-interning the same
+     * content must not allocate a fresh handle each call. */
+    PyUnicode_InternFromString__deps: ['$WasthonRT'],
     PyUnicode_InternFromString: function(uPtr) {
-        return _PyUnicode_FromString(uPtr);
+        if (uPtr === 0) return 0;
+        var rt = WasthonRT;
+        var s = UTF8ToString(uPtr);
+        var pool = rt.internPool;
+        var h = pool.get(s);
+        if (h !== undefined && rt.handles.get(h) === s) return h;
+        h = rt.wrapPinned(s);
+        pool.set(s, h);
+        return h;
     },
 
     PyUnicode_FromString__deps: ['$WasthonRT'],
     PyUnicode_FromString: function(uPtr) {
         if (uPtr === 0) return 0;
-        return WasthonRT.wrap(UTF8ToString(uPtr));
+        return WasthonRT.wrapNewRef(UTF8ToString(uPtr));
     },
 
     PyLong_FromLong__deps: ['$WasthonRT'],
     PyLong_FromLong: function(v) {
         // Brython ints are JS numbers (or BigInt for long). For sha2-scale
         // values, plain JS number is correct.
-        return WasthonRT.wrap(v | 0);
+        return WasthonRT.wrapNewRef(v | 0);
     },
 
     PyLong_FromUInt32__deps: ['$WasthonRT'],
-    PyLong_FromUInt32: function(v) { return WasthonRT.wrap(v >>> 0); },
+    PyLong_FromUInt32: function(v) { return WasthonRT.wrapNewRef(v >>> 0); },
 
     PyLong_FromVoidPtr__deps: ['$WasthonRT'],
-    PyLong_FromVoidPtr: function(p) { return WasthonRT.wrap(p >>> 0); },
+    PyLong_FromVoidPtr: function(p) { return WasthonRT.wrapNewRef(p >>> 0); },
 
     PyBool_FromLong__deps: ['$WasthonRT'],
     PyBool_FromLong: function(v) { return v ? WasthonRT.SLOT_TRUE : WasthonRT.SLOT_FALSE; },
@@ -888,9 +1050,9 @@ mergeInto(LibraryManager.library, {
             // crash on undefined. Patch __class__ to point at the same
             // type so both lookup paths work.
             if (f && !f.__class__ && f.ob_type) f.__class__ = f.ob_type;
-            return rt.wrap(f);
+            return rt.wrapNewRef(f);
         }
-        return rt.wrap(v);
+        return rt.wrapNewRef(v);
     },
 
     PyFloat_AsDouble__deps: ['$WasthonRT'],
@@ -1033,7 +1195,7 @@ mergeInto(LibraryManager.library, {
         for (var i = 0; i < size; i++) arr[i] = WasthonRT._b_.None;
         // Tag as a Brython list so Brython routines accept it.
         arr.__class__ = WasthonRT._b_.list;
-        return WasthonRT.wrap(arr);
+        return WasthonRT.wrapNewRef(arr);
     },
 
     PyList_Append__deps: ['$WasthonRT'],
@@ -1057,6 +1219,11 @@ mergeInto(LibraryManager.library, {
         var arr = WasthonRT.unwrap(listHandle);
         if (!Array.isArray(arr)) return -1;
         arr[i] = WasthonRT.unwrap(itemHandle);
+        // Steals the item reference: the JS array now holds the object, the
+        // consumed handle ref is dropped (dies with its scope once unowned).
+        // Instance-exempt (consumeResultRef): a C instance's refcount-1 now
+        // belongs to the container — decref'ing it would fire tp_dealloc.
+        WasthonRT.consumeResultRef(itemHandle);
         return 0;
     },
 
@@ -1118,7 +1285,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var arr = new Array(size | 0);
         for (var i = 0; i < (size | 0); i++) arr[i] = rt._b_.None;
-        return rt.wrap(rt._b_.tuple.$factory(arr));
+        return rt.wrapNewRef(rt._b_.tuple.$factory(arr));
     },
 
     PyTuple_SetItem__deps: ['$WasthonRT'],
@@ -1130,8 +1297,9 @@ mergeInto(LibraryManager.library, {
          * (Array.isArray true with .__class__ === tuple) or via an
          * internal field — handle both. */
         var item = rt.unwrap(itemH);
-        if (Array.isArray(t)) { t[i] = item; return 0; }
-        if (t[i] !== undefined) { t[i] = item; return 0; }
+        // Steals the item reference (see PyList_SetItem — instance-exempt).
+        if (Array.isArray(t)) { t[i] = item; rt.consumeResultRef(itemH); return 0; }
+        if (t[i] !== undefined) { t[i] = item; rt.consumeResultRef(itemH); return 0; }
         return -1;
     },
 
@@ -1164,7 +1332,7 @@ mergeInto(LibraryManager.library, {
             arr[i] = rt.unwrap(itemH);
             rt.incref(itemH);  // no-steal: tuple takes its own ref on each item
         }
-        return rt.wrap(rt._b_.tuple.$factory(arr));
+        return rt.wrapNewRef(rt._b_.tuple.$factory(arr));
     },
 
     /* Callable check + call iter. */
@@ -1194,7 +1362,7 @@ mergeInto(LibraryManager.library, {
                 yield v;
             }
         }
-        return rt.wrap(gen());
+        return rt.wrapNewRef(gen());
     },
 
     /* PyObject_Vectorcall — call with fastcall ABI from C. We translate to
@@ -1244,7 +1412,7 @@ mergeInto(LibraryManager.library, {
             } else {
                 mod = imp(modname);
             }
-            return rt.wrap(rt.$B.$getattr(mod, attr));
+            return rt.wrapNewRef(rt.$B.$getattr(mod, attr));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.ImportError),
                 "wasthon: failed to import " + modname + "." + attr + ": " + (e.message || e));
@@ -1259,7 +1427,7 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(handle);
         if (obj === null) return 0;
         try {
-            return rt.wrap(rt._b_.bytes.$factory(obj));
+            return rt.wrapNewRef(rt._b_.bytes.$factory(obj));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError),
                 "PyBytes_FromObject: cannot convert");
@@ -1271,7 +1439,7 @@ mergeInto(LibraryManager.library, {
      * functions (str_dict_set / $setitem / $contains / $delitem). */
     PyDict_New__deps: ['$WasthonRT'],
     PyDict_New: function() {
-        return WasthonRT.wrap(WasthonRT.$B.empty_dict());
+        return WasthonRT.wrapNewRef(WasthonRT.$B.empty_dict());
     },
 
     PyDict_GetItemWithError__deps: ['$WasthonRT'],
@@ -1352,7 +1520,7 @@ mergeInto(LibraryManager.library, {
         // pattern as flattenKwArray uses for `.items()`.
         try {
             var keys_view = rt.$B.$call(rt.$B.$getattr(d, 'keys'));
-            return rt.wrap(rt.$B.$call(rt._b_.list, keys_view));
+            return rt.wrapNewRef(rt.$B.$call(rt._b_.list, keys_view));
         }
         catch (e) { return 0; }
     },
@@ -1369,7 +1537,8 @@ mergeInto(LibraryManager.library, {
             if (rt._b_.dict.$contains_string(d, k)) {
                 var v = rt._b_.dict.$getitem(d, k);
                 rt._b_.dict.$delitem(d, k);
-                if (resultPtr !== 0) HEAP32[resultPtr >> 2] = rt.wrap(v);
+                // The popped value is a new reference handed to the caller.
+                if (resultPtr !== 0) HEAP32[resultPtr >> 2] = rt.wrapNewRef(v);
                 return 1;
             }
             if (resultPtr !== 0) HEAP32[resultPtr >> 2] = 0;
@@ -1776,7 +1945,7 @@ mergeInto(LibraryManager.library, {
         var bytesObj = rt._b_.bytes.$factory(arr);
         _free(buf);
         HEAP32[writerPtr >> 2] = 0;
-        return rt.wrap(bytesObj);
+        return rt.wrapNewRef(bytesObj);
     },
 
     _PyBytesWriter_Dealloc: function(writerPtr) {
@@ -1793,7 +1962,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var d = rt.unwrap(dictH);
         if (d === null) return 0;
-        try { return rt.wrap(rt.$B.mappingproxy.tp_new(rt.$B.mappingproxy, [d])); }
+        try { return rt.wrapNewRef(rt.$B.mappingproxy.tp_new(rt.$B.mappingproxy, [d])); }
         catch (e) { return 0; }
     },
 
@@ -1860,9 +2029,9 @@ mergeInto(LibraryManager.library, {
     PyNumber_Absolute: function(handle) {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
-        if (typeof obj === 'number') return rt.wrap(Math.abs(obj));
-        if (typeof obj === 'bigint') return rt.wrap(obj < 0n ? -obj : obj);
-        try { return rt.wrap(rt.$B.$call(rt._b_.abs, obj)); }
+        if (typeof obj === 'number') return rt.wrapNewRef(Math.abs(obj));
+        if (typeof obj === 'bigint') return rt.wrapNewRef(obj < 0n ? -obj : obj);
+        try { return rt.wrapNewRef(rt.$B.$call(rt._b_.abs, obj)); }
         catch (e) { return 0; }
     },
 
@@ -1992,10 +2161,15 @@ mergeInto(LibraryManager.library, {
                         var fnPtr = readPtr();
                         var arg   = readPtr();
                         var resH  = getWasmTableEntry(fnPtr)(arg);
-                        return [rt.unwrap(resH), i+2];
+                        var convV = rt.unwrap(resH);
+                        rt.consumeResultRef(resH);  // new ref consumed (instance-exempt)
+                        return [convV, i+2];
                     }
                     var h = readPtr();
-                    return [rt.unwrap(h), i+1];
+                    var v = rt.unwrap(h);
+                    // 'N' steals the reference ('O'/'S' don't). Instance-exempt.
+                    if (c === 'N') rt.consumeResultRef(h);
+                    return [v, i+1];
                 }
                 case 's': case 'z': case 'U': {
                     var ptr = readPtr();
@@ -2061,8 +2235,8 @@ mergeInto(LibraryManager.library, {
                 if (r[0] !== null) results.push(r[0]);
                 i = r[1];
             }
-            if (results.length === 1) return rt.wrap(results[0]);
-            return rt.wrap(rt._b_.tuple.$factory(results));
+            if (results.length === 1) return rt.wrapNewRef(results[0]);
+            return rt.wrapNewRef(rt._b_.tuple.$factory(results));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.SystemError),
                 "Py_BuildValue(\"" + fmt + "\"): " + (e.message || String(e)));
@@ -2079,7 +2253,7 @@ mergeInto(LibraryManager.library, {
         if (Array.isArray(obj)) return handle;
         try {
             var arr = rt._b_.list.$factory(obj);
-            return rt.wrap(arr);
+            return rt.wrapNewRef(arr);
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError),
                 errmsgPtr ? UTF8ToString(errmsgPtr) : "expected a sequence");
@@ -2109,9 +2283,9 @@ mergeInto(LibraryManager.library, {
                 var out = [];
                 for (var i = 0; i < count; i++) out = out.concat(obj);
                 if (obj.__class__) out.__class__ = obj.__class__;
-                return rt.wrap(out);
+                return rt.wrapNewRef(out);
             }
-            if (typeof obj === 'string') return rt.wrap(obj.repeat(count));
+            if (typeof obj === 'string') return rt.wrapNewRef(obj.repeat(count));
             return 0;
         } catch (e) { return 0; }
     },
@@ -2174,7 +2348,7 @@ mergeInto(LibraryManager.library, {
             var v = rt.unwrap(h);
             parts.push(typeof v === 'string' ? v : String(v));
         }
-        return rt.wrap(parts.join(sep));
+        return rt.wrapNewRef(parts.join(sep));
     },
 
     /* Public PyDict_Next is the 4-arg subset; just forward. */
@@ -2241,7 +2415,7 @@ mergeInto(LibraryManager.library, {
         if (d === null) return 0;
         try {
             var items = rt._b_.list.$factory(rt._b_.dict.items(d));
-            return rt.wrap(items);
+            return rt.wrapNewRef(items);
         } catch (e) { return 0; }
     },
 
@@ -2254,7 +2428,7 @@ mergeInto(LibraryManager.library, {
         try {
             var out = sep.join ? sep.join(seq) :
                       rt.$B.$getattr(sep, 'join')(seq);
-            return rt.wrap(out);
+            return rt.wrapNewRef(out);
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -2408,13 +2582,13 @@ mergeInto(LibraryManager.library, {
     },
 
     PyLong_FromUnsignedLong__deps: ['$WasthonRT'],
-    PyLong_FromUnsignedLong: function(v) { return WasthonRT.wrap(v >>> 0); },
+    PyLong_FromUnsignedLong: function(v) { return WasthonRT.wrapNewRef(v >>> 0); },
 
     PyLong_FromSsize_t__deps: ['$WasthonRT'],
-    PyLong_FromSsize_t: function(v) { return WasthonRT.wrap(v | 0); },
+    PyLong_FromSsize_t: function(v) { return WasthonRT.wrapNewRef(v | 0); },
 
     PyLong_FromSize_t__deps: ['$WasthonRT'],
-    PyLong_FromSize_t: function(v) { return WasthonRT.wrap(v >>> 0); },
+    PyLong_FromSize_t: function(v) { return WasthonRT.wrapNewRef(v >>> 0); },
 
     /* _PyLong_GCD(a, b) — Greatest common divisor of two PyLongs.
      * Uses Euclid's algorithm on BigInts. */
@@ -2431,8 +2605,8 @@ mergeInto(LibraryManager.library, {
         var aa = toBig(a), bb = toBig(b);
         while (bb !== 0n) { var t = bb; bb = aa % bb; aa = t; }
         var n = Number(aa);
-        if (BigInt(n) === aa && Number.isSafeInteger(n)) return rt.wrap(n);
-        return rt.wrap(aa);
+        if (BigInt(n) === aa && Number.isSafeInteger(n)) return rt.wrapNewRef(n);
+        return rt.wrapNewRef(aa);
     },
 
     /* PyFloat_FromString — parse a string into a float. */
@@ -2489,9 +2663,9 @@ mergeInto(LibraryManager.library, {
         // Return as Number if it fits, BigInt otherwise.
         var asNum = Number(v);
         if (BigInt(asNum) === v && Number.isSafeInteger(asNum)) {
-            return WasthonRT.wrap(asNum);
+            return WasthonRT.wrapNewRef(asNum);
         }
-        return WasthonRT.wrap(v);
+        return WasthonRT.wrapNewRef(v);
     },
 
     /* _PyLong_AsByteArray — serialize int into byte buffer. _random uses
@@ -2731,7 +2905,7 @@ mergeInto(LibraryManager.library, {
             }
             out += piece;
         }
-        return rt.wrap(out);
+        return rt.wrapNewRef(out);
     },
 
     PyLong_AsLong__deps: ['$WasthonRT'],
@@ -2881,11 +3055,11 @@ mergeInto(LibraryManager.library, {
         // BigInt yields Infinity, and BigInt(Infinity) throws).
         if (typeof v === 'bigint') {
             if (v < -9007199254740992n || v > 9007199254740992n) {
-                return WasthonRT.wrap(v);
+                return WasthonRT.wrapNewRef(v);
             }
-            return WasthonRT.wrap(Number(v));
+            return WasthonRT.wrapNewRef(Number(v));
         }
-        return WasthonRT.wrap(v);
+        return WasthonRT.wrapNewRef(v);
     },
 
     /* PyLong_FromInt64 — CPython 3.14 explicit-width alias of FromLongLong. */
@@ -3033,8 +3207,8 @@ mergeInto(LibraryManager.library, {
         _free(writer);
         // Coalesce to Number if it fits.
         var asNum = Number(n);
-        if (BigInt(asNum) === n && Number.isSafeInteger(asNum)) return rt.wrap(asNum);
-        return rt.wrap(n);
+        if (BigInt(asNum) === n && Number.isSafeInteger(asNum)) return rt.wrapNewRef(asNum);
+        return rt.wrapNewRef(n);
     },
 
     PyLongWriter_Discard__deps: ['$WasthonRT'],
@@ -3052,10 +3226,10 @@ mergeInto(LibraryManager.library, {
             // as negative. This entry point is explicitly the
             // "from unsigned" one — reinterpret in the [0, 2^64) range.
             if (v < 0n) v = (1n << 64n) + v;
-            if (v > 9007199254740992n) return WasthonRT.wrap(v);
-            return WasthonRT.wrap(Number(v));
+            if (v > 9007199254740992n) return WasthonRT.wrapNewRef(v);
+            return WasthonRT.wrapNewRef(Number(v));
         }
-        return WasthonRT.wrap(v);
+        return WasthonRT.wrapNewRef(v);
     },
 
     PyComplex_FromDoubles__deps: ['$WasthonRT'],
@@ -3063,7 +3237,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var c = (rt.$B && rt.$B.make_complex) ? rt.$B.make_complex(real, imag)
                                               : { real: real, imag: imag, __class__: rt._b_.complex };
-        return rt.wrap(c);
+        return rt.wrapNewRef(c);
     },
 
     /* PyComplex_FromCComplex(c) — emcc wasm32 ABI passes a struct-by-value
@@ -3077,7 +3251,7 @@ mergeInto(LibraryManager.library, {
         var imag = HEAPF64[(structPtr + 8) >> 3];
         var c = (rt.$B && rt.$B.make_complex) ? rt.$B.make_complex(real, imag)
                                               : { real: real, imag: imag, __class__: rt._b_.complex };
-        return rt.wrap(c);
+        return rt.wrapNewRef(c);
     },
 
     PyComplex_Check__deps: ['$WasthonRT'],
@@ -3203,7 +3377,7 @@ mergeInto(LibraryManager.library, {
         var arr = new Array(n);
         if (strPtr === 0) { for (var i = 0; i < n; i++) arr[i] = 0; }
         else { for (var i = 0; i < n; i++) arr[i] = HEAPU8[strPtr + i]; }
-        return rt.wrap(rt._b_.bytearray.$factory(arr));
+        return rt.wrapNewRef(rt._b_.bytearray.$factory(arr));
     },
 
     /* PySet_New(iterable) / PyFrozenSet_New(iterable) — NULL means empty. */
@@ -3211,7 +3385,7 @@ mergeInto(LibraryManager.library, {
     PySet_New: function(iterableH) {
         var rt = WasthonRT;
         var it = iterableH === 0 ? [] : rt.unwrap(iterableH);
-        try { return rt.wrap(rt._b_.set.$factory(it === null ? [] : it)); }
+        try { return rt.wrapNewRef(rt._b_.set.$factory(it === null ? [] : it)); }
         catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError),
                 "PySet_New: " + (e.message || String(e)));
@@ -3222,7 +3396,7 @@ mergeInto(LibraryManager.library, {
     PyFrozenSet_New: function(iterableH) {
         var rt = WasthonRT;
         var it = iterableH === 0 ? [] : rt.unwrap(iterableH);
-        try { return rt.wrap(rt._b_.frozenset.$factory(it === null ? [] : it)); }
+        try { return rt.wrapNewRef(rt._b_.frozenset.$factory(it === null ? [] : it)); }
         catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError),
                 "PyFrozenSet_New: " + (e.message || String(e)));
@@ -3277,7 +3451,7 @@ mergeInto(LibraryManager.library, {
                 return 0;
             }
             var v = items[pos];
-            HEAP32[keyPtr >> 2] = rt.wrap(v);
+            HEAP32[keyPtr >> 2] = rt.wrapNewRef(v);
             /* Hash: pickle uses it only as an opaque ordering token. */
             if (hashPtr !== 0) HEAP32[hashPtr >> 2] = pos;
             HEAP32[posPtr >> 2] = pos + 1;
@@ -3322,7 +3496,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
         var name = rt.unwrap(nameH);
-        try { return rt.wrap(rt.$B.$getattr(obj, name)); }
+        try { return rt.wrapNewRef(rt.$B.$getattr(obj, name)); }
         catch (e) { return 0; }
     },
 
@@ -3364,7 +3538,7 @@ mergeInto(LibraryManager.library, {
             }
             arr.push(c);
         }
-        return rt.wrap(rt._b_.bytes.$factory(arr));
+        return rt.wrapNewRef(rt._b_.bytes.$factory(arr));
     },
 
     /* IEEE 754 pack/unpack — DataView handles 32/64 bit natively; 16-bit
@@ -3481,13 +3655,13 @@ mergeInto(LibraryManager.library, {
             case 0: return rt.SLOT_NONE;
             case 1: return rt.SLOT_FALSE;
             case 2: return rt.SLOT_TRUE;
-            case 3: return rt.wrap(rt._b_.Ellipsis);
-            case 4: return rt.wrap(rt._b_.NotImplemented);
-            case 5: return rt.wrap(0);
-            case 6: return rt.wrap(1);
-            case 7: return rt.wrap("");
-            case 8: return rt.wrap(rt._b_.bytes.$factory([]));
-            case 9: return rt.wrap([]);  // empty tuple
+            case 3: return rt.wrapNewRef(rt._b_.Ellipsis);
+            case 4: return rt.wrapNewRef(rt._b_.NotImplemented);
+            case 5: return rt.wrapNewRef(0);
+            case 6: return rt.wrapNewRef(1);
+            case 7: return rt.wrapNewRef("");
+            case 8: return rt.wrapNewRef(rt._b_.bytes.$factory([]));
+            case 9: return rt.wrapNewRef([]);  // empty tuple
             default: return 0;
         }
     },
@@ -3756,7 +3930,7 @@ mergeInto(LibraryManager.library, {
         }
         try {
             var method = rt.$B.$getattr(self, name);
-            return rt.wrap(rt.$B.$call(method));
+            return rt.wrapNewRef(rt.$B.$call(method));
         } catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
@@ -3769,7 +3943,7 @@ mergeInto(LibraryManager.library, {
         var fn = rt.unwrap(fnHandle);
         var arg = rt.toBrythonArg(rt.unwrap(argHandle));
         if (!fn) return 0;
-        try { return rt.wrap(rt.$B.$call(fn, arg)); }
+        try { return rt.wrapNewRef(rt.$B.$call(fn, arg)); }
         catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
@@ -3887,7 +4061,10 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         if (!rt._tstateDict) {
             rt._tstateDict = rt._b_.dict.$factory();
-            rt._tstateDictHandle = rt.wrap(rt._tstateDict);
+            // Pinned: cached in a JS field and reused across calls — a
+            // scope-tracked handle here goes stale at the creating call's
+            // return (broke _decimal: getcontext() then setcontext()).
+            rt._tstateDictHandle = rt.wrapPinned(rt._tstateDict);
         }
         return rt._tstateDictHandle;
     },
@@ -3913,7 +4090,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         if (!rt._interpDict) {
             rt._interpDict = rt._b_.dict.$factory();
-            rt._interpDictHandle = rt.wrap(rt._interpDict);
+            rt._interpDictHandle = rt.wrapPinned(rt._interpDict);  // pinned: JS-cached (see tstate dict)
         }
         return rt._interpDictHandle;
     },
@@ -3924,7 +4101,7 @@ mergeInto(LibraryManager.library, {
     PyWeakref_NewRef: function(objH, callbackH) {
         // Just return obj wrapped — strong-ref semantics suffice.
         var rt = WasthonRT;
-        return rt.wrap(rt.unwrap(objH));
+        return rt.wrapNewRef(rt.unwrap(objH));
     },
 
     /* PyWeakref_GetRef(ref, *out) — write referenced obj to *out and
@@ -3970,7 +4147,7 @@ mergeInto(LibraryManager.library, {
         // Materialize as an exception instance via $B.$call.
         try {
             var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
-            return rt.wrap(rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg)));
+            return rt.wrapNewRef(rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg)));
         } catch (e) { return rt.SLOT_NONE; }
     },
     PyErr_SetRaisedException__deps: ['$WasthonRT'],
@@ -4005,7 +4182,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var w = rt.unwrap(writerH);
         if (!w || !w.__wasthon_writer__) return 0;
-        return rt.wrap(w.chunks.join(''));
+        return rt.wrapNewRef(w.chunks.join(''));
     },
     PyUnicodeWriter_Discard__deps: ['$WasthonRT'],
     PyUnicodeWriter_Discard: function(writerH) {
@@ -4102,7 +4279,7 @@ mergeInto(LibraryManager.library, {
         // would truncate; binascii's caller passes a single ASCII char.)
         var arr = new Array(out.length);
         for (var k = 0; k < out.length; k++) arr[k] = out.charCodeAt(k) & 0xff;
-        return rt.wrap(rt._b_.bytes.$factory(arr));
+        return rt.wrapNewRef(rt._b_.bytes.$factory(arr));
     },
 
     /* PySequence_Check(o) — does o support the sequence protocol? True for
@@ -4129,7 +4306,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
         if (obj === null) return 0;
-        try { return rt.wrap(rt.$B.$getitem(obj, i)); }
+        try { return rt.wrapNewRef(rt.$B.$getitem(obj, i)); }
         catch (e) {
             rt.forwardError(e, rt._b_.IndexError);
             return 0;
@@ -4275,7 +4452,7 @@ mergeInto(LibraryManager.library, {
                     throw e;
                 }
             }
-            HEAP32[outPtr >> 2] = rt.wrap(val);
+            HEAP32[outPtr >> 2] = rt.wrapNewRef(val);
             return 1;
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError),
@@ -4300,7 +4477,7 @@ mergeInto(LibraryManager.library, {
         }
         try {
             var val = rt.$B.$getitem(obj, key);
-            HEAP32[outPtr >> 2] = rt.wrap(val);
+            HEAP32[outPtr >> 2] = rt.wrapNewRef(val);
             return 1;
         } catch (e) {
             try {
@@ -4349,7 +4526,7 @@ mergeInto(LibraryManager.library, {
         if (!self || name === null) return 0;
         try {
             var m = rt.$B.$getattr(self, name);
-            return rt.wrap(rt.$B.$call(m, arg));
+            return rt.wrapNewRef(rt.$B.$call(m, arg));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.AttributeError), name + ": " + (e.message || e));
             return 0;
@@ -4367,7 +4544,7 @@ mergeInto(LibraryManager.library, {
         try {
             // Brython's $call supports positional only; for kwargs, the
             // caller object usually accepts them via a special dict.
-            return rt.wrap(rt.$B.$call.apply(null, [fn].concat(Array.from(args))));
+            return rt.wrapNewRef(rt.$B.$call.apply(null, [fn].concat(Array.from(args))));
         } catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
@@ -4379,7 +4556,7 @@ mergeInto(LibraryManager.library, {
     PyNumber_Long: function(objH) {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
-        try { return rt.wrap(rt._b_.int.$factory(obj)); }
+        try { return rt.wrapNewRef(rt._b_.int.$factory(obj)); }
         catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -4398,19 +4575,19 @@ mergeInto(LibraryManager.library, {
             if (typeof a === 'number' && typeof b === 'number' &&
                 Number.isInteger(a) && Number.isInteger(b)) {
                 var sum = a + b;
-                if (Number.isFinite(sum) && Number.isSafeInteger(sum)) return rt.wrap(sum);
+                if (Number.isFinite(sum) && Number.isSafeInteger(sum)) return rt.wrapNewRef(sum);
                 /* Overflow into BigInt land. */
-                return rt.wrap(BigInt(a) + BigInt(b));
+                return rt.wrapNewRef(BigInt(a) + BigInt(b));
             }
-            if (typeof a === 'number' && typeof b === 'number') return rt.wrap(a + b);
+            if (typeof a === 'number' && typeof b === 'number') return rt.wrapNewRef(a + b);
             if (typeof a === 'bigint' || typeof b === 'bigint') {
                 var ba = typeof a === 'bigint' ? a : BigInt(Math.trunc(Number(a)));
                 var bb = typeof b === 'bigint' ? b : BigInt(Math.trunc(Number(b)));
                 var r = ba + bb;
-                if (r >= -2147483648n && r <= 2147483647n) return rt.wrap(Number(r));
-                return rt.wrap(r);
+                if (r >= -2147483648n && r <= 2147483647n) return rt.wrapNewRef(Number(r));
+                return rt.wrapNewRef(r);
             }
-            return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__add__'), b));
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__add__'), b));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -4424,19 +4601,19 @@ mergeInto(LibraryManager.library, {
             if (typeof a === 'number' && typeof b === 'number' &&
                 Number.isInteger(a) && Number.isInteger(b)) {
                 var prod = a * b;
-                if (Number.isFinite(prod) && Number.isSafeInteger(prod)) return rt.wrap(prod);
+                if (Number.isFinite(prod) && Number.isSafeInteger(prod)) return rt.wrapNewRef(prod);
                 /* Overflow into BigInt land. */
-                return rt.wrap(BigInt(a) * BigInt(b));
+                return rt.wrapNewRef(BigInt(a) * BigInt(b));
             }
-            if (typeof a === 'number' && typeof b === 'number') return rt.wrap(a * b);
+            if (typeof a === 'number' && typeof b === 'number') return rt.wrapNewRef(a * b);
             if (typeof a === 'bigint' || typeof b === 'bigint') {
                 var ba = typeof a === 'bigint' ? a : BigInt(Math.trunc(Number(a)));
                 var bb = typeof b === 'bigint' ? b : BigInt(Math.trunc(Number(b)));
                 var r = ba * bb;
-                if (r >= -2147483648n && r <= 2147483647n) return rt.wrap(Number(r));
-                return rt.wrap(r);
+                if (r >= -2147483648n && r <= 2147483647n) return rt.wrapNewRef(Number(r));
+                return rt.wrapNewRef(r);
             }
-            return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__mul__'), b));
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__mul__'), b));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -4446,28 +4623,28 @@ mergeInto(LibraryManager.library, {
     PyNumber_FloorDivide: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
-        try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__floordiv__'), b)); }
+        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__floordiv__'), b)); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
     PyNumber_TrueDivide__deps: ['$WasthonRT'],
     PyNumber_TrueDivide: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
-        try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__truediv__'), b)); }
+        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__truediv__'), b)); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
     PyNumber_Remainder__deps: ['$WasthonRT'],
     PyNumber_Remainder: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
-        try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__mod__'), b)); }
+        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__mod__'), b)); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
     PyNumber_And__deps: ['$WasthonRT'],
     PyNumber_And: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
-        try { return rt.wrap(rt.$B.$call(rt.$B.$getattr(a, '__and__'), b)); }
+        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__and__'), b)); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
@@ -4484,7 +4661,7 @@ mergeInto(LibraryManager.library, {
         if (s === null) { rt.setError(rt.wrap(rt._b_.TypeError), "str expected"); return 0; }
         var arr = new Array(s.length);
         for (var i = 0; i < s.length; i++) arr[i] = s.charCodeAt(i) & 0xFF;
-        return rt.wrap(rt._b_.bytes.$factory(arr));
+        return rt.wrapNewRef(rt._b_.bytes.$factory(arr));
     },
 
     /* PyObject_GetOptionalAttr — like GetAttr but missing attr is OK.
@@ -4541,7 +4718,7 @@ mergeInto(LibraryManager.library, {
         if (!obj) return rt.SLOT_NONE;
         var d = rt.$B.get_dict(obj);
         if (!d) return rt.SLOT_NONE;
-        return rt.wrap(d);
+        return rt.wrapNewRef(d);
     },
 
     /* PyObject_Str(o) — str(o). */
@@ -4549,7 +4726,7 @@ mergeInto(LibraryManager.library, {
     PyObject_Str: function(objH) {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
-        try { return rt.wrap(rt._b_.str.$factory(obj)); }
+        try { return rt.wrapNewRef(rt._b_.str.$factory(obj)); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
@@ -4568,7 +4745,7 @@ mergeInto(LibraryManager.library, {
         }
         try {
             var m = rt.$B.$getattr(obj, name);
-            return rt.wrap(rt.$B.$call.apply(null, [m].concat(args)));
+            return rt.wrapNewRef(rt.$B.$call.apply(null, [m].concat(args)));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.AttributeError), name + ": " + (e.message || e));
             return 0;
@@ -4582,7 +4759,8 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var name = rt.asJSStr(rt.unwrap(nameH));
         if (name === null) return 0;
-        try { return rt.wrap(rt._b_.__import__(name)); }
+        // Pinned: module singleton (see PyImport_ImportModule).
+        try { return rt.wrapPinned(rt._b_.__import__(name)); }
         catch (e) {
             rt.forwardError(e, rt._b_.ImportError);
             return 0;
@@ -4663,7 +4841,7 @@ mergeInto(LibraryManager.library, {
     /* PyLong from/to double */
     PyLong_FromDouble__deps: ['$WasthonRT'],
     PyLong_FromDouble: function(v) {
-        return WasthonRT.wrap(Math.trunc(v));
+        return WasthonRT.wrapNewRef(Math.trunc(v));
     },
     PyLong_AsDouble__deps: ['$WasthonRT'],
     PyLong_AsDouble: function(handle) {
@@ -4676,7 +4854,7 @@ mergeInto(LibraryManager.library, {
     PyNumber_Divmod: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
-        try { return rt.wrap(rt._b_.divmod(a, b)); }
+        try { return rt.wrapNewRef(rt._b_.divmod(a, b)); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
@@ -4732,8 +4910,8 @@ mergeInto(LibraryManager.library, {
         var args = parse(undefined);
         // Py_VaBuildValue returns a single value if format yields one,
         // else a tuple of values. (Matches CPython.)
-        if (args.length === 1) return rt.wrap(args[0]);
-        return rt.wrap(rt._b_.tuple.$factory(args));
+        if (args.length === 1) return rt.wrapNewRef(args[0]);
+        return rt.wrapNewRef(rt._b_.tuple.$factory(args));
     },
 
     /* _PyLong_DivmodNear(a, b) — round-half-to-even integer divmod.
@@ -4763,7 +4941,7 @@ mergeInto(LibraryManager.library, {
         var qN = Number(q), rN = Number(r);
         var qOut = (BigInt(qN) === q && Number.isSafeInteger(qN)) ? qN : q;
         var rOut = (BigInt(rN) === r && Number.isSafeInteger(rN)) ? rN : r;
-        return rt.wrap(rt._b_.tuple.$factory([qOut, rOut]));
+        return rt.wrapNewRef(rt._b_.tuple.$factory([qOut, rOut]));
     },
 
     /* PyObject_CallFunctionObjArgs(callable, arg1, ..., NULL) — variadic call
@@ -4783,7 +4961,7 @@ mergeInto(LibraryManager.library, {
             if (h === 0) break;
             args.push(rt.toBrythonArg(rt.unwrap(h)));
         }
-        try { return rt.wrap(rt.$B.$call.apply(null, [fn].concat(args))); }
+        try { return rt.wrapNewRef(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
@@ -4796,7 +4974,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var l = rt.unwrap(listH);
         if (l === null) return 0;
-        try { return rt.wrap(rt._b_.tuple.$factory(l)); }
+        try { return rt.wrapNewRef(rt._b_.tuple.$factory(l)); }
         catch (e) { return 0; }
     },
 
@@ -4923,7 +5101,7 @@ mergeInto(LibraryManager.library, {
         try {
             var mod = rt.$B.module.tp_new(rt.$B.module);
             rt.$B.module.tp_init(mod, name);
-            return rt.wrap(mod);
+            return rt.wrapNewRef(mod);
         } catch (e) { return 0; }
     },
 
@@ -4944,7 +5122,7 @@ mergeInto(LibraryManager.library, {
         var capGet = getPtr, capSet = setPtr, capClosure = closurePtr;
 
         var fget = capGet ? (function(getP, closP) {
-            return function(self) {
+            return rt.scoped(function(self) {
                 var selfH = (self && self.__wasthon_ptr__) ? self.__wasthon_ptr__ : rt.wrap(self);
                 rt.pendingException = null;
                 var resH = getWasmTableEntry(getP)(selfH, closP);
@@ -4953,12 +5131,12 @@ mergeInto(LibraryManager.library, {
                     var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
                     throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
                 }
-                return rt.unwrap(resH);
-            };
+                return rt.unwrapResult(resH);
+            });
         })(capGet, capClosure) : rt._b_.None;
 
         var fset = capSet ? (function(setP, closP) {
-            return function(self, value) {
+            return rt.scoped(function(self, value) {
                 var selfH = (self && self.__wasthon_ptr__) ? self.__wasthon_ptr__ : rt.wrap(self);
                 var valH = rt.wrap(value);
                 rt.pendingException = null;
@@ -4969,13 +5147,13 @@ mergeInto(LibraryManager.library, {
                     throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
                 }
                 return rc;
-            };
+            });
         })(capSet, capClosure) : rt._b_.None;
 
         var prop = rt._b_.property.$factory(fget, fset);
         prop.__name__ = name;
         prop.__wasthon_getset__ = getsetPtr;
-        return rt.wrap(prop);
+        return rt.wrapNewRef(prop);
     },
 
     /* PyDescr_NAME — read the descriptor's __name__ field. */
@@ -4997,12 +5175,17 @@ mergeInto(LibraryManager.library, {
         try {
             if (rt._b_.dict.$contains(d, k)) {
                 var v = rt._b_.dict.$getitem(d, k);
-                if (resultPtr) HEAP32[resultPtr >> 2] = rt.wrap(v);
+                // *result is a strong reference (CPython 3.13 contract).
+                if (resultPtr) HEAP32[resultPtr >> 2] = rt.wrapNewRef(v);
                 return 1;
             }
             var dv = rt.unwrap(defH);
             rt._b_.dict.$setitem(d, k, dv);
-            if (resultPtr) HEAP32[resultPtr >> 2] = defH;
+            rt.incref(defH);                      // dict takes its own ref (no-steal)
+            if (resultPtr) {
+                HEAP32[resultPtr >> 2] = defH;
+                rt.incref(defH);                  // *result strong reference
+            }
             return 0;
         } catch (e) { return -1; }
     },
@@ -5026,7 +5209,7 @@ mergeInto(LibraryManager.library, {
         try {
             var bytes = HEAPU8.slice(sPtr, sPtr + size);
             var s = new TextDecoder(enc, { fatal: false }).decode(bytes);
-            return rt.wrap(s);
+            return rt.wrapNewRef(s);
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
                 "decode " + enc + " failed: " + (e.message || String(e)));
@@ -5425,8 +5608,13 @@ mergeInto(LibraryManager.library, {
             for (var i = 0; i < newsize; i++) newArr[i] = i < oldLen ? (src[i] & 0xff) : 0;
         }
         var newBytes = rt._b_.bytes.$factory(newArr);
-        var newHandle = rt.wrap(newBytes);
+        // CPython contract: the reference in *pv is consumed and replaced
+        // by a new one. Without the decref the original placeholder
+        // (refcount 1 from PyBytes_FromStringAndSize) leaks on every
+        // resize — one pinned handle per pickle.dumps().
+        var newHandle = rt.wrapNewRef(newBytes);
         HEAP32[pvPtr >> 2] = newHandle;
+        rt.decref(handle);
         return 0;
     },
 
@@ -5439,7 +5627,7 @@ mergeInto(LibraryManager.library, {
         if (typeof obj === 'bigint') return handle;
         try {
             var v = rt._b_.int.$factory(obj);
-            return rt.wrap(v);
+            return rt.wrapNewRef(v);
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError),
                 "an integer is required");
@@ -5712,7 +5900,7 @@ mergeInto(LibraryManager.library, {
             var b = HEAPU8[argbufPtr + i];
             hex += hexChars[b >> 4] + hexChars[b & 0x0f];
         }
-        return WasthonRT.wrap(hex);
+        return WasthonRT.wrapNewRef(hex);
     },
 
     /* --------------------------------------------------------------- *
@@ -5843,7 +6031,7 @@ mergeInto(LibraryManager.library, {
         // float/double arrays element-wise died with "unorderable types"
         // (test_array test_cmp / test_nan).
         try {
-            return rt.wrap(rt.$B.rich_comp(ops[op], a, b));
+            return rt.wrapNewRef(rt.$B.rich_comp(ops[op], a, b));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -5877,7 +6065,7 @@ mergeInto(LibraryManager.library, {
     PyObject_Repr__deps: ['$WasthonRT'],
     PyObject_Repr: function(handle) {
         var rt = WasthonRT;
-        try { return rt.wrap(String(rt._b_.repr(rt.unwrap(handle)))); }
+        try { return rt.wrapNewRef(String(rt._b_.repr(rt.unwrap(handle)))); }
         catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError), "repr failed: " + (e.message || String(e)));
             return 0;
@@ -5921,7 +6109,7 @@ mergeInto(LibraryManager.library, {
                         };
                         bound.ob_type = rt.$B.builtin_method;
                         bound.__self__ = obj;
-                        return rt.wrap(bound);
+                        return rt.wrapNewRef(bound);
                     }
                 }
             } catch (_) {}
@@ -5954,7 +6142,7 @@ mergeInto(LibraryManager.library, {
     PySequence_List__deps: ['$WasthonRT'],
     PySequence_List: function(handle) {
         var rt = WasthonRT;
-        try { return rt.wrap(rt._b_.list.$factory(rt.unwrap(handle))); }
+        try { return rt.wrapNewRef(rt._b_.list.$factory(rt.unwrap(handle))); }
         catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError), "list() failed");
             return 0;
@@ -5967,10 +6155,10 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
         try {
-            if (Array.isArray(obj)) return rt.wrap(obj.slice(low, high));
-            if (typeof obj === 'string') return rt.wrap(obj.slice(low, high));
+            if (Array.isArray(obj)) return rt.wrapNewRef(obj.slice(low, high));
+            if (typeof obj === 'string') return rt.wrapNewRef(obj.slice(low, high));
             var slice = rt._b_.slice.$factory(low, high);
-            return rt.wrap(rt.$B.$getitem(obj, slice));
+            return rt.wrapNewRef(rt.$B.$getitem(obj, slice));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError), "slice failed");
             return 0;
@@ -5982,7 +6170,7 @@ mergeInto(LibraryManager.library, {
     _PyObject_CallNoArgs: function(handle) {
         var rt = WasthonRT;
         var fn = rt.unwrap(handle);
-        try { return rt.wrap(rt.$B.$call(fn)); }
+        try { return rt.wrapNewRef(rt.$B.$call(fn)); }
         catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError), "call failed: " + (e.message || String(e)));
             return 0;
@@ -6106,8 +6294,8 @@ mergeInto(LibraryManager.library, {
                  (typeof a === 'number') ? BigInt(Math.trunc(a)) : 0n;
         var s = typeof shift === 'bigint' ? shift : BigInt(shift | 0);
         var result = bi << s;
-        if (result >= -2147483648n && result <= 2147483647n) return rt.wrap(Number(result));
-        return rt.wrap(result);
+        if (result >= -2147483648n && result <= 2147483647n) return rt.wrapNewRef(Number(result));
+        return rt.wrapNewRef(result);
     },
 
     _PyObject_MaybeCallSpecialNoArgs__deps: ['$WasthonRT'],
@@ -6119,7 +6307,7 @@ mergeInto(LibraryManager.library, {
         try {
             var m = rt.$B.$getattr(obj, name, null);
             if (m === null || m === undefined) return 0;
-            return rt.wrap(rt.$B.$call(m));
+            return rt.wrapNewRef(rt.$B.$call(m));
         } catch (e) { return 0; }
     },
 
@@ -6148,7 +6336,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try {
             var arr = rt._b_.list.$factory(rt.unwrap(handle));
-            return rt.wrap(rt._b_.tuple.$factory(arr));
+            return rt.wrapNewRef(rt._b_.tuple.$factory(arr));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError), "tuple() failed");
             return 0;
@@ -6252,8 +6440,8 @@ mergeInto(LibraryManager.library, {
                  (typeof a === 'number') ? BigInt(Math.trunc(a)) : 0n;
         var s = typeof shift === 'bigint' ? shift : BigInt(shift | 0);
         var result = bi >> s;
-        if (result >= -2147483648n && result <= 2147483647n) return rt.wrap(Number(result));
-        return rt.wrap(result);
+        if (result >= -2147483648n && result <= 2147483647n) return rt.wrapNewRef(Number(result));
+        return rt.wrapNewRef(result);
     },
 
     PyNumber_Index__deps: ['$WasthonRT'],
@@ -6264,7 +6452,7 @@ mergeInto(LibraryManager.library, {
         if (typeof obj === 'bigint') return objH;
         try {
             var v = rt.$B.$call(rt.$B.$getattr(obj, '__index__'));
-            return rt.wrap(v);
+            return rt.wrapNewRef(v);
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError),
                 "object cannot be interpreted as an integer");
@@ -6292,10 +6480,10 @@ mergeInto(LibraryManager.library, {
                 var ba = typeof na === 'bigint' ? na : BigInt(Math.trunc(na));
                 var bb = typeof nb === 'bigint' ? nb : BigInt(Math.trunc(nb));
                 var r = ba - bb;
-                if (r >= -2147483648n && r <= 2147483647n) return rt.wrap(Number(r));
-                return rt.wrap(r);
+                if (r >= -2147483648n && r <= 2147483647n) return rt.wrapNewRef(Number(r));
+                return rt.wrapNewRef(r);
             }
-            return rt.wrap(na - nb);
+            return rt.wrapNewRef(na - nb);
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError), "subtract failed: " + (e.message || String(e)));
             return 0;
@@ -6309,8 +6497,8 @@ mergeInto(LibraryManager.library, {
         var s = strPtr ? UTF8ToString(strPtr) : "";
         try {
             var bi = base === 0 ? BigInt(s) : BigInt(parseInt(s, base));
-            if (bi >= -2147483648n && bi <= 2147483647n) return rt.wrap(Number(bi));
-            return rt.wrap(bi);
+            if (bi >= -2147483648n && bi <= 2147483647n) return rt.wrapNewRef(Number(bi));
+            return rt.wrapNewRef(bi);
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.ValueError),
                 "invalid literal for int: '" + s + "'");
@@ -6338,7 +6526,7 @@ mergeInto(LibraryManager.library, {
             } else {
                 mod = imp(modName);
             }
-            return rt.wrap(rt.$B.$getattr(mod, attrName));
+            return rt.wrapNewRef(rt.$B.$getattr(mod, attrName));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.ImportError),
                 "PyImport_ImportModuleAttr: " + modName + "." + attrName +
@@ -6426,7 +6614,7 @@ mergeInto(LibraryManager.library, {
         rt._writers.delete(id);
         _free(writerPtr);
         if (!chunks) return 0;
-        return rt.wrap(chunks.join(''));
+        return rt.wrapNewRef(chunks.join(''));
     },
 
     PyUnicodeWriter_WriteChar__deps: ['$WasthonRT'],
@@ -6536,12 +6724,12 @@ mergeInto(LibraryManager.library, {
 
     /* _wasthon_id(name_cstr) — return a Brython str handle for "name".
      * Backs the _Py_ID(name) macro that some C code uses as a stand-in for
-     * pre-interned identifiers. */
-    _wasthon_id__deps: ['$WasthonRT'],
+     * pre-interned identifiers. Routes through the intern pool: _Py_ID
+     * strings are immortal in CPython and compared by pointer, so the
+     * handle must be stable across calls and never scope-released. */
+    _wasthon_id__deps: ['$WasthonRT', 'PyUnicode_InternFromString'],
     _wasthon_id: function(namePtr) {
-        var rt = WasthonRT;
-        var name = namePtr ? UTF8ToString(namePtr) : "";
-        return rt.wrap(name);
+        return _PyUnicode_InternFromString(namePtr);
     },
 
     /* _PyEval_GetBuiltin(name) — look up a builtin by name (str object). */
@@ -6650,7 +6838,7 @@ mergeInto(LibraryManager.library, {
             var label = bo < 0 ? 'utf-16le' : (bo > 0 ? 'utf-16be' : 'utf-16');
             var bytes = HEAPU8.slice(sPtr, sPtr + size);
             var s = new TextDecoder(label).decode(bytes);
-            return WasthonRT.wrap(s);
+            return WasthonRT.wrapNewRef(s);
         } catch (e) {
             WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.UnicodeDecodeError),
                 "utf-16 decode failed: " + (e.message || e));
@@ -6676,7 +6864,7 @@ mergeInto(LibraryManager.library, {
                     : (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
                 chars.push(String.fromCodePoint(cp));
             }
-            return rt.wrap(chars.join(''));
+            return rt.wrapNewRef(chars.join(''));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
                 "utf-32 decode failed: " + (e.message || e));
@@ -6758,7 +6946,7 @@ mergeInto(LibraryManager.library, {
     _PyLong_FromByteArray__deps: ['$WasthonRT'],
     _PyLong_FromByteArray: function(bytesPtr, n, littleEndian, isSigned) {
         var rt = WasthonRT;
-        if (n === 0) return rt.wrap(0);
+        if (n === 0) return rt.wrapNewRef(0);
         var v = 0n;
         if (littleEndian) {
             for (var i = n - 1; i >= 0; i--) {
@@ -6774,8 +6962,8 @@ mergeInto(LibraryManager.library, {
             var top = littleEndian ? HEAPU8[bytesPtr + n - 1] : HEAPU8[bytesPtr];
             if (top & 0x80) v -= (1n << BigInt(n * 8));
         }
-        if (v >= -2147483648n && v <= 2147483647n) return rt.wrap(Number(v));
-        return rt.wrap(v);
+        if (v >= -2147483648n && v <= 2147483647n) return rt.wrapNewRef(Number(v));
+        return rt.wrapNewRef(v);
     },
 
     /* _PyLong_AsByteArray — reverse of above. */
@@ -6834,7 +7022,9 @@ mergeInto(LibraryManager.library, {
             } else {
                 mod = imp(name);
             }
-            return rt.wrap(mod);
+            // Modules are singletons C code caches in lazy statics with no
+            // INCREF — pin the handle (bounded by the set of modules).
+            return rt.wrapPinned(mod);
         } catch (e) {
             rt.forwardError(e, rt._b_.ImportError);
             return 0;
@@ -6983,7 +7173,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
         if (obj === null) return 0;
-        try { return rt.wrap(rt._b_.iter(obj)); }
+        try { return rt.wrapNewRef(rt._b_.iter(obj)); }
         catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -7007,7 +7197,7 @@ mergeInto(LibraryManager.library, {
         try {
             var newm = rt.$B.$getattr(cls, '__new__');
             var inst = rt.$B.$call.apply(rt.$B, [newm].concat(callArgs));
-            return rt.wrap(inst);
+            return rt.wrapNewRef(inst);
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -7027,7 +7217,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try {
             var a = rt.unwrap(aH), b = rt.unwrap(bH);
-            return rt.wrap(rt.$B.$call(rt._b_.int.__mul__, a, b));
+            return rt.wrapNewRef(rt.$B.$call(rt._b_.int.__mul__, a, b));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -7039,7 +7229,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try {
             var a = rt.unwrap(aH), b = rt.unwrap(bH);
-            return rt.wrap(rt.$B.$call(rt._b_.int.__floordiv__, a, b));
+            return rt.wrapNewRef(rt.$B.$call(rt._b_.int.__floordiv__, a, b));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -7053,9 +7243,9 @@ mergeInto(LibraryManager.library, {
         try {
             var a = rt.unwrap(aH), b = rt.unwrap(bH), c = rt.unwrap(cH);
             if (c === null || c === rt._b_.None) {
-                return rt.wrap(rt.$B.$call(rt._b_.int.__pow__, a, b));
+                return rt.wrapNewRef(rt.$B.$call(rt._b_.int.__pow__, a, b));
             }
-            return rt.wrap(rt._b_.pow(a, b, c));
+            return rt.wrapNewRef(rt._b_.pow(a, b, c));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -7067,7 +7257,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try {
             var x = rt.unwrap(handle);
-            return rt.wrap(Math.abs(typeof x === 'number' ? x : Number(x)));
+            return rt.wrapNewRef(Math.abs(typeof x === 'number' ? x : Number(x)));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -7092,7 +7282,7 @@ mergeInto(LibraryManager.library, {
         }
         var bits = 0;
         while (n > 0n) { bits++; n >>= 1n; }
-        return rt.wrap(bits);
+        return rt.wrapNewRef(bits);
     },
 
     /* float.as_integer_ratio — returns (numerator, denominator). */
@@ -7113,7 +7303,7 @@ mergeInto(LibraryManager.library, {
             // bogus "Cannot pass NaN to float.as_integer_ratio" for ANY value
             // (this broke every float→Decimal conversion).
             var fn = rt.$B.$getattr(rt._b_.float, 'as_integer_ratio');
-            return rt.wrap(rt.$B.$call(fn, rt.$B.fast_float(asNum)));
+            return rt.wrapNewRef(rt.$B.$call(fn, rt.$B.fast_float(asNum)));
         } catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
@@ -7262,7 +7452,7 @@ mergeInto(LibraryManager.library, {
         var chunk = cps.slice(start, end).map(function(c) {
             return String.fromCodePoint(c);
         }).join('');
-        return rt.wrap(chunk);
+        return rt.wrapNewRef(chunk);
     },
 
     PyUnicode_FromKindAndData__deps: ['$WasthonRT'],
@@ -7276,12 +7466,12 @@ mergeInto(LibraryManager.library, {
             else c = HEAPU8[dataPtr + i];
             chars.push(String.fromCodePoint(c));
         }
-        return rt.wrap(chars.join(''));
+        return rt.wrapNewRef(chars.join(''));
     },
 
     PyUnicode_FromOrdinal__deps: ['$WasthonRT'],
     PyUnicode_FromOrdinal: function(ordinal) {
-        return WasthonRT.wrap(String.fromCodePoint(ordinal));
+        return WasthonRT.wrapNewRef(String.fromCodePoint(ordinal));
     },
 
     /* PyUnicode_FromWideChar(buf, len) — buf is a wchar_t* (32-bit on
@@ -7290,7 +7480,7 @@ mergeInto(LibraryManager.library, {
     PyUnicode_FromWideChar__deps: ['$WasthonRT'],
     PyUnicode_FromWideChar: function(bufPtr, len) {
         var rt = WasthonRT;
-        if (bufPtr === 0) return rt.wrap("");
+        if (bufPtr === 0) return rt.wrapNewRef("");
         if (len < 0) {
             // NUL-terminated.
             len = 0;
@@ -7300,7 +7490,7 @@ mergeInto(LibraryManager.library, {
         for (var i = 0; i < len; i++) {
             chars.push(String.fromCodePoint(HEAPU32[(bufPtr + i * 4) >> 2]));
         }
-        return rt.wrap(chars.join(''));
+        return rt.wrapNewRef(chars.join(''));
     },
 
     PyUnicode_AppendAndDel__deps: ['$WasthonRT'],
@@ -7320,7 +7510,7 @@ mergeInto(LibraryManager.library, {
         var l = rt.unwrap(leftH);
         var r = rt.unwrap(rightH);
         if (typeof l !== 'string' || typeof r !== 'string') return 0;
-        return rt.wrap(l + r);
+        return rt.wrapNewRef(l + r);
     },
 
     PyUnicode_Join__deps: ['$WasthonRT'],
@@ -7329,7 +7519,7 @@ mergeInto(LibraryManager.library, {
         var sep = rt.unwrap(sepH);
         var seq = rt.unwrap(seqH);
         if (typeof sep !== 'string' || !Array.isArray(seq)) return 0;
-        try { return rt.wrap(seq.join(sep)); } catch (e) { return 0; }
+        try { return rt.wrapNewRef(seq.join(sep)); } catch (e) { return 0; }
     },
 
     PyUnicode_MAX_CHAR_VALUE__deps: ['$WasthonRT'],
@@ -7358,7 +7548,7 @@ mergeInto(LibraryManager.library, {
     PyUnicode_New__deps: ['$WasthonRT'],
     PyUnicode_New: function(size, maxchar) {
         var rt = WasthonRT;
-        if (size === 0) return rt.wrap("");
+        if (size === 0) return rt.wrapNewRef("");
         // Choose kind matching CPython's PEP 393: 1 byte for maxchar < 0x100,
         // 2 bytes for < 0x10000, 4 bytes otherwise. _decimal always uses 127.
         var kind = (maxchar < 0x100) ? 1 : (maxchar < 0x10000 ? 2 : 4);
@@ -7369,7 +7559,7 @@ mergeInto(LibraryManager.library, {
             __wasthon_unicode_size__: size,
             __wasthon_unicode_kind__: kind,
         };
-        return rt.wrap(placeholder);
+        return rt.wrapNewRef(placeholder);
     },
 
     /* PyUnicode_1BYTE_DATA(str) — returns the pointer to the Latin-1
@@ -7470,7 +7660,7 @@ mergeInto(LibraryManager.library, {
     PyCapsule_New: function(ptr, namePtr, dtor) {
         var rt = WasthonRT;
         var name = namePtr ? UTF8ToString(namePtr) : null;
-        return rt.wrap({ __class__: 'PyCapsule', ptr: ptr, name: name });
+        return rt.wrapNewRef({ __class__: 'PyCapsule', ptr: ptr, name: name });
     },
 
     PyCapsule_GetPointer__deps: ['$WasthonRT'],
@@ -7570,7 +7760,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
         var key = rt.unwrap(keyH);
-        try { return rt.wrap(rt.$B.$getitem(obj, key)); }
+        try { return rt.wrapNewRef(rt.$B.$getitem(obj, key)); }
         catch (e) {
             var excCls = (e && e.__class__) ? e.__class__ : rt._b_.KeyError;
             rt.setError(rt.wrap(excCls),
@@ -7616,7 +7806,7 @@ mergeInto(LibraryManager.library, {
         if (t === null) return 0;
         try {
             var sliced = rt._b_.tuple.$factory(Array.from(t).slice(low, high));
-            return rt.wrap(sliced);
+            return rt.wrapNewRef(sliced);
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError),
                 "PyTuple_GetSlice: " + (e.message || String(e)));
@@ -7674,7 +7864,7 @@ mergeInto(LibraryManager.library, {
                 : (maxsplit < 0
                     ? rt.$B.$call(rt.$B.$getattr(s, 'split'), sep)
                     : rt.$B.$call(rt.$B.$getattr(s, 'split'), sep, maxsplit));
-            return rt.wrap(parts);
+            return rt.wrapNewRef(parts);
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError),
                 "PyUnicode_Split: " + (e.message || String(e)));
@@ -7705,7 +7895,7 @@ mergeInto(LibraryManager.library, {
                     "sys module not loaded");
                 return 0;
             }
-            return rt.wrap(rt.$B.$getattr(sys, name));
+            return rt.wrapNewRef(rt.$B.$getattr(sys, name));
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.AttributeError),
                 "sys." + name + ": " + (e.message || String(e)));
@@ -7868,7 +8058,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
         if (typeof obj === 'string') return handle;
-        try { return rt.wrap(rt._b_.str.$factory(obj)); }
+        try { return rt.wrapNewRef(rt._b_.str.$factory(obj)); }
         catch (e) { return 0; }
     },
 
@@ -8190,7 +8380,9 @@ mergeInto(LibraryManager.library, {
         var modObj = rt.$B.module.tp_new(rt.$B.module);
         rt.$B.module.tp_init(modObj, defInfo.name,
                              defInfo.doc || rt._b_.None);
-        var modHandle = rt.wrap(modObj);
+        // Pinned: the module handle lives in registries and C module-state
+        // for the whole session.
+        var modHandle = rt.wrapPinned(modObj);
 
         // Allocate per-module state (m_size bytes) and register it.
         var statePtr = 0;
@@ -8365,7 +8557,9 @@ mergeInto(LibraryManager.library, {
         var typeStructPtr = _malloc(64);
         HEAPU8.fill(0, typeStructPtr, typeStructPtr + 64);
         var dictObj = rt.$B.get_dict(cls);
-        var dictHandle = rt.wrap(dictObj);
+        // Pinned: stored in the malloc'd type struct (tp_dict), read by C
+        // for the type's whole life (same as ensureTypeStruct's pin).
+        var dictHandle = rt.wrapPinned(dictObj);
         HEAP32[(typeStructPtr +  4) >> 2] = slotMap[63 /* Py_tp_free */] || rt._defaultTpFree;  // tp_free
         HEAP32[(typeStructPtr +  8) >> 2] = dictHandle;     // tp_dict
         HEAP32[(typeStructPtr + 12) >> 2] = namePtr;        // tp_name
@@ -8436,7 +8630,7 @@ mergeInto(LibraryManager.library, {
         //   PyObject *tp_new(PyTypeObject *cls, PyObject *args, PyObject *kw);
         var tpNewPtr = slotMap[65 /* Py_tp_new */];
         if (tpNewPtr) {
-            cls.tp_new = function(brythonCls, args, kw) {
+            cls.tp_new = rt.scoped(function(brythonCls, args, kw) {
                 var argsH = rt.wrap(args || []);
                 // For a Python subclass of a C-type, don't forward kwargs to the
                 // C tp_new. CPython's array_new (and most C tp_new) only reject
@@ -8463,7 +8657,7 @@ mergeInto(LibraryManager.library, {
                     // $B.$call is the generic dispatch that handles both.
                     throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
                 }
-                var inst = rt.unwrap(resultH);
+                var inst = rt.unwrapResult(resultH);
                 /* Honor Python subclasses. The C tp_new received `typeHandle`
                  * (our parent C-type, captured in closure), so the instance
                  * comes back with ob_type pointing to the parent. If Brython
@@ -8509,7 +8703,7 @@ mergeInto(LibraryManager.library, {
                     }
                 }
                 return inst;
-            };
+            });
             cls.tp_new.$is_slot = true;
             // Expose the C tp_new as __new__ in the class dict so an explicit
             // `Type.__new__(cls, *args)` (e.g. test_subclassing's
@@ -8749,7 +8943,7 @@ mergeInto(LibraryManager.library, {
                         }
                         return rt._b_.NotImplemented;
                     }
-                    return rt.unwrap(resH);
+                    return rt.unwrapResult(resH);
                 };
             } else if (shape === 'bi') {
                 /* binary returning int (0/1, -1 on error) — used by
@@ -8787,7 +8981,7 @@ mergeInto(LibraryManager.library, {
                         }
                         return rt._b_.NotImplemented;
                     }
-                    return rt.unwrap(resH);
+                    return rt.unwrapResult(resH);
                 };
             } else if (shape === 'r') {
                 var isStringy = (brythonName === 'tp_str' || brythonName === 'tp_repr');
@@ -8803,7 +8997,7 @@ mergeInto(LibraryManager.library, {
                         }
                         return rt._b_.None;
                     }
-                    var obj = rt.unwrap(resH);
+                    var obj = rt.unwrapResult(resH);
                     if (isStringy) {
                         // C side returns a PyUnicode_New placeholder; materialize.
                         var s = rt.asJSStr(obj);
@@ -8875,7 +9069,7 @@ mergeInto(LibraryManager.library, {
                     if (resH === 0) {
                         throw rt.$B.$call(rt._b_.IndexError, "index out of range");
                     }
-                    return rt.unwrap(resH);
+                    return rt.unwrapResult(resH);
                 };
             } else if (shape === 'sis') {
                 /* sq_ass_item: self + ssize_t + value. Returns int rc.
@@ -8969,7 +9163,7 @@ mergeInto(LibraryManager.library, {
                                           typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
                     }
                     if (resH === 0) throw rt.$B.$call(rt._b_.StopIteration);
-                    return rt.unwrap(resH);
+                    return rt.unwrapResult(resH);
                 };
             } else if (shape === 'c') {
                 // richcompare: install 6 dunder methods sharing one C slot.
@@ -8991,19 +9185,20 @@ mergeInto(LibraryManager.library, {
                             }
                             return rt._b_.NotImplemented;
                         }
-                        return rt.unwrap(resH);
+                        return rt.unwrapResult(resH);
                     };
                 };
                 cls.tp_funcs = cls.tp_funcs || {};
                 for (var ci = 0; ci < compares.length; ci++) {
                     var name = compares[ci][0], op = compares[ci][1];
-                    var fn = makeCmp(op);
+                    var fn = rt.scoped(makeCmp(op));
                     cls[name] = fn;
                     cls.tp_funcs[name] = fn;
                     try { rt.$B.set_to_dict(cls, name, fn); } catch (_) {}
                 }
                 return;  // skip the generic install below
             }
+            dispatch = rt.scoped(dispatch);
             cls[brythonName] = dispatch;
             cls.tp_funcs = cls.tp_funcs || {};
             cls.tp_funcs[brythonName] = dispatch;
@@ -9089,7 +9284,7 @@ mergeInto(LibraryManager.library, {
         // skips the init step.
         var tpInitPtr = slotMap[61 /* Py_tp_init */];
         if (tpInitPtr) {
-            cls.tp_init = function(self) {
+            cls.tp_init = rt.scoped(function(self) {
                 // Brython call sig: tp_init(self, ...args, kwarg)
                 // CPython sig:      tp_init(self, args_tuple, kwargs_dict)
                 var jsArgs = Array.from(arguments).slice(1);
@@ -9133,7 +9328,7 @@ mergeInto(LibraryManager.library, {
                     var msg = pe ? pe.msg : "tp_init failed";
                     throw rt.$B.$call(exc, typeof msg === 'string' ? msg : String(msg));
                 }
-            };
+            });
             // Expose the C tp_init as the __init__ attribute, so an explicit
             // `inst.__init__(args)` (Struct reinit `s.__init__('>hh')`) and a
             // subclass's `super().__init__(args)` dispatch to it instead of
@@ -9156,7 +9351,7 @@ mergeInto(LibraryManager.library, {
         var tpCallPtr = slotMap[77 /* Py_tp_call */];
         if (tpCallPtr) {
             var _tpCallWrap;
-            cls.tp_call = _tpCallWrap = function(self) {
+            cls.tp_call = _tpCallWrap = rt.scoped(function(self) {
                 var jsArgs = Array.from(arguments).slice(1);
                 var kw = null;
                 // Brython's kw marker is any trailing {$kw: ...} payload; the
@@ -9198,8 +9393,8 @@ mergeInto(LibraryManager.library, {
                     throw rt.$B.$call(rt._b_.RuntimeError,
                         "tp_call returned NULL");
                 }
-                return rt.unwrap(resH);
-            };
+                return rt.unwrapResult(resH);
+            });
             // Also expose as __call__ so Brython's `callable(obj)` builtin
             // (and `obj(...)` syntax via $call) finds it. Without this,
             // tp_call is wired at the C level but callable() returns False
@@ -9226,7 +9421,7 @@ mergeInto(LibraryManager.library, {
         var tpGetattroPtr = slotMap[57 /* Py_tp_getattro */];
         if (tpGetattroPtr) {
             var _objGetattr = rt._b_.object.tp_getattro;
-            cls.tp_getattro = cls.$getattribute = function(self, name) {
+            cls.tp_getattro = cls.$getattribute = rt.scoped(function(self, name) {
                 // Re-entry guard: when C falls through to PyObject_GenericGetAttr
                 // → $B.$getattr → us again, break out to the default tp_getattro
                 // so normal descriptor lookup terminates the cycle.
@@ -9247,7 +9442,7 @@ mergeInto(LibraryManager.library, {
                     rt.pendingException = null;
                     var resH = getWasmTableEntry(tpGetattroPtr)(selfH, nameH);
                     if (resH !== 0 && !rt.pendingException) {
-                        return rt.unwrap(resH);
+                        return rt.unwrapResult(resH);
                     }
                     var pe = rt.pendingException;
                     rt.pendingException = null;
@@ -9263,7 +9458,7 @@ mergeInto(LibraryManager.library, {
                 } finally {
                     if (self) delete self.__wasthon_in_getattro__;
                 }
-            };
+            });
         }
 
         // Install dealloc hook so that when Brython GCs an instance we
@@ -9340,8 +9535,12 @@ mergeInto(LibraryManager.library, {
     PyModule_Add: function(moduleHandle, namePtr, valueHandle) {
         var rt = WasthonRT;
         var modObj = rt.unwrap(moduleHandle);
-        if (!modObj || namePtr === 0) return -1;
+        if (!modObj || namePtr === 0) { rt.consumeResultRef(valueHandle); return -1; }
         rt.$B.module_setattr(modObj, UTF8ToString(namePtr), rt.unwrap(valueHandle));
+        // Steals the value reference, even on failure (CPython contract).
+        // Instance-exempt: unicodedata's `ucd_3_2_0` (a C UCD instance) is
+        // PyModule_Add'ed at exec — a raw decref would tp_dealloc it live.
+        rt.consumeResultRef(valueHandle);
         return 0;
     },
 
@@ -9492,7 +9691,7 @@ mergeInto(LibraryManager.library, {
             var capGet = getPtr, capSet = setPtr, capClosure = closurePtr;
 
             var fget = capGet ? (function(getP, closP) {
-                return function(self) {
+                return rt.scoped(function(self) {
                     var selfH = (self && self.__wasthon_ptr__) ? self.__wasthon_ptr__ : rt.wrap(self);
                     rt.pendingException = null;
                     var resH = getWasmTableEntry(getP)(selfH, closP);
@@ -9502,12 +9701,12 @@ mergeInto(LibraryManager.library, {
                         var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
                         throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
                     }
-                    return rt.unwrap(resH);
-                };
+                    return rt.unwrapResult(resH);
+                });
             })(capGet, capClosure) : rt._b_.None;
 
             var fset = capSet ? (function(setP, closP) {
-                return function(self, value) {
+                return rt.scoped(function(self, value) {
                     var selfH = (self && self.__wasthon_ptr__) ? self.__wasthon_ptr__ : rt.wrap(self);
                     var valH = rt.wrap(value);
                     rt.pendingException = null;
@@ -9519,7 +9718,7 @@ mergeInto(LibraryManager.library, {
                         throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
                     }
                     return rc;
-                };
+                });
             })(capSet, capClosure) : rt._b_.None;
 
             try {
@@ -9691,7 +9890,9 @@ mergeInto(LibraryManager.library, {
                             HEAPU8[addr] = rt._b_.bool.$factory(value) ? 1 : 0;
                             break;
                         case 4:
-                            HEAP32[addr >> 2] = rt.wrap(value);
+                            // T_OBJECT member write into the instance struct:
+                            // C reads it back on later calls — pin the handle.
+                            HEAP32[addr >> 2] = rt.wrapPinned(value);
                             break;
                         case 9:
                             iv = rt.coerceInt(value);
@@ -9976,7 +10177,7 @@ mergeInto(LibraryManager.library, {
                 // No exception set but NULL returned — generic error.
                 throw rt.$B.$call(rt._b_.RuntimeError, methName + ": call returned NULL");
             }
-            var result = rt.unwrap(resultHandle);
+            var result = rt.unwrapResult(resultHandle);
             /* Sync bytes-like objects whose backing was a C-side linear-
              * memory buffer (e.g. zlib.compress output, pickle.loads bytes
              * written into __wasthon_cstr__). Walks recursively into
@@ -10087,6 +10288,10 @@ mergeInto(LibraryManager.library, {
             }
             return result;
         };
+        // Every trampoline call runs under a fresh handle scope: sentinel
+        // handles wrapped during the C call (args, temporaries, borrowed
+        // wraps) are released at return unless C took a reference.
+        tramp = rt.scoped(tramp);
         // Brython reads $function_infos for a function's __module__/__name__/
         // __qualname__ and in repr/coroutine paths; native builtins carry it
         // as [module, name, qualname] (finalize_builtin_types). Trampolines
