@@ -1986,7 +1986,9 @@ return x1 >=y1
 case "__gt__":
 return x1 > y1}}
 var res
-if(x !==null && $B.is_type(x)){if(op=="__eq__"){return(x===y)}else if(op=="__ne__"){return !(x===y)}else{$B.RAISE(_b_.TypeError,"'"+method2comp[op]+
+// classes compare by identity ONLY under plain `type`; a custom
+// metaclass may define __eq__/__ne__ (pickletester's pickling_metaclass)
+if(x !==null && $B.is_type(x)&& $B.get_class(x)===_b_.type){if(op=="__eq__"){return(x===y)}else if(op=="__ne__"){return !(x===y)}else{$B.RAISE(_b_.TypeError,"'"+method2comp[op]+
 "' not supported between instances of '"+$B.class_name(x)+
 "' and '"+$B.class_name(y)+"'")}}
 var rev_op=reversed_op[op]||op,y_rev_func
@@ -2214,6 +2216,10 @@ return setter(in_mro,self,value)}}
 var slots=$B.get_from_dict(klass,'__slots__',$B.NULL)
 if(slots !==$B.NULL){if(_b_.tuple.sq_contains(slots,attr)){self.slot_values[attr]=value}}
 var dict=$B.get_dict(self)
+// a class whose __slots__ contains '__dict__' keeps a per-instance dict:
+// create it lazily on first out-of-slots setattr
+if(! dict && klass.$slots_has_dict){self[$B.DICT]=$B.empty_dict()
+dict=self[$B.DICT]}
 if(dict){$B.str_dict_set(dict,attr,value)}else{var exc=$B.attr_error(attr,self)
 exc.args[0]=`'${$B.get_name(klass)}' object has no attribute `+
 `'${attr}' and no __dict__ for setting new attributes`
@@ -2328,6 +2334,15 @@ if(spec !==""){$B.RAISE(_b_.TypeError,"non-empty format string passed to object.
 )}
 return _b_.str.$factory(self)}
 object_funcs.__getstate__=function(self){var dict=$B.get_dict(self)
+// CPython 3.11+: instances with filled __slots__ return a 2-tuple
+// (dict-or-None, {slot: value}); plain instances keep returning the dict
+var sd=null
+for(var k in self){if(k.startsWith('slot_value_')&& self[k]!==undefined){
+if(sd===null){sd=$B.empty_dict()}
+_b_.dict.$setitem(sd,k.slice(11),self[k])}}
+if(sd !==null){
+var d1=(dict !==undefined && dict !==null && _b_.dict.mp_length(dict)> 0)? dict :_b_.None
+return $B.fast_tuple([d1,sd])}
 return dict===undefined ? _b_.None :dict}
 object_funcs.__init_subclass__=function(self){
 var $=$B.args("__init_subclass__",1,{cls:null},arguments,null,"args","kwargs")
@@ -2726,7 +2741,14 @@ function reset_setattr(cls){$B.make_setattr(cls)
 if(cls.tp_subclasses===undefined){console.log('no subclasses',cls)}
 for(var kls of cls.tp_subclasses){reset_setattr(kls)}}
 function set_slots(cl_dict,class_obj){let slots=$B.str_dict_get(cl_dict,'__slots__',$B.NULL)
-if(slots !==$B.NULL){for(let key of $B.make_js_iterator(slots)){var member={name:key,type:$B.TYPES.OBJECT,attr:'slot_value_'+key,flags:0}
+if(slots !==$B.NULL){for(let key of $B.make_js_iterator(slots)){
+// CPython: '__dict__'/'__weakref__' in __slots__ are markers, not slots —
+// their presence keeps the instance __dict__ / weakref support
+if(key=='__dict__'||key=='__weakref__'){if(key=='__dict__'){class_obj.$slots_has_dict=true}
+continue}
+// CPython mangles private slot names at class-creation time
+if(key.startsWith('__') && ! key.endsWith('__')){key='_'+$B.get_name(class_obj).replace(/^_+/,'')+key}
+var member={name:key,type:$B.TYPES.OBJECT,attr:'slot_value_'+key,flags:0}
 var md={ob_type:$B.member_descriptor,d_type:class_obj,d_name:key,d_member:member}
 $B.str_dict_set(cl_dict,key,md)}}}
 _b_.type.tp_setattro=function(kls,attr,value){var $test=false 
@@ -7354,12 +7376,13 @@ return{
 ob_type:$B.get_class(self),source:self.source.concat(get_list_from_bytes_like(other))}}
 _b_.bytes.sq_contains=function(self,other){if(typeof other=="number"){return self.source.indexOf(other)>-1}
 if(self.source.length < other.source.length){return false}
-var len=other.source.length
-for(var i=0;i < self.source.length-other.source.length+1;i++){var flag=true
-for(var j=0;j < len;j++){if(other.source[i+j]!=self.source[j]){flag=false
-break}}
-if(flag){return true}}
-return false}
+// subsequence search via native String.indexOf (the naive O(n*m) JS loop
+// timed out the pickle suite on multi-MB dumps); bytes map 1:1 to latin-1
+// code units, built in chunks to respect the argument-count limit
+var _toStr=function(src){var parts=[]
+for(var k=0;k < src.length;k+=32768){parts.push(String.fromCharCode.apply(null,Array.prototype.slice.call(src,k,k+32768)))}
+return parts.join('')}
+return _toStr(self.source).indexOf(_toStr(other.source))>-1}
 _b_.bytes.bf_getbuffer=function(self,flags){return $B.$call(_b_.memoryview,self)}
 var bytes_funcs=_b_.bytes.tp_funcs={}
 bytes_funcs.__bytes__=function(self){if($B.exact_type(self,_b_.bytes)){return self}
@@ -9514,7 +9537,25 @@ if(same_sign){return int_or_long(quot)}else{if(typeof quot=='bigint'){return int
 _b_.int.nb_true_divide=function(self,other){var[x,y]=[self,other].map(toBigInt)
 if(x===$B.NULL ||y===$B.NULL){return _b_.NotImplemented}
 if(y===0n){$B.RAISE(_b_.ZeroDivisionError,'division by zero')}
-return $B.fast_float(Number(x)/Number(y))}
+var negate=(x<0n)!=(y<0n)
+if(x<0n){x=-x}
+if(y<0n){y=-y}
+if(x===0n){return $B.fast_float(negate ? -0.0 : 0.0)}
+var bx=x.toString(2).length,by=y.toString(2).length,diff=bx-by
+var shift=Math.max(diff,-1021)-55
+var q,r
+if(shift>=0){var ys=y<<BigInt(shift);q=x/ys;r=x%ys}
+else{var xs=x<<BigInt(-shift);q=xs/y;r=xs%y}
+if(r!==0n){q|=1n}
+var qbits=q.toString(2).length
+var extra=Math.max(qbits,-1021-shift)-53
+var half=1n<<BigInt(extra-1),low=q&((half<<1n)-1n)
+q>>=BigInt(extra)
+if(low>half||(low===half&&(q&1n))){q+=1n}
+shift+=extra
+var res=Number(q)*2**shift
+if(!isFinite(res)){$B.RAISE(_b_.OverflowError,'integer division result too large for a float')}
+return $B.fast_float(negate ? -res : res)}
 _b_.int.nb_index=function(self){return int_value(self)}
 _b_.int.tp_new=function(cls,args,kw){var nb_kwargs=$B.str_dict_length(kw)
 var nb_args=args.length+nb_kwargs
@@ -9536,7 +9577,9 @@ break}
 if(! $B.$isinstance(cls,_b_.type)){$B.RAISE(_b_.TypeError,"int.__new__(X): X is not a type object")}
 if(cls===bool){$B.RAISE(_b_.TypeError,"int.__new__(bool) is not safe, use bool.__new__()")}
 if(cls===int){return int.$factory(value,base)}
-var res={ob_type:cls,value}
+// subclasses must convert too: MyInt(Fraction(17)) stored the raw
+// Fraction as its value ([object Object] everywhere downstream)
+var res={ob_type:cls,value:int.$factory(value,base)}
 $B.init_dict(res)
 return res}
 var int_funcs=_b_.int.tp_funcs={}
@@ -9576,7 +9619,9 @@ _len=_bytes.length
 for(let i=0;i < _len;i++){_b_.bytes.$factory([_bytes[i]])}}
 if(byteorder=="big"){_bytes.reverse()}else if(byteorder !="little"){$B.RAISE(_b_.ValueError,"byteorder must be either 'little' or 'big'")}
 var num=_bytes[0]
-if(signed && num >=128){num=num-256}
+// the sign lives in the MOST significant byte — handled at the end via
+// the final two's-complement; pre-complementing the LOW byte here
+// subtracted 256 from every signed value whose low byte was >= 128
 num=BigInt(num)
 var _mult=256n
 for(let i=1;i < _len;i++){num+=_mult*BigInt(_bytes[i])

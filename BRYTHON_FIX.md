@@ -91,6 +91,126 @@ array('Q', [1, 2])  # after
 4  # after (was 2)
 ```
 
+## [x] class comparison ignored custom metaclass `__eq__`
+
+**Impact: pickle +5 (644) — test_dynamic_class (classes recreated through
+`copyreg.pickle` compare equal via their metaclass).** `rich_comp` had an
+identity shortcut for ANY type operand (`x === y`), so a metaclass's
+`__eq__`/`__ne__` was never consulted. The shortcut now applies only to
+plain `type` classes; custom metaclasses fall through to the regular
+dunder dispatch.
+
+```python
+>>> class Meta(type):
+...     def __eq__(self, other):
+...         return self.tag == other.tag
+>>> A = Meta('X', (), {'tag': 1}); B = Meta('X', (), {'tag': 1})
+>>> A == B
+False  # before
+>>> A == B
+True  # after
+```
+
+## [x] stdev/pstdev crash instead of ValueError on inf/nan (gh-140938)
+
+**Impact: statistics +1 (368).** The bundled statistics.py predates
+CPython's gh-140938 guard: `mss.numerator` on the float inf/nan result
+raised AttributeError instead of `ValueError('inf or nan encountered in
+data')`. Ported the upstream try/except into stdev and pstdev.
+
+```python
+>>> statistics.pstdev([1.0, math.inf])
+AttributeError: 'float' object has no attribute 'numerator'  # before
+>>> statistics.pstdev([1.0, math.inf])
+ValueError: inf or nan encountered in data  # after
+```
+
+## [x] int subclass constructor stored its argument unconverted
+
+**Impact: statistics +1 (367), random +1 (86).** `int.tp_new` converted
+through `int.$factory` only for plain `int`; for subclasses it built
+`{ob_type: cls, value}` with the RAW argument — `MyInt(Fraction(17))`
+carried a Fraction as its value and printed `[object Object]` everywhere
+downstream. Subclasses now convert through the same factory.
+
+```python
+>>> class MyInt(int): pass
+>>> MyInt(Fraction(17))
+[object Object]  # before
+>>> MyInt(Fraction(17))
+17  # after
+```
+
+## [x] `int.from_bytes` subtracted 256 from signed values with a high low-byte
+
+**Impact: pickle +5 (pickle 639) +1 (batch) — decode_long in the pure-Python pickler (the
+CDumpPickle_LoadPickle / PyPicklerTests class family), test_ints/test_long
+and the numeric is-not-a-copy cluster.** The two's-complement was applied
+TWICE: once (wrongly) on the LEAST significant byte at loop start
+(`if(signed && num >= 128) num -= 256`), once (correctly) on the MSB at the
+end — so every signed conversion whose low byte was ≥ 0x80 came out 256
+short. The C loaders were fine, which is why the corruption only appeared
+in suite classes that load through Python.
+
+```python
+>>> int.from_bytes(b'\xff\xff', 'little', signed=True)
+-257  # before
+>>> int.from_bytes(b'\xff\xff', 'little', signed=True)
+-1  # after
+```
+
+
+## [x] `__slots__` machinery: `'__dict__'` marker, private-name mangling, slots-aware `__getstate__`
+
+**Impact: pickle +10 (cluster WithPrivateSlots/WithSlotsAndDict/my_dynamic_class).**
+Three faithful-CPython gaps in the class machinery:
+(1) `'__dict__'` (and `'__weakref__'`) inside `__slots__` are MARKERS, not
+slots — their presence means the instance keeps a `__dict__`; Brython
+created a bogus `slot_value___dict__` member instead, so any out-of-slots
+setattr raised "no __dict__ for setting new attributes". Now a class
+marker + a lazily-created per-instance dict.
+(2) CPython mangles private slot names at class-creation time
+(`__private` → `_Cls__private`); Brython didn't, so the compiler-mangled
+`self.__private = x` never found its slot.
+(3) `object.__getstate__` ignored slots entirely; CPython 3.11+ returns
+`(dict-or-None, {slot: value})` when slots are filled — pickle's reduce
+protocol depends on it. Slot values live as `slot_value_*` JS properties
+(the member-descriptor storage), collected from there.
+
+```python
+>>> class S:
+...     __slots__ = ('a', '__dict__')
+>>> s = S(); s.b = 2
+AttributeError: 'S' object has no attribute 'b' and no __dict__ for setting new attributes  # before
+>>> s = S(); s.b = 2; s.b
+2  # after
+>>> class T:
+...     __slots__ = ('a',)
+>>> t = T(); t.a = 1; t.__getstate__()
+None  # before
+>>> t = T(); t.a = 1; t.__getstate__()
+(None, {'a': 1})  # after
+```
+
+
+## [x] `bytes.__contains__` subsequence search never matched
+
+**Impact: pickle +22 (589→611) — every `assertIn(fragment, dump)` in the
+suite; single-byte `in` was fine.** Two swapped indices in the inner loop
+of `bytes.sq_contains` compared the needle shifted against the start of
+the haystack (`other.source[i+j] != self.source[j]`), so any multi-byte
+needle missed unless it matched at position 0. Fixed the indices — then
+replaced the naive O(n*m) JS loop outright with native `String.indexOf`
+over latin-1 strings (chunked `String.fromCharCode`): with the loop merely
+corrected, real scans over multi-MB pickle dumps timed the suite out.
+
+```python
+>>> b'wor' in b'hello world'
+False  # before
+>>> b'wor' in b'hello world'
+True  # after
+```
+
 ## [x] `assertWarns` never matched (recorded message is a raw str)
 
 **Impact: sqlite3 +10 (315→325), array +2 — and every `assertWarns` in any
@@ -1265,3 +1385,50 @@ But a JS function carries a usable `.name`.
      return _b_.object.tp_getattro(self, attr)
  }
 ```
+
+## [x] `int.__truediv__` broken on big ints: `(2**1200)/(2**1100)` = nan, `1/2**1074` = 0.0
+**Impact: +1 test** (test_statistics test_random_25177; zero regression on statistics/
+random/math/cmath/decimal/zlib). Generic correctness fix: every `int/int` where an
+operand exceeds 2**53 (and every `float(Fraction)`, which divides numerator by
+denominator) was wrong or NaN.
+
+**Symptom:** `(2**1200)/(2**1100)` → `nan` (expected `2**100`), `1/2**1074` → `0.0`
+(expected `5e-324`, the min subnormal), and ordinary big-int quotients were off by
+several ulps (double-rounding through two lossy conversions).
+
+**Root cause:** `py_int.js`, `int.nb_true_divide` converts both operands to double
+*before* dividing: `Number(x)/Number(y)`. Any operand ≥ 2**1024 becomes `Infinity`
+(Inf/Inf = NaN), any ≥ 2**53 loses bits before the division, and subnormal results
+underflow to 0 through the intermediate conversion.
+
+**Fix** — `py_int.js`, `int.nb_true_divide`: port of CPython's `long_true_divide`
+(`Objects/longobject.c`) on BigInt — divide first, convert once, with correct
+round-half-to-even at the right bit position (handles subnormals without double
+rounding, raises OverflowError like CPython):
+
+```js
+// after the existing NULL / ZeroDivisionError guards:
+var negate=(x<0n)!=(y<0n)
+if(x<0n){x=-x}
+if(y<0n){y=-y}
+if(x===0n){return $B.fast_float(negate ? -0.0 : 0.0)}
+var bx=x.toString(2).length,by=y.toString(2).length,diff=bx-by
+var shift=Math.max(diff,-1021)-55          // -1021 = DBL_MIN_EXP
+var q,r
+if(shift>=0){var ys=y<<BigInt(shift);q=x/ys;r=x%ys}
+else{var xs=x<<BigInt(-shift);q=xs/y;r=xs%y}
+if(r!==0n){q|=1n}                          // sticky bit
+var qbits=q.toString(2).length
+var extra=Math.max(qbits,-1021-shift)-53   // 53 = DBL_MANT_DIG
+var half=1n<<BigInt(extra-1),low=q&((half<<1n)-1n)
+q>>=BigInt(extra)
+if(low>half||(low===half&&(q&1n))){q+=1n}  // round-half-to-even
+shift+=extra
+var res=Number(q)*2**shift                 // both factors exact ⇒ product exact
+if(!isFinite(res)){$B.RAISE(_b_.OverflowError,'integer division result too large for a float')}
+return $B.fast_float(negate ? -res : res)
+```
+
+Validated bit-exact against CPython on 3006 differential cases (random 1–1200-bit
+operands, signs, subnormals, ties, overflow) plus 200k random small-int cases.
+The `rich_op1` small-int fast path (`typeof x == "number"`) is untouched.
