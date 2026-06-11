@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`MAXIMUM_MEMORY=4GB` on both bundles and standalone `_lzma`** (+12:
+      test_lzma 76→88). The default 2GB wasm cap was the real wall behind most
+      of test_lzma's "MemoryError: out of memory" cluster: the suite's
+      cumulative heap usage plus liblzma's ~94MB preset-6 encoder allocations
+      hit the ceiling, and `ALLOW_MEMORY_GROWTH` could not grow past it. 4GB
+      is the wasm32 maximum — a virtual-address reservation, free on 64-bit
+      hosts. Documented in the README link-flags section as a TEMPORARY fix:
+      headroom against the known handle/sentinel retention, to re-evaluate
+      (possibly back to 2GB) once the per-call arena work lands.
+
 - [x] **Pickling a C-opaque instance silently produced an empty shell**
       (+1: test_zlib 56→57 — the suite's first 100% —, +4 test_decimal
       Context copy/with, +2 test_bz2, +1 test_lzma compressor-pickle).

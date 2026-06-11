@@ -411,7 +411,7 @@ features like FTS5/RTREE/JSON1 that aren't on the query hot loop). This
 size cut is what made bundling `_sqlite3` in `wasthon-full` viable.
 
 **Link flags.** Links use `emcc -O2` with the standard runtime exports.
-Two per-target deviations target the stack:
+Three per-target deviations target the stack and the heap ceiling:
 
 - **`-sSTACK_SIZE=4MB`** on `_decimal`, `_pickle`, `pyexpat` and both
   wasthon bundles. The sizing rule is **"match the legitimate use
@@ -437,6 +437,21 @@ Two per-target deviations target the stack:
   `_pickle`/`pyexpat` standalone — the 4 MB headroom alone clears
   everything we've measured for those, and the per-prologue guard
   carries a small runtime perf cost.
+- **`-sMAXIMUM_MEMORY=4GB`** on `_lzma` standalone and both wasthon
+  bundles — **a temporary fix**. The default 2GB growth ceiling was the
+  real wall behind most of test_lzma's out-of-memory failures: liblzma's
+  preset-6 encoder allocates ~94 MB per instance, and the *cumulative*
+  heap pressure of a long-running page (the bridge's known handle-map /
+  sentinel retention, see the GC section) pushes the total toward the
+  cap, where `ALLOW_MEMORY_GROWTH` can grow no further and `malloc`
+  starts returning NULL. 4 GB is the wasm32 maximum; the `maximum` is a
+  virtual-address-space reservation, not an allocation, so it costs
+  nothing on 64-bit hosts (32-bit user agents may fail to instantiate —
+  considered acceptable in 2026). This buys headroom, it does not fix
+  the retention: once the per-call arena work lands, the ceiling should
+  be re-evaluated (and possibly lowered back to 2GB, which would also
+  spare hand-written JS the unsigned-pointer discipline required above
+  the 2GB address boundary).
 
 The script handles all the per-module quirks: downloading missing source
 trees, compiling external libraries (libexpat, liblzma, libzstd, bzip2,

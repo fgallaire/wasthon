@@ -560,6 +560,7 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
         --js-library "${SRC}/wasthon.js" \
         -sUSE_ZLIB=1 \
         -s ALLOW_MEMORY_GROWTH=1 -s ALLOW_TABLE_GROWTH=1 \
+        -s MAXIMUM_MEMORY=4GB \
         -s EXPORTED_FUNCTIONS="[${EXPORTS}]" \
         -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' \
         -s MODULARIZE=1 -s EXPORT_ES6=1 -s EXPORT_NAME="${BUNDLE_EXPORT_NAME}" \
@@ -637,6 +638,12 @@ _lzma)
     copy_module_and_clinic "${CPYTHON_SRC}/Modules/_lzmamodule.c"
     emcc -O3 -c -I . -I "${SRC}" -I "${XZ_DIR}/src/liblzma/api" \
         _lzmamodule.c -o _lzmamodule.o
+    # MAXIMUM_MEMORY=4GB: keep the standalone module coherent with the
+    # bundles - liblzma's preset-6 encoder (~94MB per instance) plus
+    # cumulative heap pressure can hit the default 2GB growth ceiling.
+    # See the README link-flags section; temporary headroom, to revisit
+    # once the handle/sentinel leak work lands.
+    EXTRA_LD_FLAGS="-sMAXIMUM_MEMORY=4GB ${EXTRA_LD_FLAGS:-}" \
     link_module "_lzma" "PyInit__lzma" "_lzma_init" \
         _lzmamodule.o "${XZ_DIR}/src/liblzma/.libs/liblzma.a"
     ;;
