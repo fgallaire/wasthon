@@ -817,12 +817,26 @@ mergeInto(LibraryManager.library, {
         }
     },
 
-    /* PyErr_WarnEx — emit a runtime warning. We swallow it: not having
-     * Python's warnings module wired in WASM, the closest correct behaviour
-     * is silent success. Returns 0 (no exception raised). */
+    /* PyErr_WarnEx — emit a runtime warning through Brython's warnings
+     * machinery so assertWarns/catch_warnings actually see it. Returns -1
+     * with the exception set when a warnings filter turns it into an
+     * error (CPython semantics). */
     PyErr_WarnEx__deps: ['$WasthonRT'],
     PyErr_WarnEx: function(categoryH, msgPtr, stacklevel) {
-        return 0;
+        var rt = WasthonRT;
+        try {
+            var msg = UTF8ToString(msgPtr);
+            var cat = categoryH ? rt.unwrap(categoryH) : rt._b_.RuntimeWarning;
+            var w = rt.$B.imported && rt.$B.imported.warnings;
+            if (!w) {
+                w = rt.$B.$call(rt._b_.__import__, 'warnings');
+            }
+            rt.$B.$call(rt.$B.$getattr(w, 'warn'), msg, cat);
+            return 0;
+        } catch (e) {
+            rt.forwardError(e);
+            return -1;
+        }
     },
 
     PyUnicode_FromString__deps: ['$WasthonRT'],

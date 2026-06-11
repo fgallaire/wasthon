@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyErr_WarnEx` swallowed every C-module warning** (+1: sqlite3
+      314→315). It returned 0 without emitting anything; now routes through
+      Brython's `warnings.warn` (and returns -1 with the exception set when
+      a filter turns the warning into an error). The full sqlite3
+      DeprecationWarning cluster (×16) needs the deeper VFS warnings bug
+      fixed too — see below.
+
 - [x] **Clinic UInt converters raised OverflowError for negative values**
       (+1 hashlib, +1 lzma). CPython's `_PyLong_UInt32/UInt64_Converter`
       raise **ValueError** ("Cannot convert negative int") on negatives —
