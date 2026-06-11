@@ -7,6 +7,37 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyArg_ParseTupleAndKeywords` accepted unknown keyword arguments**
+      (+11: test_csv 116→118, test_decimal 288→291, test_lzma 75→81 — jointly
+      with the exception-type fidelity entry below). CPython's legacy parser
+      rejects kwargs not named in kwlist; the bridge's silently dropped them,
+      so `csv.reader([], bad_attr=0)` / `register_dialect(n, badargument=None)`
+      / bad lzma filter-spec keys succeeded instead of raising TypeError. Scan
+      the kwds keys against kwlist up front. (The clinic-side
+      `_PyArg_UnpackKeywords` got this check on 2026-06-05; this parser was
+      left out.)
+
+- [x] **C-raised exception types were flattened to RuntimeError across the
+      call primitives** (standalone +0, prerequisite of the entry above —
+      validation tests assert the TYPE). The generic call primitive,
+      `PyObject_CallObject` and the HasAttr-area getattr recovered the class
+      from a bare `(e && e.__class__)`, absent on a freshly-raised Brython
+      exception (it carries `ob_type`) — every C TypeError surfacing through
+      a nested call (csv dialect validation: "delimiter must be a 1-character
+      string") arrived as RuntimeError. Route through `forwardError` (the
+      2026-06-08 reserve, applied now that tests exercise these paths).
+
+- [x] **A bytes struct member filled C-side read back as zeros** (+1:
+      test_zlib 54→55). zlib's `save_unconsumed_input` builds `unused_data`
+      via `PyBytes_FromStringAndSize(NULL, n)` + `memcpy` — a writable
+      placeholder whose content lives in linear memory while `.source` still
+      holds the zero fill. The post-call syncBytes pass only folds RETURN
+      values; a member read later through the PyMemberDef descriptor
+      (`dco.unused_data`) returned the placeholder raw — `b'\x00' * n` instead
+      of the leftover input. Fold the placeholder in the member getter
+      (Py_T_OBJECT_EX); `PyBytes_AsString` re-allocates from `.source` if C
+      touches the bytes again.
+
 - [x] **Subclass instances lied about their C type — SignalDict comparisons
       aborted** (+4: test_decimal 284→288). The no-tp_new default allocator
       stamped instances with the handle of the ANCESTOR that supplied the

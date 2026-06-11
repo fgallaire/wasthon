@@ -5420,6 +5420,28 @@ mergeInto(LibraryManager.library, {
             }
         }
 
+        // CPython's PyArg_ParseTupleAndKeywords rejects keyword arguments
+        // not named in kwlist. This parser silently dropped them, so e.g.
+        // csv.reader([], bad_attr=0) / register_dialect(n, badargument=None)
+        // succeeded instead of raising TypeError. (The clinic-side
+        // _PyArg_UnpackKeywords got this check earlier; this legacy parser
+        // was left out.)
+        if (kwds) {
+            try {
+                var kwkeys = rt.$B.$call(rt._b_.list,
+                    rt.$B.$call(rt.$B.$getattr(kwds, 'keys')));
+                for (var ki = 0; ki < kwkeys.length; ki++) {
+                    var kname = rt.asJSStr(kwkeys[ki]);
+                    if (kname !== null && kwlist.indexOf(kname) < 0) {
+                        rt.setError(rt.wrap(rt._b_.TypeError),
+                            "'" + kname +
+                            "' is an invalid keyword argument for this function");
+                        return 0;
+                    }
+                }
+            } catch (_) { /* unusable mapping — let the slot loop handle it */ }
+        }
+
         // Normalise args to a JS array of positional values.
         var posArgs;
         if (Array.isArray(args)) posArgs = args;
