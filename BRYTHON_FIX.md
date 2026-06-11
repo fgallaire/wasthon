@@ -146,6 +146,23 @@ AttributeError: '_BufferedReader' object has no attribute 'raw'  # before
 <_io.BytesIO object>  # after
 ```
 
+## [x] `file.write(buffer-protocol object)` silently wrote 0 bytes
+
+**Impact: array +14 (742→756) — the `f.write(array(...))` /
+fromfile-roundtrip family (×28 EOFError cluster).** The fs layer's `toU8`
+returned an EMPTY Uint8Array for any object it didn't recognize (it only
+knew `.source`, TypedArrays and JS arrays) — so writing a wasthon C array
+truncated the file to 0 bytes and every later `fromfile` died with
+"read() didn't return enough bytes". Materialize Python buffer-protocol
+objects via `tobytes()` (fallback `bytes(obj)`).
+
+```python
+>>> open(fn, 'wb').write(array.array('i', [1, 2, 3, 4, 5]))
+0  # before
+>>> open(fn, 'wb').write(array.array('i', [1, 2, 3, 4, 5]))
+20  # after
+```
+
 ## [x] os-level calls stringify PathLike objects to '[object Object]'
 
 **Impact: zstd +6 (89→95).** `open()` resolves `__fspath__` (fixed earlier)

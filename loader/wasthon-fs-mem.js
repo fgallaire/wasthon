@@ -28,6 +28,17 @@
                 return new Uint8Array(obj.buffer, obj.byteOffset, obj.byteLength);
             }
             if (Array.isArray(obj)) return Uint8Array.from(obj);
+            // Python buffer-protocol objects (e.g. wasthon C arrays,
+            // memoryviews): materialize their bytes. Silently writing 0
+            // bytes here made f.write(array(...)) a no-op.
+            if (obj.ob_type !== undefined || obj.__class__ !== undefined) {
+                try {
+                    const tb = B.$getattr(obj, 'tobytes', null);
+                    const by = tb !== null ? B.$call(tb) : B.$call(_b_.bytes, obj);
+                    if (by && by.source !== undefined) return Uint8Array.from(by.source);
+                    if (by) return Uint8Array.from(B.$list(_b_.list.$factory(by)));
+                } catch (e) {}
+            }
             return new Uint8Array(0);
         }
         const toBytes = (u8) => _b_.bytes.$factory(Array.from(u8));
