@@ -1193,7 +1193,9 @@ mergeInto(LibraryManager.library, {
     PyList_New: function(size) {
         var arr = new Array(size | 0);
         for (var i = 0; i < size; i++) arr[i] = WasthonRT._b_.None;
-        // Tag as a Brython list so Brython routines accept it.
+        // Tag as a Brython list: get_class short-circuits Array.isArray
+        // BEFORE reading __class__; native lists carry the OB_TYPE Symbol.
+        arr[WasthonRT.$B.OB_TYPE] = WasthonRT._b_.list;
         arr.__class__ = WasthonRT._b_.list;
         return WasthonRT.wrapNewRef(arr);
     },

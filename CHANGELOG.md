@@ -16,6 +16,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
       −238 on 2026-06-12, root-caused to the handle-map resize cascade,
       harmless now that scopes keep the map flat.)
 
+- [x] **Unpickled lists reported type JavascriptArray** (+31: test_pickle
+      574, +3: sqlite3 328). `get_class` short-circuits `Array.isArray` to
+      JavascriptArray BEFORE reading `__class__`; native Brython lists carry
+      the `OB_TYPE` Symbol. PyList_New now sets that Symbol, so
+      `assertIs(type(loads(dumps([1])))), list)` holds — and sqlite3's
+      fetchall rows too. (This was the −159/−238 minefield: re-measured
+      −238 on 2026-06-12, root-caused to the handle-map resize cascade,
+      harmless now that scopes keep the map flat.)
+
 - [x] **Handle scopes — the JS-side sentinel handle-map leak is fixed**
       (+2 decimal immediately; the enabler for the two entries below and for
       every formerly-impossible fix that adds wraps). The bridge gains the
