@@ -103,6 +103,7 @@ try {
     }
     log(`Running CPython ${testName}.py…\n`);
     window.__wasthon_test_name = testName;
+    window.__wasthon_only = params.get('only') || '';
 
     const py = document.createElement('script');
     py.type = 'text/python';
@@ -341,12 +342,7 @@ except Exception:
 # DecompressionParameter) at import-time. That fails on wasthon because
 # PyType_Check doesn't recognize enum.IntEnum-derived classes as types.
 # Neutralize the call before the VFS file runs — preserves the import.
-if test_name == 'test_zstd':
-    try:
-        import _zstd as _wasthon_zstd
-        _wasthon_zstd.set_parameter_types = lambda *a, **k: None
-    except Exception as _e:
-        log('  (zstd set_parameter_types stub failed: ' + str(_e) + ')')
+
 
 # test_bz2's setUp does tempfile.mkstemp() -> os.open() (not implemented
 # in Brython browser), so all 101 tests error out before their body runs.
@@ -543,6 +539,21 @@ try:
     if test_name in _KNOWN_HANGS:
         _patch_suite_for_hangs(suite, _KNOWN_HANGS[test_name],
                                _KNOWN_HANG_PREFIXES.get(test_name, []))
+    # ?only=Sub1,Sub2 — keep only tests whose id contains one of the
+    # substrings (debug tool for suite-order pollution bisects).
+    from browser import window as _w
+    _only = str(_w.__wasthon_only or '')
+    if _only:
+        _subs = _only.split(',')
+        def _filter_suite(s):
+            kept = unittest.TestSuite()
+            for item in s:
+                if isinstance(item, unittest.TestSuite):
+                    kept.addTests(_filter_suite(item))
+                elif any(x in item.id() for x in _subs):
+                    kept.addTest(item)
+            return kept
+        suite = _filter_suite(suite)
     # Ceinture + bretelles + cintre: monkey-patch TestCase.run itself.
     # If setattr-on-class doesn't propagate (some Brython binding wart),
     # this intercepts at the only choke-point that always runs.
