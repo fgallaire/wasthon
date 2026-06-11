@@ -4471,7 +4471,21 @@ mergeInto(LibraryManager.library, {
             return 1;
         } catch (e) {
             HEAP32[outPtr >> 2] = 0;
-            return 0;
+            // Only a MISSING attribute is the 0 case; any other exception
+            // (e.g. a `write` property raising OSError — csv.writer's
+            // BadWriter test) must propagate as -1 with the real type, per
+            // CPython's PyObject_GetOptionalAttr contract.
+            var ae = rt._b_.AttributeError;
+            var isAttr = false;
+            try {
+                if (e && (e.__class__ === ae || e.ob_type === ae ||
+                          (rt.$B.$isinstance && rt.$B.$isinstance(e, ae)))) {
+                    isAttr = true;
+                }
+            } catch (_) {}
+            if (isAttr) return 0;
+            rt.forwardError(e, rt._b_.RuntimeError);
+            return -1;
         }
     },
 

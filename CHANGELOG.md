@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyObject_GetOptionalAttr` swallowed non-AttributeError exceptions**
+      (+1: test_csv 118→119). The contract is 1=found / 0=missing /
+      -1=error-propagates; the bridge returned 0 for ANY exception, so a
+      `write` property raising OSError (csv.writer's BadWriter test) was
+      reported as "attribute missing" and C replaced the OSError with its
+      TypeError "argument 1 must have a write method". Discriminate
+      AttributeError (→0) from the rest (→forwardError, -1).
+
 - [x] **`PyArg_ParseTupleAndKeywords` accepted unknown keyword arguments**
       (+11: test_csv 116→118, test_decimal 288→291, test_lzma 75→81 — jointly
       with the exception-type fidelity entry below). CPython's legacy parser
