@@ -4824,7 +4824,11 @@ mergeInto(LibraryManager.library, {
     PyTuple_CheckExact: function(objH) {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
-        return (obj && obj.__class__ === rt._b_.tuple) ? 1 : 0;
+        // ob_type first: Brython 3.14 tuples (fast_tuple) carry ob_type,
+        // not an own __class__ — the old test rejected every real tuple,
+        // killing e.g. zstd's (ZstdDict, type) dict-form parsing.
+        return (obj && (obj.ob_type === rt._b_.tuple ||
+                        obj.__class__ === rt._b_.tuple)) ? 1 : 0;
     },
 
     /* PyDict_Check / PyDict_CheckExact — declared in wasthon.h but had no

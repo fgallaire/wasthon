@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyTuple_CheckExact` rejected every real Brython tuple** (+7:
+      test_zstd 78→85, 66%→72%). It tested `obj.__class__ === tuple`, but a
+      Brython 3.14 tuple (`fast_tuple`) carries `ob_type`, not an own
+      `__class__` — the predicate was constantly false. zstd's
+      `(ZstdDict, type)` dict-form parsing gates on it
+      (`zd.as_digested_dict` / `as_prefix` → "zstd_dict argument should be a
+      ZstdDict object"). Check `ob_type` first. (The canonical-class
+      precedence family — see the +0 reserve.)
+
 - [x] **Python functions were unpicklable — `Py_TYPE(func)` never equaled
       `&PyFunction_Type`** (+64: test_pickle 399→463, the biggest single fix of
       the campaign). The builtin-type binding mapped `BT_FUNCTION` to
