@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Pickling a C-opaque instance silently produced an empty shell**
+      (+1: test_zlib 56→57 — the suite's first 100% —, +4 test_decimal
+      Context copy/with, +2 test_bz2, +1 test_lzma compressor-pickle).
+      CPython's `object.__getstate__` (3.11+) raises TypeError ("cannot
+      pickle 'X' object") for an instance whose C struct holds opaque state
+      and which has no instance `__dict__`; ours fell through to Brython's
+      default (state=None), so `pickle.dumps(zlib._ZlibDecompressor())`
+      "worked". Install the guard on C types defining no pickling protocol
+      of their own; Python subclass instances (they carry a `__dict__`) and
+      exception types keep their behavior. NOTE: the early TypeErrors shift
+      lzma's heap-sensitive OOM boundary — recovered by the 4GB entry below.
+
 - [x] **`PyArg_ParseTupleAndKeywords` coerced anything to int and ignored
       excess positional args** (+1: test_zlib 55→56, +1 test_lzma). Two more
       legacy-parser gaps, siblings of the unknown-kwargs one: integer formats

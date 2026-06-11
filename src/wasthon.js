@@ -8523,6 +8523,39 @@ mergeInto(LibraryManager.library, {
         // we look it up via __mro__.
         cls.__wasthon_basicsize__ = basicsize;
 
+        // CPython's object.__getstate__ (3.11+) raises TypeError ("cannot
+        // pickle 'X' object") for an instance whose C struct holds opaque
+        // state (tp_basicsize beyond PyObject) with no instance __dict__ —
+        // that's what makes pickling zlib._ZlibDecompressor & co fail. Our
+        // instances fell through to Brython's default (state=None) and
+        // pickled as empty shells. Install the guard when the type defines
+        // no pickling protocol of its own; a Python SUBCLASS instance has an
+        // instance __dict__ (we init_dict it) and stays picklable, as in
+        // CPython.
+        (function() {
+            var tf = cls.tp_funcs || {};
+            // Exception types excluded: BaseException's own reduce protocol
+            // (args-based) must stay in charge — and the raise/except path
+            // exercises it (the guard on LZMAError broke LZMAFile tests).
+            var isExc = cls.tp_mro && cls.tp_mro.indexOf(rt._b_.BaseException) > -1;
+            if (!isExc && basicsize > 0 && !tf.__reduce__ && !tf.__reduce_ex__ &&
+                    !tf.__getstate__ && !tf.__getnewargs__ &&
+                    !tf.__getnewargs_ex__) {
+                var unpicklable = function(self) {
+                    var d = null;
+                    try { d = rt.$B.get_dict(self); } catch (_) {}
+                    if (d) return d;
+                    throw rt.$B.$call(rt._b_.TypeError,
+                        "cannot pickle '" + (cls.tp_name || 'object') +
+                        "' object");
+                };
+                try { rt.$B.set_to_dict(cls, '__getstate__', unpicklable); }
+                catch (_) {}
+                cls.tp_funcs = cls.tp_funcs || {};
+                cls.tp_funcs.__getstate__ = unpicklable;
+            }
+        })();
+
         // Wire number/repr/hash slots to Brython __dunder__ methods so
         // class-level ops resolve to the C slot. Maps slot ID → Brython
         // method name + dispatch shape (b=binary, t=ternary, u=unary,
