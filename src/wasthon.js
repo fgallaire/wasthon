@@ -808,12 +808,11 @@ mergeInto(LibraryManager.library, {
         }
         try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
-            var excCls = (e && e.__class__) ? e.__class__ : rt._b_.RuntimeError;
-            var msg;
-            if (e && e.args && e.args.length > 0) msg = String(e.args[0]);
-            else if (e && e.message) msg = e.message;
-            else msg = String(e);
-            rt.setError(rt.wrap(excCls), msg);
+            // forwardError, not the bare `e.__class__` read: a Brython
+            // exception raised through $B.$call carries ob_type (not
+            // __class__), so the bare read flattened every C-raised
+            // TypeError to RuntimeError (csv dialect validation et al.).
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
@@ -3822,8 +3821,7 @@ mergeInto(LibraryManager.library, {
         if (args === null) args = [];
         try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.RuntimeError),
-                "PyObject_CallObject failed: " + (e && e.message ? e.message : String(e)));
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
@@ -4991,10 +4989,7 @@ mergeInto(LibraryManager.library, {
                 }
             } catch (_) {}
             if (isAttr) return 0;
-            var excCls = (e && e.__class__) ? e.__class__ : rt._b_.RuntimeError;
-            var msg = (e && e.args && e.args.length) ? String(e.args[0])
-                    : (e && e.message) || String(e);
-            rt.setError(rt.wrap(excCls), msg);
+            rt.forwardError(e, rt._b_.RuntimeError);
             return -1;
         }
     },
