@@ -39,7 +39,7 @@ const testName = params.get('test') || 'test_struct';
 // Default mapping test_<x> → wasthon module(s); override with ?install=.
 const INSTALL_MAP = {
     test_struct: ['_struct', 'array'], test_math: ['math'], test_cmath: ['cmath'],
-    test_binascii: ['binascii', 'array'], test_csv: ['_csv'], test_decimal: ['_decimal'],
+    test_binascii: ['binascii', 'array'], test_csv: ['_csv', 'array'], test_decimal: ['_decimal'],
     test_array: ['array'],
     test_hmac: ['_hmac', '_md5', '_sha1', '_sha2', '_sha3', '_blake2'],
     test_statistics: ['_statistics'], test_zstd: ['_zstd'],
