@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`$getattr` can return a raw getset_descriptor — resolve it at the C
+      boundary** (+0, enabler of the entry above). `PyObject_GetOptionalAttr`
+      (via the 3-arg default form) and `PyObject_GetAttr` could hand C an
+      UNRESOLVED `getset_descriptor` (seen on `__qualname__` lookups during
+      save_global), which then flowed into `PyUnicode_Split` ("not a str").
+      Switch to the 2-arg `$getattr` + invoke `tp_descr_get` when a raw
+      descriptor surfaces; `PyUnicode_Split`'s error now names the type it got.
+
 - [x] **`MAXIMUM_MEMORY=4GB` on both bundles and standalone `_lzma`** (+12:
       test_lzma 76→88). The default 2GB wasm cap was the real wall behind most
       of test_lzma's "MemoryError: out of memory" cluster: the suite's

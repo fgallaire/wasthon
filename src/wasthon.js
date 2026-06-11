@@ -4463,8 +4463,18 @@ mergeInto(LibraryManager.library, {
         var name = rt.asJSStr(rt.unwrap(attrNameH));
         if (obj === null || name === null) { HEAP32[outPtr >> 2] = 0; return 0; }
         try {
-            var v = rt.$B.$getattr(obj, name, undefined);
+            // 2-arg $getattr: the 3-arg default form can return a raw
+            // getset_descriptor unresolved (function.__qualname__ — broke
+            // _pickle's save_global for every module-level function);
+            // missing attr raises AttributeError, handled below.
+            var v = rt.$B.$getattr(obj, name);
             if (v === undefined || v === null) { HEAP32[outPtr >> 2] = 0; return 0; }
+            // $getattr can hand back a RAW getset_descriptor for some
+            // instance/attribute combinations. An unresolved descriptor
+            // must never cross into C — invoke its getter.
+            if (v.ob_type === rt.$B.getset_descriptor) {
+                v = rt.$B.getset_descriptor.tp_descr_get(v, obj);
+            }
             var h = rt.wrap(v);
             HEAP32[outPtr >> 2] = h;
             rt.incref(h);  // *Optional* API returns a NEW reference (caller DECREFs)
@@ -5836,7 +5846,13 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(objH);
         var name = rt.asJSStr(rt.unwrap(nameH));
         if (!obj || name === null) return 0;
-        try { return rt.wrapMaybeType(rt.$B.$getattr(obj, name)); }
+        try {
+            var v = rt.$B.$getattr(obj, name);
+            if (v && v.ob_type === rt.$B.getset_descriptor) {
+                v = rt.$B.getset_descriptor.tp_descr_get(v, obj);
+            }
+            return rt.wrapMaybeType(v);
+        }
         catch (e) {
             /* tp_funcs fallback: look up the method in the class chain
              * and synthesize a bound-method-like callable. */
@@ -7587,7 +7603,10 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var s = rt.asJSStr(rt.unwrap(sH));
         if (s === null) {
-            rt.setError(rt.wrap(rt._b_.TypeError), "PyUnicode_Split: not a str");
+            var so = rt.unwrap(sH); var sc = '?';
+            try { sc = rt.$B.class_name ? rt.$B.class_name(so) : typeof so; } catch (_) {}
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "PyUnicode_Split: not a str (got " + sc + ")");
             return 0;
         }
         var sep = sepH === 0 ? null : rt.asJSStr(rt.unwrap(sepH));
