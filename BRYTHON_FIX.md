@@ -146,6 +146,21 @@ AttributeError: '_BufferedReader' object has no attribute 'raw'  # before
 <_io.BytesIO object>  # after
 ```
 
+## [x] os-level calls stringify PathLike objects to '[object Object]'
+
+**Impact: zstd +6 (89→95).** `open()` resolves `__fspath__` (fixed earlier)
+but the fs layer's `norm()` did `String(p)` — so `os.remove(pathlib.Path(x))`
+(and stat/access/unlink/...) looked up the literal key `'[object Object]'`
+and raised FileNotFoundError at the END of every Path-based test. Resolve
+`__fspath__` at the top of `norm()`: one fix point covers the whole posix
+surface (`wasthon-fs-mem.js`).
+
+```python
+>>> os.remove(pathlib.Path('f.bin'))
+FileNotFoundError: No such file or directory: '[object Object]'  # before
+>>> os.remove(pathlib.Path('f.bin'))  # after: removes the file
+```
+
 ## [x] Text I/O over compression files (the write path didn't exist)
 
 **Impact: bz2 +4 (84→88), zstd +2 (87→89), cmath +1, pickle +1 — the whole

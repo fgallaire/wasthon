@@ -39,6 +39,15 @@
         let nextFd = 3, nextIno = 1;
 
         function norm(p) {
+            if (p && typeof p === 'object' && p.charCodeAt === undefined) {
+                // os.PathLike (e.g. Brython pathlib.Path reaching os.remove/
+                // stat/...): resolve __fspath__ before stringifying, else the
+                // key becomes '[object Object]'
+                try {
+                    const f = B.$getattr(p, '__fspath__', null);
+                    if (f !== null && f !== undefined) p = B.$call(f);
+                } catch (e) {}
+            }
             p = String(p);
             if (p === '') return '.';
             const abs = p[0] === '/';
