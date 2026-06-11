@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Clinic UInt converters raised OverflowError for negative values**
+      (+1 hashlib, +1 lzma). CPython's `_PyLong_UInt32/UInt64_Converter`
+      raise **ValueError** ("Cannot convert negative int") on negatives —
+      blake2's `leaf_size`/`node_offset` and lzma's `preset` tests assert
+      that type. Also: UInt32 silently WRAPPED values above 2**32-1 via
+      `>>> 0`; now OverflowError. (The generic `PyLong_AsUnsignedLong`
+      family keeps OverflowError — that's faithful there; array depends
+      on it.)
+
 - [x] **BigInt elements in a bytes `.source` broke buffer marshalling**
       (+2: test_zstd 85→87; kills the test_hmac 1/5 flaky on
       `test_update_large`). Brython's `random.randbytes` can leave BigInt

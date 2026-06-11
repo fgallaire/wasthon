@@ -951,15 +951,17 @@ mergeInto(LibraryManager.library, {
         var bv;
         if (typeof obj === 'number') {
             if (obj < 0) {
-                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
-                    "can't convert negative int to unsigned");
+                // CPython's clinic UInt converters raise ValueError here
+                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.ValueError),
+                    "Cannot convert negative int");
                 return 0;
             }
             bv = BigInt(Math.trunc(obj));
         } else if (typeof obj === 'bigint') {
             if (obj < 0n) {
-                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
-                    "can't convert negative int to unsigned");
+                // CPython's clinic UInt converters raise ValueError here
+                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.ValueError),
+                    "Cannot convert negative int");
                 return 0;
             }
             bv = obj;
@@ -985,8 +987,14 @@ mergeInto(LibraryManager.library, {
             return 0;
         }
         if (v < 0) {
+            // CPython's clinic UInt converters raise ValueError here
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.ValueError),
+                "Cannot convert negative int");
+            return 0;
+        }
+        if (v > 0xFFFFFFFF) {
             WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
-                "can't convert negative int to unsigned");
+                "value is too large");
             return 0;
         }
         HEAPU32[ptr >> 2] = v >>> 0;
@@ -5061,15 +5069,17 @@ mergeInto(LibraryManager.library, {
         var bv;
         if (typeof obj === 'number') {
             if (obj < 0) {
-                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
-                    "can't convert negative int to unsigned");
+                // CPython's clinic UInt converters raise ValueError here
+                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.ValueError),
+                    "Cannot convert negative int");
                 return 0;
             }
             bv = BigInt(obj);
         } else if (typeof obj === 'bigint') {
             if (obj < 0n) {
-                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
-                    "can't convert negative int to unsigned");
+                // CPython's clinic UInt converters raise ValueError here
+                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.ValueError),
+                    "Cannot convert negative int");
                 return 0;
             }
             bv = obj;
