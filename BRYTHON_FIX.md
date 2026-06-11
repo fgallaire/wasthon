@@ -18,6 +18,206 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] float binary ops coerce ANY operand via `__float__`
+
+**Impact: +2 decimal (restores 295 with the real semantics) —
+`Decimal(5) + 2.2` computed 7.2 instead of raising TypeError.** CPython's
+float binary ops (CONVERT_TO_DOUBLE) accept ONLY int/float; `conv_float`
+also called the operand's `__float__`, so implicit Decimal/float mixing
+silently succeeded (test_implicit_from_float only passed by accident
+before the locals() fix). Drop the `__float__` branch from `conv_float`
+(`www/src/py_float.js`).
+
+```python
+>>> Decimal(5) + 2.2
+Decimal('7.2')  # before (wrong)
+>>> Decimal(5) + 2.2
+TypeError: unsupported operand type(s) for +: 'decimal.Decimal' and 'float'  # after
+```
+
+## [x] `locals()` returns the raw frame object (methods saw their instance)
+
+**Impact: test_hashlib +8 (58→66) — replaces the test_get_builtin_constructor
+skip.** (The transient decimal −2 was test_implicit_from_float passing FOR THE
+WRONG REASON before — eval() on the raw frame object happened to raise the
+expected TypeError; fixed for real by the conv_float entry below.) `_b_.locals` returned `$B.frame_obj.frame[1]` raw: not a Python mapping
+(`'x' in locals()` raised "argument of type 'X' is not a container"), and in
+a test METHOD the frame object carries `__class__`/`ob_type` infrastructure
+keys, so the object even REPORTED itself as the instance's class. CPython's
+test_hashlib does `if '_md5' in locals()` inside a `finally:` — the raise
+left `sys.modules['_md5'] = None`, poisoning six subsequent tests
+("unsupported hash type md5"). Fix: return a dict snapshot (CPython
+semantics), honoring a class-body `$target` only when it is dict-classed,
+and skipping `$`-prefixed / `__class__` / `ob_type` infrastructure keys
+(whose `$setitem` would clobber the dict's own JS identity).
+
+```python
+>>> 'x' in locals()
+TypeError: argument of type 'Probe' is not a container or iterable  # before
+>>> 'x' in locals()
+True  # after
+```
+
+## [x] `int * bytes` / `int * bytearray` raise TypeError
+
+**Impact: test_struct +1 (28→29); unblocks `46*b"!"`-style constructions
+(test_binascii's b2a_uu argument).** The slot convention delivers args in
+ORIGINAL order, so on the reflected path (`46 * b'!'` → `__rmul__`)
+`bytes.nb_multiply` receives the INT as self and does
+`PyNumber_Index(bytes)` → "'bytes' object cannot be interpreted as an
+integer". Handle either operand order, like CPython's `bytes_repeat`
+(both `bytes.nb_multiply` and the bytearray `nb_multiply` helper).
+
+```python
+>>> 46 * b'!'
+TypeError: 'bytes' object cannot be interpreted as an integer  # before
+>>> 46 * b'!'
+b'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'  # after
+```
+
+## [x] `open()` rejects os.PathLike objects
+
+**Impact: test_bz2 +1 (83→84); unblocks every `open(pathlib.Path(...))` /
+custom `__fspath__` path.** Brython's `open()` does
+`if(!is_str(path_or_fd)) raise TypeError('invalid file: ...')` with no
+`__fspath__` resolution — CPython's open() accepts any path-like. Resolve
+`__fspath__` before the str check.
+
+```python
+>>> open(MyPath('f.bin'), 'wb')
+TypeError: invalid file: [object Object]  # before
+>>> open(MyPath('f.bin'), 'wb')
+<_io.BufferedWriter name='f.bin'>  # after
+```
+
+## [x] `object.__reduce_ex__` ignores Python `__reduce__` overrides and passes a dict VIEW as dictitems
+
+**Impact: test_pickle +73 (469→542) — and the suite runs in 88s instead of
+~290s.** Two bugs in the protocol-2 default reduce (`www/src/py_object.js`):
+1. The override guard only honored C-style overrides
+   (`reduce.ob_type === method_descriptor`); a **Python-level `__reduce__`**
+   (any user subclass) is a plain function → silently ignored, the default
+   reduce ran instead.
+2. `key_value_iterator = dict.items(self)` — the VIEW; CPython's `reduce_2`
+   does `PyObject_GetIter(items)`. `_pickle` then rejected every dict
+   subclass: "fifth item of the tuple returned by __reduce__ must be an
+   iterator, not dict_items". Wrap in `iter(...)`.
+
+```python
+>>> class D(dict):
+...     def __reduce__(self): return (D, (), None, None, iter(self.items()))
+>>> _pickle.loads(_pickle.dumps(D(a=1), 2))
+PicklingError: fifth item of the tuple returned by __reduce__ must be an iterator, not dict_items  # before
+>>> _pickle.loads(_pickle.dumps(D(a=1), 2))
+{'a': 1}  # after
+```
+
+## [x] `range[i:j]` calls the nonexistent `range.$factory`
+
+**Impact: test_pickle +6** (pickletester slices ranges in several helpers; the
+2026-06-04 audit had already flagged this as a real Brython bug). The slice
+branch of range's subscript computes substart/substop/substep then calls
+`range.$factory(...)` — which doesn't exist (Brython 3.14 ranges are built by
+`range.tp_new`). Call `range.tp_new(range, [substart, substop, substep])`
+instead (`www/src/py_range_slice.js`).
+
+```python
+>>> range(1, 7, 2)[1:]
+JavascriptError: range.$factory is not a function  # before
+>>> range(1, 7, 2)[1:]
+range(3, 7, 2)  # after
+```
+
+## [x] `bool` bitwise ops are JS logical ops and only guard one operand
+
+**Impact: statistics `_integer_sqrt_of_frac_rto` (`a | (a*a*m != n)`) returned
+even roots — `2 | True` was `2`.** `bool.nb_or/nb_and` use JS `||`/`&&`
+(logical, not bitwise), and the guard tests `other` only. Called directly with
+two bools that *happens* to work; called REFLECTED (`bool.__ror__`, which
+Brython's subclass-priority dispatch in `rich_op1` selects for `int OP bool`
+since bool subclasses int), `self` is the INT: `bool.nb_or(2, True)` hit
+`self || other` = JS `2 || true` = `2`. Same shape for `&` (`2 && true` =
+`true`) and the xor guard. Fix: two booleans → bool of the BITWISE result;
+otherwise delegate both coerced operands to the int op; NotImplemented for
+non-ints (`www/src/py_int.js` region, `bool.nb_and/nb_xor/nb_or`).
+
+```python
+>>> 2 | True
+2  # before
+>>> 2 | True
+3  # after
+```
+
+## [x] `math.isinf` doesn't coerce via `__float__`; `math.fsum` ignores special values
+
+**Impact: test_statistics 359→364 (+5)** — the whole inf-family
+(ApproxEqualSpecials/ExactRatio/SumSpecialValues/TestMean `test_inf`,
+TestFMean `test_special_values`). Two gaps in Brython's `math` (VFS
+`libs/math.js`):
+1. `isinf(x)` returned `_b_.float.$funcs.isinf(x)`, which reads `x.value` —
+   undefined on a `Decimal` → always False, where CPython coerces any
+   `__float__`-able argument (`isnan`/`isfinite` already went through
+   `float_check`). Now falls back to `float_check`.
+2. `fsum` is the plain msum recipe: `Infinity + -Infinity` → silently `nan`.
+   CPython tracks `inf_sum`/`special_sum` and raises
+   `ValueError('-inf + inf in fsum')` on mixed infinities, returns ±inf /
+   nan otherwise. Faithful translation added.
+
+```python
+>>> math.isinf(Decimal('inf'))
+False  # before
+>>> math.isinf(Decimal('inf'))
+True  # after
+```
+
+```python
+>>> math.fsum([float('inf'), float('-inf')])
+nan  # before
+>>> math.fsum([float('inf'), float('-inf')])
+ValueError: -inf + inf in fsum  # after
+```
+
+## [x] `JavascriptArray` doesn't support slicing (nor negative indices)
+
+**Impact: test_csv 111→115 (+4)** — `DictReader` with extra fields does
+`row[lf:]` on the row, and a row built C-side (`PyList_New`, _csv reader) is a
+`JavascriptArray`; its `mp_subscript` went straight to `$B.PyNumber_Index(i)` →
+"'slice' object cannot be interpreted as an integer"
+(test_read_long ×3 + test_ordered_dict_reader). Also `row[-1]` read `self[-1]`
+= undefined. Add a slice branch (via `slice.tp_funcs.indices`, items keep their
+JS-side reps like `sq_concat` does) and normalize negative indices
+(`www/src/js_objects.js`, `js_array.mp_subscript`).
+
+```python
+>>> next(csv.reader(io.StringIO("1,2,abc,4\r\n")))[2:]
+TypeError: 'slice' object cannot be interpreted as an integer  # before
+>>> next(csv.reader(io.StringIO("1,2,abc,4\r\n")))[2:]
+['abc', '4']  # after
+```
+
+## [x] `memoryview[::k]` (stepped slice) reported itself C-contiguous
+
+**Impact: completes `struct.pack_into` into array/memoryview buffers —
+test_struct 26→28 (+2), jointly with the bridge `'w*'` writable-buffer fix in
+`CHANGELOG.md`.** In CPython `mv[::2]` / `mv[::-1]` is a *non-contiguous* view, so
+`pack_into`'s `getbuffer(PyBUF_WRITABLE)` rejects it with TypeError
+(`test_pack_into` asserts this). Brython's `memoryview.mp_subscript` turns any
+slice into `memoryview.$factory(self.obj[key])` — and for a stepped slice
+`self.obj[key]` is a fresh *contiguous* copy, so the view looked contiguous and
+`pack_into` silently wrote into the throwaway instead of raising. Mark the result
+non-contiguous when the slice step is not 1 (`www/src/py_buffer.js`,
+`memoryview.mp_subscript`):
+
+```js
+// avant : if($B.get_class(key)===_b_.slice){return memoryview.$factory(res)}
+// après :
+if($B.get_class(key)===_b_.slice){var mv=memoryview.$factory(res)
+    var st=key.step
+    if(st!==undefined && st!==_b_.None && st!==1 && st!==1n){
+        mv.c_contiguous=false; mv.f_contiguous=false; mv.contiguous=false}
+    return mv}
+```
+
 ## [x] `JavascriptArray` is unpicklable ("Can't pickle <class 'JavascriptArray'>")
 
 **Impact: keystone of test_array 596→620 (+24)** — unblocks the `jsobj2pyobj` /

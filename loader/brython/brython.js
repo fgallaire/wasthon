@@ -2353,9 +2353,11 @@ res.push(d)
 return _b_.tuple.$factory(res)}
 object_funcs.__reduce_ex__=function(self,protocol){var klass=$B.get_class(self)
 var reduce=$B.$getattr(klass,'__reduce__')
-if(reduce !==object.tp_funcs.__reduce__ &&
-((reduce.ob_type===$B.method_descriptor)&&
-(reduce.method !==object.tp_funcs.__reduce__))){return $B.$call(reduce,self)}
+// Honor ANY non-default override: a Python-level __reduce__ is a plain
+// function (not a method_descriptor) and was silently ignored.
+var reduce_is_default=(reduce===object.tp_funcs.__reduce__)||
+(reduce.ob_type===$B.method_descriptor && reduce.method===object.tp_funcs.__reduce__)
+if(! reduce_is_default){return $B.$call(reduce,self)}
 if($B.imported.copyreg===undefined){$B.$import('copyreg')}
 if(protocol < 2){var _reduce_ex=$B.module_getattr($B.imported.copyreg,'_reduce_ex')
 return $B.$call(_reduce_ex,self,protocol)}
@@ -2376,7 +2378,7 @@ if($B.$getattr(klass,'append',null)!==null &&
 $B.$getattr(klass,'extend',null)!==null){list_like_iterator=_b_.iter(self)}
 res.push(list_like_iterator)
 var key_value_iterator=_b_.None
-if($B.is_dict(self)){key_value_iterator=_b_.dict.tp_funcs.items(self)}
+if($B.is_dict(self)){key_value_iterator=_b_.iter(_b_.dict.tp_funcs.items(self))}
 res.push(key_value_iterator)
 return $B.fast_tuple(res)}
 object_funcs.__sizeof__=function(self){}
@@ -4161,6 +4163,10 @@ var rawmode='',m;
 var line_buffering,is_number,isatty=0;
 var raw,modeobj,buffer,wrapper,result,path_or_fd
 path_or_fd=file
+// os.PathLike support: resolve __fspath__ before rejecting (CPython open()
+// accepts any path-like object).
+if(! $B.is_str(path_or_fd)){var _fsp=$B.$getattr(file,'__fspath__',null)
+if(_fsp !==null){path_or_fd=$B.$call(_fsp)}}
 if(! $B.is_str(path_or_fd)){$B.RAISE(_b_.TypeError,`invalid file: ${file}`)}
 if(encoding=='locale'){
 encoding='utf-8'}
@@ -4732,8 +4738,18 @@ _b_.locals=function(){
 check_nb_args('locals',0,arguments)
 var locals_obj=$B.frame_obj.frame[1]
 var class_locals=locals_obj.$target
-if(class_locals){return class_locals}
-return locals_obj}
+// $target is meant for CLASS BODIES (a dict-like namespace proxy); in a
+// method frame it can hold the INSTANCE (so locals() returned self, and
+// "'x' in locals()" raised). Only honor dict-like targets; otherwise
+// return a dict snapshot, as CPython does.
+if(class_locals && $B.get_class(class_locals)===_b_.dict){return class_locals}
+var d=$B.empty_dict()
+for(var key in locals_obj){
+// skip frame infrastructure: $-keys, and __class__/ob_type which are not
+// locals (and whose $setitem would clobber the dict's own JS identity)
+if(key.startsWith('$')||key=='__class__'||key=='ob_type'){continue}
+_b_.dict.$setitem(d,key,locals_obj[key])}
+return d}
 var map=_b_.map
 map.$factory=function(){var $=$B.args('map',2,{func:null,it1:null},arguments,null,'args',null),func=$.func
 var iter_args=[$B.make_js_iterator($.it1)]
@@ -6250,7 +6266,7 @@ len=1n+(stop-start-1n)/step}else{if(self.stop >=self.start){return 0}
 len=1n+(start-stop-1n)/-step}
 return _b_.int.$int_or_long(len)}
 _b_.range.mp_subscript=function(self,rank){if($B.$isinstance(rank,_b_.slice)){var norm=_b_.slice.$conv_for_seq(rank,range.mp_length(self)),substep=$B.rich_op('__mul__',self.step,norm.step),substart=compute_item(self,norm.start),substop=compute_item(self,norm.stop)
-return range.$factory(substart,substop,substep)}
+return range.tp_new(range,[substart,substop,substep])}
 try{rank=$B.PyNumber_Index(rank)}catch(err){$B.RAISE(_b_.TypeError,"range indices must be integers "+
 `or slices, not ${$B.class_name(rank)}`)}
 if($B.rich_comp('__gt__',0,rank)){rank=$B.rich_op('__add__',rank,range.mp_length(self))}
@@ -6628,6 +6644,8 @@ for(var i=self.source.length-1;i >=0;i--){if(cars.indexOf(self.source[i])==-1){b
 return this.$factory(self.source.slice(0,i+1))}}
 function nb_multiply(){var $=$B.args('__mul__',2,{self:null,value:null},arguments)
 var self=$.self,value=$.value
+// reflected path delivers the ORIGINAL arg order (2*bytearray -> self=int)
+if(self.source===undefined && value && value.source !==undefined){var _t=self;self=value;value=_t}
 var v=$B.PyNumber_Index(value)
 var source=self.source.slice()
 for(var i=0;i < v;i++){for(var item of self.source){source[source.length]=item}}
@@ -7206,8 +7224,13 @@ _b_.bytes.tp_richcompare=function(self,other,op){if(! $B.is_bytes(other)){return
 return _b_.list.tp_richcompare(
 $B.$list(self.source),$B.$list(other.source),op)}
 _b_.bytes.nb_multiply=function(){var $=$B.args('__mul__',2,{self:null,other:null},arguments)
-var other=$B.PyNumber_Index($.other)
-var t=[],source=$.self.source,slen=source.length
+// slot convention: args arrive in ORIGINAL order, so for 46*b'!' (the
+// reflected __rmul__ path) self is the INT — handle either side, like
+// CPython's bytes_repeat.
+var _s=$.self,_o=$.other
+if(_s.source===undefined && _o && _o.source !==undefined){var _t=_s;_s=_o;_o=_t}
+var other=$B.PyNumber_Index(_o)
+var t=[],source=_s.source,slen=source.length
 for(var i=0;i < other;i++){for(var j=0;j < slen;j++){t.push(source[j])}}
 var res=bytes.$factory()
 res.source=t
@@ -7438,7 +7461,12 @@ return self.obj.source[key]}else{
 return self.obj.source[key]}}
 var getitem=$B.$getattr($B.get_class(self.obj),'__getitem__',$B.NULL)
 if(getitem !==$B.NULL){res=$B.$call(getitem,self.obj,key)}
-if($B.get_class(key)===_b_.slice){return memoryview.$factory(res)}}
+if($B.get_class(key)===_b_.slice){var mv=memoryview.$factory(res)
+var st=key.step
+if(st!==undefined && st!==_b_.None && st!==1 && st!==1n){mv.c_contiguous=false
+mv.f_contiguous=false
+mv.contiguous=false}
+return mv}}
 _b_.memoryview.bf_getbuffer=function(self){self.exports++
 return self}
 _b_.memoryview.bf_releasebuffer=function(self){self.exports--}
@@ -9563,11 +9591,17 @@ var bool=_b_.bool
 bool.$factory=function(){
 var $=$B.args("bool",1,{x:null},arguments,{x:false},null,null,1)
 return $B.$bool($.x,true)}
-_b_.bool.nb_and=function(self,other){if($B.$isinstance(other,bool)){return self && other}else if($B.$isinstance(other,int)){return int.nb_and(int_value(self),other)}
+_b_.bool.nb_and=function(self,other){
+// Guard BOTH operands: called reflected (bool.__ror__ & co) self is the
+// INT (2 & True reached "self && other" = JS LOGICAL and -> True).
+if(typeof self=='boolean' && typeof other=='boolean'){return (self & other)? true :false}
+if($B.$isinstance(other,int)&& $B.$isinstance(self,int)){return int.nb_and(int_value(self),int_value(other))}
 return _b_.NotImplemented}
-_b_.bool.nb_xor=function(self,other){if($B.$isinstance(other,bool)){return self ^ other ? true :false}else if($B.$isinstance(other,int)){return int.nb_xor(int_value(self),other)}
+_b_.bool.nb_xor=function(self,other){if(typeof self=='boolean' && typeof other=='boolean'){return (self ^ other)? true :false}
+if($B.$isinstance(other,int)&& $B.$isinstance(self,int)){return int.nb_xor(int_value(self),int_value(other))}
 return _b_.NotImplemented}
-_b_.bool.nb_or=function(self,other){if($B.$isinstance(other,bool)){return self ||other}else if($B.$isinstance(other,int)){return int.nb_or(int_value(self),other)}
+_b_.bool.nb_or=function(self,other){if(typeof self=='boolean' && typeof other=='boolean'){return (self |other)? true :false}
+if($B.$isinstance(other,int)&& $B.$isinstance(self,int)){return int.nb_or(int_value(self),int_value(other))}
 return _b_.NotImplemented}
 _b_.bool.tp_repr=function(self){$B.builtins_repr_check(bool,arguments)
 return self ? "True" :"False"}
@@ -9776,9 +9810,11 @@ this.value=value}
 Float.prototype.valueOf=function(){return this.value}
 const fast_float=$B.fast_float=function(value){return new Float(value)}
 function conv_float(...objs){var res=[]
+// CPython's float binary ops (CONVERT_TO_DOUBLE) accept ONLY int/float —
+// no __float__ coercion. Calling __float__ here made Decimal(5)+2.2
+// compute 7.2 instead of raising TypeError (implicit float mixing).
 for(var obj of objs){var x=$B.NULL
-if($B.$isinstance(obj,_b_.float)){x=obj}else if($B.is_int(obj)){x=_b_.int.nb_float(obj)}else{var float_method=$B.$getattr($B.get_class(obj),'__float__',$B.NULL)
-if(float_method !==$B.NULL){x=$B.$call(float_method,obj)}}
+if($B.$isinstance(obj,_b_.float)){x=obj}else if($B.is_int(obj)){x=_b_.int.nb_float(obj)}
 res.push(x)}
 return res}
 float.$factory=function(value){if(value===undefined){return fast_float(0)}
@@ -11856,7 +11892,18 @@ for(var item of $B.make_js_iterator(other)){res.push(pyobj2jsobj(item))}
 return res}
 js_array.mp_ass_subscript=function(self,key,value){if(value===$B.NULL){self.splice(key,1)}else{self[key]=pyobj2jsobj(value)}}
 js_array.mp_length=function(self){return self.length}
-js_array.mp_subscript=function(self,i){i=$B.PyNumber_Index(i)
+js_array.mp_subscript=function(self,i){
+// Slice support: a C-built list (PyList_New, e.g. a _csv reader row) is a
+// JavascriptArray; DictReader does row[lf:] and got "'slice' object cannot
+// be interpreted as an integer". Items keep their JS-side reps (like
+// sq_concat); access converts via jsobj2pyobj as usual.
+if($B.get_class(i)===_b_.slice){var ind=_b_.slice.tp_funcs.indices(i,self.length)
+var start=ind[0],stop=ind[1],step=ind[2],res=[]
+if(step > 0){for(var k=start;k < stop;k+=step){res.push(self[k])}}
+else{for(var k=start;k > stop;k+=step){res.push(self[k])}}
+return res}
+i=$B.PyNumber_Index(i)
+if(i < 0){i+=self.length}
 return jsobj2pyobj(self[i])}
 js_array.sq_contains=function(self,item){item=pyobj2jsobj(item)
 for(var x of self){if($B.is_or_equals(x,item)){return true}}
