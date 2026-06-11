@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **BigInt elements in a bytes `.source` broke buffer marshalling**
+      (+2: test_zstd 85→87; kills the test_hmac 1/5 flaky on
+      `test_update_large`). Brython's `random.randbytes` can leave BigInt
+      ELEMENTS in the bytes source array (value-dependent — hence flaky);
+      `HEAPU8.set(src)` and `src[i] & 0xff` both throw "can't convert BigInt
+      to number". Hardened all 4 marshal sites (buffer get-data, `w*` alloc,
+      2× cstr) with a `Number()`-converting fallback. Hunted via the
+      anomaly-capture trap added to driver-par (auto-dump the page log when a
+      suite scores below its known baseline) + a 6-state bisect.
+
 - [x] **`PyUnicode_Decode` passed raw Python encoding names to TextDecoder**
       (+6: test_pyexpat 33→39). pyexpat decodes with 'iso8859' (a CPython
       alias of latin-1) and Python spells encodings with underscores; WHATWG

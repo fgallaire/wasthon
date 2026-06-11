@@ -1568,7 +1568,12 @@ mergeInto(LibraryManager.library, {
                 rt.setError(rt.wrap(rt._b_.MemoryError), "w* alloc failed");
                 return 0;
             }
-            HEAPU8.set(src, bbuf);
+            try {
+                HEAPU8.set(src, bbuf);
+            } catch (e) {
+                // BigInt elements (see buffer-marshal comment)
+                for (var wi = 0; wi < blen; wi++) HEAPU8[bbuf + wi] = Number(src[wi]) & 0xff;
+            }
             HEAP32[(vp +  0) >> 2] = bbuf;                          // buf
             HEAP32[(vp +  4) >> 2] = targetH;                      // obj (handle)
             HEAP32[(vp +  8) >> 2] = blen;                          // len
@@ -2247,7 +2252,10 @@ mergeInto(LibraryManager.library, {
         var len = src.length;
         var ptr = _malloc(len + 1);
         if (src instanceof Uint8Array) HEAPU8.set(src, ptr);
-        else for (var i = 0; i < len; i++) HEAPU8[ptr + i] = src[i] & 0xff;
+        else for (var i = 0; i < len; i++) {
+            // Number() first: a BigInt element makes `x & 0xff` throw
+            HEAPU8[ptr + i] = Number(src[i]) & 0xff;
+        }
         HEAPU8[ptr + len] = 0;
         try { obj.__wasthon_cstr__ = ptr; } catch (_) {}
         return ptr;
@@ -3146,7 +3154,10 @@ mergeInto(LibraryManager.library, {
         var len = src.length;
         var ptr = _malloc(len + 1);
         if (src instanceof Uint8Array) HEAPU8.set(src, ptr);
-        else for (var i = 0; i < len; i++) HEAPU8[ptr + i] = src[i] & 0xff;
+        else for (var i = 0; i < len; i++) {
+            // Number() first: a BigInt element makes `x & 0xff` throw
+            HEAPU8[ptr + i] = Number(src[i]) & 0xff;
+        }
         HEAPU8[ptr + len] = 0;
         try { obj.__wasthon_cstr__ = ptr; } catch (_) {}
         return ptr;
@@ -7975,7 +7986,14 @@ mergeInto(LibraryManager.library, {
         // (intrinsic memcpy) and Array<int> (engine-vectorized bulk copy).
         // Both vastly outperform a JS-level byte-by-byte loop, which is
         // the bottleneck for buffer marshalling on large payloads.
-        HEAPU8.set(src, buf);
+        // Brython's random.randbytes can leave BigInt ELEMENTS in a bytes
+        // .source (value-dependent, hence flaky): TypedArray.set throws
+        // "can't convert BigInt to number". Fall back to a converting loop.
+        try {
+            HEAPU8.set(src, buf);
+        } catch (e) {
+            for (var bi = 0; bi < len; bi++) HEAPU8[buf + bi] = Number(src[bi]) & 0xff;
+        }
 
         // Write back: outBufPtrPtr points to a void*, outLenPtr to Py_ssize_t.
         // wasm32: pointer = 4 bytes, Py_ssize_t (intptr_t) = 4 bytes.
