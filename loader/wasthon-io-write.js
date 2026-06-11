@@ -339,6 +339,7 @@
 
         const G = T.tp_funcs;
         const origRead = G.read, origReadline = G.readline, origSeek = G.seek;
+        const origWrite = G.write, origFlush = G.flush;
 
         G.read = function () {
             const $ = B.args('read', 2, { self: null, size: null }, arguments, { size: -1 });
@@ -373,7 +374,12 @@
         G.__iter__ = function (s) { return s; };
         G.write = function (s, txt) {
             checkOpen(s);
-            if (!s.$wfs) B.RAISE(_b_.UnsupportedOperation, 'not writable');
+            if (!s.$wfs) {
+                // not an fd-backed text file (e.g. text over a compression
+                // file): delegate to the base wrapper's write
+                if (origWrite) return origWrite.call(this, s, txt);
+                B.RAISE(_b_.OSError, 'not writable');
+            }
             if (s.$text !== undefined) {           // switch read→write: resync raw pos
                 RF.seek(s.$raw, s.$cache_start + bytelen(s, s.$text.slice(0, s.$text_pos)), 0);
                 s.$text = undefined;
@@ -393,7 +399,11 @@
             if (s.$text === undefined) return RF.tell(s.$raw);
             return s.$cache_start + bytelen(s, s.$text.slice(0, s.$text_pos));
         };
-        G.flush = function (s) { if (s.$wfs) RF.flush(s.$raw); return _b_.None; };
+        G.flush = function (s) {
+            if (s.$wfs) { RF.flush(s.$raw); return _b_.None; }
+            if (origFlush) return origFlush.call(this, s);
+            return _b_.None;
+        };
         G.truncate = function (s, size) {
             checkOpen(s);
             return s.$wfs ? RF.truncate(s.$raw, size) : _b_.None;
@@ -401,11 +411,21 @@
         G.close = function (s) {
             if (s.closed) return _b_.None;
             if (s.$wfs) RF.close(s.$raw);
+            else if (s.$buffer !== undefined) {
+                // text over a non-fd binary buffer (e.g. compression file):
+                // close it — that's what flushes the compressor's output
+                const c = B.$getattr(s.$buffer, 'close', null);
+                if (c !== null) B.$call(c);
+            }
             s.closed = true; return _b_.None;
         };
         G.fileno = function (s) { return s.$wfs ? RF.fileno(s.$raw) : -1; };
         G.readable = function (s) { return s.$wfs ? B.$bool(s.$raw.readable) : B.$bool(1); };
-        G.writable = function (s) { return s.$wfs ? B.$bool(s.$raw.writable) : B.$bool(0); };
+        G.writable = function (s) {
+            if (s.$wfs) return B.$bool(s.$raw.writable);
+            const w = B.$getattr(s.$buffer, 'writable', null);
+            return w !== null ? B.$call(w) : B.$bool(0);
+        };
         G.seekable = function (s) { return B.$bool(1); };
         G.__enter__ = function (s) { return s; };
         G.__exit__ = function (s) { G.close(s); return _b_.False; };

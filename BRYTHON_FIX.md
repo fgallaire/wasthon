@@ -75,6 +75,100 @@ TypeError: 'bytes' object cannot be interpreted as an integer  # before
 b'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'  # after
 ```
 
+## [x] VFS array: q/Q typecodes unimplemented, i/I wrong width
+
+**Impact: zstd +1, bz2 +1.** The array module's typecode table had
+`'q'/'Q': null` ("not implemented") — `BigInt64Array`/`BigUint64Array` have
+been universal for years — and mapped `'i'/'I'` to 16-bit views (CPython's
+int itemsize is 4).
+
+```python
+>>> array.array('Q', [1, 2])
+NotImplementedError: type code Q is not implemented  # before
+>>> array.array('Q', [1, 2])
+array('Q', [1, 2])  # after
+>>> array.array('i').itemsize
+4  # after (was 2)
+```
+
+## [x] `assertWarns` never matched (recorded message is a raw str)
+
+**Impact: sqlite3 +10 (315→325), array +2 — and every `assertWarns` in any
+suite.** Brython's JS `_warnings.warn` shim records the message AS GIVEN;
+CPython materializes `category(message)` for str messages, and unittest's
+`_AssertWarnsContext` does `isinstance(m.message, expected)` — a raw str
+never matches, so `assertWarns` reported "X not triggered" even when the
+warning fired. Fixed in `_AssertWarnsContext.__exit__` (late
+materialization from `m.category`): patching the warn shim itself hangs
+import-time warnings (constructor → module-resolution loop), so the
+context manager is the safe point.
+
+```python
+>>> with self.assertWarns(DeprecationWarning):
+...     warnings.warn('x', DeprecationWarning)
+AssertionError: DeprecationWarning not triggered  # before
+>>> with self.assertWarns(DeprecationWarning):
+...     warnings.warn('x', DeprecationWarning)
+# after: passes
+```
+
+## [x] `readinto()` rejected bytearray; VFS array called phantom JS methods
+
+**Impact: zstd +1 (96→97) — joint across three defects on the readinto
+path.** (1) `is_buffer` iterated `get_class(obj).__mro__`, which is
+undefined in Brython 3.14 (MRO lives in `tp_mro`) → crash; use
+`$B.get_mro`. (2) `bytearray` — THE canonical read-write buffer — never got
+the `$buffer_protocol` flag (bytes and memoryview have it) → "readinto()
+argument must be read-write bytes-like object, not bytearray". (3) the VFS
+array module called `array.append/insert/pop(self, x)` as raw JS class
+properties, which don't exist (`array_funcs.X` is the real table) →
+"array.append is not a function" on every extend/fromlist path.
+
+```python
+>>> f.readinto(bytearray(5))
+TypeError: readinto() argument must be read-write bytes-like object, not bytearray  # before
+>>> f.readinto(bytearray(5))
+5  # after
+```
+
+## [x] `BufferedReader.raw` attribute missing
+
+**Impact: zstd +1, bz2 +1 (the `decomp._buffer.raw.tell()` test pattern).**
+Brython's `_BufferedReader` stores the underlying stream as a JS property
+but never exposes it: the `X_get` tp_funcs convention only takes effect for
+names DECLARED in `cls.tp_getset` (which builds the getset_descriptors at
+finalize). Added `tp_getset = ['raw']` + `raw_get`.
+
+```python
+>>> io.BufferedReader(io.BytesIO(b'x')).raw
+AttributeError: '_BufferedReader' object has no attribute 'raw'  # before
+>>> io.BufferedReader(io.BytesIO(b'x')).raw
+<_io.BytesIO object>  # after
+```
+
+## [x] Text I/O over compression files (the write path didn't exist)
+
+**Impact: bz2 +4 (84→88), zstd +2 (87→89), cmath +1, pickle +1 — the whole
+`open(fn, 'wt'|'rt')`-over-BZ2File/ZstdFile family.** Five stacked defects:
+`_TextIOWrapper.$factory` eagerly `read(-1)`s its buffer at CONSTRUCTION
+(UnsupportedOperation on a write-mode compression file) and didn't know
+`encoding='locale'`; it had no `write` at all; the wasthon io layer's
+TextIOWrapper `write`/`flush`/`close`/`writable` raised or no-opped for
+non-fd-backed buffers instead of delegating (so the compressor's output —
+emitted at close — never reached the file, leaving 0 bytes); and
+`_bufferedreader_read_fast` assumed a preloaded `raw.$bytes` snapshot,
+crashing on fd-backed raws ("can't access property length"). Fixes: lazy
+read gated on `readable()`, write/flush/close delegation to `$buffer`,
+locale→utf-8, and an fd fallback (`raw.read(n)`) in the buffered reader.
+
+```python
+>>> with bz2.open('f.bz2', 'wt') as f: f.write('hello')
+io.UnsupportedOperation: File not open for reading  # before
+>>> with bz2.open('f.bz2', 'wt') as f: f.write('hello')
+>>> bz2.open('f.bz2', 'rt').read()
+'hello'  # after
+```
+
 ## [x] `open()` rejects os.PathLike objects
 
 **Impact: test_bz2 +1 (83→84); unblocks every `open(pathlib.Path(...))` /

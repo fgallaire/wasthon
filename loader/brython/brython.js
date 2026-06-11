@@ -3822,7 +3822,13 @@ $B$call($B.$getattr(self,'close'))}
 var _IOBase_funcs=_IOBase.tp_funcs={}
 _IOBase_funcs.__enter__=function(self){return self}
 _IOBase_funcs.__exit__=function(self){_IOBase_funcs.close(self)}
-_IOBase_funcs.close=function(self){self._closed=true}
+_IOBase_funcs.close=function(self){
+// a text wrapper must close (and thereby flush) its underlying binary
+// buffer — critical for compression files, whose data is emitted at close
+if(self._closed !==true && self.$buffer !==undefined){
+var _c=$B.$getattr(self.$buffer,'close',null)
+if(_c !==null){$B.$call(_c)}}
+self._closed=true}
 _IOBase_funcs.closed_get=function(self){return self._closed}
 _IOBase_funcs.closed_set=_b_.None
 _IOBase_funcs.fileno=function(_self){_io_unsupported('fileno')}
@@ -3913,7 +3919,7 @@ $B._RawIOBase.tp_methods=["read","readall","readinto","write"
 $B.set_func_names($B._RawIOBase,"_io")
 $B._BufferedIOBase=$B.make_builtin_class('_BufferedIOBase',[_IOBase])
 $B.is_buffer=function(obj){if($B.get_class(obj).$buffer_protocol){return true}
-for(var klass of $B.get_class(obj).__mro__){if(klass.$buffer_protocol){return true}}
+for(var klass of $B.get_mro($B.get_class(obj))){if(klass.$buffer_protocol){return true}}
 return false}
 function _bufferediobase_readinto_generic(_self,buffer,readinto1){var len,data
 if(! $B.is_buffer(buffer)){$B.RAISE(_b_.TypeError," readinto() argument must be "+
@@ -3934,7 +3940,13 @@ self.__closed=true
 return true}catch(err){return false}}
 _BufferedIOBase_funcs.readinto=function(_self,buffer){return _bufferediobase_readinto_generic(_self,buffer,0);}
 _BufferedIOBase_funcs.readinto1=function(_self,buffer){return _bufferediobase_readinto_generic(_self,buffer,1);}
-_BufferedIOBase_funcs.close=function(_self){_self.closed=true}
+_BufferedIOBase_funcs.close=function(_self){
+// close (and flush) the underlying binary buffer if any (text over
+// compression files: data is only emitted at close)
+if(_self.closed !==true && _self.$buffer !==undefined){
+var _c=$B.$getattr(_self.$buffer,'close',null)
+if(_c !==null){$B.$call(_c)}}
+_self.closed=true}
 _BufferedIOBase_funcs.detach=function(){_io_unsupported("detach")}
 _BufferedIOBase_funcs.read=function(){_io_unsupported("read")}
 _BufferedIOBase_funcs.read1=function(){_io_unsupported("read1")}
@@ -3944,6 +3956,11 @@ $B._BufferedIOBase.tp_methods=["__enter__","__exit__","readinto","readinto1","cl
 $B.set_func_names($B._BufferedIOBase,'_io')
 function _bufferedreader_read_all(_self){return $B.$call($B.$getattr(_self.raw,'readall'))}
 function _bufferedreader_read_fast(_self,n){var raw=_self.raw
+// fd-backed raw (no preloaded $bytes snapshot): delegate to raw.read
+if(raw.$bytes===undefined){
+var _r=$B.$call($B.$getattr(raw,'read'),n)
+if(_r===_b_.None||_b_.len(_r)===0){return _b_.None}
+return _r}
 if(raw.$byte_pos >=raw.$bytes.length){return _b_.None}
 var b=raw.$bytes.slice(raw.$byte_pos,raw.$byte_pos+n)
 raw.$byte_pos+=n
@@ -3959,9 +3976,14 @@ raw.$byte_pos=eof+1
 raw.$byte_pos=Math.min(raw.$byte_pos,raw.$bytes.length)
 return $B.fast_bytes(b)}
 $B._BufferedReader=$B.make_builtin_class('_BufferedReader',[$B._BufferedIOBase])
+$B._BufferedReader.tp_getset=['raw']
 $B._BufferedReader.tp_init=function(_self,raw,buffer_size=DEFAULT_BUFFER_SIZE){_self.raw=raw
 _self.buffer_size=buffer_size}
-var _BufferedReader_funcs=$B._BufferedReader.tp_funcs={}
+var _BufferedReader_funcs=$B._BufferedReader.tp_funcs={
+// expose the underlying raw stream, like CPython's BufferedReader.raw
+// (test pattern: decomp._buffer.raw.tell())
+raw_get:function(_self){return _self.raw},
+}
 _BufferedReader_funcs.peek=function(_self,size){var $=$B.args('peek',2,{self:null,size:null},arguments,{size:0})
 var _self=$.self,size=$.size
 var raw=_self.raw
@@ -4107,9 +4129,15 @@ $BufferedReader.tp_methods=["read"
 ]
 $B._TextIOWrapper=$B.make_builtin_class('_io._TextIOWrapper',[$B._TextIOBase])
 $B._TextIOWrapper.$factory=function(){var $=$B.args("TextIOWrapper",6,{buffer:null,encoding:null,errors:null,newline:null,line_buffering:null,write_through:null},arguments,{encoding:"utf-8",errors:_b_.None,newline:_b_.None,line_buffering:_b_.False,write_through:_b_.False})
-if($.encoding===_b_.None){$.encoding='utf-8'}
+if($.encoding===_b_.None||$.encoding==='locale'){$.encoding='utf-8'}
 var bytes
-if($.buffer.raw!==undefined && $.buffer.raw.$bytes!==undefined){bytes=$B.fast_bytes($.buffer.raw.$bytes)}
+// Don't eagerly read a non-readable buffer (text over a write-mode
+// compression file raised UnsupportedOperation at construction).
+var _readable=true
+try{var _rfn=$B.$getattr($.buffer,'readable',null)
+if(_rfn !==null && ! $B.$call(_rfn)){_readable=false}}catch(_e){}
+if(! _readable){bytes=$B.fast_bytes([])}
+else if($.buffer.raw!==undefined && $.buffer.raw.$bytes!==undefined){bytes=$B.fast_bytes($.buffer.raw.$bytes)}
 else{bytes=$B.$call($B.$getattr($.buffer,'read'),-1)}
 var res={ob_type:$B._TextIOWrapper,$buffer:$.buffer,$bytes:bytes,$encoding:$.encoding,$errors:$.errors,$newline:$.newline}
 $B.init_dict(res)
@@ -4145,6 +4173,18 @@ break}else{res+=char.value
 nb++
 if(nb > size){break}}}
 return $B.String(res)}
+_TextIOWrapper_funcs.write=function(_self,s){
+if(_self.closed===true){$B.RAISE(_b_.ValueError,'I/O operation on closed file')}
+// delegate to the underlying binary buffer (text over compression files)
+var _wfn=$B.$getattr(_self.$buffer,'write',null)
+if(_wfn===null){$B.RAISE(_b_.OSError,'not writable')}
+var _errors=_self.$errors===undefined||_self.$errors===_b_.None?'strict':_self.$errors
+var _b=_b_.str.tp_funcs.encode(s,_self.$encoding,_errors)
+$B.$call(_wfn,_b)
+return s.length}
+_TextIOWrapper_funcs.flush=function(_self){var _f=$B.$getattr(_self.$buffer,'flush',null)
+if(_f !==null){$B.$call(_f)}
+return _b_.None}
 _TextIOWrapper_funcs.seek=function(_self,offset,whence){if(_self.closed){$B.RAISE(_b_.ValueError,'I/O operation on closed file')}
 if(whence===undefined){whence=0}
 if(whence===0){self.$text_pos=offset}else if(whence===1){self.$text_pos+=offset}else if(whence===2){self.$text_pos=self.$text_length+offset}
@@ -6973,6 +7013,8 @@ _b_.bytearray.tp_methods=["__alloc__","__reduce__","__reduce_ex__","__sizeof__",
 _b_.bytearray.classmethods=["fromhex"]
 _b_.bytearray.staticmethods=["maketrans"]
 $B.set_func_names(bytearray,"builtins")
+// bytearray is THE canonical read-write buffer (readinto target)
+bytearray.$buffer_protocol=true
 var bytes=_b_.bytes
 bytes.$buffer_protocol=true
 bytes.$is_sequence=true
