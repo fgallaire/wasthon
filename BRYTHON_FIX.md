@@ -18,6 +18,25 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `_testcapi` stub missing `nan_msb_is_signaling`
+
+**Impact: +1 struct (test_half_float, 35→36 → suite at 100%).** Brython's
+`_testcapi` stub (`Lib/_testcapi.py`, bundled into the `brython_stdlib.js`
+VFS) ships the integer limit constants (`ULLONG_MAX`, `PY_SSIZE_T_MAX`, …)
+but omits `nan_msb_is_signaling`, the bool CPython's `_testcapi` exposes for
+the platform's NaN convention. `test_half_float` reads it to pick the
+expected quiet-NaN bit pattern and died with `AttributeError`. JS/wasm are
+IEEE-754 with the quiet-NaN MSB **set** (not signaling), so the correct
+stub value is `False` — add it next to the other module constants.
+
+```python
+>>> import _testcapi
+>>> _testcapi.nan_msb_is_signaling
+AttributeError: module '_testcapi' has no attribute 'nan_msb_is_signaling'  # before
+>>> _testcapi.nan_msb_is_signaling
+False  # after (IEEE-754: quiet NaN has the MSB set)
+```
+
 ## [x] float binary ops coerce ANY operand via `__float__`
 
 **Impact: +2 decimal (restores 295 with the real semantics) —
@@ -1453,3 +1472,75 @@ that exact string.
 `'\n'` keep the old indexOf('\n'); `''` takes min(indexOf('\r'), indexOf('\n'))
 with `\r\n` lookahead; explicit terminators use indexOf(that string). All
 indexOf-based (no per-char scan).
+
+
+## [x] `_thread`/`_contextvars` VFS predate 3.14: threads silently do nothing
+**Impact: +1 test** (test_hashlib test_threaded_hashing — **hashlib 73/73 runnable,
+4th suite at 100%**) + the whole threading surface unblocked for other suites.
+
+**Symptom:** `threading.Thread(target=f).start()` raised
+`TypeError: start_new_thread() got an unexpected keyword argument 'handle'`;
+after aliasing, threads "ran" but the target was never executed (a shared
+hasher stayed at the empty digest).
+
+**Root cause (two layers):**
+1. `_thread` VFS: `start_joinable_thread = start_new_thread` — but 3.14's
+   `threading.Thread.start()` calls
+   `_start_joinable_thread(bootstrap, handle=..., daemon=...)`, and
+   `_ThreadHandle` was an empty `pass` class (`threading` needs
+   `.join()`/`.is_done()`).
+2. `_contextvars` VFS is an auto-generated skeleton whose methods are repr
+   STRINGS — `Context.run` was literally
+   `"<method 'run' of 'Context' objects>"`, so `_bootstrap_inner`'s
+   `self._context.run(self.run)` raised `TypeError: 'str' object is not
+   callable`… swallowed by `_invoke_excepthook` (stderr), making the
+   no-op look like a passing thread.
+
+**Fix (vendored brython_stdlib.js):**
+```python
+# _thread
+def start_joinable_thread(function, handle=None, daemon=True):
+    start_new_thread(function, ())     # dummy threads run synchronously
+    return handle if handle is not None else _ThreadHandle()
+
+class _ThreadHandle:
+    ident = -1
+    def join(self, timeout=None): pass
+    def is_done(self): return True
+
+# _contextvars
+class Context:
+    def run(self, callable, *args, **kwargs):
+        return callable(*args, **kwargs)
+```
+
+## [x] `_IOBase` finalize/iteration/`__enter__` defects (bz2 closed-file family)
+**Impact: +2 tests** (test_bz2 testOpenDel + testClosedIteratorDeadlock → bz2 92;
+zero regression on csv/lzma/zstd/zlib).
+
+Three defects in the native `_IOBase` layer (vendored brython.js):
+
+1. **`tp_finalize`**: `$B$call(...)` typo (ReferenceError on every `del f`
+   of an open file) + a leftover debug `console.log('del', self)`.
+2. **`tp_iternext`**: `next(f)` without `iter(f)` crashed — the slot read
+   `self.readline`, which only `tp_iter` assigns. Now resolves readline
+   itself as a fallback. ★ The slot MUST stay a generator function —
+   rewriting it as a plain return-null function broke every StringIO
+   iteration path (csv −10): the generator form is the convention
+   Brython's iteration protocol consumes for this slot.
+3. **`__enter__` (`_IOBase` + the `_BufferedIOBase` shadow copy)**: no
+   closed-check, so `with closed_file:` silently succeeded. Now raises
+   ValueError like CPython's `_checkClosed()`. The check reads `closed`
+   defensively ($getattr in a try): on some native classes (StringIO) the
+   getset resolution crashes with "func.getter is not a function".
+
+**Known landmines documented for the next io session:**
+- `_BufferedIOBase.__exit__` returns `true` → SUPPRESSES every with-block
+  exception (testContextProtocol's `1/0`). Making it faithful
+  (`return False`) measured **−31 on bz2 alone** through an
+  order/state interaction never diagnosed (plain `with` probes pass).
+  Bisected twice; needs a dedicated session.
+- `_bufferedreader_readline` assumes the `raw.$bytes` snapshot; the
+  no-seek read(1) fallback for stream raws (DecompressReader) measured
+  −31 as well (2nd confirmation after the zstd −57 scar). Real design:
+  buffer inside the BufferedReader.

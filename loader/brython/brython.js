@@ -3832,17 +3832,28 @@ var _IOBase=$B.make_builtin_class("_IOBase")
 _IOBase.tp_iter=function(self){if(self.closed){$B.RAISE(_b_.ValueError,'closed')}
 self.readline=$B.search_in_mro($B.get_class(self),'readline')
 return self}
-_IOBase.tp_iternext=function*(self){var line=$B.$call(self.readline,self)
+_IOBase.tp_iternext=function*(self){
+// resolve readline here too: next(f) without iter(f) used to crash on
+// self.readline undefined (the generator form is the convention Brython
+// consumes for this slot — do NOT change it to a plain function)
+var rl=self.readline||$B.search_in_mro($B.get_class(self),'readline')
+var line=$B.$call(rl,self)
 if(line==undefined ||_b_.len(line)===0){return}
 yield line}
 _IOBase.tp_finalize=function(self){
-console.log('del',self)
 try{var closed=$B.$getattr(self,'closed')}catch(err){if($B.is_exc(err,_b_.AttributeError)){
 return}}
 if(closed){return}
-$B$call($B.$getattr(self,'close'))}
+$B.$call($B.$getattr(self,'close'))}
 var _IOBase_funcs=_IOBase.tp_funcs={}
-_IOBase_funcs.__enter__=function(self){return self}
+_IOBase_funcs.__enter__=function(self){
+// CPython IOBase.__enter__ does _checkClosed() first. closed is read
+// defensively: on some native classes (StringIO) the getset resolution
+// via $getattr crashes ('func.getter is not a function').
+var closed=false
+try{closed=$B.$bool($B.$getattr(self,'closed'))}catch(e){closed=!!self._closed}
+if(closed){$B.RAISE(_b_.ValueError,'I/O operation on closed file')}
+return self}
 _IOBase_funcs.__exit__=function(self){_IOBase_funcs.close(self)}
 _IOBase_funcs.close=function(self){
 // a text wrapper must close (and thereby flush) its underlying binary
@@ -3956,7 +3967,14 @@ var setitem=$B.search_in_mro($B.get_class(buffer),'__setitem__')
 $B.$call(setitem,buffer,_b_.slice.$factory(0,len),data)
 return len}
 var _BufferedIOBase_funcs=$B._BufferedIOBase.tp_funcs={}
-_BufferedIOBase_funcs.__enter__=function(self){return self}
+_BufferedIOBase_funcs.__enter__=function(self){
+// CPython IOBase.__enter__ does _checkClosed() first. closed is read
+// defensively: on some native classes (StringIO) the getset resolution
+// via $getattr crashes ('func.getter is not a function').
+var closed=false
+try{closed=$B.$bool($B.$getattr(self,'closed'))}catch(e){closed=!!self._closed}
+if(closed){$B.RAISE(_b_.ValueError,'I/O operation on closed file')}
+return self}
 _BufferedIOBase_funcs.__exit__=function(self,type,value,traceback){try{$B.$call($B.$getattr(self,'close'))
 self.__closed=true
 return true}catch(err){return false}}
