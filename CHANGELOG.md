@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyDict_GET_SIZE` missed non-string dict keys** (+21: pickle 670 — int/
+      tuple-keyed and recursive dicts). Brython stores string keys as own
+      JS properties and every other key in a `Symbol('KEYS')` table the
+      bridge's own-property walk couldn't see — `{1: 'a'}` reported size 0,
+      so pickle's save_dict emitted an EMPTY dict (and mixed dicts only
+      their string part). The vendored brython.js now exports the symbol
+      (`$B.DICT_KEYS`) and GET_SIZE counts that table for real dicts
+      (guarded by get_class — probing symbols on Brython proxy objects
+      walks their Python getattr handler, and GET_SIZE is C-hot).
+
 - [x] **`PyUnicode_DecodeUTF8` truncated at embedded NULs** (+5: pickle 649 —
       the binunicode family). `UTF8ToString(ptr, size)` bounds the read but
       still stops at the first NUL byte (C-string semantics), so pickle's

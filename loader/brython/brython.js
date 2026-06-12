@@ -10498,6 +10498,7 @@ $B.set_func_names(complex,"builtins")})(__BRYTHON__);
 var _b_=$B.builtins
 const VERSION=Symbol('VERSION')
 const KEYS=Symbol('KEYS')
+$B.DICT_KEYS=KEYS
 const VALUES=Symbol('VALUES')
 const HASHES=Symbol('HASHES')
 const TABLE=Symbol('TABLE')

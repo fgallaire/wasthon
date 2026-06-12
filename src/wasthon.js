@@ -5354,6 +5354,17 @@ mergeInto(LibraryManager.library, {
         if (typeof obj === 'object') {
             var n = 0;
             for (var k in obj) if (Object.prototype.hasOwnProperty.call(obj, k)) n++;
+            try {
+                if (WasthonRT.$B.get_class(obj) === WasthonRT._b_.dict) {
+                    var KS = WasthonRT.$B.DICT_KEYS;
+                    var kt = KS ? obj[KS] : null;
+                    if (kt) {
+                        for (var ki = 0; ki < kt.length; ki++) {
+                            if (kt[ki] !== undefined) n++;
+                        }
+                    }
+                }
+            } catch (_e) {}
             return n;
         }
         return 0;
