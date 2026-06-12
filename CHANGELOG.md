@@ -7,6 +7,19 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Unsigned clinic converters: faithful bounds** (+3: hashlib 72 —
+      test_blake2b, test_blake2s, test_digest_length_overflow; +1 hmac).
+      `_PyLong_UnsignedLong_Converter` stored `v >>> 0` with no upper-bound
+      check (blake2 `leaf_size=1<<32` silently became 0) and raised
+      OverflowError on negatives where pycore raises
+      `ValueError("value must be positive")`. The 64-bit variant masked to
+      64 bits the same way (`node_offset=2**64` accepted as 0). Both now
+      match pycore_long.h: ValueError on negative, OverflowError
+      ("Python int too large to convert to C unsigned long (long)") above
+      the bound — which is also what shake `digest(2**32+10)` needs.
+      (The sibling `_PyLong_UInt{32,64}_Converter` routes still lack the
+      upper-bound check — latent, to fix and measure separately.)
+
 - [x] **`Py_TPFLAGS_IMMUTABLETYPE` propagates to Brython** (+1: hashlib 68
       — test_readonly_types ×12 subtests). C types created through
       `PyType_FromModuleAndSpec` were plain mutable Brython classes;

@@ -3658,8 +3658,17 @@ mergeInto(LibraryManager.library, {
             return 0;
         }
         if (v < 0) {
+            // pycore's _PyLong_Unsigned*_Converter raises ValueError for
+            // negatives ("value must be positive"), NOT OverflowError.
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.ValueError),
+                "value must be positive");
+            return 0;
+        }
+        if (v > 0xFFFFFFFF) {
+            // PyLong_AsUnsignedLong overflow (unsigned long = u32 on wasm32);
+            // silently truncating let blake2 leaf_size=1<<32 through as 0.
             WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
-                "can't convert negative int to unsigned");
+                "Python int too large to convert to C unsigned long");
             return 0;
         }
         HEAPU32[ptr >> 2] = v >>> 0;
@@ -5325,23 +5334,30 @@ mergeInto(LibraryManager.library, {
         var bv;
         if (typeof obj === 'number') {
             if (obj < 0) {
-                // CPython's clinic UInt converters raise ValueError here
+                // pycore converter: ValueError for negatives
                 WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.ValueError),
-                    "Cannot convert negative int");
+                    "value must be positive");
                 return 0;
             }
             bv = BigInt(obj);
         } else if (typeof obj === 'bigint') {
             if (obj < 0n) {
-                // CPython's clinic UInt converters raise ValueError here
+                // pycore converter: ValueError for negatives
                 WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.ValueError),
-                    "Cannot convert negative int");
+                    "value must be positive");
                 return 0;
             }
             bv = obj;
         } else {
             WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
                 "an integer is required");
+            return 0;
+        }
+        if (bv > 0xFFFFFFFFFFFFFFFFn) {
+            // PyLong_AsUnsignedLongLong overflow; silently masking let
+            // blake2 node_offset=2**64 through as 0.
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
+                "Python int too large to convert to C unsigned long long");
             return 0;
         }
         // Store little-endian u64 as two u32s.
