@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyUnicode_DecodeUTF8` truncated at embedded NULs** (+5: pickle 649 —
+      the binunicode family). `UTF8ToString(ptr, size)` bounds the read but
+      still stops at the first NUL byte (C-string semantics), so pickle's
+      BINUNICODE payloads with embedded NULs lost their tail
+      ('€\x00' came back as '€'). Decode the exact heap slice
+      with TextDecoder instead.
+
 - [x] **`PyLong_FromString` parsed through a double and rejected trailing
       whitespace** (+12: test_pickle 624). `BigInt(parseInt(s, base))`
       round-trips through a 2^53-precision double — proto-0 LONG literals

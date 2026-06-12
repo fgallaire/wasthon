@@ -694,7 +694,11 @@ mergeInto(LibraryManager.library, {
     PyUnicode_DecodeUTF8__deps: ['$WasthonRT'],
     PyUnicode_DecodeUTF8: function(strPtr, size, errorsPtr) {
         if (strPtr === 0) return WasthonRT.wrapNewRef("");
-        return WasthonRT.wrapNewRef(UTF8ToString(strPtr, size));
+        /* UTF8ToString stops at the first NUL even with a size bound
+         * (C-string semantics) — pickle's BINUNICODE payloads may embed
+         * NULs ('\u20ac\x00' lost its tail). Decode the exact slice. */
+        return WasthonRT.wrapNewRef(new TextDecoder('utf-8').decode(
+            HEAPU8.subarray(strPtr, strPtr + size)));
     },
 
     /* PyUnicode_DecodeASCII — same as UTF8 decode for 0x00-0x7F. */
