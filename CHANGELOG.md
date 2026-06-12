@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyMemoryView_FromMemory` implemented** (+1 pickle; was a
+      NotImplementedError stub). Read-only semantics: copies the C buffer
+      into a Brython bytes wrapped in a real memoryview, returned as a new
+      reference. Write-through (PyBUF_WRITE) would need borrowed
+      linear-memory backing — no bundled caller needs it (pickle's
+      BINBYTES readers are read-only consumers).
+
 - [x] **Unpickled lists reported type JavascriptArray** (+31: test_pickle
       574, +3: sqlite3 328). `get_class` short-circuits `Array.isArray` to
       JavascriptArray BEFORE reading `__class__`; native Brython lists carry

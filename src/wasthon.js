@@ -7821,11 +7821,22 @@ mergeInto(LibraryManager.library, {
      * returning NULL with NotImplementedError keeps the link satisfied
      * while signalling unsupported when actually called. */
     PyMemoryView_FromMemory__deps: ['$WasthonRT'],
-    PyMemoryView_FromMemory: function(_memPtr, _size, _flags) {
+    PyMemoryView_FromMemory: function(memPtr, size, flags) {
         var rt = WasthonRT;
-        rt.setError(rt.wrap(rt._b_.NotImplementedError),
-            "PyMemoryView_FromMemory: memoryview not supported in bridge");
-        return 0;
+        try {
+            /* Read-only view: copy the C buffer into a Brython bytes and
+             * wrap it in a real memoryview. Write-through (PyBUF_WRITE)
+             * would need borrowed linear-memory backing — no caller in the
+             * bundled modules needs it (pickle's BINBYTES readers are
+             * read-only consumers). */
+            var bytes = rt.$B.fast_bytes(
+                Array.from(HEAPU8.subarray(memPtr, memPtr + size)));
+            var mv = rt.$B.$call(rt._b_.memoryview, bytes);
+            return rt.wrapNewRef(mv);
+        } catch (e) {
+            rt.forwardError(e, rt._b_.RuntimeError);
+            return 0;
+        }
     },
 
     /* PyUnicode_EqualToUTF8(u, c_str) — like _PyUnicode_EqualToASCIIString
