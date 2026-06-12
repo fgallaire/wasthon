@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyLong_FromString` parsed through a double and rejected trailing
+      whitespace** (+12: test_pickle 624). `BigInt(parseInt(s, base))`
+      round-trips through a 2^53-precision double — proto-0 LONG literals
+      above that silently corrupted (test_ints' 4294967295 arrived as
+      4294967039 through a longer chain; test_long1's 30-digit literal lost
+      its low digits) — and `BigInt('123\n')` throws, so valid literals
+      with pickle's trailing newline raised "invalid literal" (×6).
+      Rewritten: digit-at-a-time pure-BigInt parse with CPython semantics
+      (leading/trailing whitespace, sign, 0x/0o/0b prefixes, `_`
+      separators, `*pend` contract, strict-rest check when pend is NULL).
+
 - [x] **`PyMemoryView_FromMemory` implemented** (+1 pickle; was a
       NotImplementedError stub). Read-only semantics: copies the C buffer
       into a Brython bytes wrapped in a real memoryview, returned as a new

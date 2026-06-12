@@ -6497,16 +6497,46 @@ mergeInto(LibraryManager.library, {
     PyLong_FromString: function(strPtr, pendPtr, base) {
         var rt = WasthonRT;
         var s = strPtr ? UTF8ToString(strPtr) : "";
-        try {
-            var bi = base === 0 ? BigInt(s) : BigInt(parseInt(s, base));
-            if (bi >= -2147483648n && bi <= 2147483647n) return rt.wrapNewRef(Number(bi));
-            return rt.wrapNewRef(bi);
-        } catch (e) {
+        /* Digit-at-a-time BigInt parse. The old BigInt(parseInt(s, base))
+         * round-tripped through a DOUBLE (2^53 precision) and silently
+         * corrupted big literals; and BigInt('123\n') threw, so valid
+         * literals with a trailing newline (pickle's proto-0 LONG lines)
+         * raised "invalid literal". */
+        var p = 0, sign = 1n;
+        while (p < s.length && s.charCodeAt(p) <= 32) p++;   // leading space
+        if (s[p] === '+') p++;
+        else if (s[p] === '-') { sign = -1n; p++; }
+        var b = base | 0;
+        var pfx = s.slice(p, p + 2).toLowerCase();
+        if ((b === 0 || b === 16) && pfx === '0x') { b = 16; p += 2; }
+        else if ((b === 0 || b === 8) && pfx === '0o') { b = 8; p += 2; }
+        else if ((b === 0 || b === 2) && pfx === '0b') { b = 2; p += 2; }
+        else if (b === 0) b = 10;
+        var B = BigInt(b), v = 0n, ndigits = 0;
+        for (; p < s.length; p++) {
+            var c = s.charCodeAt(p), d;
+            if (c === 95) continue;                          // '_' separator
+            if (c >= 48 && c <= 57) d = c - 48;
+            else if (c >= 97 && c <= 122) d = c - 87;
+            else if (c >= 65 && c <= 90) d = c - 55;
+            else break;
+            if (d >= b) break;
+            v = v * B + BigInt(d);
+            ndigits++;
+        }
+        var rest = p;
+        while (rest < s.length && s.charCodeAt(rest) <= 32) rest++;
+        if (ndigits === 0 || (!pendPtr && rest < s.length)) {
             rt.setError(rt.wrap(rt._b_.ValueError),
-                "invalid literal for int: '" + s + "'");
+                "invalid literal for int() with base " + b + ": '" + s + "'");
             return 0;
         }
+        if (pendPtr) HEAP32[pendPtr >> 2] = strPtr + p;
+        v = sign * v;
+        if (v >= -2147483648n && v <= 2147483647n) return rt.wrapNewRef(Number(v));
+        return rt.wrapNewRef(v);
     },
+
 
     /* Py_hexdigits is defined as a real C global in wasthon.c. */
 
