@@ -21,7 +21,7 @@
 # Requires: curl or wget (to download sources) and make (used by emmake for xz/zstd).
 # External source trees default to ./external/<libname> — override via env
 # vars to point at an existing checkout:
-#   CPYTHON_SRC=/path/to/Python-3.14.4
+#   CPYTHON_SRC=/path/to/Python-3.14.6
 #   EXPAT_DIR=/path/to/expat-2.6.4
 #   ZSTD_DIR=/path/to/zstd-1.5.6
 #   XZ_DIR=/path/to/xz-5.4.6
@@ -98,7 +98,7 @@ BUILD="${REPO}/build"
 SRC="${REPO}/src"
 EXTERNAL="${REPO}/external"
 
-CPYTHON_SRC="${CPYTHON_SRC:-${EXTERNAL}/Python-3.14.4}"
+CPYTHON_SRC="${CPYTHON_SRC:-${EXTERNAL}/Python-3.14.6}"
 EXPAT_DIR="${EXPAT_DIR:-${EXTERNAL}/expat-2.6.4}"
 ZSTD_DIR="${ZSTD_DIR:-${EXTERNAL}/zstd-1.5.6}"
 XZ_DIR="${XZ_DIR:-${EXTERNAL}/xz-5.4.6}"
@@ -177,7 +177,7 @@ ensure_src() {
 
 # Per-lib bootstrappers — download source tree if missing.
 ensure_cpython()  { ensure_src "${CPYTHON_SRC}" \
-    "https://www.python.org/ftp/python/3.14.4/Python-3.14.4.tar.xz"; }
+    "https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz"; }
 ensure_bzip2()    { ensure_src "${BZIP2_DIR}" \
     "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"; }
 ensure_expat() {

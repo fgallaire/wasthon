@@ -7,6 +7,24 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **CPython pin bump 3.14.4 → 3.14.6** (+1: csv 122/122 runnable —
+      3rd suite at 100%). 3.14.6 (released 2026-06-10) ships the
+      gh-145105 csv fix upstream — re-entering the reader from its source
+      iterator now raises `csv.Error` ("iterator has already advanced the
+      reader") instead of letting StopIteration escape — replacing the
+      build-time patch that briefly carried it in `build.sh`. Three
+      resyncs were the whole cost of the bump: `wasthon.h` defines
+      `_Py_atomic_{store,load}_char_relaxed` as plain accesses
+      (single-threaded WASM; 3.14.6's `_bz2module.c` calls one directly,
+      a free-threading safety backport — the only direct atomic across
+      our 25 modules); `pyexpat.h` gains the three `PyExpat_CAPI` tail
+      members 3.14.6 added (billion-laughs protection setters +
+      `SetHashSalt16Bytes`); `test_binascii` resynced to 3.14.6
+      (`a2b_uu` now raises on empty input — the only `binascii.c`
+      change). Full sweep iso vs the 3.14.4 baseline: 3484 effective,
+      csv 122/0, statistics 370/0, zlib 57/0, every other suite at the
+      point.
+
 - [x] **Lone surrogates round-trip through pickle (surrogatepass)** (+2:
       pickle 682). TextEncoder/TextDecoder replace lone surrogates with
       U+FFFD on BOTH sides; CPython pickles them as 3-byte CESU sequences

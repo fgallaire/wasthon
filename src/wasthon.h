@@ -363,6 +363,12 @@ typedef struct { uint8_t _unused; } PyMutex;
 #define Py_BEGIN_ALLOW_THREADS   /* empty */
 #define Py_END_ALLOW_THREADS     /* empty */
 
+/* Internal atomics — plain accesses in single-threaded WASM. CPython
+ * 3.14.5+ modules call a few of these directly (free-threading safety
+ * backports, e.g. _bz2module.c needs_input). */
+#define _Py_atomic_store_char_relaxed(P, V)  (*(P) = (V))
+#define _Py_atomic_load_char_relaxed(P)      (*(P))
+
 /* ---------------------------------------------------------------- *
  * Type flags and method flags                                      *
  * ---------------------------------------------------------------- */
