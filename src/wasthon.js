@@ -696,9 +696,38 @@ mergeInto(LibraryManager.library, {
         if (strPtr === 0) return WasthonRT.wrapNewRef("");
         /* UTF8ToString stops at the first NUL even with a size bound
          * (C-string semantics) — pickle's BINUNICODE payloads may embed
-         * NULs ('\u20ac\x00' lost its tail). Decode the exact slice. */
-        return WasthonRT.wrapNewRef(new TextDecoder('utf-8').decode(
-            HEAPU8.subarray(strPtr, strPtr + size)));
+         * NULs ('\u20ac\x00' lost its tail). Decode the exact slice.
+         * surrogatepass: CESU sequences (ed a0-bf ..) must round-trip as
+         * lone surrogates, TextDecoder replaces them — slow path only when
+         * an 0xED lead byte is present. */
+        var sl = HEAPU8.subarray(strPtr, strPtr + size);
+        var hasED = false;
+        for (var di = 0; di < sl.length; di++) {
+            if (sl[di] === 0xED) { hasED = true; break; }
+        }
+        if (!hasED) {
+            return WasthonRT.wrapNewRef(new TextDecoder('utf-8').decode(sl));
+        }
+        var chars = [];
+        for (var p = 0; p < sl.length;) {
+            var b = sl[p];
+            if (b < 0x80) { chars.push(b); p += 1; }
+            else if ((b & 0xE0) === 0xC0) {
+                chars.push(((b & 31) << 6) | (sl[p+1] & 63)); p += 2;
+            } else if ((b & 0xF0) === 0xE0) {
+                chars.push(((b & 15) << 12) | ((sl[p+1] & 63) << 6) | (sl[p+2] & 63)); p += 3;
+            } else {
+                var cp = ((b & 7) << 18) | ((sl[p+1] & 63) << 12) |
+                         ((sl[p+2] & 63) << 6) | (sl[p+3] & 63);
+                cp -= 0x10000;
+                chars.push(0xD800 + (cp >> 10), 0xDC00 + (cp & 1023)); p += 4;
+            }
+        }
+        var parts = [];
+        for (var k = 0; k < chars.length; k += 16384) {
+            parts.push(String.fromCharCode.apply(null, chars.slice(k, k + 16384)));
+        }
+        return WasthonRT.wrapNewRef(parts.join(''));
     },
 
     /* PyUnicode_DecodeASCII — same as UTF8 decode for 0x00-0x7F. */
@@ -3865,7 +3894,31 @@ mergeInto(LibraryManager.library, {
         // Strings aren't weak-keyable. Use a small Map keyed by string content.
         if (!rt._utf8CacheStr) rt._utf8CacheStr = new Map();
         if (rt._utf8CacheStr.has(obj)) return rt._utf8CacheStr.get(obj);
-        var bytes = new TextEncoder().encode(obj);
+        /* surrogatepass: TextEncoder replaces lone surrogates with U+FFFD,
+         * but CPython pickles them as 3-byte CESU sequences (ed a0-bf ..)
+         * and round-trips them — '\ud800' came back as the replacement
+         * char. Slow path only when a surrogate is present. */
+        var bytes;
+        if (/[\uD800-\uDFFF]/.test(obj)) {
+            var out = [];
+            for (var si = 0; si < obj.length; si++) {
+                var c = obj.charCodeAt(si);
+                if (c < 0x80) out.push(c);
+                else if (c < 0x800) out.push(0xC0 | (c >> 6), 0x80 | (c & 63));
+                else if (c >= 0xD800 && c <= 0xDBFF && si + 1 < obj.length &&
+                         obj.charCodeAt(si + 1) >= 0xDC00 && obj.charCodeAt(si + 1) <= 0xDFFF) {
+                    var c2 = obj.charCodeAt(++si);
+                    var cp = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
+                    out.push(0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 63),
+                             0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+                } else {
+                    out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+                }
+            }
+            bytes = new Uint8Array(out);
+        } else {
+            bytes = new TextEncoder().encode(obj);
+        }
         var ptr = _malloc(bytes.length + 1);
         HEAPU8.set(bytes, ptr);
         HEAPU8[ptr + bytes.length] = 0;

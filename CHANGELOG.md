@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Lone surrogates round-trip through pickle (surrogatepass)** (+2:
+      pickle 682). TextEncoder/TextDecoder replace lone surrogates with
+      U+FFFD on BOTH sides; CPython pickles them as 3-byte CESU sequences
+      (`'\ud800'` → `ed a0 80`) and round-trips them. Manual symmetric
+      encoder/decoder, slow path gated on an actual surrogate (encode) /
+      0xED lead byte (decode) so normal strings keep the native fast path.
+
 - [x] **Protocol-5 out-of-band buffers work** (+10: pickle 680 — the
       in_band/oob_buffers/ZeroCopy family). The PickleBuffer binding is a
       JS stub carrying its underlying buffer on `.obj`;
