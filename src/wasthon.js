@@ -8600,6 +8600,14 @@ mergeInto(LibraryManager.library, {
         // constants like SALT_SIZE) can write to.
         var cls = rt.$B.make_builtin_class(shortName);
         rt.$B.init_dict(cls);
+        /* Py_TPFLAGS_IMMUTABLETYPE (wasthon.h: 1<<4): mark the Brython class
+         * so type.tp_setattro refuses Python-level writes ("cannot set ...
+         * attribute of immutable type ..."), as CPython does. Bridge-side
+         * installs (tp_dict descriptors, class constants via
+         * PyDict_SetItemString) go through set_to_dict and are unaffected. */
+        if (flags & 0x10) {
+            cls.tp_flags = (cls.tp_flags || 0) | rt.$B.TPFLAGS.IMMUTABLETYPE;
+        }
         /* __module__ from the dotted spec name prefix (CPython's
          * PyType_FromMetaclass sets tp_dict['__module__'] = name[:lastdot]),
          * else the module's __name__. Without the dotted form, types like

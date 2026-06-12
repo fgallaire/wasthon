@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`Py_TPFLAGS_IMMUTABLETYPE` propagates to Brython** (+1: hashlib 68
+      — test_readonly_types ×12 subtests). C types created through
+      `PyType_FromModuleAndSpec` were plain mutable Brython classes;
+      CPython marks e.g. every HACL hash type immutable, so
+      `sha1.value = False` must raise TypeError. Brython's
+      `type.tp_setattro` already enforces its own
+      `TPFLAGS.IMMUTABLETYPE` bit ("cannot set ... attribute of immutable
+      type ..."); the factory now translates the spec flag (wasthon
+      numbering, 1<<4) to Brython's bit (1<<8). Bridge-side installs go
+      through `set_to_dict` and are unaffected.
+
 - [x] **CPython pin bump 3.14.4 → 3.14.6** (+1: csv 122/122 runnable —
       3rd suite at 100%). 3.14.6 (released 2026-06-10) ships the
       gh-145105 csv fix upstream — re-entering the reader from its source
