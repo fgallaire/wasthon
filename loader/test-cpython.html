@@ -109,6 +109,14 @@ try {
     py.type = 'text/python';
     py.textContent = `
 import sys, types, unittest
+# 3.14 flag read by threading.Thread.__init__; Brython's sys.flags predates it
+try:
+    sys.flags.thread_inherit_context
+except AttributeError:
+    try:
+        sys.flags.thread_inherit_context = 0
+    except Exception:
+        pass
 from browser import window
 log = window.__wasthon_log
 test_name = window.__wasthon_test_name
@@ -198,7 +206,13 @@ def _import_fresh_module(name, fresh=(), blocked=(), **kw):
     for _b in blocked:
         _ifm_sys.modules[_b] = None
     try:
-        return _ifm_il.import_module(name)
+        _ifm_res = _ifm_il.import_module(name)
+        # CPython's helper also imports every fresh= module and returns
+        # None if any is missing — that None is what gates skips like
+        # test_pbkdf2_hmac_c (fresh=['_hashlib'], absent by design here).
+        for _f in fresh:
+            _ifm_il.import_module(_f)
+        return _ifm_res
     except ImportError:
         return None
     finally:
@@ -238,6 +252,9 @@ os_helper.FakePath = _FakePath
 threading_helper = _mod('test.support.threading_helper')
 warnings_helper = _mod('test.support.warnings_helper')
 hashlib_helper = _mod('test.support.hashlib_helper')
+# CPython HASHLIB_GIL_MINSIZE — the _flex fallback returned 0, so
+# test_sha256_gil hashed b'#'*0 and missed its hardcoded digest.
+hashlib_helper.find_gil_minsize = lambda *a, **k: 2048
 hypothesis_helper = _mod('test.support.hypothesis_helper')
 # Faithful mime of CPython's test.support._hypothesis_stubs (Hypothesis is not
 # available in Brython): @given with NO @example examples -> skip the property
