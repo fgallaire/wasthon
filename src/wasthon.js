@@ -8176,6 +8176,15 @@ mergeInto(LibraryManager.library, {
 
     wasthon_get_buffer_data__deps: ['$WasthonRT'],
     wasthon_get_buffer_data: function(handle, outBufPtrPtr, outLenPtr) {
+        /* PickleBuffer stub (binding case 13): the instance carries its
+         * underlying buffer on `.obj` — recurse on that, so proto-5
+         * save_picklebuffer's PyObject_GetBuffer works in-band. */
+        var _o = WasthonRT.unwrap(handle);
+        if (_o && _o.ob_type && _o.ob_type.__wasthon_picklebuffer__ && _o.obj) {
+            return _wasthon_get_buffer_data(
+                WasthonRT.wrap(_o.obj), outBufPtrPtr, outLenPtr);
+        }
+
         var obj = WasthonRT.unwrap(handle);
         if (obj === null || obj === undefined) {
             WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),

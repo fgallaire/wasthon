@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Protocol-5 out-of-band buffers work** (+10: pickle 680 — the
+      in_band/oob_buffers/ZeroCopy family). The PickleBuffer binding is a
+      JS stub carrying its underlying buffer on `.obj`;
+      `wasthon_get_buffer_data` didn't know how to dereference it, so
+      `save_picklebuffer`'s PyObject_GetBuffer raised "a bytes-like object
+      is required, not 'PickleBuffer'" and every proto-5 buffer dump died.
+      One early branch recurses on the carried buffer — NEXT_BUFFER /
+      READONLY_BUFFER opcodes and the buffer_callback now fire.
+
 - [x] **`PyDict_GET_SIZE` missed non-string dict keys** (+21: pickle 670 — int/
       tuple-keyed and recursive dicts). Brython stores string keys as own
       JS properties and every other key in a `Symbol('KEYS')` table the
