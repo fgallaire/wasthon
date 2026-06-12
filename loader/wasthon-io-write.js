@@ -360,9 +360,26 @@
             checkOpen(s);
             ensureText(s);
             if (s.$text_pos >= s.$text.length) return B.String('');
-            const nl = s.$text.indexOf('\n', s.$text_pos);
-            const end = (nl === -1) ? s.$text.length : nl + 1;
-            const res = s.$text.slice(s.$text_pos, end);
+            // line split depends on the newline mode (CPython TextIOWrapper):
+            // null (=None) → text was translated in ensureText, split on '\n';
+            // ''           → untranslated universal: \r\n, \r or \n, kept;
+            // explicit     → split only on that exact terminator.
+            const t = s.$text;
+            let end;
+            if (s.$newline === null || s.$newline === '\n') {
+                const nl = t.indexOf('\n', s.$text_pos);
+                end = (nl === -1) ? t.length : nl + 1;
+            } else if (s.$newline === '') {
+                const cr = t.indexOf('\r', s.$text_pos);
+                const lf = t.indexOf('\n', s.$text_pos);
+                if (cr === -1 && lf === -1) end = t.length;
+                else if (cr === -1 || (lf !== -1 && lf < cr)) end = lf + 1;
+                else end = (t[cr + 1] === '\n') ? cr + 2 : cr + 1;
+            } else {
+                const nl = t.indexOf(s.$newline, s.$text_pos);
+                end = (nl === -1) ? t.length : nl + s.$newline.length;
+            }
+            const res = t.slice(s.$text_pos, end);
             s.$text_pos = end;
             return B.String(res);
         };

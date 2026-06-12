@@ -1432,3 +1432,24 @@ return $B.fast_float(negate ? -res : res)
 Validated bit-exact against CPython on 3006 differential cases (random 1–1200-bit
 operands, signs, subnormals, ties, overflow) plus 200k random small-int cases.
 The `rich_op1` small-int fast path (`typeof x == "number"`) is untouched.
+
+## [x] TextIOWrapper line iteration ignores the `newline` mode (csv `lineterminator='\r'` roundtrips broken)
+**Impact: +2 tests** (test_csv roundtrip_escaped_unquoted_newlines + roundtrip_quoteed_newlines,
+`lineterminator='\r'` subtests; zero regression on bz2/lzma/zstd/array/zlib) —
+**test_csv 122/122 runnable = 3rd suite at 100%.**
+
+**Symptom:** a file written with `newline=''` and `'\r'` line endings comes back
+as ONE giant line when iterated — `_csv.Error: new-line character seen in
+unquoted field` on read-back.
+
+**Root cause:** `wasthon-io-write.js` `G.readline` split only on `'\n'`,
+whatever the TextIOWrapper `newline` mode. CPython semantics: `newline=None`
+translates `\r\n`/`\r` → `\n` on input (ensureText already did this, so '\n'
+split was right); `newline=''` does NOT translate and a line ends at `\r\n`,
+`\r` or `\n` (terminator kept); an explicit `'\r'`/`'\r\n'` splits only on
+that exact string.
+
+**Fix** — `wasthon-io-write.js` `G.readline`: branch on `s.$newline` — `null`/
+`'\n'` keep the old indexOf('\n'); `''` takes min(indexOf('\r'), indexOf('\n'))
+with `\r\n` lookahead; explicit terminators use indexOf(that string). All
+indexOf-based (no per-char scan).
