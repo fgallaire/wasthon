@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **The raised exception INSTANCE survives the bridge** (+2 pyexpat, +1
+      sqlite3; zero regression). Every trampoline rebuilt the pending exception
+      as `exc(msg)` from `{exc, msg}`, discarding the object C had actually
+      raised — so attributes C set on it were lost. `pyexpat`'s `set_xml_error`
+      builds an `ExpatError`, sets `.code`/`.lineno`/`.offset` on it, then
+      `PyErr_SetObject`s it; the caught exception had none of them
+      (`test_expaterror`, `test_parse_again`). Now `setError` carries an optional
+      `value` (the instance) and a single `pendingExc(pe, fallbackExc)` helper —
+      used by every throw site (~19, incl. the tp_methods call trampoline and
+      tp_init) plus `PyErr_GetRaisedException` — returns it when present.
+      Restricted to genuine `BaseException` instances: `_decimal` passes a *list*
+      of signal flags as the `PyErr_SetObject` value, which must still build
+      `exc(flags)` rather than be thrown as-is (that overbroad match cost −14
+      decimal before the `isinstance` guard).
+
 - [x] **`wasthon_float_nb_absolute` reads a boxed float's `.value`** (+1
       statistics → 370/370 runnable, +4 decimal; zero regression). It did
       `Math.abs(typeof x === 'number' ? x : Number(x))`, but a Brython float is

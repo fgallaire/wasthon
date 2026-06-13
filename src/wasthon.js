@@ -517,8 +517,23 @@ mergeInto(LibraryManager.library, {
             return this.wrapNewRef(obj);
         },
 
-        setError: function(excHandle, msg) {
-            this.pendingException = { exc: excHandle, msg: msg };
+        setError: function(excHandle, msg, value) {
+            // `value` (optional) is the actual exception INSTANCE. When C built
+            // the exception object and set custom attributes on it (pyexpat's
+            // ExpatError.code/lineno/offset, OSError.errno, …), we must throw
+            // that very object, not a freshly-reconstructed exc(msg) that drops
+            // them. pendingExc() returns it when present.
+            this.pendingException = { exc: excHandle, msg: msg, value: value || null };
+        },
+
+        /* Materialize the pending exception as a throwable Brython object.
+         * Prefers the preserved instance (attributes intact); otherwise
+         * reconstructs exc(msg). `fallbackExc`, when supplied by a call site
+         * that already unwrapped pe.exc, avoids a second unwrap. */
+        pendingExc: function(pe, fallbackExc) {
+            if (pe && pe.value) return pe.value;
+            var exc = fallbackExc || this.unwrap(pe.exc) || this._b_.Exception;
+            return this.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
         },
 
         /* Coerce obj to a JS number-or-bigint primitive, honoring Python's
@@ -4330,10 +4345,9 @@ mergeInto(LibraryManager.library, {
         if (!rt.pendingException) return rt.SLOT_NONE;
         var pe = rt.pendingException;
         rt.pendingException = null;
-        // Materialize as an exception instance via $B.$call.
+        // Materialize the preserved instance (attrs intact) or reconstruct.
         try {
-            var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
-            return rt.wrapNewRef(rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg)));
+            return rt.wrapNewRef(rt.pendingExc(pe));
         } catch (e) { return rt.SLOT_NONE; }
     },
     PyErr_SetRaisedException__deps: ['$WasthonRT'],
@@ -4344,9 +4358,9 @@ mergeInto(LibraryManager.library, {
             return;
         }
         var exc = rt.unwrap(excH);
-        // exc is an exception INSTANCE; pass through.
+        // exc is an exception INSTANCE; preserve it so its attributes survive.
         rt.setError(rt.wrap(exc && exc.__class__ ? exc.__class__ : rt._b_.Exception),
-                    String(exc));
+                    String(exc), exc);
     },
     PyErr_FormatUnraisable__deps: ['$WasthonRT'],
     PyErr_FormatUnraisable: function(fmtPtr) {
@@ -5339,7 +5353,7 @@ mergeInto(LibraryManager.library, {
                 if (rt.pendingException) {
                     var pe = rt.pendingException; rt.pendingException = null;
                     var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
-                    throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                    throw rt.pendingExc(pe, exc);
                 }
                 return rt.unwrapResult(resH);
             });
@@ -5354,7 +5368,7 @@ mergeInto(LibraryManager.library, {
                 if (rt.pendingException) {
                     var pe = rt.pendingException; rt.pendingException = null;
                     var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
-                    throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                    throw rt.pendingExc(pe, exc);
                 }
                 return rc;
             });
@@ -5799,6 +5813,17 @@ mergeInto(LibraryManager.library, {
                 if (v.args && v.args.length > 0) msg = String(v.args[0]);
                 else msg = rt.$B.class_name(v);
             } catch (_) { msg = ""; }
+            // Preserve v ONLY when it is a genuine exception instance, so any
+            // attributes C set on it (ExpatError.code/lineno/offset, …) survive
+            // instead of being lost to a reconstructed exc(msg). _decimal passes
+            // a *list* of signal flags as the value here — that must build
+            // exc(flags), not be thrown as-is, so it falls through to reconstruct.
+            var isExc = false;
+            try { isExc = rt.$B.$isinstance(v, rt._b_.BaseException); } catch (_) {}
+            if (isExc) {
+                rt.setError(excHandle, msg, v);
+                return;
+            }
         } else {
             try { msg = String(v); } catch (_) { msg = ""; }
         }
@@ -9035,7 +9060,7 @@ mergeInto(LibraryManager.library, {
                     var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
                     // Brython exception classes don't all expose $factory;
                     // $B.$call is the generic dispatch that handles both.
-                    throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                    throw rt.pendingExc(pe, exc);
                 }
                 var inst = rt.unwrapResult(resultH);
                 /* Honor Python subclasses. The C tp_new received `typeHandle`
@@ -9318,8 +9343,7 @@ mergeInto(LibraryManager.library, {
                     if (resH === 0 || rt.pendingException) {
                         if (rt.pendingException) {
                             var pe = rt.pendingException; rt.pendingException = null;
-                            throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
-                                              typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                            throw rt.pendingExc(pe);
                         }
                         return rt._b_.NotImplemented;
                     }
@@ -9339,8 +9363,7 @@ mergeInto(LibraryManager.library, {
                     var rc = getWasmTableEntry(slotPtr)(selfH, otherH);
                     if (rc < 0 && rt.pendingException) {
                         var pe = rt.pendingException; rt.pendingException = null;
-                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
-                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                        throw rt.pendingExc(pe);
                     }
                     return rc ? true : false;
                 };
@@ -9356,8 +9379,7 @@ mergeInto(LibraryManager.library, {
                     if (resH === 0 || rt.pendingException) {
                         if (rt.pendingException) {
                             var pe = rt.pendingException; rt.pendingException = null;
-                            throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
-                                              typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                            throw rt.pendingExc(pe);
                         }
                         return rt._b_.NotImplemented;
                     }
@@ -9372,8 +9394,7 @@ mergeInto(LibraryManager.library, {
                     if (resH === 0 || rt.pendingException) {
                         if (rt.pendingException) {
                             var pe = rt.pendingException; rt.pendingException = null;
-                            throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
-                                              typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                            throw rt.pendingExc(pe);
                         }
                         return rt._b_.None;
                     }
@@ -9392,8 +9413,7 @@ mergeInto(LibraryManager.library, {
                     var rc = getWasmTableEntry(slotPtr)(selfH);
                     if (rc < 0 && rt.pendingException) {
                         var pe = rt.pendingException; rt.pendingException = null;
-                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
-                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                        throw rt.pendingExc(pe);
                     }
                     /* Length-style slots (sq_length, mp_length) return the
                      * count directly; tp_hash and nb_bool return rc to be
@@ -9443,8 +9463,7 @@ mergeInto(LibraryManager.library, {
                     var resH = getWasmTableEntry(slotPtr)(selfH, i);
                     if (rt.pendingException) {
                         var pe = rt.pendingException; rt.pendingException = null;
-                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
-                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                        throw rt.pendingExc(pe);
                     }
                     if (resH === 0) {
                         throw rt.$B.$call(rt._b_.IndexError, "index out of range");
@@ -9501,8 +9520,7 @@ mergeInto(LibraryManager.library, {
                     var rc = getWasmTableEntry(slotPtr)(selfH, i, valH);
                     if (rt.pendingException) {
                         var pe = rt.pendingException; rt.pendingException = null;
-                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
-                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                        throw rt.pendingExc(pe);
                     }
                     return rc;
                 };
@@ -9524,8 +9542,7 @@ mergeInto(LibraryManager.library, {
                     var rc = getWasmTableEntry(slotPtr)(selfH, itemH, valH);
                     if (rt.pendingException) {
                         var pe = rt.pendingException; rt.pendingException = null;
-                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
-                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                        throw rt.pendingExc(pe);
                     }
                     return rc;
                 };
@@ -9539,8 +9556,7 @@ mergeInto(LibraryManager.library, {
                     var resH = getWasmTableEntry(slotPtr)(selfH);
                     if (rt.pendingException) {
                         var pe = rt.pendingException; rt.pendingException = null;
-                        throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
-                                          typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                        throw rt.pendingExc(pe);
                     }
                     if (resH === 0) throw rt.$B.$call(rt._b_.StopIteration);
                     return rt.unwrapResult(resH);
@@ -9560,8 +9576,7 @@ mergeInto(LibraryManager.library, {
                         if (resH === 0 || rt.pendingException) {
                             if (rt.pendingException) {
                                 var pe = rt.pendingException; rt.pendingException = null;
-                                throw rt.$B.$call(rt.unwrap(pe.exc) || rt._b_.Exception,
-                                                  typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                                throw rt.pendingExc(pe);
                             }
                             return rt._b_.NotImplemented;
                         }
@@ -9704,9 +9719,8 @@ mergeInto(LibraryManager.library, {
                 if (rc !== 0 || rt.pendingException) {
                     var pe = rt.pendingException;
                     rt.pendingException = null;
-                    var exc = (pe && rt.unwrap(pe.exc)) || rt._b_.Exception;
-                    var msg = pe ? pe.msg : "tp_init failed";
-                    throw rt.$B.$call(exc, typeof msg === 'string' ? msg : String(msg));
+                    if (pe) throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);
+                    throw rt.$B.$call(rt._b_.Exception, "tp_init failed");
                 }
             });
             // Expose the C tp_init as the __init__ attribute, so an explicit
@@ -9767,8 +9781,7 @@ mergeInto(LibraryManager.library, {
                     rt.pendingException = null;
                     if (pe) {
                         var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
-                        throw rt.$B.$call(exc, typeof pe.msg === 'string'
-                            ? pe.msg : String(pe.msg));
+                        throw rt.pendingExc(pe, exc);
                     }
                     throw rt.$B.$call(rt._b_.RuntimeError,
                         "tp_call returned NULL");
@@ -9828,8 +9841,7 @@ mergeInto(LibraryManager.library, {
                     rt.pendingException = null;
                     if (pe) {
                         var exc = rt.unwrap(pe.exc) || rt._b_.AttributeError;
-                        throw rt.$B.$call(exc, typeof pe.msg === 'string'
-                            ? pe.msg : String(pe.msg));
+                        throw rt.pendingExc(pe, exc);
                     }
                     // C returned NULL without setting an exception — final
                     // miss. Surface a clean AttributeError.
@@ -10079,7 +10091,7 @@ mergeInto(LibraryManager.library, {
                         var pe = rt.pendingException;
                         rt.pendingException = null;
                         var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
-                        throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                        throw rt.pendingExc(pe, exc);
                     }
                     return rt.unwrapResult(resH);
                 });
@@ -10095,7 +10107,7 @@ mergeInto(LibraryManager.library, {
                         var pe = rt.pendingException;
                         rt.pendingException = null;
                         var exc = rt.unwrap(pe.exc) || rt._b_.Exception;
-                        throw rt.$B.$call(exc, typeof pe.msg === 'string' ? pe.msg : String(pe.msg));
+                        throw rt.pendingExc(pe, exc);
                     }
                     return rc;
                 });
@@ -10549,9 +10561,7 @@ mergeInto(LibraryManager.library, {
             if (rt.pendingException) {
                 var pe = rt.pendingException;
                 rt.pendingException = null;
-                var excClass = rt.unwrap(pe.exc) || rt._b_.RuntimeError;
-                var msg = typeof pe.msg === 'string' ? pe.msg : String(pe.msg);
-                throw rt.$B.$call(excClass, msg);
+                throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.RuntimeError);
             }
             if (resultHandle === 0) {
                 // No exception set but NULL returned — generic error.
