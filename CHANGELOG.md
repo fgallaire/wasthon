@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **PyObject_GenericGetAttr forwards the real exception**
+      (+1 struct test_operations_on_half_initialized_Struct; zero regression
+      — the shared generic-getattr path, exercised by every C type, is
+      unchanged across all 20 suites). A descriptor getter that *raised* was
+      lost: `PyObject_GenericGetAttr` caught the exception from `$B.$getattr`
+      and returned a bare NULL **without setting the pending exception**, so
+      the tp_getattro wrapper (C-first, then synthesizes AttributeError on an
+      unexplained NULL) masked it as "object has no attribute". CPython's
+      contract is that a NULL return always leaves the exception set — now it
+      forwards the original (falling back to AttributeError on a genuine
+      miss). Surfaced by an uninitialized `struct.Struct.__new__(Struct)`:
+      reading `.format` runs `s_get_format`, which raises RuntimeError
+      "Struct object is not initialized" — it had been arriving as the wrong
+      AttributeError.
+
 - [x] **Faithful IEEE float packing** (+1 struct test_705836; zero
       regression — array's 'e'/'f' typecodes and pickle floats unchanged).
       • `PyFloat_Pack4` silently produced inf on a finite value too large for

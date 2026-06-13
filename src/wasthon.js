@@ -3601,8 +3601,14 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
         var name = rt.unwrap(nameH);
+        // CPython contract: a NULL return must leave the exception set. Forward
+        // the real one ($getattr raises AttributeError on a genuine miss, but a
+        // descriptor getter may raise anything — e.g. _struct's s_get_format
+        // raises RuntimeError on an uninitialized Struct). Swallowing it and
+        // returning a bare NULL made the caller (the tp_getattro wrapper)
+        // synthesize a generic AttributeError, masking the real exception.
         try { return rt.wrapNewRef(rt.$B.$getattr(obj, name)); }
-        catch (e) { return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.AttributeError); return 0; }
     },
 
     PyObject_SelfIter__deps: ['$WasthonRT'],
