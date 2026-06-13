@@ -32,9 +32,23 @@ static inline Py_complex _Py_c_quot(Py_complex a, Py_complex b) {
     r.imag = (a.imag * b.real - a.real * b.imag) / d;
     return r;
 }
-#include <math.h>  /* for hypot */
-static inline double _Py_c_abs(Py_complex a) {
-    return hypot(a.real, a.imag);
+#include <math.h>   /* for hypot, isfinite, isinf, fabs */
+#include <errno.h>  /* for errno, ERANGE */
+static inline double _Py_c_abs(Py_complex z) {
+    /* Faithful to CPython's complexobject.c: sets errno = ERANGE on
+     * overflow (otherwise errno = 0) — cmath.polar/exp/... read errno to
+     * raise OverflowError. The old stub returned bare hypot(), so
+     * cmath.polar(complex(1.4e308, 1.4e308)) yielded inf instead of raising. */
+    double result;
+    if (!isfinite(z.real) || !isfinite(z.imag)) {
+        /* C99: an infinite part gives infinity even if the other is NaN. */
+        if (isinf(z.real)) { errno = 0; return fabs(z.real); }
+        if (isinf(z.imag)) { errno = 0; return fabs(z.imag); }
+        return NAN;  /* a NaN part, neither infinite */
+    }
+    result = hypot(z.real, z.imag);
+    errno = isfinite(result) ? 0 : ERANGE;
+    return result;
 }
 static inline Py_complex _Py_cr_sum(Py_complex a, double b) {
     Py_complex r; r.real = a.real + b; r.imag = a.imag; return r;

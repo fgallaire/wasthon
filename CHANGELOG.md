@@ -7,6 +7,19 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`_Py_c_abs` sets errno on overflow** (cmath.polar/exp/… now raise
+      OverflowError on an unrepresentable magnitude; +0 in isolation, but it
+      keeps cmath at 26 once the io-seekable fix below lets
+      test_cmath.test_specific_values read its data file to completion). The
+      wasthon inline stub in `src/pycore_complexobject.h` returned a bare
+      `hypot(real, imag)`, dropping CPython's `errno = ERANGE` on overflow and
+      the C99 infinity/NaN rules. cmath reads errno to decide whether to raise,
+      so `cmath.polar(complex(1.4e308, 1.4e308))` yielded `(inf, …)` instead of
+      raising. The truncated BufferedReader read had been hiding the
+      `polar0100` case; reading the file fully unmasked this real bug, now
+      fixed faithfully (`abs(complex)` already raised — only the C stub
+      diverged).
+
 - [x] **PyLong_AsDouble raises OverflowError instead of yielding inf**
       (+4 math: testLog, testLog10, testLog2, testFsum; zero regression). The
       converter did `Number(bigint)`, which silently returns `Infinity` for an
