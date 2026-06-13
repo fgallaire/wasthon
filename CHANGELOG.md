@@ -7,6 +7,23 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **binascii buffer-protocol fidelity → test_binascii 76/76 runnable**
+      (+8, 5th suite at 100%; zero regression, +1 pickle bonus on the
+      proto-5 buffer family). Two distinct root causes, ×4 each across the
+      array/bytes/bytearray/memoryview test matrix:
+      • **`PyUnicode_1BYTE_DATA` returned NULL for a real str** (it only
+        handled `PyUnicode_New` placeholders). binascii's
+        `ascii_buffer_converter` set `buf->buf = address 0`, so
+        `a2b_base64(str)` read garbage from the heap base (`b'zk\x1c'` vs the
+        decoded text — test_unicode_a2b). Now delegates to `PyUnicode_DATA`,
+        which already materializes the 1-byte Latin-1 buffer (no duplication).
+      • **non-contiguous memoryviews were silently materialized** via
+        `tobytes()` in `wasthon_get_buffer_data` instead of rejected.
+        `PyObject_GetBuffer` here only honors PyBUF_SIMPLE (C-contiguous), so
+        a strided slice (`m[::-2]`) now raises BufferError like CPython
+        (test_c_contiguity). Brython sets `c_contiguous` on every memoryview;
+        the check reads it falsy-safe (`!== undefined && !c_contiguous`).
+
 - [x] **Unsigned clinic converters: faithful bounds** (+3: hashlib 72 —
       test_blake2b, test_blake2s, test_digest_length_overflow; +1 hmac).
       `_PyLong_UnsignedLong_Converter` stored `v >>> 0` with no upper-bound

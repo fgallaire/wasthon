@@ -7681,11 +7681,16 @@ mergeInto(LibraryManager.library, {
     /* PyUnicode_1BYTE_DATA(str) — returns the pointer to the Latin-1
      * data buffer for a 1-byte-kind PEP 393 string. Only valid on
      * placeholders allocated by PyUnicode_New with maxchar < 0x100. */
-    PyUnicode_1BYTE_DATA__deps: ['$WasthonRT'],
+    PyUnicode_1BYTE_DATA__deps: ['$WasthonRT', 'PyUnicode_DATA'],
     PyUnicode_1BYTE_DATA: function(handle) {
         var obj = WasthonRT.unwrap(handle);
         if (obj && obj.__wasthon_unicode_buf__) return obj.__wasthon_unicode_buf__;
-        return 0;
+        // A real JS string (not a PyUnicode_New placeholder): materialize the
+        // Latin-1 byte buffer, exactly as PyUnicode_DATA does for a 1-byte-kind
+        // string. Returning NULL (the old behavior) made binascii's
+        // ascii_buffer_converter set buf->buf = address 0, so a2b_*(str) read
+        // garbage from the heap base (test_binascii.test_unicode_a2b).
+        return _PyUnicode_DATA(handle);
     },
 
     /* PyErr_CheckSignals — no signals in WASM, always returns 0 (no pending). */
@@ -8258,6 +8263,20 @@ mergeInto(LibraryManager.library, {
         if (obj === null || obj === undefined) {
             WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.TypeError),
                 "a bytes-like object is required, not 'NoneType'");
+            return -1;
+        }
+
+        // A non-contiguous memoryview (e.g. m[::-2]) cannot be exposed as a
+        // simple C-contiguous buffer. PyObject_GetBuffer here only honors
+        // PyBUF_SIMPLE, so reject it with BufferError as CPython does, instead
+        // of silently materializing it via tobytes() below
+        // (test_binascii.test_c_contiguity). Brython sets c_contiguous on
+        // every memoryview (false for a strided slice).
+        if ((obj.ob_type === WasthonRT._b_.memoryview ||
+             obj.__class__ === WasthonRT._b_.memoryview) &&
+            obj.c_contiguous !== undefined && !obj.c_contiguous) {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.BufferError),
+                "underlying buffer is not C-contiguous");
             return -1;
         }
 
