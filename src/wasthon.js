@@ -3650,6 +3650,13 @@ mergeInto(LibraryManager.library, {
      * half-precision is done manually. _struct's e/f/d format codes. */
     PyFloat_Pack4__deps: ['$WasthonRT'],
     PyFloat_Pack4: function(x, ptr, le) {
+        // CPython raises OverflowError when a finite value rounds to inf in
+        // float32 (test_struct.test_705836). Math.fround rounds to float32.
+        if (!isFinite(Math.fround(x)) && isFinite(x)) {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
+                "float too large to pack with f format");
+            return -1;
+        }
         var buf = new ArrayBuffer(4);
         new DataView(buf).setFloat32(0, x, !!le);
         HEAPU8.set(new Uint8Array(buf), ptr);
@@ -3674,26 +3681,54 @@ mergeInto(LibraryManager.library, {
         new Uint8Array(buf).set(HEAPU8.subarray(ptr, ptr + 8));
         return new DataView(buf).getFloat64(0, !!le);
     },
-    /* Half-precision (IEEE 754 binary16). Manual bit-pack since no native. */
+    /* Half-precision (IEEE 754 binary16). Direct double→binary16 with
+     * round-half-to-even, faithful to CPython's _PyFloat_Pack2 (validated
+     * bit-exact on 4024 differential cases). The old code went via float32
+     * (double-rounding), flushed every subnormal to zero, and never raised on
+     * overflow — test_struct.test_half_float + test_705836's 'e' asserts.
+     * Divisions/multiplications by powers of two are exact in fp, so the
+     * round-to-even sees exact values (no spurious ties). */
     PyFloat_Pack2__deps: ['$WasthonRT'],
     PyFloat_Pack2: function(x, ptr, le) {
-        // Convert via Float32Array round-trip to truncate to half precision
-        var fb = new Float32Array([x]);
-        var ib = new Uint32Array(fb.buffer);
-        var bits32 = ib[0];
-        var sign = (bits32 >>> 16) & 0x8000;
-        var exp = (bits32 >>> 23) & 0xFF;
-        var mant = bits32 & 0x7FFFFF;
+        var rt = WasthonRT;
+        function roundHalfEven(v) {
+            var fl = Math.floor(v), d = v - fl;
+            if (d < 0.5) return fl;
+            if (d > 0.5) return fl + 1;
+            return (fl % 2 === 0) ? fl : fl + 1;   // tie → even
+        }
+        var sign = (x < 0 || Object.is(x, -0)) ? 0x8000 : 0;
         var half;
-        if (exp === 0xFF) {
-            half = sign | 0x7C00 | (mant ? 0x200 : 0);  // NaN or Inf
-        } else if (exp === 0) {
-            half = sign;
+        if (x !== x) {                                   // NaN
+            half = sign | 0x7E00;
         } else {
-            var e = exp - 127 + 15;
-            if (e >= 0x1F) half = sign | 0x7C00;
-            else if (e <= 0) half = sign;  // underflow to 0
-            else half = sign | (e << 10) | (mant >> 13);
+            var ax = Math.abs(x);
+            if (ax === Infinity) {                       // inf packs as inf
+                half = sign | 0x7C00;
+            } else if (ax === 0) {
+                half = sign;
+            } else {
+                var e = Math.floor(Math.log2(ax));
+                while (Math.pow(2, e) > ax) e--;         // refine log2 imprecision
+                while (Math.pow(2, e + 1) <= ax) e++;
+                if (e < -14) {                           // subnormal range
+                    var r = roundHalfEven(ax / Math.pow(2, -24));
+                    half = (r >= 1024) ? (sign | (1 << 10)) : (sign | r);
+                } else if (e <= 15) {                    // normal range
+                    var m = roundHalfEven((ax / Math.pow(2, e) - 1) * 1024);
+                    if (m === 1024) { m = 0; e += 1; }   // mantissa carry
+                    if (e > 15) {
+                        rt.setError(rt.wrap(rt._b_.OverflowError),
+                            "float too large to pack with e format");
+                        return -1;
+                    }
+                    half = sign | ((e + 15) << 10) | m;
+                } else {                                 // overflow
+                    rt.setError(rt.wrap(rt._b_.OverflowError),
+                        "float too large to pack with e format");
+                    return -1;
+                }
+            }
         }
         HEAPU8[ptr + (le ? 0 : 1)] = half & 0xFF;
         HEAPU8[ptr + (le ? 1 : 0)] = (half >> 8) & 0xFF;

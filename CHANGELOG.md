@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Faithful IEEE float packing** (+1 struct test_705836; zero
+      regression — array's 'e'/'f' typecodes and pickle floats unchanged).
+      • `PyFloat_Pack4` silently produced inf on a finite value too large for
+      float32; now raises OverflowError "float too large to pack with f
+      format" (the >f/<f/f asserts in test_705836). • `PyFloat_Pack2`
+      (binary16) went via a float32 round-trip (double rounding), flushed
+      EVERY subnormal to zero, and never raised on overflow. Replaced with a
+      direct double→binary16 conversion with round-half-to-even, correct
+      subnormals, and OverflowError — validated bit-exact against CPython on
+      4024 differential cases (divisions/multiplications by powers of two are
+      exact in fp, so the rounding sees no spurious ties). This greens the
+      half-float roundtrips in test_half_float (the test still needs
+      _testcapi's NaN-signaling helpers for its tail).
+
 - [x] **Two struct type/protocol fidelity fixes** (+2 struct, zero
       regression). • `PyObject_IsTrue` propagated nothing useful — it masked
       whatever `__bool__` raised as a generic TypeError "PyObject_IsTrue
