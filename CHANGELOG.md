@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyNumber_Add`/`Multiply`/`FloorDivide`/`TrueDivide`/`Remainder`/`And`
+      use Brython's `rich_op1`** (+9 statistics; zero regression). Each did a bare
+      `$call($getattr(a, '__op__'), b)` with no fallback when the left operand's
+      slot returns `NotImplemented`. `PyNumber_Add(int, float)` therefore handed
+      back `NotImplemented` (`int.__add__` rejects a float and CPython then tries
+      `float.__radd__`): `math.sumprod`'s float-total finalize
+      (`PyNumber_Add(total=int 0, term=float)`) blew up with "`'NotImplementedType'
+      object has no attribute '__add__'`", taking out every float `sumprod`
+      (statistics' correlation / covariance / fmean / KDE). `$B.rich_op1(op, a, b)`
+      is Brython's own binary-operator protocol — numeric fast path, then
+      `op` → reflected `rop` → `TypeError` — so the reflected operand is tried
+      and a mixed int/float add yields the right `float`. The numeric fast paths
+      already in `PyNumber_Add`/`Multiply` (JS-number + BigInt) are kept;
+      only the generic-object fallback changed.
+
 - [x] **`ensureTypeStruct` installs `tp_iternext` (offset 56)** (+1 statistics,
       +1 math; zero regression). C code that reads `Py_TYPE(it)->tp_iternext`
       and calls it directly — `math.sumprod` caches

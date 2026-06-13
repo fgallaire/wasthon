@@ -4773,7 +4773,12 @@ mergeInto(LibraryManager.library, {
                 if (r >= -2147483648n && r <= 2147483647n) return rt.wrapNewRef(Number(r));
                 return rt.wrapNewRef(r);
             }
-            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__add__'), b));
+            /* General case: Brython's binary-op protocol (tries a.__add__(b),
+             * then the reflected b.__radd__(a) on NotImplemented, else raises
+             * TypeError). A bare a.__add__(b) returned NotImplemented for
+             * int(0)+float — math.sumprod's float path then failed with
+             * "'NotImplementedType' has no attribute '__add__'". */
+            return rt.wrapNewRef(rt.$B.rich_op1('__add__', a, b));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -4799,7 +4804,7 @@ mergeInto(LibraryManager.library, {
                 if (r >= -2147483648n && r <= 2147483647n) return rt.wrapNewRef(Number(r));
                 return rt.wrapNewRef(r);
             }
-            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__mul__'), b));
+            return rt.wrapNewRef(rt.$B.rich_op1('__mul__', a, b));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -4809,28 +4814,28 @@ mergeInto(LibraryManager.library, {
     PyNumber_FloorDivide: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
-        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__floordiv__'), b)); }
+        try { return rt.wrapNewRef(rt.$B.rich_op1('__floordiv__', a, b)); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
     PyNumber_TrueDivide__deps: ['$WasthonRT'],
     PyNumber_TrueDivide: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
-        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__truediv__'), b)); }
+        try { return rt.wrapNewRef(rt.$B.rich_op1('__truediv__', a, b)); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
     PyNumber_Remainder__deps: ['$WasthonRT'],
     PyNumber_Remainder: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
-        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__mod__'), b)); }
+        try { return rt.wrapNewRef(rt.$B.rich_op1('__mod__', a, b)); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
     PyNumber_And__deps: ['$WasthonRT'],
     PyNumber_And: function(aH, bH) {
         var rt = WasthonRT;
         var a = rt.unwrap(aH), b = rt.unwrap(bH);
-        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__and__'), b)); }
+        try { return rt.wrapNewRef(rt.$B.rich_op1('__and__', a, b)); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
