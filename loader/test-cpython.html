@@ -37,17 +37,29 @@ const testName = params.get('test') || 'test_struct';
 // whose Python wrappers (random.py, json/__init__.py) are coupled to
 // Brython's implementations, not the CPython C-API our modules follow.
 // Default mapping test_<x> → wasthon module(s); override with ?install=.
+// Each suite installs EVERY wasthon module it imports — otherwise an
+// `import math`/`pickle`/`struct`/… silently falls back to Brython's own
+// stdlib, so the test exercises Brython, not wasthon. (Audited by grepping
+// each test's imports against the wasthon module set.)
 const INSTALL_MAP = {
-    test_struct: ['_struct', 'array'], test_math: ['math'], test_cmath: ['cmath', 'math'],
-    test_binascii: ['binascii', 'array'], test_csv: ['_csv', 'array'], test_decimal: ['_decimal', 'math'],
-    test_array: ['array'],
-    test_hmac: ['_hmac', '_md5', '_sha1', '_sha2', '_sha3', '_blake2'],
-    test_statistics: ['_statistics'], test_zstd: ['_zstd'],
-    test_random: ['_random'],
-    test_zlib: ['zlib', 'binascii'], test_bz2: ['_bz2'], test_lzma: ['_lzma'],
-    test_unicodedata: ['unicodedata'], test_pyexpat: ['pyexpat'],
-    test_pickle: ['_pickle'], test_re: ['_sre'], test_sqlite3: ['_sqlite3'],
-    test_hashlib: ['_md5','_sha1','_sha2','_sha3','_blake2'],
+    test_struct: ['_struct', 'array', 'binascii', 'math', '_random'],
+    test_math: ['math', '_decimal', '_random', '_statistics', '_struct'],
+    test_cmath: ['cmath', 'math'],
+    test_binascii: ['binascii', 'array', '_sre'],
+    test_csv: ['_csv', 'array', '_pickle'],
+    test_decimal: ['_decimal', 'math', '_pickle', '_random'],
+    test_array: ['array', '_pickle', '_struct'],
+    test_hmac: ['_hmac', '_md5', '_sha1', '_sha2', '_sha3', '_blake2', 'binascii', '_random'],
+    test_statistics: ['_statistics', '_decimal', 'math', '_pickle', '_random'],
+    test_zstd: ['_zstd', 'array', '_random', '_sre'],
+    test_random: ['_random', 'math', '_pickle'],
+    test_zlib: ['zlib', 'binascii', '_pickle', '_random'],
+    test_bz2: ['_bz2', 'array', '_pickle', '_random'],
+    test_lzma: ['_lzma', 'array', '_pickle', '_random'],
+    test_unicodedata: ['unicodedata'], test_pyexpat: ['pyexpat', '_sre'],
+    test_pickle: ['_pickle', '_struct'], test_re: ['_sre', 'array', '_pickle'],
+    test_sqlite3: ['_sqlite3'],
+    test_hashlib: ['_md5','_sha1','_sha2','_sha3','_blake2', 'array', 'binascii', '_sre'],
 };
 const installList = params.get('install')
     ? params.get('install').split(',')
