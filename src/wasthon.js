@@ -1201,6 +1201,14 @@ mergeInto(LibraryManager.library, {
                 "an integer is required");
             return 0;
         }
+        if (bv > 0xFFFFFFFFFFFFFFFFn) {
+            // CPython's _PyLong_UInt64_Converter raises OverflowError rather
+            // than truncating; without it getrandbits(2**100) silently used
+            // k = low-64-bits = 0 and returned 0 instead of raising.
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
+                "Python int too large to convert to C unsigned long long");
+            return 0;
+        }
         HEAPU32[ ptr        >> 2] = Number(bv & 0xFFFFFFFFn);
         HEAPU32[(ptr + 4)   >> 2] = Number((bv >> 32n) & 0xFFFFFFFFn);
         return 1;

@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`_PyLong_UInt64_Converter` raises OverflowError past `UINT64_MAX`** (+1
+      random; zero regression). It wrote the low 64 bits with no range check, so
+      `getrandbits(1 << 1000)` truncated to `k = 0` (its low 64 bits) and
+      returned 0 instead of raising — `test_random`'s `test_getrandbits`. Bound
+      to `0xFFFFFFFFFFFFFFFF` like CPython's converter.
+
 - [x] **`_PyArg_BadArgument` appends `, not <type>`** (+1 pyexpat; zero
       regression). It built `"<fn>() <disp> must be <exp>"` and ignored the
       offending `arg`, so clinic type errors read e.g. `ParserCreate() argument
