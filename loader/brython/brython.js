@@ -7574,7 +7574,7 @@ if(nb*new_itemsize !=_b_.len(self)){$B.RAISE(_b_.TypeError,'memoryview: product(
 switch(format){case "B":
 return memoryview.$factory(self.obj)
 case "I":
-var res=memoryview.$factory(self.obj),objlen=len(self.obj)
+var res=memoryview.$factory(self.obj),objlen=_b_.len(self.obj)
 res.itemsize=4
 res.format="I"
 if(objlen % 4 !=0){$B.RAISE(_b_.TypeError,"memoryview: length is not "+
@@ -7639,7 +7639,7 @@ for(var i=0;i < self.obj.source.length;i+=4){var item=self.obj.source[i],coef=25
 for(var j=1;j < 4;j++){item+=coef*self.obj.source[i+j]
 coef*=256}
 res.push(item)}
-return res}}}
+return _b_.list.$factory(res)}}}
 memoryview_funcs.toreadonly=function(self){self.readonly=1}
 _b_.memoryview.tp_methods=["release","tobytes","hex","tolist","cast","toreadonly","count","index","__enter__","__exit__"]
 _b_.memoryview.classmethods=["_from_flags","__class_getitem__"]
@@ -10247,7 +10247,7 @@ if(self.value==0){return Object.is(self.value,0)? "0x0.0p0" :"-0x0.0p0"}
 var _a=frexp(fabs(self.value)),_m=_a[0],_e=_a[1],_shift=1-Math.max(-1021-_e,0)
 _m=ldexp(fast_float(_m),_shift).value
 _e-=_shift
-var _int2hex="0123456789ABCDEF".split(""),_s=_int2hex[Math.floor(_m)]
+var _int2hex="0123456789abcdef".split(""),_s=_int2hex[Math.floor(_m)]
 _s+='.'
 _m-=Math.floor(_m)
 for(var i=0;i <(TOHEX_NBITS-1)/4;i++){_m*=16.0

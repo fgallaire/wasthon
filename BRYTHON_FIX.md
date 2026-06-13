@@ -18,6 +18,69 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `memoryview.cast('I')` / `.tolist()` broken (4-byte format)
+
+**Impact: enables CPython's `re` package on wasthon's `_sre`** (`re._compiler._bytes_to_codes`
+does `memoryview(b).cast('I').tolist()`); unblocks test_re → CPython re (+11). Source:
+`www/src/memoryobject.js`. The `cast` `len`→`_b_.len` part is Pierre's commit `8d3fd4b56`.
+
+Two bugs in the 4-byte (`"I"`) path: `cast` used a bare `len(self.obj)` (undefined →
+`JavascriptError: len is not defined`); `tolist` returned a raw JS array, so
+`[block] + that` raised `TypeError: unsupported operand … 'list' and 'JavascriptArray'`.
+Fix: `_b_.len(self.obj)` in cast, and `_b_.list.$factory(res)` in tolist (matching the
+1-byte path).
+
+```python
+>>> memoryview(b'\x04\x00\x00\x00').cast('I').tolist()
+JavascriptError: len is not defined   # before
+>>> memoryview(b'\x04\x00\x00\x00').cast('I').tolist()
+[4]                                   # after
+```
+
+## [x] `float.hex()` emits uppercase mantissa digits
+
+**Impact: +3 test_random** (`test_guaranteed_stable`, `test_bug_27706`,
+`test_bug_31482` — they compare `random().hex()` against CPython's lowercase
+literals). Source: `www/src/py_float.js`, `float.hex` (`_int2hex`).
+
+Root cause: the hex-digit table was `_int2hex = "0123456789ABCDEF"` (uppercase);
+CPython's `float.__hex__` always uses lowercase a–f. Fix: lowercase the table.
+
+```python
+>>> (255.0).hex()
+'0x1.FE00000000000p+7'  # before
+>>> (255.0).hex()
+'0x1.fe00000000000p+7'  # after
+```
+
+## [x] `_operator._compare_digest` rejects bytearray/memoryview and uses `==`
+
+**Impact: +8 test_hmac** (`HMACCompareDigestTestCase` + `OperatorCompareDigestTestCase`:
+`test_bytearray`, `test_mixed_types`, `test_bytes_subclass`, `test_string_subclass`).
+Source: `Lib/_operator.py`, `_compare_digest_impl`.
+
+Symptom: `hmac.compare_digest(bytearray(b'x'), bytearray(b'x'))` raised
+`TypeError: unsupported operand types`; a `bytes`/`str` subclass overriding
+`__eq__` to raise hit `ValueError: should not be called`.
+
+Root cause: the impl only accepted `(str, str)` and `(bytes, bytes)` and compared
+with `a == b` — so `bytearray`/`memoryview` were rejected, and `==` invoked the
+operand's `__eq__` (compare_digest must be constant-time and never call it).
+
+Fix: accept any `(bytes, bytearray)` pair (mixed ok), require ASCII for `str`,
+compare value-by-value (`ord` for str, byte ints for bytes-like) with a
+length-difference guard — no `==`, no `__eq__`. A slice (`a[:]`) normalises a str
+subclass to a primitive first (Brython subclass instances are not directly
+iterable/encodable — a separate engine bug).
+
+```python
+>>> from hmac import compare_digest
+>>> compare_digest(bytearray(b'abc'), b'abc')
+TypeError: unsupported operand types  # before
+>>> compare_digest(bytearray(b'abc'), b'abc')
+True                                  # after
+```
+
 ## [x] `BytesIO` does not report `seekable()` / `writable()`
 
 **Impact: io fidelity (part of the `LZMAFile(BytesIO(...)).seekable()` chain;
