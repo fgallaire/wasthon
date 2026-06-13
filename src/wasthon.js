@@ -1238,8 +1238,18 @@ mergeInto(LibraryManager.library, {
         var fname = fnPtr ? UTF8ToString(fnPtr) : "function";
         var disp  = dispPtr ? UTF8ToString(dispPtr) : "argument";
         var exp   = expPtr ? UTF8ToString(expPtr) : "?";
+        // CPython appends ", not <type>" — "None" for Py_None, else tp_name.
+        // Without it, clinic type errors read "… must be str or None" and miss
+        // the actual type (test_pyexpat's namespace_separator=int, …).
+        var arg = argH ? rt.unwrap(argH) : null;
+        var tname;
+        if (arg === null || arg === undefined || arg === rt._b_.None) {
+            tname = "None";
+        } else {
+            try { tname = rt.$B.class_name(arg); } catch (_) { tname = "object"; }
+        }
         rt.setError(rt.wrap(rt._b_.TypeError),
-            fname + "() " + disp + " must be " + exp);
+            fname + "() " + disp + " must be " + exp + ", not " + tname);
         return 0;
     },
 

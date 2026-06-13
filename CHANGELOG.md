@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`_PyArg_BadArgument` appends `, not <type>`** (+1 pyexpat; zero
+      regression). It built `"<fn>() <disp> must be <exp>"` and ignored the
+      offending `arg`, so clinic type errors read e.g. `ParserCreate() argument
+      'namespace_separator' must be str or None` — missing CPython's `, not int`
+      tail (`test_pyexpat`'s `NamespaceSeparatorTest.test_illegal`). Append
+      `, not ` + (`None` for `Py_None`, else the value's class name), matching
+      `PyErr_Format(..., "%s() %s must be %s, not %s", …)`.
+
 - [x] **The raised exception INSTANCE survives the bridge** (+2 pyexpat, +1
       sqlite3; zero regression). Every trampoline rebuilt the pending exception
       as `exc(msg)` from `{exc, msg}`, discarding the object C had actually
