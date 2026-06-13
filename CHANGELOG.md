@@ -7,6 +7,26 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Integer conversion overflow + `__index__` in the bridge** (+5 zstd,
+      +3 sqlite3; zero regression — the shared-primitive payoff: fixing the
+      PyLong primitives fixed zstd/sqlite3's int packing for free, and
+      `_random` (a heavy `_PyLong_AsByteArray` user) was untouched). Four
+      faithfulness gaps, all on widely-shared converters:
+      • **`PyLong_AsLong`/`PyLong_AsInt` truncated with `| 0`** (no overflow
+        detection) → C long is 32-bit on wasm32, so a too-big int silently
+        wrapped. Now range-checked against ±2³¹, raising OverflowError.
+      • **`PyLong_AsLongLong`** had no range check (and didn't even set
+        TypeError on a non-int) → now bounded to ±2⁶³.
+      • **`_PyLong_AsByteArray` was defined TWICE** (the later shadowed the
+        earlier), and *both* masked silently with no magnitude check →
+        `struct.pack('>q', 2**64)` wrote a wrapped value. Deduplicated to one
+        definition that raises/returns -1 when the value doesn't fit in n
+        bytes (signed and unsigned), faithful to CPython.
+      • **`PyIndex_Check` only recognized raw JS ints** → an object with
+        `__index__` was rejected ("required argument is not an integer").
+        Now also checks the type's `__index__`, mirroring the neighbouring
+        `PyNumber_AsSsize_t`.
+
 - [x] **binascii buffer-protocol fidelity → test_binascii 76/76 runnable**
       (+8, 5th suite at 100%; zero regression, +1 pickle bonus on the
       proto-5 buffer family). Two distinct root causes, ×4 each across the

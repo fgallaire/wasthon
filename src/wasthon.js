@@ -2004,9 +2004,19 @@ mergeInto(LibraryManager.library, {
     /* PyIndex_Check / PyNumber_AsSsize_t — accept ints */
     PyIndex_Check__deps: ['$WasthonRT'],
     PyIndex_Check: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
-        return (typeof obj === 'number' && Number.isInteger(obj)) ||
-               typeof obj === 'bigint' ? 1 : 0;
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if ((typeof obj === 'number' && Number.isInteger(obj)) ||
+            typeof obj === 'bigint') {
+            return 1;
+        }
+        // A Python object whose type defines __index__ (CPython checks
+        // nb_index). The old check only recognized raw JS ints, so
+        // struct.pack('i', obj_with___index__) raised "not an integer".
+        // Mirror PyNumber_AsSsize_t's __index__ detection below.
+        var idx = null;
+        try { idx = rt.$B.$getattr(obj, '__index__', null); } catch (e) { idx = null; }
+        return idx ? 1 : 0;
     },
 
     PyNumber_AsSsize_t__deps: ['$WasthonRT'],
@@ -2703,8 +2713,12 @@ mergeInto(LibraryManager.library, {
         return WasthonRT.wrapNewRef(v);
     },
 
-    /* _PyLong_AsByteArray — serialize int into byte buffer. _random uses
-     * this to compute the seed array from arbitrary-size Python ints. */
+    /* _PyLong_AsByteArray — serialize an int into an n-byte buffer (two's
+     * complement). Used by _struct's standard-mode pack ('<q'/'>q'/…) and by
+     * _random's seed array. Raises/returns -1 on a value that doesn't fit in
+     * n bytes — the old code (and a duplicate definition that shadowed it)
+     * masked silently, so struct.pack('>q', 2**64) wrote a wrapped value
+     * instead of raising (test_struct.test_integers). */
     _PyLong_AsByteArray__deps: ['$WasthonRT'],
     _PyLong_AsByteArray: function(handle, bytesPtr, n, littleEndian, isSigned, withExc) {
         var rt = WasthonRT;
@@ -2713,14 +2727,26 @@ mergeInto(LibraryManager.library, {
         if (typeof obj === 'number') v = BigInt(Math.trunc(obj));
         else if (typeof obj === 'bigint') v = obj;
         else return -1;
-        // Two's complement for negative if signed
-        if (v < 0n) {
-            if (!isSigned) {
+        var bits = BigInt(n * 8);
+        if (isSigned) {
+            var lo = -(1n << (bits - 1n)), hi = (1n << (bits - 1n)) - 1n;
+            if (v < lo || v > hi) {
+                if (withExc) rt.setError(rt.wrap(rt._b_.OverflowError),
+                    "int too big to convert");
+                return -1;
+            }
+            if (v < 0n) v = (1n << bits) + v;   // two's complement
+        } else {
+            if (v < 0n) {
                 if (withExc) rt.setError(rt.wrap(rt._b_.OverflowError),
                     "can't convert negative int to unsigned");
                 return -1;
             }
-            v = (1n << BigInt(n * 8)) + v;
+            if (v >= (1n << bits)) {
+                if (withExc) rt.setError(rt.wrap(rt._b_.OverflowError),
+                    "int too big to convert");
+                return -1;
+            }
         }
         for (var i = 0; i < n; i++) {
             var byte = Number(v & 0xFFn);
@@ -2951,7 +2977,17 @@ mergeInto(LibraryManager.library, {
             rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
             return -1;
         }
-        return (typeof n === 'bigint' ? Number(n) : n) | 0;
+        // C long is 32-bit on wasm32. The old `| 0` silently truncated, so
+        // overflow was undetectable — struct.pack('i'/'l', 2**32) returned 0
+        // instead of raising (test_struct.test_integers). Raise OverflowError
+        // like CPython, faithful to PyLong_AsUInt32 above.
+        var b = (typeof n === 'bigint') ? n : BigInt(Math.trunc(n));
+        if (b < -2147483648n || b > 2147483647n) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "Python int too large to convert to C long");
+            return -1;
+        }
+        return Number(b);
     },
 
     PyLong_AsInt__deps: ['$WasthonRT'],
@@ -2962,7 +2998,13 @@ mergeInto(LibraryManager.library, {
             rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
             return -1;
         }
-        return (typeof n === 'bigint' ? Number(n) : n) | 0;
+        var b = (typeof n === 'bigint') ? n : BigInt(Math.trunc(n));
+        if (b < -2147483648n || b > 2147483647n) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "Python int too large to convert to C int");
+            return -1;
+        }
+        return Number(b);
     },
 
     /* PyLong_AsUInt32(obj, *value) — 0 on success (writes uint32 to
@@ -3053,9 +3095,20 @@ mergeInto(LibraryManager.library, {
     PyLong_AsLongLong: function(handle) {
         var rt = WasthonRT;
         var n = rt.coerceInt(rt.unwrap(handle));
-        if (n === undefined) return 0n;
-        if (typeof n === 'bigint') return n;
-        return BigInt(Math.trunc(n));
+        if (n === undefined) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
+            return 0n;
+        }
+        // C long long is 64-bit signed. No range check before meant
+        // struct.pack('q'/'<q', 2**64) returned a wrapped value instead of
+        // raising OverflowError (test_struct.test_integers).
+        var b = (typeof n === 'bigint') ? n : BigInt(Math.trunc(n));
+        if (b < -9223372036854775808n || b > 9223372036854775807n) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "Python int too large to convert to C long long");
+            return 0n;
+        }
+        return b;
     },
 
     PyLong_AsUnsignedLongLong__deps: ['$WasthonRT'],
@@ -7080,29 +7133,6 @@ mergeInto(LibraryManager.library, {
         }
         if (v >= -2147483648n && v <= 2147483647n) return rt.wrapNewRef(Number(v));
         return rt.wrapNewRef(v);
-    },
-
-    /* _PyLong_AsByteArray — reverse of above. */
-    _PyLong_AsByteArray__deps: ['$WasthonRT'],
-    _PyLong_AsByteArray: function(vH, bytesPtr, n, littleEndian, isSigned, withException) {
-        var rt = WasthonRT;
-        var v = rt.unwrap(vH);
-        var big = (typeof v === 'bigint') ? v : BigInt(Math.trunc(Number(v) || 0));
-        var modValue = big;
-        if (big < 0n) {
-            if (!isSigned && withException) {
-                rt.setError(rt.wrap(rt._b_.OverflowError), "can't convert negative int to unsigned");
-                return -1;
-            }
-            modValue = (1n << BigInt(n * 8)) + big;
-        }
-        for (var i = 0; i < n; i++) {
-            var byte = Number(modValue & 0xffn);
-            modValue >>= 8n;
-            var off = littleEndian ? i : (n - 1 - i);
-            HEAPU8[bytesPtr + off] = byte;
-        }
-        return 0;
     },
 
     /* PyImport_ImportModule(name) — runtime import. Routes through
