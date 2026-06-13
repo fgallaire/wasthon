@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **_PyObject_MaybeCallSpecialNoArgs forwards the special method's
+      exception** (+1 math; zero regression). Same shape as the
+      PyObject_GenericGetAttr fix: a bare `catch (e) { return 0 }` swallowed
+      whatever `__ceil__`/`__floor__`/`__round__`/`__trunc__` raised, so
+      `math.floor(Decimal('NaN'))` returned None and `math.ceil(TestBadCeil())`
+      didn't surface its ValueError — the C caller (math_floor &co) checks
+      `PyErr_Occurred()` right after the NULL and falls through to
+      PyFloat_AsDouble when the error is gone. Absence of the method still
+      returns NULL with no error (the "Maybe"); only a *raising* present method
+      now propagates via forwardError.
+
 - [x] **PyLong_AsLongAndOverflow requires `__index__`** (+1 math
       testFactorialNonIntegers; zero regression). The converter took any JS
       number — `Math.trunc`'d a float, and `BigInt(1.5)` even threw a raw

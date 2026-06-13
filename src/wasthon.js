@@ -6552,11 +6552,20 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(objH);
         var name = rt.asJSStr(rt.unwrap(nameH));
         if (!obj || name === null) return 0;
+        // Absence of the special method = NULL with NO error (the "Maybe": the
+        // C caller, e.g. math_floor, then tries PyFloat_AsDouble). But if the
+        // method IS present and RAISES, the exception must propagate — the
+        // caller checks PyErr_Occurred() right after a NULL. The old bare
+        // catch swallowed it, so math.floor(Decimal('NaN')) returned None
+        // instead of raising ValueError. Forward the real exception.
+        var m = rt.$B.$getattr(obj, name, null);
+        if (m === null || m === undefined) return 0;
         try {
-            var m = rt.$B.$getattr(obj, name, null);
-            if (m === null || m === undefined) return 0;
             return rt.wrapNewRef(rt.$B.$call(m));
-        } catch (e) { return 0; }
+        } catch (e) {
+            rt.forwardError(e);
+            return 0;
+        }
     },
 
     PyOS_double_to_string__deps: ['$WasthonRT'],
