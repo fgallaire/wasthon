@@ -7481,7 +7481,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try {
             var a = rt.unwrap(aH), b = rt.unwrap(bH);
-            return rt.wrapNewRef(rt.$B.$call(rt._b_.int.__mul__, a, b));
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(rt._b_.int, '__mul__'), a, b));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -7493,7 +7493,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try {
             var a = rt.unwrap(aH), b = rt.unwrap(bH);
-            return rt.wrapNewRef(rt.$B.$call(rt._b_.int.__floordiv__, a, b));
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(rt._b_.int, '__floordiv__'), a, b));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -7507,7 +7507,7 @@ mergeInto(LibraryManager.library, {
         try {
             var a = rt.unwrap(aH), b = rt.unwrap(bH), c = rt.unwrap(cH);
             if (c === null || c === rt._b_.None) {
-                return rt.wrapNewRef(rt.$B.$call(rt._b_.int.__pow__, a, b));
+                return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(rt._b_.int, '__pow__'), a, b));
             }
             return rt.wrapNewRef(rt._b_.pow(a, b, c));
         } catch (e) {

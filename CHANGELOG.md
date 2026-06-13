@@ -7,6 +7,19 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **_decimal's cached int arithmetic resolves int's ops via `$getattr`**
+      (+33 statistics, +1 decimal; zero regression). `wasthon_long_nb_multiply`
+      /`_floor_divide`/`_power` (the PyLong number slots _decimal caches at init
+      and calls for `numerator * 10**exp // gcd`) did `$call(rt._b_.int.__mul__,
+      …)` — but Brython keeps int's operators as type SLOTS, not direct JS
+      attributes, so `rt._b_.int.__mul__` is `undefined` and `$call(undefined)`
+      threw `can't access property "$factory" of undefined`. So
+      `Decimal.as_integer_ratio()` — and everything in statistics that turns
+      Decimals into ratios (mean/harmonic_mean/_exact_ratio) — crashed. The
+      audit that routed test_statistics through wasthon's `_decimal` exposed it
+      (its 370 had been Brython-inflated). Resolve each op via
+      `$getattr(int, '__op__')`.
+
 - [x] **_PyObject_MaybeCallSpecialNoArgs forwards the special method's
       exception** (+1 math; zero regression). Same shape as the
       PyObject_GenericGetAttr fix: a bare `catch (e) { return 0 }` swallowed
