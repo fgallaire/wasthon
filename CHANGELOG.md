@@ -7,6 +7,22 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`wasthon_float_nb_absolute` reads a boxed float's `.value`** (+1
+      statistics → 370/370 runnable, +4 decimal; zero regression). It did
+      `Math.abs(typeof x === 'number' ? x : Number(x))`, but a Brython float is
+      a raw JS number only for some literals/fast-paths — results of `rich_op1`
+      division, `random.expovariate`, etc. are boxed `{ob_type: float, value:
+      …}`, and `Number({…})` is `NaN`. So `abs()` of any *computed* float was
+      `NaN`. `_decimal`'s `Decimal(float)` (`PyDecType_FromFloatExact`) calls
+      `float.__abs__` as `_py_float_abs` *before* `as_integer_ratio`, so
+      `Decimal(<computed float>)` died with "cannot convert NaN to integer
+      ratio" — `statistics.geometric_mean`'s Decimal cross-check
+      (`math.prod(map(Decimal, expovariate_data))`) hit it. Extract `.value`
+      like `PyFloat_AsDouble` already does. The sibling
+      `wasthon_float_as_integer_ratio` (which raises that very message, and is
+      `_decimal`'s cached `_py_float_as_integer_ratio`) had the same blind spot
+      on a boxed operand — same `.value` guard added so it can't recur.
+
 - [x] **`PyLong_AsDouble` handles a `bool`** (+1 statistics; zero regression).
       It returned `obj` for a JS number and `Number(obj)` for a BigInt but fell
       through to `return 0` for a JS boolean. `math.fsum`'s `ASSIGN_DOUBLE` macro

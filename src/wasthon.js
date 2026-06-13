@@ -7563,7 +7563,18 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try {
             var x = rt.unwrap(handle);
-            return rt.wrapNewRef(Math.abs(typeof x === 'number' ? x : Number(x)));
+            // Brython floats come in two shapes: a raw JS number (literals,
+            // many fast paths) or a boxed {ob_type: float, value: …} object
+            // (results of rich_op1 division, random.expovariate, …). Number()
+            // of the boxed object is NaN, so abs() of any computed float was
+            // NaN — _decimal's Decimal(float) calls this (_py_float_abs) before
+            // as_integer_ratio, so Decimal(expovariate result) blew up with
+            // "cannot convert NaN to integer ratio". Read .value like
+            // PyFloat_AsDouble does.
+            var d = (typeof x === 'number') ? x
+                  : (x && typeof x.value === 'number') ? x.value
+                  : Number(x);
+            return rt.wrapNewRef(Math.abs(d));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -7597,7 +7608,12 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try {
             var x = rt.unwrap(selfH);
-            var asNum = typeof x === 'number' ? x : Number(x);
+            // Same boxed-vs-raw split as nb_absolute: a boxed float carries its
+            // double in .value, and Number({…}) is NaN. Without the .value read
+            // a boxed operand would falsely raise "cannot convert NaN…" below.
+            var asNum = (typeof x === 'number') ? x
+                      : (x && typeof x.value === 'number') ? x.value
+                      : Number(x);
             if (!isFinite(asNum)) {
                 rt.setError(rt.wrap(rt._b_.OverflowError),
                     "cannot convert " + asNum + " to integer ratio");
