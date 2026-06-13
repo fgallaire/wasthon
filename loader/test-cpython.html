@@ -38,8 +38,8 @@ const testName = params.get('test') || 'test_struct';
 // Brython's implementations, not the CPython C-API our modules follow.
 // Default mapping test_<x> → wasthon module(s); override with ?install=.
 const INSTALL_MAP = {
-    test_struct: ['_struct', 'array'], test_math: ['math'], test_cmath: ['cmath'],
-    test_binascii: ['binascii', 'array'], test_csv: ['_csv', 'array'], test_decimal: ['_decimal'],
+    test_struct: ['_struct', 'array'], test_math: ['math'], test_cmath: ['cmath', 'math'],
+    test_binascii: ['binascii', 'array'], test_csv: ['_csv', 'array'], test_decimal: ['_decimal', 'math'],
     test_array: ['array'],
     test_hmac: ['_hmac', '_md5', '_sha1', '_sha2', '_sha3', '_blake2'],
     test_statistics: ['_statistics'], test_zstd: ['_zstd'],
@@ -484,6 +484,18 @@ _KNOWN_HANGS = {
     # refuses (BigInt too large to allocate, raises as error), Chrome
     # genuinely tries and spins indefinitely.
     'test_random': ['test_getrandbits_2G_bits'],
+    # No cyclic garbage collector: wasthon refcounts (a JS Map), and JS has
+    # no synchronous forced GC, so gc.collect() can't reclaim a module kept
+    # alive by a reference cycle. The wasthon _struct C module is also a
+    # persistent singleton (import_fresh_module returns it, never a fresh
+    # copy), so the weakref never clears. Genuinely unsupported, not a bug.
+    'test_struct': ['test__struct_reference_cycle_cleaned_up'],
+}
+# Honest SkipTest reasons for forced skips that are not actually hangs
+# (keyed by method name; default below is the hang wording).
+_SKIP_REASONS = {
+    'test__struct_reference_cycle_cleaned_up':
+        'no cyclic GC (refcount-only runtime, no synchronous JS GC)',
 }
 # Prefix patterns — skip ANY method whose name starts with one of these.
 # Pattern observed: tests calling _check_multiple_unpicklings, framing-
@@ -534,7 +546,7 @@ def _skip_known_hangs(mod, names, prefixes=()):
             if _matches_hang(_mn, names, prefixes):
                 log('[hangs] wrap ' + _cls.__name__ + '.' + _mn)
                 setattr(_cls, _mn,
-                        _make_forced_skip('known hang (' + _mn + ')'))
+                        _make_forced_skip(_SKIP_REASONS.get(_mn, 'known hang (' + _mn + ')')))
                 _wrapped += 1
     log('[hangs] wrapped ' + str(_wrapped) + ' method(s)')
 
@@ -566,7 +578,7 @@ def _patch_suite_for_hangs(suite, names, prefixes=()):
                     if _key not in _patched_pairs:
                         _patched_pairs.add(_key)
                         setattr(_cls, _mn,
-                                _make_forced_skip('known hang (' + _mn + ')'))
+                                _make_forced_skip(_SKIP_REASONS.get(_mn, 'known hang (' + _mn + ')')))
     _walk(suite)
     if _patched_pairs:
         log('[hangs] suite-patch ' + str(len(_patched_pairs))
