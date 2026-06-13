@@ -448,6 +448,17 @@ void *wasthon_get_builtin_tp_iter(void) {
     return (void *)wasthon_builtin_tp_iter;
 }
 
+/* Same shape for tp_iternext — ensureTypeStruct installs this at offset 56
+ * so C code that reads Py_TYPE(it)->tp_iternext and calls it directly gets a
+ * real function pointer, not a NULL slot. math.sumprod caches
+ * `p_next = *Py_TYPE(p_it)->tp_iternext; p_i = p_next(p_it);`; with a zeroed
+ * slot that was an indirect call to null (every sumprod call trapped). */
+extern PyObject *wasthon_builtin_tp_iternext(PyObject *self);
+EMSCRIPTEN_KEEPALIVE
+void *wasthon_get_builtin_tp_iternext(void) {
+    return (void *)wasthon_builtin_tp_iternext;
+}
+
 /* tp_new for Brython-class type-structs (JS-library). ensureTypeStruct installs
  * this at offset 60 so C code that reconstructs instances from such a struct —
  * e.g. _pickle load_newobj's `cls->tp_new(cls, args, kwargs)` — works. */

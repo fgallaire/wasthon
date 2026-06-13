@@ -7,6 +7,23 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`ensureTypeStruct` installs `tp_iternext` (offset 56)** (+1 statistics,
+      +1 math; zero regression). C code that reads `Py_TYPE(it)->tp_iternext`
+      and calls it directly — `math.sumprod` caches
+      `p_next = *Py_TYPE(p_it)->tp_iternext; p_i = p_next(p_it);` — needs a real
+      function pointer in that slot. For a Brython-backed iterator (the
+      `list_iterator` from `PyObject_GetIter`), `Py_TYPE` routes through
+      `ensureTypeStruct`, which synthesised a zero-filled 64-byte type struct and
+      populated `tp_iter` (offset 24) but never `tp_iternext` (offset 56) — so
+      the call was an indirect call to null and every `sumprod` trapped
+      ("indirect call to null", long mistaken for a missing C `fma`; `fma` links
+      fine — the int path, which never touches `fma`, crashed too). Added a
+      generic `wasthon_builtin_tp_iternext` trampoline (mirrors `PyIter_Next` and
+      CPython's `listiter_next`: `next(it)`, returning NULL with NO exception at
+      StopIteration, which `sumprod`'s `if (p_i == NULL) { if (PyErr_Occurred())
+      …; p_stopped = true; }` loop handles) plus its C accessor, installed for
+      every struct symmetrically with `tp_iter`.
+
 - [x] **_decimal's cached int arithmetic resolves int's ops via `$getattr`**
       (+33 statistics, +1 decimal; zero regression). `wasthon_long_nb_multiply`
       /`_floor_divide`/`_power` (the PyLong number slots _decimal caches at init

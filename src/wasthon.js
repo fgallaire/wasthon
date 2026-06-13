@@ -439,6 +439,7 @@ mergeInto(LibraryManager.library, {
             if (cls.__wasthon_type_handle__) return cls.__wasthon_type_handle__;
             if (!this._defaultTpAlloc) this._defaultTpAlloc = _wasthon_get_default_tp_alloc();
             if (!this._builtinTpIter)  this._builtinTpIter  = _wasthon_get_builtin_tp_iter();
+            if (!this._builtinTpIternext) this._builtinTpIternext = _wasthon_get_builtin_tp_iternext();
             if (!this._brythonTpNew)   this._brythonTpNew   = _wasthon_get_brython_tp_new();
             // PyTypeObject layout (Phase 1, 64 bytes): offset 0 = ob_refcnt,
             // 4 = tp_free, 8 = tp_dict, 12 = tp_name, 16 = tp_alloc,
@@ -460,6 +461,12 @@ mergeInto(LibraryManager.library, {
             // that don't read it.
             HEAP32[(typeStructPtr + 16) >> 2] = this._defaultTpAlloc;  // tp_alloc
             HEAP32[(typeStructPtr + 24) >> 2] = this._builtinTpIter;   // tp_iter
+            // tp_iternext (offset 56): C code that reads Py_TYPE(it)->tp_iternext
+            // and calls it directly (math.sumprod) needs a non-NULL slot —
+            // otherwise an indirect call to null. Installed for every struct
+            // for symmetry with tp_iter above; the trampoline raises the right
+            // TypeError if the object isn't actually an iterator.
+            HEAP32[(typeStructPtr + 56) >> 2] = this._builtinTpIternext;  // tp_iternext
             // tp_new (offset 60): C code that reconstructs instances from a
             // type struct (e.g. _pickle load_newobj `cls->tp_new(cls,args)`)
             // needs a non-NULL tp_new. wasthon_brython_tp_new does
@@ -7440,6 +7447,31 @@ mergeInto(LibraryManager.library, {
         try { return rt.wrapNewRef(rt._b_.iter(obj)); }
         catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
+            return 0;
+        }
+    },
+
+    /* Generic tp_iternext for Brython-backed iterator type-structs (offset 56).
+     * C code that reads Py_TYPE(it)->tp_iternext and calls it directly — e.g.
+     * math.sumprod's `p_next = *Py_TYPE(p_it)->tp_iternext` — needs a real
+     * function pointer here; ensureTypeStruct otherwise leaves the slot NULL
+     * and the call traps ("indirect call to null"). Mirrors PyIter_Next:
+     * next(it), returning NULL with NO exception at StopIteration — the
+     * faithful built-in-iterator contract (CPython's listiter_next returns
+     * NULL without setting an exception on clean exhaustion), which sumprod's
+     * `if (p_i == NULL) { if (PyErr_Occurred()) ...; p_stopped = true; }`
+     * loop handles directly. */
+    wasthon_builtin_tp_iternext__deps: ['$WasthonRT'],
+    wasthon_builtin_tp_iternext: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        try { return rt.wrapNewRef(rt._b_.next(obj)); }
+        catch (e) {
+            try {
+                if (rt.$B.is_exc && rt.$B.is_exc(e, rt._b_.StopIteration)) return 0;
+            } catch (_) {}
+            rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
     },
