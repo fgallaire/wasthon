@@ -5039,6 +5039,11 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
         if (typeof obj === 'number') return obj;
+        // bool is an int subclass — PyLong_AsDouble(True) == 1.0 in CPython.
+        // math.fsum's ASSIGN_DOUBLE routes a bool here (via PyLong_CheckExact),
+        // so without this fsum([True, False, …]) summed every bool as 0.0
+        // (statistics.fmean over booleans returned 0.0 instead of 0.6).
+        if (typeof obj === 'boolean') return obj ? 1 : 0;
         if (typeof obj === 'bigint') {
             // CPython raises OverflowError when the integer is too large for a
             // double (returns -1.0 with the error set) — math.log/log10/log2's

@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyLong_AsDouble` handles a `bool`** (+1 statistics; zero regression).
+      It returned `obj` for a JS number and `Number(obj)` for a BigInt but fell
+      through to `return 0` for a JS boolean. `math.fsum`'s `ASSIGN_DOUBLE` macro
+      routes a `bool` through `PyLong_AsDouble` (CPython: `bool` is an `int`
+      subclass, `PyLong_AsDouble(True) == 1.0`), so `fsum([True, False, True,
+      True, False])` summed every element as `0.0` → `statistics.fmean` over
+      booleans returned `0.0` instead of `0.60`. `float(True)` already worked
+      (it goes through `nb_float`); only the long-conversion C-API path was
+      blind to bools. Added `typeof obj === 'boolean' → obj ? 1 : 0`.
+
 - [x] **`PyNumber_Add`/`Multiply`/`FloorDivide`/`TrueDivide`/`Remainder`/`And`
       use Brython's `rich_op1`** (+9 statistics; zero regression). Each did a bare
       `$call($getattr(a, '__op__'), b)` with no fallback when the left operand's
