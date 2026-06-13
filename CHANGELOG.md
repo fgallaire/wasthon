@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **PyLong_AsDouble raises OverflowError instead of yielding inf**
+      (+4 math: testLog, testLog10, testLog2, testFsum; zero regression). The
+      converter did `Number(bigint)`, which silently returns `Infinity` for an
+      integer too large for a double — so `math.log(10**1000)` computed
+      `log(inf) = inf` instead of `2302.58…`. CPython's `loghelper` deliberately
+      calls `PyLong_AsDouble` first and, on its OverflowError, falls back to
+      `_PyLong_Frexp` to take the log of an arbitrary-precision int without
+      overflowing; that path was never reached. Now a non-finite result sets
+      OverflowError "int too large to convert to float" and returns -1.0, the
+      exact CPython contract (`math.fsum`'s overflow check rides the same
+      conversion).
+
 - [x] **Deterministic free for the one-shot `compress()`/`decompress()`
       helpers** (+16 lzma 96 → 112; zero regression; bz2/zstd helpers wrapped
       too). The earlier close()-shim reclaimed the compression *file* objects,

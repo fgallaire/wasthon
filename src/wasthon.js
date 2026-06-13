@@ -5024,9 +5024,23 @@ mergeInto(LibraryManager.library, {
     },
     PyLong_AsDouble__deps: ['$WasthonRT'],
     PyLong_AsDouble: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
         if (typeof obj === 'number') return obj;
-        if (typeof obj === 'bigint') return Number(obj);
+        if (typeof obj === 'bigint') {
+            // CPython raises OverflowError when the integer is too large for a
+            // double (returns -1.0 with the error set) — math.log/log10/log2's
+            // loghelper relies on exactly this to fall back to _PyLong_Frexp.
+            // Number(huge_bigint) silently yields Infinity, so log(10**1000)
+            // computed log(inf) = inf instead.
+            var d = Number(obj);
+            if (!isFinite(d)) {
+                rt.setError(rt.wrap(rt._b_.OverflowError),
+                    "int too large to convert to float");
+                return -1;
+            }
+            return d;
+        }
         return 0;
     },
     PyNumber_Divmod__deps: ['$WasthonRT'],
