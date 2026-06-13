@@ -7,6 +7,27 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Faithful Py_ssize_t/size_t conversion + sys.maxsize untangle**
+      (+3 pickle, +3 array, +2 math, +2 decimal, +2 struct = +12; zero
+      regression — zlib, re and every slicing-heavy suite unchanged). A
+      compensating lie: `PyLong_AsSsize_t` *clamped* to ±2³¹ (and
+      `PyLong_AsSize_t` masked with `>>> 0`) instead of raising OverflowError,
+      because `sys.maxsize` (= Brython's `max_array_size`) was wrongly 2³²-1 —
+      so `zlib.decompress(data, sys.maxsize)` would have wrapped to negative
+      garbage. The clamp masked struct's 'n'/'N' overflow
+      (test_struct.test_integers). Untangled faithfully:
+      • vendored `brython.js`: `max_array_size` = PY_SSIZE_T_MAX (2³¹-1), the
+        correct value for a 32-bit-ssize_t target (this is a wasm32-ABI
+        adjustment, not an upstream Brython bug — browsers aren't ssize_t-bound).
+      • `PyLong_AsSsize_t` / `PyLong_AsSize_t` now raise OverflowError on a
+        value outside the platform range, like CPython. zlib still works
+        because sys.maxsize (2³¹-1) fits ssize_t exactly.
+      • `_PyNumber_Index` now uses `__index__` ONLY (operator.index semantics),
+        never falling back to `__int__` (it used `int(obj)`), so packing an
+        object whose `__index__` raises no longer silently used `__int__`
+        (test_integers BadIndex). The +2 elsewhere (math/decimal/pickle/array)
+        is faithful overflow detection in indexing/sizing paths.
+
 - [x] **Integer conversion overflow + `__index__` in the bridge** (+5 zstd,
       +3 sqlite3; zero regression — the shared-primitive payoff: fixing the
       PyLong primitives fixed zstd/sqlite3's int packing for free, and

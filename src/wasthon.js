@@ -3071,22 +3071,39 @@ mergeInto(LibraryManager.library, {
             rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
             return -1;
         }
-        var v = (typeof n === 'bigint' ? Number(n) : n);
-        // Py_ssize_t is 32-bit in wasm32 — clamp to its range instead of `| 0`
-        // wrapping, which turned a large positive (e.g. sys.maxsize) into a
-        // negative garbage value (zlib decompress(data, sys.maxsize) →
-        // "max_length must be non-negative").
-        if (v > 2147483647) return 2147483647;
-        if (v < -2147483648) return -2147483648;
-        return v | 0;
+        // Py_ssize_t is 32-bit on wasm32. CPython raises OverflowError on a
+        // value outside ±2**31; the old code CLAMPED, which masked struct's
+        // 'n' overflow (test_struct.test_integers). sys.maxsize is now the
+        // faithful PY_SSIZE_T_MAX (2**31-1), so zlib.decompress(data,
+        // sys.maxsize) still passes a value that fits — no clamp needed.
+        var b = (typeof n === 'bigint') ? n : BigInt(Math.trunc(n));
+        if (b < -2147483648n || b > 2147483647n) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "Python int too large to convert to C ssize_t");
+            return -1;
+        }
+        return Number(b);
     },
 
     PyLong_AsSize_t__deps: ['$WasthonRT'],
     PyLong_AsSize_t: function(handle) {
         var rt = WasthonRT;
         var n = rt.coerceInt(rt.unwrap(handle));
-        if (n === undefined) return 0;
-        return (typeof n === 'bigint' ? Number(n) : n) >>> 0;
+        if (n === undefined) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
+            return 0;
+        }
+        // size_t is 32-bit unsigned on wasm32: [0, 2**32-1]. Raise on negative
+        // or overflow like CPython (was a silent `>>> 0` mask → struct 'N'
+        // overflow undetectable).
+        var b = (typeof n === 'bigint') ? n : BigInt(Math.trunc(n));
+        if (b < 0n || b > 4294967295n) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                b < 0n ? "can't convert negative value to size_t"
+                       : "Python int too large to convert to C size_t");
+            return 0;
+        }
+        return Number(b);
     },
 
     /* PyLong long-long variants. wasm has i64 emulated via i32 pairs at the
@@ -5757,21 +5774,43 @@ mergeInto(LibraryManager.library, {
         return 0;
     },
 
-    /* _PyNumber_Index — convert to int. Pass-through for our purposes. */
+    /* _PyNumber_Index — operator.index semantics: coerce via __index__ ONLY,
+     * never __int__. The old code used int.$factory (== int(obj)), which falls
+     * back to __int__ when __index__ raises — so struct.pack of an object whose
+     * __index__ raises but __int__ returns an int silently packed the __int__
+     * value (test_struct.test_integers BadIndex). Mirrors PyNumber_AsSsize_t. */
     _PyNumber_Index__deps: ['$WasthonRT'],
     _PyNumber_Index: function(handle) {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
-        if (typeof obj === 'number' && Number.isInteger(obj)) return handle;
-        if (typeof obj === 'bigint') return handle;
-        try {
-            var v = rt._b_.int.$factory(obj);
-            return rt.wrapNewRef(v);
-        } catch (e) {
+        if ((typeof obj === 'number' && Number.isInteger(obj)) ||
+            typeof obj === 'bigint') {
+            return handle;
+        }
+        var idx = null;
+        try { idx = rt.$B.$getattr(obj, '__index__', null); } catch (e) { idx = null; }
+        if (!idx) {
+            var nm = "?"; try { nm = rt.$B.class_name(obj); } catch (e) {}
             rt.setError(rt.wrap(rt._b_.TypeError),
-                "an integer is required");
+                "'" + nm + "' object cannot be interpreted as an integer");
             return 0;
         }
+        var iv;
+        try {
+            iv = rt.$B.$call(idx);
+        } catch (e) {
+            // __index__ raised — propagate it; do NOT fall back to __int__.
+            if (rt.forwardError) rt.forwardError(e, rt._b_.TypeError);
+            else rt.setError(rt.wrap(rt._b_.TypeError), "__index__ raised");
+            return 0;
+        }
+        if (!rt._b_.isinstance(iv, rt._b_.int)) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "__index__ returned non-int (type " +
+                (rt.$B.class_name ? rt.$B.class_name(iv) : typeof iv) + ")");
+            return 0;
+        }
+        return rt.wrapNewRef(iv);
     },
 
     /* PyArg_ParseTuple / PyArg_ParseTupleAndKeywords — legacy varargs
