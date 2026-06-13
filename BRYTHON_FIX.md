@@ -18,6 +18,53 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `BytesIO` does not report `seekable()` / `writable()`
+
+**Impact: io fidelity (part of the `LZMAFile(BytesIO(...)).seekable()` chain;
++0 alone — `test_seekable` also needs instance-attribute shadowing of a
+built-in method, untouched).** PR branch `io-bytesio-seekable-writable`.
+`BytesIO.tp_methods` (`www/src/libs/_io_classes.js`) ended at `"readable"`,
+omitting `"seekable"` and `"writable"`, so although `BytesIO_funcs.seekable`
+/`.writable` are defined (returning `True`) they were never installed and
+the instance inherited `_IOBase`'s `False`.
+
+```python
+>>> from io import BytesIO
+>>> BytesIO(b'x').seekable()
+False   # before
+True    # after
+>>> BytesIO(b'x').writable()
+False   # before
+True    # after
+```
+
+## [x] `BufferedReader` does not delegate `seekable()`/`readable()`/`writable()`
+
+**Impact: io fidelity (the other half of the chain above; +0 alone).** PR
+branch `io-bufferedreader-delegate-seekable`. `_BufferedReader.tp_methods`
+(`www/src/py_io.js`) listed only `["peek","seek","read","readline"]`, so the
+buffer inherited `_IOBase`'s `seekable()`/`writable()` = `False` instead of
+delegating to its raw stream as CPython does.
+
+Side effect (honest): a correct `readable()` lets the file-based doctests
+read their data file to completion instead of stopping short. This unmasked
+two latent bugs the truncated read had hidden — `cmath.polar` overflow (now
+fixed in the bridge, see `CHANGELOG.md` `_Py_c_abs`), and a cosmetic
+`math/ieee754.txt` doctest mismatch where `asin(INF)`'s domain error prints
+the value as `Infinity` instead of `inf` (skip → fail, no pass lost; a real
+formatting bug to fix later).
+
+```python
+>>> import io
+>>> class R(io.RawIOBase):
+...     def readable(self): return True   # required, else UnsupportedOperation
+...     def seekable(self): return True
+...     def readinto(self, b): return 0
+>>> io.BufferedReader(R()).seekable()
+False   # before (inherits _IOBase, ignores raw)
+True    # after (delegates to raw.seekable())
+```
+
 ## [x] `_testcapi` stub missing `nan_msb_is_signaling`
 
 **Impact: +1 struct (test_half_float, 35→36 → suite at 100%).** Brython's
