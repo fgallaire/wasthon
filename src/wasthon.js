@@ -6508,10 +6508,21 @@ mergeInto(LibraryManager.library, {
     PyLong_AsLongAndOverflow__deps: ['$WasthonRT'],
     PyLong_AsLongAndOverflow: function(objH, overflowPtr) {
         var rt = WasthonRT;
+        // CPython requires an int or an object with __index__ — a float, str or
+        // Decimal has none, so math.factorial(5.0)/(5.2)/("5") must raise
+        // TypeError rather than truncate/parse (coerceInt was too lenient, and
+        // a bare BigInt(1.5) threw a raw JS error). Brython gives int.__index__
+        // but not float.__index__, so this distinguishes 5 from 5.0.
         var obj = rt.unwrap(objH);
-        var v = (typeof obj === 'bigint') ? obj :
-                (typeof obj === 'number') ? BigInt(Math.trunc(obj)) :
-                BigInt(Number(obj) || 0);
+        var idx = rt.$B.$getattr(obj, '__index__', null);
+        if (idx === null || idx === undefined) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "'" + rt.$B.class_name(obj) + "' object cannot be interpreted as an integer");
+            if (overflowPtr) HEAP32[overflowPtr >> 2] = 0;
+            return -1;
+        }
+        var n = rt.$B.$call(idx);
+        var v = (typeof n === 'bigint') ? n : BigInt(Math.trunc(Number(n)));
         if (overflowPtr) {
             HEAP32[overflowPtr >> 2] = (v > 2147483647n) ? 1 :
                                        (v < -2147483648n) ? -1 : 0;

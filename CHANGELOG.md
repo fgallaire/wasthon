@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **PyLong_AsLongAndOverflow requires `__index__`** (+1 math
+      testFactorialNonIntegers; zero regression). The converter took any JS
+      number — `Math.trunc`'d a float, and `BigInt(1.5)` even threw a raw
+      JS error — so `math.factorial(5.0)` / `(5.2)` / `("5")` /
+      `(Decimal('5'))` returned `120` instead of raising TypeError. CPython
+      accepts only an int or an object with `__index__`; Brython gives
+      `int.__index__` but not `float.__index__`, so looking it up
+      distinguishes `5` from `5.0` and rejects float/str/Decimal faithfully.
+
 - [x] **`_Py_c_abs` sets errno on overflow** (cmath.polar/exp/… now raise
       OverflowError on an unrepresentable magnitude; +0 in isolation, but it
       keeps cmath at 26 once the io-seekable fix below lets
