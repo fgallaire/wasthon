@@ -5438,15 +5438,19 @@ mergeInto(LibraryManager.library, {
 
     PyObject_IsTrue__deps: ['$WasthonRT'],
     PyObject_IsTrue: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
         if (obj === null || obj === undefined) return 0;
         // Use Brython's truth semantics.
         try {
-            return WasthonRT.$B.$bool(obj) ? 1 : 0;
+            return rt.$B.$bool(obj) ? 1 : 0;
         } catch (e) {
-            // Failure path: set TypeError, return -1 per CPython contract.
-            var excHandle = WasthonRT.wrap(WasthonRT._b_.TypeError);
-            WasthonRT.setError(excHandle, e.message || "PyObject_IsTrue failed");
+            // Propagate __bool__'s own exception (e.g. struct.pack('?',
+            // ExplodingBool()) must raise the OSError __bool__ raised, not a
+            // masked TypeError — test_struct.test_bool). -1 per the contract.
+            if (rt.forwardError) rt.forwardError(e, rt._b_.TypeError);
+            else rt.setError(rt.wrap(rt._b_.TypeError),
+                e.message || "PyObject_IsTrue failed");
             return -1;
         }
     },
@@ -8861,7 +8865,18 @@ mergeInto(LibraryManager.library, {
         // ABI. The C function signature is:
         //   PyObject *tp_new(PyTypeObject *cls, PyObject *args, PyObject *kw);
         var tpNewPtr = slotMap[65 /* Py_tp_new */];
-        if (tpNewPtr) {
+        if ((flags & 0x8) && !tpNewPtr) {
+            // Py_TPFLAGS_DISALLOW_INSTANTIATION (wasthon.h: 1<<3): no public
+            // constructor — calling the type raises TypeError, as CPython
+            // does. _struct.unpack_iterator uses this (no tp_new slot)
+            // (test_struct.test_uninstantiable). A spec that DOES provide a
+            // tp_new slot keeps it (the branch below).
+            cls.tp_new = function() {
+                rt.$B.RAISE(rt._b_.TypeError,
+                    "cannot create '" + shortName + "' instances");
+            };
+            cls.tp_new.$is_slot = true;
+        } else if (tpNewPtr) {
             cls.tp_new = rt.scoped(function(brythonCls, args, kw) {
                 var argsH = rt.wrap(args || []);
                 // For a Python subclass of a C-type, don't forward kwargs to the

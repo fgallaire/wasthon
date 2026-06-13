@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Two struct type/protocol fidelity fixes** (+2 struct, zero
+      regression). • `PyObject_IsTrue` propagated nothing useful — it masked
+      whatever `__bool__` raised as a generic TypeError "PyObject_IsTrue
+      failed", so `struct.pack('?', ExplodingBool())` lost the OSError
+      (test_struct.test_bool). Now forwards the original exception.
+      • `Py_TPFLAGS_DISALLOW_INSTANTIATION` (1<<3) was ignored by the
+      `PyType_FromModuleAndSpec` factory, so `_struct.unpack_iterator` (a
+      DISALLOW type with no tp_new slot) inherited a constructor; calling it
+      now raises TypeError "cannot create '...' instances"
+      (test_struct.test_uninstantiable).
+
 - [x] **Faithful Py_ssize_t/size_t conversion + sys.maxsize untangle**
       (+3 pickle, +3 array, +2 math, +2 decimal, +2 struct = +12; zero
       regression — zlib, re and every slicing-heavy suite unchanged). A
