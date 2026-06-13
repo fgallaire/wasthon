@@ -63,6 +63,41 @@
             if (cls) patchFileClose(cls);
         }
 
+        // One-shot helpers (lzma.compress / decompress, bz2.*, zstd.*) build a
+        // throwaway compressor/decompressor whose heavy C context (~94 MB for an
+        // LZMA encoder) never reaches refcount 0 — Brython is GC, not refcount,
+        // so the local is dropped but never decref'd, and a tight comparison
+        // loop OOMs. We call the real helper (it owns all the arg/format logic),
+        // then decref every instance of the relevant types that it created and
+        // left behind — firing tp_dealloc on exactly the leaked transients.
+        function wrapHelperFree(modName, fnName, typeNames) {
+            const mod = B.imported && B.imported[modName];
+            if (!mod) return;
+            const flag = '$wasthon_helper_' + fnName + '_patched';
+            if (mod[flag]) return;
+            const orig = get(mod, fnName);
+            if (typeof orig !== 'function') return;
+            const types = typeNames.map((n) => get(mod, n)).filter(Boolean);
+            if (!types.length || !rt.refcounts) return;
+            mod[flag] = true;
+            const wrapped = function () {
+                const rc = rt.refcounts;
+                const before = new Set(rc.keys());
+                try {
+                    return orig.apply(this, arguments);
+                } finally {
+                    for (const h of Array.from(rc.keys())) {
+                        if (before.has(h)) continue;
+                        const obj = rt.handles.get(h);
+                        if (obj && types.indexOf(obj.ob_type) !== -1) {
+                            try { rt.decref(h); } catch (e) {}
+                        }
+                    }
+                }
+            };
+            try { B.$setattr(mod, fnName, wrapped); } catch (e) { mod[flag] = false; }
+        }
+
         const origImport = B.$import;
         if (origImport.$wasthonDealloc) return;
         const wrapped = function () {
@@ -77,6 +112,13 @@
             patchModule('lzma', 'LZMAFile');               // ~94 MB lzma context
             patchModule('bz2', 'BZ2File');
             patchModule('compression.zstd', 'ZstdFile');   // ZSTD_C/DCtx
+            // free the transient compressor/decompressor of the one-shot helpers
+            wrapHelperFree('lzma', 'compress', ['LZMACompressor']);
+            wrapHelperFree('lzma', 'decompress', ['LZMADecompressor']);
+            wrapHelperFree('bz2', 'compress', ['BZ2Compressor']);
+            wrapHelperFree('bz2', 'decompress', ['BZ2Decompressor']);
+            wrapHelperFree('compression.zstd', 'compress', ['ZstdCompressor']);
+            wrapHelperFree('compression.zstd', 'decompress', ['ZstdDecompressor']);
         }
         // also catch modules already imported
         try { patchAll(); } catch (e) {}

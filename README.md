@@ -716,7 +716,21 @@ Infrastructure work that pays back on existing modules:
       `loader/wasthon-dealloc.js` wraps the synchronous `$B.$import` to patch
       `lzma.LZMAFile`/`bz2.BZ2File`/`compression.zstd.ZstdFile` `.close()` so a
       `with` block decref's the compressor it drops and reclaims the context at
-      block exit. +8 (`test_lzma` +7, `test_zstd` +1). Details in `CHANGELOG.md`.
+      block exit. +8 (`test_lzma` +7, `test_zstd` +1). A second deterministic
+      trigger covers the *one-shot* module helpers (`lzma.compress(data)` /
+      `decompress`, and the bz2/zstd equivalents): these build a bare
+      `LZMACompressor`/`LZMADecompressor` with **no** `close()`, so the ~94 MB
+      encoder leaked on every call — the tests call `compress()` once per
+      round-trip comparison, so the heap OOM'd mid-suite and the next compressor
+      allocation returned NULL silently into `LZMAFile._compressor`, surfacing
+      as a `Symbol("DICT") of null` cascade. The shim runs the real helper (it
+      owns the format/preset/filters logic and the decompress retry loop) and
+      then decref's every instance of the compressor/decompressor *type* it
+      created and left behind — capture-by-type, so the returned bytes are
+      untouched. This confirmed the dispatch mechanism was never the issue
+      (an explicit free survives 60 iterations that otherwise OOM at ~22); only
+      the trigger was missing. +16 (`test_lzma` 96 → 112). Details in
+      `CHANGELOG.md`.
 - [x] Buffer-export safety, without a GC — `memoryview(a)` must make array
       mutations raise `BufferError` while the view lives (and succeed once it's
       released). No finalizer needed: the bridge syncs the export count Brython
@@ -729,11 +743,14 @@ Infrastructure work that pays back on existing modules:
 - [ ] Explicit-contract residual — a C instance held by a Python local that is
       dropped or reassigned without a `close()`/`with` is never DECREF'd:
       Brython offers no scope-exit or GC callback into `wasthon_decref`, so its
-      native context leaks. The `close()`/`with` contract above covers every
-      heavy native that exposes one (LZMA/Zstd/bz2 file wrappers; sqlite
-      `Connection.close()` frees natively); the residual — a bare
-      compressor/Connection dropped without close — is acceptable for light
-      natives and a known cap on loop-bench depth for heavy ones. (Instance /
+      native context leaks. Two deterministic triggers now cover the common
+      cases: the `close()`/`with` contract for every heavy native that exposes
+      one (LZMA/Zstd/bz2 file wrappers; sqlite `Connection.close()` frees
+      natively), and the one-shot `compress()`/`decompress()` helper wrap for
+      the create-use-drop transient with no `close()`. The residual is the
+      genuinely unhooked case — a bare compressor/`Connection` kept in a
+      long-lived local and dropped on its own — acceptable for light natives
+      and a known cap on loop-bench depth for heavy ones. (Instance /
       `refcounts` axis; distinct from the sentinel / `handles` leak below.)
 - [x] JS-side handle-map (sentinel) leak — FIXED by **handle scopes** (the
       JNI local-reference / HPy model). Every JS→C entry point (method

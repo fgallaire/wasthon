@@ -7,6 +7,27 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **Deterministic free for the one-shot `compress()`/`decompress()`
+      helpers** (+16 lzma 96 → 112; zero regression; bz2/zstd helpers wrapped
+      too). The earlier close()-shim reclaimed the compression *file* objects,
+      but `lzma.compress(data)` / `lzma.decompress(data)` build a throwaway
+      `LZMACompressor` / `LZMADecompressor` with NO close() — the ~94 MB
+      encoder context leaked, and the tests call `lzma.compress(...)` on every
+      round-trip comparison, so the WASM heap OOM'd part-way through the suite.
+      The first failed compressor allocation then returned NULL *silently* into
+      `LZMAFile.__init__`'s `self._compressor`, so every later
+      `with LZMAFile(..., "w")` died at `self._compressor.compress` with a bare
+      `Symbol("DICT") of null` (a ~14-test cascade) plus a few direct
+      MemoryErrors. tp_dealloc itself was never the problem — it dispatches and
+      frees correctly (verified: an explicit free survives 60 iterations that
+      otherwise OOM at ~22). The only gap was a deterministic *trigger* for a
+      transient with no close(). `loader/wasthon-dealloc.js` now wraps the
+      module helpers: it runs the real function (keeping all the
+      format/preset/filters logic and the decompress retry loop), then decrefs
+      every instance of the compressor/decompressor type it created and left
+      behind — firing tp_dealloc on exactly the leaked transients. Capture is
+      by type, so the returned bytes are never touched.
+
 - [x] **PyObject_GenericGetAttr forwards the real exception**
       (+1 struct test_operations_on_half_initialized_Struct; zero regression
       — the shared generic-getattr path, exercised by every C type, is
