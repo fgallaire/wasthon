@@ -251,7 +251,26 @@ mergeInto(LibraryManager.library, {
         unwrapResult: function(h) {
             var v = this.unwrap(h);
             this.consumeResultRef(h);
+            this.syncCstrBytes(v);
             return v;
+        },
+
+        // Fold a C-written linear-memory buffer back into a bytes object's JS
+        // `.source` array. PyBytes_FromStringAndSize(NULL, n) hands C a writable
+        // buffer (__wasthon_cstr__) while .source stays zero-filled; the C
+        // producer writes the buffer in place (e.g. sqlite3_blob_read into
+        // PyBytes_AS_STRING), so any result crossing back to Brython must sync.
+        // The tp_methods trampoline did this (syncBytes) but slot returns
+        // (mp_subscript/sq_item — Blob[slice]) did not, so blob reads were all
+        // zeros. Idempotent for read-only AsString buffers (a copy of .source).
+        syncCstrBytes: function(v) {
+            if (!v || typeof v !== 'object') return;
+            var ptr = v.__wasthon_cstr__;
+            if (!ptr) return;
+            var src = v.source;
+            if (!src || src.length === undefined) return;
+            var n = src.length;
+            for (var i = 0; i < n; i++) src[i] = HEAPU8[ptr + i];
         },
 
         init: function() {

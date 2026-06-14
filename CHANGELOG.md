@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **bytes results sync their C-written buffer in `unwrapResult`** (+5
+      sqlite3; zero regression). `PyBytes_FromStringAndSize(NULL, n)` hands C a
+      writable `__wasthon_cstr__` buffer while `.source` stays zero-filled; the
+      tp_methods trampoline folded it back (`syncBytes`) but slot returns
+      (`mp_subscript` / `sq_item`) did not — so `Blob[slice]`
+      (`sqlite3_blob_read` into `PyBytes_AS_STRING`) read all zeros. Fold the
+      buffer in `unwrapResult`, which every trampoline funnels through
+      (idempotent: `syncBytes` clears `__wasthon_cstr__` after folding, and a
+      read-only `PyBytes_AsString` copy already mirrors `.source`).
+
 - [x] **`PyObject_Vectorcall` forwards keyword arguments** (+38 sqlite3; zero
       regression). It dropped `kwnames` entirely ("rare in sre's call sites"),
       so any C code forwarding a fastcall with keywords lost them.
