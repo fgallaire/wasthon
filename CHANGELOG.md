@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyArg_Parse` integer formats coerce via `__index__` only** (+7 array).
+      The `b/h/i/l/L/q` converters accepted a Python float through Brython's
+      boxed-`{value}` fast-path, silently truncating it into an integer array —
+      `array('i').append(42.0)` didn't raise. CPython's getargs coerces integer
+      formats through `__index__` (a float has none → "'float' object cannot be
+      interpreted as an integer"); only `f`/`d` take a float (and still accept
+      `nan`/`inf` — the `isNaN` reject now fires only on the last-resort
+      `Number(arg)` coercion, not a boxed float). `test_array`'s
+      `test_type_error` + `test_nan`; unsigned `I`/`Q` already rejected via
+      `PyLong_AsUnsigned*`.
+
 - [x] **slot 25 (`Py_mp_length`) wires `__len__`** (+6 sqlite3, +1 decimal;
       zero regression). The slot-dispatch table mapped `mp_subscript` (27) and
       `sq_length` (29) but omitted `Py_mp_length` (25), so a type exposing only

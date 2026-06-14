@@ -1920,37 +1920,55 @@ mergeInto(LibraryManager.library, {
             return 1;
         }
 
+        // CPython getargs: the INTEGER formats coerce via __index__ only — a
+        // float (which has __float__/__int__ but no __index__) is rejected with
+        // "'float' object cannot be interpreted as an integer" (array('i')
+        // .append(42.0) must raise TypeError). Only the FLOAT formats f/d accept
+        // a float / __float__. Brython boxes a Python float as {value:<number>},
+        // so the old `.value` fast-path silently truncated floats into int arrays.
+        var isFloatFmt = (c === 'f' || c === 'd');
         var n;
         if (typeof arg === 'number')      n = arg;
         else if (typeof arg === 'bigint') n = arg;
         else if (arg === true)            n = 1;
         else if (arg === false)           n = 0;
-        else if (arg && typeof arg.value === 'number') {
-            /* Brython float wraps a JS number in an object with .value */
-            n = arg.value;
-        } else {
+        else {
             try {
-                var idx = rt.$B.$getattr(arg, '__index__', null) ||
-                          rt.$B.$getattr(arg, '__int__', null) ||
-                          rt.$B.$getattr(arg, '__float__', null);
-                if (idx) {
-                    // $call, not idx(): a Brython bound method needs Brython's
-                    // calling convention (frame setup); a bare idx() throws,
-                    // which the catch turned into a bogus "cannot convert" —
-                    // so every __index__/__int__ object (e.g. array's Intable)
-                    // was rejected by PyArg_Parse.
-                    var iv = rt.$B.$call(idx);
-                    if (typeof iv === 'bigint') n = iv;
-                    else if (iv && typeof iv.value === 'number') n = iv.value;
-                    else n = Number(iv);
-                } else { n = Number(arg); }
+                // $call (not idxFn()): a Brython bound method needs Brython's
+                // calling convention; a bare call throws.
+                var idxFn = rt.$B.$getattr(arg, '__index__', null);
+                if (idxFn) {
+                    var iv = rt.$B.$call(idxFn);
+                    n = (typeof iv === 'bigint') ? iv :
+                        (iv && typeof iv.value === 'number') ? iv.value : Number(iv);
+                } else if (isFloatFmt) {
+                    if (arg && typeof arg.value === 'number') {
+                        n = arg.value;
+                    } else {
+                        var fFn = rt.$B.$getattr(arg, '__float__', null);
+                        if (fFn) {
+                            var fv = rt.$B.$call(fFn);
+                            n = (fv && typeof fv.value === 'number') ? fv.value : Number(fv);
+                        } else {
+                            // last-resort coercion: a NaN here means it failed
+                            // (e.g. arg was a non-numeric object), NOT a real
+                            // float('nan') — a genuine float arrives boxed above.
+                            n = Number(arg);
+                            if (isNaN(n)) throw new Error("coercion gave NaN");
+                        }
+                    }
+                } else {
+                    var cn = "?";
+                    try { cn = rt.$B.class_name(arg); } catch (_) {}
+                    rt.setError(rt.wrap(rt._b_.TypeError),
+                        "'" + cn + "' object cannot be interpreted as an integer");
+                    return 0;
+                }
                 if (typeof n !== 'number' && typeof n !== 'bigint') {
                     throw new Error("coercion produced " + typeof n);
                 }
-                if (typeof n === 'number' && isNaN(n)) {
-                    throw new Error("coercion gave NaN");
-                }
             } catch (e) {
+                if (rt.pendingException) return 0;
                 rt.setError(rt.wrap(rt._b_.TypeError),
                     "PyArg_Parse: cannot convert (got " + (typeof arg) + ")");
                 return 0;
