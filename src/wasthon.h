@@ -300,12 +300,24 @@ void       PyUnicode_WRITE(int kind, void *data, Py_ssize_t i, Py_UCS4 ch);
 extern void wasthon_incref(PyObject *op);
 extern void wasthon_decref(PyObject *op);
 
-#define Py_INCREF(op)       do { if (op) wasthon_incref((PyObject *)(op)); } while (0)
-#define Py_DECREF(op)       do { if (op) wasthon_decref((PyObject *)(op)); } while (0)
+/* These evaluate `op` exactly once — like CPython's static-inline Py_NewRef.
+ * A multiple-evaluation macro is unsafe here because some bridge "lvalue"
+ * accessors are non-idempotent: PyList_GET_ITEM expands to
+ * wasthon_list_items(list)[i], which re-materialises the list with FRESH
+ * handles on every call. `self->literal = Py_NewRef(PyList_GET_ITEM(t, 0))`
+ * would then INCREF one fresh handle but STORE a different one (never
+ * ref-counted → released → reads back None). _sre's TemplateObject hit this:
+ * every group-ref re.sub() template lost its literal. */
+static inline void      _wasthon_Xincref(PyObject *op) { if (op) wasthon_incref(op); }
+static inline void      _wasthon_Xdecref(PyObject *op) { if (op) wasthon_decref(op); }
+static inline PyObject *_wasthon_newref(PyObject *op)  { if (op) wasthon_incref(op); return op; }
+
+#define Py_INCREF(op)       _wasthon_Xincref((PyObject *)(op))
+#define Py_DECREF(op)       _wasthon_Xdecref((PyObject *)(op))
 #define Py_XINCREF(op)      Py_INCREF(op)
 #define Py_XDECREF(op)      Py_DECREF(op)
 
-#define Py_NewRef(op)       ((op) ? (wasthon_incref((PyObject *)(op)), (PyObject *)(op)) : NULL)
+#define Py_NewRef(op)       _wasthon_newref((PyObject *)(op))
 #define Py_XNewRef(op)      Py_NewRef(op)
 
 #define Py_CLEAR(op) do { \

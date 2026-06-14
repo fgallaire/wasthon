@@ -10059,6 +10059,12 @@ mergeInto(LibraryManager.library, {
             return 0;
         }
         HEAPU8.fill(0, ptr, ptr + size);
+        // CPython's PyObject_GC_NewVar sets ob_size = nitems; mirror it so
+        // Py_SIZE() reports the item count (_wasthon_Py_SIZE / _SET_SIZE keep
+        // ob_size at offset 0). Without this, var-objects whose logic gates on
+        // Py_SIZE see 0 — e.g. _sre's TemplateObject made every group-ref
+        // re.sub() template look empty (Py_SIZE 0 → treated as a bare literal).
+        HEAP32[ptr >> 2] = n | 0;
         var instance = {
             ob_type: typeInfo.brythonClass,
             __class__: typeInfo.brythonClass,

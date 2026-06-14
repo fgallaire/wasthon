@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **C var-objects: `Py_NewRef` single-eval + `PyObject_GC_NewVar` sets
+      `ob_size`** (+4 re; zero regression). Two coupled bugs broke every
+      group-ref / escape `re.sub()` template (`re.sub('(.)', r'\1\1', 'x')` →
+      `''`, bytes path → `NoneType.join`): (1) `Py_NewRef`/`Py_INCREF`/`Py_DECREF`
+      were macros that re-read `op` (`Py_NewRef` 3×); harmless for a plain
+      lvalue, but `PyList_GET_ITEM(l,i)` expands to `wasthon_list_items(l)[i]`,
+      which re-materialises the list with FRESH handles each call — so
+      `self->literal = Py_NewRef(PyList_GET_ITEM(t,0))` INCREF'd one handle and
+      STORED another (never counted → released → reads back `None`). Now
+      single-eval via `static inline`, like CPython. (2) `PyObject_GC_NewVar`
+      malloc'd `basicsize + n*itemsize` and zeroed it but never wrote the item
+      count, so `Py_SIZE()` was 0 for all C var-objects — `_sre`'s TemplateObject
+      gates on `Py_SIZE`, reading a 2-group template as a bare empty literal.
+
 - [x] **`_PyLong_UInt64_Converter` raises OverflowError past `UINT64_MAX`** (+1
       random; zero regression). It wrote the low 64 bits with no range check, so
       `getrandbits(1 << 1000)` truncated to `k = 0` (its low 64 bits) and
