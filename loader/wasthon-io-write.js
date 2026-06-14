@@ -201,10 +201,20 @@
         const checkOpen = (self) => {
             if (self.closed) B.RAISE(_b_.ValueError, 'I/O operation on closed file');
         };
+        // CPython FileIO raises io.UnsupportedOperation (an OSError subclass) on
+        // a read of a write-only file; we returned 0 bytes, so array.fromfile()
+        // on a 'wb' file saw a short read and raised EOFError instead of OSError.
+        const ensureReadable = (self) => {
+            if (!self.readable) {
+                B.make_IOUnsupported();
+                throw B.$call(B._IOUnsupported, 'File not open for reading');
+            }
+        };
 
         F.readinto = function (self, buffer) {
             if (!self.$wfs) return origReadinto.call(this, self, buffer);
             checkOpen(self);
+            ensureReadable(self);
             const data = sys().read(self.$wfd, _b_.len(buffer));
             const src = data.source || [];
             for (let i = 0; i < src.length; i++) buffer.source[i] = src[i];
@@ -217,6 +227,7 @@
                 F.readinto(self, ba); ba.ob_type = _b_.bytes; return ba;
             }
             checkOpen(self);
+            ensureReadable(self);
             const fd = self.$wfd;
             let n;
             if (size === undefined || size === _b_.None || size < 0) {
