@@ -562,6 +562,7 @@ mergeInto(LibraryManager.library, {
             var rt = this;
             var cls = fallbackCls || rt._b_.RuntimeError;
             var msg;
+            var inst = null;
             try {
                 if (e && (e.__class__ || (e.ob_type && e.args !== undefined))) {
                     cls = e.__class__ || rt.$B.get_class(e) || cls;
@@ -570,6 +571,18 @@ mergeInto(LibraryManager.library, {
                     } else {
                         try { msg = rt.$B.class_name(e); } catch (_) { msg = ''; }
                     }
+                    // Preserve the original exception INSTANCE so its attributes
+                    // survive the C boundary — pendingExc() re-raises this very
+                    // object instead of reconstructing cls(msg). A Python
+                    // exception raised across a C call (e.g. re._parser raising
+                    // re.PatternError through _sre's compile_template) carries
+                    // .msg/.pos/.pattern; reconstructing cls(msg) refed the
+                    // already-formatted "msg at position N" string as the
+                    // constructor's first arg, so err.msg kept the suffix and
+                    // err.pos became None (test_re symbolic_refs/numeric_escape).
+                    try {
+                        if (rt.$B.$isinstance(e, rt._b_.BaseException)) inst = e;
+                    } catch (_) {}
                 } else if (e && typeof e.message === 'string') {
                     msg = e.message;
                 } else {
@@ -578,7 +591,7 @@ mergeInto(LibraryManager.library, {
             } catch (_) {
                 msg = 'error';
             }
-            this.pendingException = { exc: rt.wrap(cls), msg: msg };
+            this.pendingException = { exc: rt.wrap(cls), msg: msg, value: inst };
         },
 
         // Normalise any Brython str-like to a primitive JS string.

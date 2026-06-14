@@ -7,6 +7,19 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`forwardError` preserves the exception INSTANCE** (+3 re; zero
+      regression). When a Python exception crosses a C call — `re._parser`
+      raising `re.PatternError` through `_sre`'s `compile_template` — the bridge
+      caught the Brython exception and rebuilt it as `cls(msg)`, refeeding the
+      already-formatted `"<msg> at position N"` string as the constructor's
+      first arg. `PatternError.__init__` then stored that whole string as
+      `.msg` and left `.pos` `None`, but `test_re`'s `checkTemplateError` /
+      `checkPatternError` assert `err.msg == "<msg>"` and `err.pos == N`
+      (`test_symbolic_refs_errors`, `test_sub_template_numeric_escape`). Keep
+      the original instance (guarded to `BaseException`) in
+      `pendingException.value`, like `setError` already does for C-built
+      exceptions — `pendingExc` re-raises it untouched.
+
 - [x] **C var-objects: `Py_NewRef` single-eval + `PyObject_GC_NewVar` sets
       `ob_size`** (+4 re; zero regression). Two coupled bugs broke every
       group-ref / escape `re.sub()` template (`re.sub('(.)', r'\1\1', 'x')` →
