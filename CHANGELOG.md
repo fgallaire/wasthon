@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyObject_Vectorcall` forwards keyword arguments** (+38 sqlite3; zero
+      regression). It dropped `kwnames` entirely ("rare in sre's call sites"),
+      so any C code forwarding a fastcall with keywords lost them.
+      `sqlite3.connect` forwards every keyword (`isolation_level`, `timeout`,
+      `detect_types`, …) to the `Connection` factory through
+      `PyObject_Vectorcall`, so all of them silently reverted to defaults —
+      e.g. `connect(isolation_level='BOGUS')` skipped the `ValueError`
+      validation, and `connect(detect_types=…)` / `factory=…` were ignored.
+      Read the `kwnames` tuple plus the trailing keyword values and forward
+      them through Brython's `$kw` marker (the tp_init/tp_call trampolines
+      already flatten it).
+
 - [x] **`PyErr_FormatUnraisable` routes to `sys.unraisablehook`** (+23 sqlite3;
       zero regression). It silently dropped the pending exception. Now it builds
       the `err_msg` — expanding the printf format (incl. `%R`, reading the wasm

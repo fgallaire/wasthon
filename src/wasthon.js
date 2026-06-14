@@ -1465,7 +1465,21 @@ mergeInto(LibraryManager.library, {
         for (var i = 0; i < nargs; i++) {
             args.push(rt.unwrap(HEAP32[(argsPtr + i * 4) >> 2]));
         }
-        // kwnames support is rare in sre's call sites; skip for now.
+        // kwnames: a tuple of keyword names whose matching values sit in the
+        // args buffer right after the positionals. Forward them through
+        // Brython's `$kw` marker so the callee binds them (sqlite3.connect
+        // forwards isolation_level=… to the Connection factory this way —
+        // dropping kwnames silently skipped the isolation_level validation).
+        var kwnames = kwnamesH ? rt.unwrap(kwnamesH) : null;
+        if (kwnames && kwnames.length) {
+            var kwMap = {};
+            for (var k = 0; k < kwnames.length; k++) {
+                var nm = rt.asJSStr(kwnames[k]);
+                if (nm === null) nm = String(kwnames[k]);
+                kwMap[nm] = rt.unwrap(HEAP32[(argsPtr + (nargs + k) * 4) >> 2]);
+            }
+            args.push({ $kw: [kwMap] });
+        }
         try {
             return rt.wrapNewRef(rt.$B.$call.apply(rt.$B, [fn].concat(args)));
         } catch (e) {
