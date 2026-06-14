@@ -18,6 +18,26 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `slice.$conv_for_seq` over-runs on `stop`/`start` < -len with step < 0
+
+**Impact: +14 test_array** (`test_extended_getslice` across all 14 typecodes; the
+reference side `list(a)[start:stop:step]` was wrong) — and fixes list/str/bytes
+extended slicing generally. Source: `www/src/brython.js` (`slice.$conv_for_seq`).
+
+Symptom: `[1,..,10][0:-31:-1]` returned `[1, undefined×20]` instead of `[1]`.
+Root: when normalising a negative index, `stop += len` was applied but, unlike
+CPython's `PySlice_AdjustIndices`, the result was **not re-clamped** when still
+`< 0` — so `stop = -31+10 = -21` and the loop `for (i=0; i>-21; i--)` walked into
+negative JS array indices (`items[-1]` = `undefined`). The `start` low-clamp had
+the same gap (clamped to `0`, not `step<0 ? -1 : 0`). Fix: after `+= len`, clamp
+both to `step_is_neg ? -1 : 0`, mirroring `PySlice_AdjustIndices`.
+
+```python
+>>> [1,2,3,4,5,6,7,8,9,10][0:-31:-1]
+[1, <Javascript undefined>, <Javascript undefined>, ...]  # before
+[1]                                                        # after
+```
+
 ## [x] `memoryview.cast('I')` / `.tolist()` broken (4-byte format)
 
 **Impact: enables CPython's `re` package on wasthon's `_sre`** (`re._compiler._bytes_to_codes`

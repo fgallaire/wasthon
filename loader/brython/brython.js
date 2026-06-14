@@ -6417,10 +6417,11 @@ if(step==0){$B.RAISE(_b_.ValueError,'slice step cannot be zero')}
 var start,stop
 if(self.start===None){start=step_is_neg ? len_1 :0}else{start=$B.$call(_b_.int,self.start)
 if($B.rich_comp('__gt__',0,start)){start=$B.rich_op('__add__',start,len)
-if($B.rich_comp('__gt__',0,start)){start=0}}
+if($B.rich_comp('__gt__',0,start)){start=step_is_neg ?-1 :0}}
 if($B.rich_comp('__ge__',start,len)){start=step < 0 ? len_1 :len}}
 if(self.stop===None){stop=step_is_neg ?-1 :len}else{stop=$B.PyNumber_Index(self.stop)
-if($B.rich_comp('__gt__',0,stop)){stop=$B.rich_op('__add__',stop,len)}
+if($B.rich_comp('__gt__',0,stop)){stop=$B.rich_op('__add__',stop,len)
+if($B.rich_comp('__gt__',0,stop)){stop=step_is_neg ?-1 :0}}
 if($B.rich_comp('__ge__',stop,len)){stop=step_is_neg ? len_1 :len}}
 return{start,stop,step}}
 slice.$factory=function(start,stop,step){var[args,kw]=$B.parse_args_kw('slice',arguments)
