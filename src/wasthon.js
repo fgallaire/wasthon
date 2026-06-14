@@ -2216,12 +2216,27 @@ mergeInto(LibraryManager.library, {
 
     _wasthon_Py_SET_SIZE__deps: ['$WasthonRT'],
     _wasthon_Py_SET_SIZE: function(op, size) {
-        var obj = WasthonRT.unwrap(op);
+        var rt = WasthonRT;
+        var obj = rt.unwrap(op);
         if (obj && obj.__wasthon_ptr__ === op) {
             HEAP32[op >> 2] = size | 0;
             return;
         }
-        if (Array.isArray(obj) && size < obj.length) obj.length = size;
+        if (Array.isArray(obj)) {
+            // Flush writes made via `&PyList_GET_ITEM(list,0)` (a materialised C
+            // buffer disjoint from the Brython array) back into the array before
+            // a reader sees it — _sre expand_template's bytes branch fills `out`
+            // then `Py_SET_SIZE(list,count); PyBytes_Join(sep,list)`.
+            var lb = rt._lastListItems;
+            if (lb && lb.arr === obj) {
+                var m = Math.min(size | 0, lb.n);
+                for (var i = 0; i < m; i++) {
+                    obj[i] = rt.unwrap(HEAP32[(lb.ptr + i * 4) >> 2]);
+                }
+                rt._lastListItems = null;
+            }
+            if (size < obj.length) obj.length = size;
+        }
     },
 
     /* Py_BuildValue(fmt, ...) — build a Python object from a format string.
@@ -2522,6 +2537,9 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var sep = rt.unwrap(sepH);
         var seq = rt.unwrap(seqH);
+        // _Py_SINGLETON(bytes_empty) maps to Py_None in the bridge — treat it
+        // as the empty-bytes separator (mirrors _PyUnicode_JoinArray).
+        if (sep === rt._b_.None) sep = rt._b_.bytes.$factory();
         if (!sep || !seq) return 0;
         try {
             var out = sep.join ? sep.join(seq) :
@@ -2576,6 +2594,11 @@ mergeInto(LibraryManager.library, {
         for (var i = 0; i < n; i++) {
             HEAP32[(ptr + i * 4) >> 2] = rt.wrap(arr[i]);
         }
+        // Remember this materialisation so Py_SET_SIZE can flush writes made
+        // through `&PyList_GET_ITEM(list,0)` back into the Brython list before
+        // it is read (_sre expand_template's bytes path fills `out` then joins
+        // the list, not the C buffer).
+        rt._lastListItems = { arr: arr, ptr: ptr, n: n };
         return ptr;
     },
 

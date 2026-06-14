@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`&PyList_GET_ITEM(list,0)` writes flush back + `PyBytes_Join` treats
+      `Py_None` as the empty separator** (+1 re; zero regression).
+      `wasthon_list_items` materialises a list into a *disjoint* C buffer, so
+      `out = &PyList_GET_ITEM(list,0); out[i]=…; PyBytes_Join(sep,list)` —
+      `_sre`'s `expand_template` bytes path — joined the untouched Brython list
+      (all `None` → `NoneType.join`). Record the last materialisation;
+      `Py_SET_SIZE(list,n)` now flushes that buffer back into the array before
+      the read. Plus `_Py_SINGLETON(bytes_empty)` maps to `Py_None` in the
+      bridge, so `PyBytes_Join` uses `b''` for it (mirrors
+      `_PyUnicode_JoinArray`). Fixes bytes group-ref `re.sub()` templates
+      (`test_symbolic_refs`).
+
 - [x] **`forwardError` preserves the exception INSTANCE** (+3 re; zero
       regression). When a Python exception crosses a C call — `re._parser`
       raising `re.PatternError` through `_sre`'s `compile_template` — the bridge
