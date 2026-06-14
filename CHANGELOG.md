@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **slot 25 (`Py_mp_length`) wires `__len__`** (+6 sqlite3, +1 decimal;
+      zero regression). The slot-dispatch table mapped `mp_subscript` (27) and
+      `sq_length` (29) but omitted `Py_mp_length` (25), so a type exposing only
+      `mp_length` got no `__len__` — `len(sqlite3.Blob)` and `len(sqlite3.Row)`
+      raised "object has no len()". No ID collision at 25 (unlike 29/32); the
+      length-style dispatch already handled the `mp_length` name, only the table
+      entry was missing.
+
 - [x] **bytes results sync their C-written buffer in `unwrapResult`** (+5
       sqlite3; zero regression). `PyBytes_FromStringAndSize(NULL, n)` hands C a
       writable `__wasthon_cstr__` buffer while `.source` stays zero-filled; the

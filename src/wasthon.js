@@ -9409,6 +9409,7 @@ mergeInto(LibraryManager.library, {
             30: ['nb_negative',               ['__neg__'],           'r'],
             32: ['nb_positive',               ['__pos__'],           'r'],
             6:  ['nb_absolute',               ['__abs__'],           'r'],
+            25: ['mp_length',                 ['__len__'],           'i'],
             27: ['mp_subscript',              ['__getitem__'],       'b'],
             11: ['nb_float',                  ['__float__'],         'r'],
             26: ['nb_int',                    ['__int__'],           'r'],
