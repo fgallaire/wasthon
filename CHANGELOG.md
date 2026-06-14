@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyErr_FormatUnraisable` routes to `sys.unraisablehook`** (+23 sqlite3;
+      zero regression). It silently dropped the pending exception. Now it builds
+      the `err_msg` — expanding the printf format (incl. `%R`, reading the wasm
+      va list like `Py_BuildValue`) — and forwards `(exc_type, exc_value,
+      err_msg)` to a harness helper that calls `sys.unraisablehook`. Paired with
+      the harness's real `test.support.catch_unraisable_exception`,
+      `test_sqlite3`'s `@with_tracebacks` now captures exceptions raised inside
+      aggregate / user-function / trace / progress / authorizer callbacks — 24
+      methods previously compared the `_Flex` support stub to the expected
+      class. (Harness side lives in `test-cpython.html`, not the bridge.)
+
 - [x] **`&PyList_GET_ITEM(list,0)` writes flush back + `PyBytes_Join` treats
       `Py_None` as the empty separator** (+1 re; zero regression).
       `wasthon_list_items` materialises a list into a *disjoint* C buffer, so

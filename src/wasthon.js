@@ -4417,10 +4417,52 @@ mergeInto(LibraryManager.library, {
                     String(exc), exc);
     },
     PyErr_FormatUnraisable__deps: ['$WasthonRT'],
-    PyErr_FormatUnraisable: function(fmtPtr) {
-        // Unraisable exceptions are logged in CPython; for us, drop.
+    PyErr_FormatUnraisable: function(fmtPtr, va) {
+        // CPython routes the pending (unraisable) exception to sys.unraisablehook
+        // with a formatted err_msg. Forward it to the harness helper so
+        // test.support.catch_unraisable_exception can capture exc_type/err_msg
+        // (sqlite3 callback exceptions). Without a hook we just drop it, as
+        // before. Must never raise.
         var rt = WasthonRT;
+        var pe = rt.pendingException;
         rt.pendingException = null;
+        var fn = (typeof globalThis !== 'undefined') ? globalThis.__wasthon_unraisable : null;
+        if (!pe || !fn) return;
+        try {
+            var excVal = pe.value;
+            if (!excVal && pe.exc) {
+                try { excVal = rt.$B.$call(rt.unwrap(pe.exc),
+                        typeof pe.msg === 'string' ? pe.msg : ''); }
+                catch (_) { excVal = null; }
+            }
+            var excType = null;
+            if (excVal) { try { excType = rt.$B.get_class(excVal); } catch (_) {} }
+            if (!excType && pe.exc) excType = rt.unwrap(pe.exc);
+            // Expand the printf-style format (sqlite3 uses %R with the callable),
+            // reading varargs from the wasm32 va pointer like Py_BuildValue.
+            var msg = "";
+            var fmt = fmtPtr ? UTF8ToString(fmtPtr) : "";
+            var p = va || 0;
+            for (var i = 0; i < fmt.length; i++) {
+                var ch = fmt[i];
+                if (ch !== '%' || i + 1 >= fmt.length) { msg += ch; continue; }
+                var c = fmt[++i];
+                if (c === 'R' || c === 'S' || c === 'A') {
+                    var h = p ? HEAP32[p >> 2] : 0; p += 4;
+                    var o = rt.unwrap(h);
+                    try { msg += (c === 'R') ? String(rt._b_.repr(o))
+                                             : String(rt._b_.str.$factory(o)); }
+                    catch (_) { msg += '<?>'; }
+                } else if (c === 's') {
+                    var sp = p ? HEAP32[p >> 2] : 0; p += 4;
+                    msg += sp ? UTF8ToString(sp) : '';
+                } else if (c === 'd' || c === 'i' || c === 'u') {
+                    msg += String(p ? (HEAP32[p >> 2] | 0) : 0); p += 4;
+                } else if (c === '%') { msg += '%'; }
+                else { msg += '%' + c; }
+            }
+            rt.$B.$call(fn, excType, excVal, msg);
+        } catch (e) { /* the unraisable hook must never raise */ }
     },
 
     /* PyUnicodeWriter — minimal string-builder. Stored as a sentinel

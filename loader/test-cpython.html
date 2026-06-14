@@ -214,6 +214,44 @@ support.requires_IEEE_754   = lambda f: f
 class _TestFailed(Exception): pass
 support.TestFailed          = _TestFailed
 
+# Real catch_unraisable_exception. The C bridge routes PyErr_FormatUnraisable
+# (sqlite3's callback-exception reporter) to sys.unraisablehook via the helper
+# below; this captures it. test_sqlite3 @with_tracebacks checks
+# cm.unraisable.exc_type / .err_msg for exceptions raised inside aggregate /
+# user-function / trace / progress / authorizer callbacks — the _Flex stub
+# made all of those compare _Flex to the expected class.
+import sys as _sys_unr
+class _UnraisableArgs:
+    def __init__(self, exc_type, exc_value, exc_traceback, err_msg, obj):
+        self.exc_type = exc_type
+        self.exc_value = exc_value
+        self.exc_traceback = exc_traceback
+        self.err_msg = err_msg
+        self.object = obj
+class catch_unraisable_exception:
+    def __enter__(self):
+        self.unraisable = None
+        self._old_hook = getattr(_sys_unr, 'unraisablehook', None)
+        _sys_unr.unraisablehook = self._hook
+        return self
+    def _hook(self, unraisable):
+        self.unraisable = unraisable
+    def __exit__(self, *exc):
+        _sys_unr.unraisablehook = self._old_hook
+        self.unraisable = None
+        return False
+support.catch_unraisable_exception = catch_unraisable_exception
+def _wasthon_unraisable(exc_type, exc_value, err_msg):
+    hook = getattr(_sys_unr, 'unraisablehook', None)
+    if hook is None:
+        return
+    tb = getattr(exc_value, '__traceback__', None) if exc_value is not None else None
+    try:
+        hook(_UnraisableArgs(exc_type, exc_value, tb, err_msg, None))
+    except Exception:
+        pass
+window.__wasthon_unraisable = _wasthon_unraisable
+
 # Sub-helpers as flexible modules with targeted overrides.
 import_helper = _mod('test.support.import_helper')
 # Faithful import_fresh_module: honors fresh= and blocked= (CPython blocks an
