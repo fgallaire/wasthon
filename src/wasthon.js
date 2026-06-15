@@ -7509,12 +7509,32 @@ mergeInto(LibraryManager.library, {
         //   {}        empty dict (k:v pairs not supported)
         var p = varargs, i = 0;
         function takeScalar(c) {
-            if (c === 'O') { var v = rt.unwrap(HEAP32[p >> 2]); p += 4; return v; }
-            if (c === 's') { var sp = HEAP32[p >> 2]; p += 4;
-                             return sp === 0 ? null : UTF8ToString(sp); }
-            if (c === 'i') { var v = HEAP32[p >> 2]; p += 4; return v; }
-            if (c === 'd') { if (p & 7) p = (p + 7) & ~7;
-                             var v = HEAPF64[p >> 3]; p += 8; return v; }
+            // Every recognised code MUST advance p by the vararg's width —
+            // an unhandled code that leaves p put misaligns every following
+            // argument. e.g. raise_errmsg's PyObject_CallFunction(
+            // JSONDecodeError, "(zOn)", msg, s, end): without 'z'/'n' the msg
+            // and end slots were skipped, so 'O' read the char* msg as a
+            // handle and `pos` arrived wrong → JSONDecodeError construction
+            // failed ("tp_call returned NULL") or got a str pos ("str object
+            // cannot be interpreted as an integer").
+            switch (c) {
+                case 'O': case 'N': case 'S':
+                    { var vo = rt.unwrap(HEAP32[p >> 2]); p += 4; return vo; }
+                case 's': case 'z': case 'U': case 'y':
+                    { var sp = HEAP32[p >> 2]; p += 4;
+                      return sp === 0 ? null : UTF8ToString(sp); }
+                case 'i': case 'b': case 'h': case 'l': case 'n': case 'c':
+                    { var vi = HEAP32[p >> 2]; p += 4; return vi; }
+                case 'I': case 'k': case 'B': case 'H':
+                    { var vu = HEAPU32[p >> 2]; p += 4; return vu; }
+                case 'L': case 'K':
+                    { if (p & 7) p = (p + 7) & ~7;
+                      var lo = HEAPU32[p >> 2], hi = HEAP32[(p + 4) >> 2];
+                      p += 8; return hi * 4294967296 + lo; }
+                case 'd': case 'f':
+                    { if (p & 7) p = (p + 7) & ~7;
+                      var vd = HEAPF64[p >> 3]; p += 8; return vd; }
+            }
             return undefined;
         }
         function parse(endChar) {
