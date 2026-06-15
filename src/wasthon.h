@@ -913,12 +913,23 @@ PyObject  *PyMapping_Items(PyObject *mapping);
  * (`_PyUnicode_JoinArray`, `PyBytes_Join`) recognise Py_None as the
  * "empty separator" sentinel. */
 #define _Py_SINGLETON(name)      (*Py_None)
-#define _Py_STR(name)            (*Py_None)
 /* _Py_ID(foo) is used like `&_Py_ID(foo)` to obtain a PyObject* for the
  * pre-interned string "foo". Route through a bridge helper that returns
  * a Brython str instance for the given name. */
 PyObject *_wasthon_id(const char *name);
 #define _Py_ID(name)             (*_wasthon_id(#name))
+/* _Py_STR(name): module-local strings declared with _Py_DECLARE_STR(name,
+ * literal) must resolve to that *literal* (e.g. _json's raise_errmsg uses
+ * &_Py_STR(json_decoder) == "json.decoder" to import JSONDecodeError — when
+ * this expanded to Py_None the import silently returned NULL and decode
+ * errors surfaced as "tp_call returned NULL"). The predefined global `empty`
+ * has no literal of its own and stays Py_None, the empty-separator sentinel
+ * that _sre/_io rely on (PyBytes_Join / _PyUnicode_JoinArray special-case it). */
+static inline PyObject *_wasthon_str(const char *s) {
+    return (s && s[0]) ? _wasthon_id(s) : Py_None;
+}
+#define _wasthon_strlit_empty    ""
+#define _Py_STR(name)            (*_wasthon_str(_wasthon_strlit_##name))
 
 #define _Py_NO_SANITIZE_UNDEFINED   /* attribute, no-op */
 
@@ -1454,10 +1465,13 @@ PyCFunction PyCFunction_GetFunction(PyObject *func);
  * We alias to PyUnicodeWriter for compile-time compatibility. */
 typedef PyUnicodeWriter _PyUnicodeWriter;
 
-/* _Py_DECLARE_STR(name, ...) — declares a static interned C-string global.
- * We replace it with a no-op since our _Py_ID(name) macro creates the str
- * on demand. */
-#define _Py_DECLARE_STR(name, literal)   /* no-op, _Py_ID(name) builds on demand */
+/* _Py_DECLARE_STR(name, literal) — declares a module-local interned string.
+ * Stash the literal in a file/function-static array; &_Py_STR(name) then
+ * interns it on demand (see _wasthon_str above). The identifier (`name`) and
+ * the literal differ (json_decoder vs "json.decoder"), so unlike _Py_ID we
+ * cannot stringify the name — we must keep the literal. */
+#define _Py_DECLARE_STR(name, literal) \
+    static const char _wasthon_strlit_##name[] = literal;
 
 /* Py_tp_call slot — was missing. CPython slot ID 50 conflicts with our
  * tp_str (50). Use our own unique ID. */

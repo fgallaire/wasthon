@@ -7,6 +7,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`_Py_STR(name)` resolves `_Py_DECLARE_STR` literals** (+0 json alone; enabler, pairs with the `PyObject_CallFunction` fix below for the decoder-error cluster). `_Py_STR(name)` expanded to `Py_None` for every name and `_Py_DECLARE_STR(name, literal)` was a no-op, so _json's `raise_errmsg` -- which imports JSONDecodeError via `PyImport_ImportModuleAttr(&_Py_STR(json_decoder), ...)` -- got `None` as the module name -> import silently returned NULL. (Construction still failed until the CallFunction format parser was fixed, hence +0 in isolation.) `_Py_DECLARE_STR` now stashes the literal and `_Py_STR` interns it on demand; the predefined global `empty` (no literal; _sre/_io use it as the empty-separator sentinel) stays `Py_None`.
+
 - [x] **`PyDict_DelItem` uses the `dict.$delitem` primitive** (+9 json). It called `rt._b_.dict.__delitem__(d, k)`, but `__delitem__` is not a direct attribute on `_b_.dict` (Brython keeps it in slots) -> `undefined(d,k)` -> always -1. _json's encoder bails cleaning up its circular-reference marker, so `json.dumps([1])` raised "tp_call returned NULL". Now uses `dict.$delitem` (like `$setitem`/`$contains`).
 
 - [x] **`PyArg_Parse` integer formats coerce via `__index__` only** (+7 array).
