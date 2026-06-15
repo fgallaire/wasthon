@@ -6533,9 +6533,58 @@ mergeInto(LibraryManager.library, {
      * return NULL so callers fall back to PyObject_Call. */
     PyCFunction_GetFunction: function(handle) { return 0; },
 
-    /* _PyErr_FormatNote — append a note to the current exception.
-     * We don't track exception chaining; no-op. */
-    _PyErr_FormatNote: function() { return 0; },
+    /* _PyErr_FormatNote(format, ...) — format a message and append it to the
+     * currently-raised exception's __notes__ (PEP 678). _json's encoder calls
+     * it as it unwinds a failed serialization ("when serializing %T item %R")
+     * so the exception carries a breadcrumb trail; test_json asserts on
+     * `exc.__notes__`. Was a no-op, so __notes__ never got created -> the
+     * tests hit AttributeError. Minimal printf subset (%T/%R/%S/%d/%s, with z/l
+     * length modifiers) — the only codes _json uses. */
+    _PyErr_FormatNote__deps: ['$WasthonRT'],
+    _PyErr_FormatNote: function(fmtPtr, va) {
+        var rt = WasthonRT;
+        var pe = rt.pendingException;
+        if (!pe) return 0;
+        // The note attaches to the live exception instance; reconstruct one
+        // from the pending exc+msg if a bare error was set (and keep it, so
+        // successive notes during the unwind land on the same object).
+        var exc = pe.value || (pe.value = rt.pendingExc(pe));
+        if (!exc) return 0;
+        var fmt = fmtPtr ? UTF8ToString(fmtPtr) : "";
+        var p = va | 0, msg = "", i = 0;
+        function readPtr() { var v = HEAP32[p >> 2] >>> 0; p += 4; return v; }
+        while (i < fmt.length) {
+            var c = fmt[i++];
+            if (c !== '%') { msg += c; continue; }
+            while (i < fmt.length && 'zl'.indexOf(fmt[i]) >= 0) i++;  // length mod
+            var code = fmt[i++];
+            if (code === 'T' || code === 'N') {
+                try { msg += rt.$B.class_name(rt.unwrap(readPtr())); }
+                catch (e) { msg += '<type>'; }
+            } else if (code === 'R') {
+                try { msg += String(rt._b_.repr(rt.unwrap(readPtr()))); }
+                catch (e) { msg += '<repr>'; }
+            } else if (code === 'S' || code === 'U' || code === 'V') {
+                try { msg += String(rt._b_.str.$factory(rt.unwrap(readPtr()))); }
+                catch (e) { msg += '<str>'; }
+            } else if (code === 'd' || code === 'i' || code === 'u') {
+                msg += (HEAP32[p >> 2] | 0).toString(); p += 4;
+            } else if (code === 's') {
+                var sp = readPtr(); msg += sp === 0 ? '<NULL>' : UTF8ToString(sp);
+            } else if (code === '%') {
+                msg += '%';
+            }
+        }
+        // Append to exc.__notes__ (create the list if absent) — same shape as
+        // BaseException.add_note in py_exceptions.js.
+        try {
+            var NULL = rt.$B.NULL;
+            var notes = rt.$B.get_from_dict(exc, '__notes__', NULL);
+            if (notes !== NULL) { notes.push(msg); }
+            else { rt.$B.set_to_dict(exc, '__notes__', rt.$B.$list([msg])); }
+        } catch (e) {}
+        return 0;
+    },
 
     /* PyObject_Repr(o) — repr(o). */
     PyObject_Repr__deps: ['$WasthonRT'],
