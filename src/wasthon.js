@@ -8150,7 +8150,19 @@ mergeInto(LibraryManager.library, {
 
     PyUnicode_FromOrdinal__deps: ['$WasthonRT'],
     PyUnicode_FromOrdinal: function(ordinal) {
-        return WasthonRT.wrapNewRef(String.fromCodePoint(ordinal));
+        var rt = WasthonRT;
+        // String.fromCodePoint throws a JS RangeError for an out-of-range value
+        // (> 0x10FFFF) — e.g. a 'u'/'w' array holding a corrupt item read as
+        // 0xFFFFFFFF (test_array.test_issue17223: str(array('u', b'\\xff'*4))).
+        // CPython raises ValueError; forward one instead of leaking a
+        // JavascriptError.
+        try {
+            return rt.wrapNewRef(String.fromCodePoint(ordinal >>> 0));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.ValueError),
+                "character not in range(0x110000)");
+            return 0;
+        }
     },
 
     /* PyUnicode_FromWideChar(buf, len) — buf is a wchar_t* (32-bit on
@@ -8166,8 +8178,17 @@ mergeInto(LibraryManager.library, {
             while (HEAPU32[(bufPtr + len * 4) >> 2] !== 0) len++;
         }
         var chars = [];
-        for (var i = 0; i < len; i++) {
-            chars.push(String.fromCodePoint(HEAPU32[(bufPtr + i * 4) >> 2]));
+        try {
+            for (var i = 0; i < len; i++) {
+                chars.push(String.fromCodePoint(HEAPU32[(bufPtr + i * 4) >> 2]));
+            }
+        } catch (e) {
+            // an out-of-range wchar (corrupt 'u'/'w' array item) -> ValueError,
+            // not a leaked JS RangeError (test_array.test_issue17223:
+            // array('u', b'\\xff'*4).tounicode()).
+            rt.setError(rt.wrap(rt._b_.ValueError),
+                "character not in range(0x110000)");
+            return 0;
         }
         return rt.wrapNewRef(chars.join(''));
     },
