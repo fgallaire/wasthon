@@ -730,12 +730,20 @@ mergeInto(LibraryManager.library, {
 
     PyUnicode_FromStringAndSize__deps: ['$WasthonRT'],
     PyUnicode_FromStringAndSize: function(uPtr, size) {
+        var rt = WasthonRT;
         if (uPtr === 0) {
-            return WasthonRT.wrapNewRef("");
+            return rt.wrapNewRef("");
         }
-        // Decode as UTF-8 (CPython semantics for char* + len).
-        var s = UTF8ToString(uPtr, size);
-        return WasthonRT.wrapNewRef(s);
+        // Decode exactly `size` bytes as UTF-8. UTF8ToString stops at the first
+        // embedded NUL even with a size bound (C-string semantics), which
+        // truncated text values carrying a '\0' — e.g. sqlite3 returned 'a' for
+        // 'a\x00b'. Decode the explicit slice instead; ignoreBOM keeps a leading
+        // U+FEFF as data. (size < 0 means NUL-terminated, the old behaviour.)
+        if (size < 0) {
+            return rt.wrapNewRef(UTF8ToString(uPtr));
+        }
+        var bytes = HEAPU8.subarray(uPtr, uPtr + size);
+        return rt.wrapNewRef(new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes));
     },
 
     /* PyUnicode_AsUTF8String — encode a str as UTF-8 bytes. Returns a new
