@@ -5630,7 +5630,11 @@ mergeInto(LibraryManager.library, {
         enc = encMap[enc] || enc.replace(/_/g, '-');
         try {
             var bytes = HEAPU8.slice(sPtr, sPtr + size);
-            var s = new TextDecoder(enc, { fatal: false }).decode(bytes);
+            // ignoreBOM only for utf-8: a leading U+FEFF is data there (CPython
+            // keeps it), whereas utf-16/utf-32 legitimately consume it as the
+            // byte-order mark. TextDecoder strips it by default otherwise.
+            var s = new TextDecoder(enc,
+                { fatal: false, ignoreBOM: enc === 'utf-8' }).decode(bytes);
             return rt.wrapNewRef(s);
         } catch (e) {
             rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
@@ -7263,7 +7267,7 @@ mergeInto(LibraryManager.library, {
         if (size < 0) s = UTF8ToString(strPtr);
         else {
             var bytes = HEAPU8.slice(strPtr, strPtr + size);
-            s = new TextDecoder('utf-8').decode(bytes);
+            s = new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes);
         }
         chunks.push(s);
         HEAP32[writerPtr >> 2] += s.length;
