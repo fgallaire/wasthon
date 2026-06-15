@@ -7681,17 +7681,24 @@ mergeInto(LibraryManager.library, {
         // tp_name (offset 12): a C string. Error messages format it with
         // %.200s — e.g. _json's "keys must be ... not %.100s" / make_encoder's
         // "argument 1 must be dict or None, not %.200s" read Py_TYPE(x)->tp_name.
-        // Left NULL it printed "(null)" instead of "int"/"tuple"/etc.
-        if (HEAP32[(structPtr + 12) >> 2] === 0) {
-            var bname = (cls.$infos && cls.$infos.__name__) || cls.__name__;
-            if (bname) {
-                try {
-                    var blen = lengthBytesUTF8(bname) + 1;
-                    var bptr = _malloc(blen);
-                    stringToUTF8(bname, bptr, blen);
-                    HEAP32[(structPtr + 12) >> 2] = bptr;
-                } catch (e) {}
-            }
+        // Left NULL it printed "(null)" instead of "int"/"tuple"/etc. Builtin
+        // classes keep __name__ in a slot, not as a direct JS property, so
+        // `cls.__name__`/`cls.$infos.__name__` read undefined for int/tuple/… —
+        // resolve through Brython's attribute machinery instead. Force-set
+        // (not only-if-zero): the Brython class name is authoritative; the
+        // static C struct's offset 12 under the bridge layout is unreliable.
+        var bname;
+        try { bname = rt.$B.$getattr(cls, '__name__'); } catch (e) {}
+        if (typeof bname !== 'string' || !bname) {
+            bname = (cls.$infos && cls.$infos.__name__) || cls.__name__ || cls.tp_name;
+        }
+        if (bname) {
+            try {
+                var blen = lengthBytesUTF8(bname) + 1;
+                var bptr = _malloc(blen);
+                stringToUTF8(bname, bptr, blen);
+                HEAP32[(structPtr + 12) >> 2] = bptr;
+            } catch (e) {}
         }
     },
 
