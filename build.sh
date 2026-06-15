@@ -562,7 +562,7 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
         -s ALLOW_MEMORY_GROWTH=1 -s ALLOW_TABLE_GROWTH=1 \
         -s MAXIMUM_MEMORY=4GB \
         -s EXPORTED_FUNCTIONS="[${EXPORTS}]" \
-        -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' \
+        -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8","FS"]' \
         -s MODULARIZE=1 -s EXPORT_ES6=1 -s EXPORT_NAME="${BUNDLE_EXPORT_NAME}" \
         -o "${BUNDLE_NAME}.mjs"
 

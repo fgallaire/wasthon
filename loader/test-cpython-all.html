@@ -29,9 +29,7 @@
   corresponding wasthon module (sequential, hidden iframes via
   <code>test-cpython.html?test=…</code>). Scores are CPython's own
   assertions — environment-limited tests (cpython-only / resource /
-  subprocess) are skipped, not failed. <code>json</code> is excluded
-  (its Brython wrapper is coupled to Brython's own <code>_json</code>,
-  needs integration work).
+  subprocess) are skipped, not failed.
 </p>
 
 <p id="brython-toggle" style="font-size:0.9em;margin:0 0 1em 0;padding:4px 8px;
@@ -64,7 +62,7 @@
 // tail rows' import errors surface before the timeout wall.
 const PAGES = [
     'test_struct', 'test_array', 'test_math', 'test_cmath', 'test_binascii',
-    'test_csv', 'test_random', 'test_unicodedata', 'test_pyexpat',
+    'test_csv', 'test_random', 'test_unicodedata', 'test_pyexpat', 'test_json',
     'test_pickle', 'test_re', 'test_sqlite3', 'test_decimal', 'test_hmac',
     'test_zlib', 'test_bz2', 'test_lzma', 'test_hashlib',
     'test_statistics', 'test_zstd',

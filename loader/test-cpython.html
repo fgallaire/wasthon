@@ -59,15 +59,32 @@ const INSTALL_MAP = {
     test_unicodedata: ['unicodedata'], test_pyexpat: ['pyexpat', '_sre'],
     test_pickle: ['_pickle', '_struct'], test_re: ['_sre', 'array', '_pickle'],
     test_sqlite3: ['_sqlite3'],
+    test_json: ['_json', '_pickle'],
     test_hashlib: ['_md5','_sha1','_sha2','_sha3','_blake2', 'array', 'binascii', '_sre'],
 };
 const installList = params.get('install')
     ? params.get('install').split(',')
     : (INSTALL_MAP[testName] || []);
 
+// Which .mjs to load. Default: the full bundle (has every module + the shared
+// bridge). ?bundle=<name> loads a per-module standalone build instead, e.g.
+// ?test=test_sqlite3&bundle=_sqlite3 runs the suite against build/_sqlite3.mjs
+// — the way to test a standalone module's own build config (e.g. its FS export)
+// against its CPython suite. Only works for single-module suites (the standalone
+// .mjs has just that module; installModule() of anything else logs a failure).
+const bundleName = params.get('bundle') || 'wasthon-full';
+
 try {
-    log('Loading wasthon-full.mjs…');
-    const bundle = await wasthonLoadBundle('../build/wasthon-full.mjs?t=' + Date.now());
+    log('Loading ' + bundleName + '.mjs…');
+    const bundle = await wasthonLoadBundle('../build/' + bundleName + '.mjs?t=' + Date.now());
+    // _sqlite3's file DBs live in the bundle's Emscripten FS, NOT Brython's
+    // pure-JS posix FS that `os.unlink` drives — so os_helper.unlink(TESTFN)
+    // can't remove them and a file DB survives across tests ("table already
+    // exists"). Expose the Emscripten FS unlink so the harness clears both.
+    window.wasthon_emfs_unlink = function (p) {
+        try { if (bundle.module && bundle.module.FS) bundle.module.FS.unlink(p); }
+        catch (e) { /* ENOENT etc. — nothing to remove */ }
+    };
     // Deterministic free of compressor/decompressor C contexts at
     // LZMAFile/BZ2File close() (the tests use `with`). On by default; ?dealloc=0
     // to compare against the leaking baseline.
@@ -131,6 +148,19 @@ try {
             window.__BRYTHON__.VFS['re.' + _sub] = ['.py', _s, []];
         }
         log('test_re: re → CPython re package over wasthon _sre');
+    }
+    if (testName === 'test_json' && params.get('brython') !== 'cdn') {
+        // Brython ships an old simplejson (single module, no make_scanner/
+        // make_encoder); swap in CPython's json package so the suite exercises
+        // wasthon's _json C accelerator (test_json's cjson side imports it).
+        const _jbase = './cpython-tests/json/';
+        const _jini = await (await fetch(_jbase + '__init__.py?t=' + Date.now())).text();
+        window.__BRYTHON__.VFS['json'] = ['.py', _jini, [], 1];
+        for (const _sub of ['decoder', 'encoder', 'scanner', 'tool']) {
+            const _s = await (await fetch(_jbase + _sub + '.py?t=' + Date.now())).text();
+            window.__BRYTHON__.VFS['json.' + _sub] = ['.py', _s, []];
+        }
+        log('test_json: json → CPython json package over wasthon _json');
     }
     log(`Running CPython ${testName}.py…\n`);
     window.__wasthon_test_name = testName;
@@ -208,6 +238,15 @@ support.sortdict            = lambda d: repr(d)
 support.verbose             = False
 support.is_emscripten       = False
 support.is_wasi             = False
+# Stack-overflow recursion tests (500k-deep JSON nesting, endless encoders)
+# genuinely blow the constrained wasm stack — CPython itself skips them on
+# emscripten/wasi builds. wasthon runs on emscripten, so honor those gates as
+# real skips; without this the flexible stub mocks them to no-ops and the
+# tests run, hanging the whole suite. skip_if_unlimited_stack_size passes
+# through (our stack IS limited; the emscripten gate is what does the skip).
+support.skip_emscripten_stack_overflow = lambda *a, **k: _skip
+support.skip_wasi_stack_overflow       = lambda *a, **k: _skip
+support.skip_if_unlimited_stack_size   = lambda f: f
 support._1G = 1<<30; support._2G = 1<<31; support._4G = 1<<32
 # IEEE-754 IS available in JS doubles → passthrough (do NOT skip):
 support.requires_IEEE_754   = lambda f: f
@@ -311,6 +350,9 @@ support.TESTFN         = os_helper.TESTFN
 def _fs_unlink(name):
     try: _os_fs.unlink(name)
     except OSError: pass
+    # also drop it from _sqlite3's Emscripten FS (separate from Brython's os FS)
+    try: window.wasthon_emfs_unlink(str(name))
+    except Exception: pass
 os_helper.unlink = _fs_unlink
 support.unlink   = _fs_unlink
 os_helper.rmtree = lambda *a, **k: None
@@ -720,7 +762,12 @@ _KNOWN_HANGS = {
     # SAME wasthon function (_PyArg_Parse @ wasm-function 1783/1817),
     # triggered by simple and extended slice assignment. Likely one
     # root cause. First real wasthon bridge bug from the harness.
-    'test_array': ['test_setslice', 'test_extended_set_del_slice'],
+    # test_weakref: s = array(...); p = weakref.proxy(s); s = None; gc_collect();
+    # assertRaises(ReferenceError, len, p). Dropping the Brython ref doesn't fire
+    # tp_dealloc (the JS-Map refcount only tracks C refs) and there's no
+    # synchronous GC (gc_collect is a no-op), so the proxy never clears —
+    # design-excluded, same as struct's reference_cycle. Not a bug.
+    'test_array': ['test_setslice', 'test_extended_set_del_slice', 'test_weakref'],
     # test_getrandbits_2G_bits is decorated bigmemtest(_2G) upstream
     # to skip on low-mem systems. Brython does not honor unittest.skip
     # so the test actually runs and allocates 2 billion bits. Firefox
@@ -739,6 +786,9 @@ _KNOWN_HANGS = {
 _SKIP_REASONS = {
     'test__struct_reference_cycle_cleaned_up':
         'no cyclic GC (refcount-only runtime, no synchronous JS GC)',
+    'test_weakref':
+        'no synchronous GC: a dropped Brython ref does not fire tp_dealloc, so '
+        'weakref.proxy never clears (refcount-only runtime, gc.collect is a no-op)',
 }
 # Prefix patterns — skip ANY method whose name starts with one of these.
 # Pattern observed: tests calling _check_multiple_unpicklings, framing-
@@ -800,6 +850,12 @@ _PKG_SUBMODULES = {
     'test_sqlite3': ['test_dbapi', 'test_types', 'test_factory',
                      'test_userfunctions', 'test_hooks', 'test_regression',
                      'test_transactions', 'test_backup', 'test_dump'],
+    'test_json': ['test_decode', 'test_default', 'test_dump',
+                  'test_encode_basestring_ascii', 'test_enum', 'test_fail',
+                  'test_float', 'test_indent', 'test_pass1', 'test_pass2',
+                  'test_pass3', 'test_recursion', 'test_scanstring',
+                  'test_separators', 'test_speedups', 'test_tool',
+                  'test_unicode'],
 }
 
 def _patch_suite_for_hangs(suite, names, prefixes=()):
@@ -831,6 +887,13 @@ try:
     if test_name in _PKG_SUBMODULES:
         import importlib
         __import__(test_name)  # run package __init__ (import-guards the C module)
+        # Sub-modules import the package by its CPython-absolute name, e.g.
+        # test_json/test_decode.py does: from test.test_json import PyTest,
+        # CTest. We load the package top-level (test_json), so alias it under
+        # test.<pkg> too (test has no __path__, see _SIBLINGS note).
+        sys.modules['test.' + test_name] = sys.modules[test_name]
+        try: setattr(test_pkg, test_name, sys.modules[test_name])
+        except Exception: pass
         suite = unittest.TestSuite()
         loader = unittest.TestLoader()
         for _sub in _PKG_SUBMODULES[test_name]:
@@ -941,8 +1004,15 @@ class _HeartbeatResult(unittest.TestResult):
             _name = test._testMethodName
             def _raise_skip(*a, **k):
                 raise unittest.SkipTest('known hang: ' + _name)
-            test._testMethodName = '_wasthon_forced_skip'
-            test._wasthon_forced_skip = _raise_skip
+            # Rename to a UNIQUE name per original method, not a constant.
+            # A constant ('_wasthon_forced_skip') gave every forced-skip in a
+            # class the same id; with several hang-methods per class (e.g.
+            # array's test_weakref + test_setslice + test_extended_set_del_slice
+            # across 14 typecodes) the parent-id dedup below collapsed them, so
+            # skipped was undercounted and those tests leaked into passed.
+            _skipattr = '_wasthon_forced_skip__' + _name
+            test._testMethodName = _skipattr
+            setattr(test, _skipattr, _raise_skip)
         super().startTest(test)
 result = _HeartbeatResult()
 suite.run(result)
