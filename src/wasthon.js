@@ -6002,6 +6002,21 @@ mergeInto(LibraryManager.library, {
                 rt.setError(excHandle, msg, v);
                 return;
             }
+        } else if (typeof v === 'number' || typeof v === 'bigint') {
+            // A primitive numeric value: CPython does exc(value), keeping the
+            // value's type as the single arg. _json's raise_stop_iteration sets
+            // StopIteration(idx) with an int; String(v) used to coerce it to a
+            // str, so StopIteration(5).value came back "5" and json's decoder
+            // ("Expecting value" -> JSONDecodeError(msg, doc, err.value)) then
+            // fed a str pos to doc.count('\\n', 0, pos) ("'str' object cannot be
+            // interpreted as an integer"). Build the instance here and preserve
+            // it (pendingExc returns it as-is) so .value keeps the int.
+            try {
+                rt.setError(excHandle, "", rt.$B.$call(rt.unwrap(excHandle), v));
+                return;
+            } catch (_) {
+                try { msg = String(v); } catch (_2) { msg = ""; }
+            }
         } else {
             try { msg = String(v); } catch (_) { msg = ""; }
         }
