@@ -2277,14 +2277,6 @@ mergeInto(LibraryManager.library, {
         return _wasthon_object_gc_new(typeHandle);
     },
 
-    /* PyObject_Free — free the C-side instance memory. */
-    PyObject_Free__deps: ['$WasthonRT'],
-    PyObject_Free: function(ptr) {
-        if (ptr === 0) return;
-        WasthonRT.handles.delete(ptr);
-        _free(ptr);
-    },
-
     /* PyObject_Type — return the class of an object. */
     PyObject_Type__deps: ['$WasthonRT'],
     PyObject_Type: function(handle) {
@@ -2886,28 +2878,6 @@ mergeInto(LibraryManager.library, {
         var bits = 0;
         while (n > 0n) { n >>= 1n; bits++; }
         return bits;
-    },
-
-    /* _PyLong_FromByteArray — inverse of _PyLong_AsByteArray. Constructs a
-     * Python int from byte representation. */
-    _PyLong_FromByteArray__deps: ['$WasthonRT'],
-    _PyLong_FromByteArray: function(bytesPtr, n, littleEndian, isSigned) {
-        var v = 0n;
-        for (var i = 0; i < n; i++) {
-            var off = littleEndian ? (n - 1 - i) : i;
-            v = (v << 8n) | BigInt(HEAPU8[bytesPtr + off]);
-        }
-        if (isSigned && n > 0) {
-            var bits = BigInt(n * 8);
-            var sign = 1n << (bits - 1n);
-            if (v >= sign) v -= 1n << bits;
-        }
-        // Return as Number if it fits, BigInt otherwise.
-        var asNum = Number(v);
-        if (BigInt(asNum) === v && Number.isSafeInteger(asNum)) {
-            return WasthonRT.wrapNewRef(asNum);
-        }
-        return WasthonRT.wrapNewRef(v);
     },
 
     /* _PyLong_AsByteArray — serialize an int into an n-byte buffer (two's
@@ -4586,65 +4556,11 @@ mergeInto(LibraryManager.library, {
         } catch (e) { /* the unraisable hook must never raise */ }
     },
 
-    /* PyUnicodeWriter — minimal string-builder. Stored as a sentinel
-     * handle pointing to a JS array of chunks; Finish() joins. */
-    PyUnicodeWriter_Create__deps: ['$WasthonRT'],
-    PyUnicodeWriter_Create: function(_length) {
-        var rt = WasthonRT;
-        var w = { __wasthon_writer__: true, chunks: [] };
-        return rt.wrap(w);
-    },
-    PyUnicodeWriter_Finish__deps: ['$WasthonRT'],
-    PyUnicodeWriter_Finish: function(writerH) {
-        var rt = WasthonRT;
-        var w = rt.unwrap(writerH);
-        if (!w || !w.__wasthon_writer__) return 0;
-        return rt.wrapNewRef(w.chunks.join(''));
-    },
-    PyUnicodeWriter_Discard__deps: ['$WasthonRT'],
-    PyUnicodeWriter_Discard: function(writerH) {
-        // No allocation to free; the JS GC handles the chunks array.
-    },
-    PyUnicodeWriter_WriteUTF8__deps: ['$WasthonRT'],
-    PyUnicodeWriter_WriteUTF8: function(writerH, strPtr, size) {
-        var rt = WasthonRT;
-        var w = rt.unwrap(writerH);
-        if (!w || !w.__wasthon_writer__) return -1;
-        if (strPtr === 0) return 0;
-        w.chunks.push(size < 0 ? UTF8ToString(strPtr) : UTF8ToString(strPtr, size));
-        return 0;
-    },
-    PyUnicodeWriter_WriteStr__deps: ['$WasthonRT'],
-    PyUnicodeWriter_WriteStr: function(writerH, objH) {
-        var rt = WasthonRT;
-        var w = rt.unwrap(writerH);
-        if (!w || !w.__wasthon_writer__) return -1;
-        var s = rt.asJSStr(rt.unwrap(objH));
-        if (s === null) {
-            try { s = String(rt._b_.str.$factory(rt.unwrap(objH))); }
-            catch (e) { return -1; }
-        }
-        w.chunks.push(s);
-        return 0;
-    },
-    PyUnicodeWriter_WriteRepr__deps: ['$WasthonRT'],
-    PyUnicodeWriter_WriteRepr: function(writerH, objH) {
-        var rt = WasthonRT;
-        var w = rt.unwrap(writerH);
-        if (!w || !w.__wasthon_writer__) return -1;
-        try { w.chunks.push(String(rt._b_.repr(rt.unwrap(objH)))); return 0; }
-        catch (e) { return -1; }
-    },
-    PyUnicodeWriter_WriteSubstring__deps: ['$WasthonRT'],
-    PyUnicodeWriter_WriteSubstring: function(writerH, strH, start, end) {
-        var rt = WasthonRT;
-        var w = rt.unwrap(writerH);
-        if (!w || !w.__wasthon_writer__) return -1;
-        var s = rt.asJSStr(rt.unwrap(strH));
-        if (s === null) return -1;
-        w.chunks.push(s.substring(start, end));
-        return 0;
-    },
+    /* PyUnicodeWriter — the implementation lives further down (the
+     * `_writers` id-keyed set: Create/Finish/Discard/WriteUTF8/WriteStr/
+     * WriteChar/WriteASCII/WriteRepr/WriteSubstring/Format). An earlier
+     * `__wasthon_writer__`-sentinel duplicate set used to sit here but was
+     * fully shadowed (object-literal last-key-wins) and is removed. */
 
     /* _Py_strhex_bytes_with_sep — format `bytes_len` bytes from C buffer
      * as a hex BYTES object (CPython naming convention: the `bytes_`
