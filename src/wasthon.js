@@ -4919,10 +4919,25 @@ mergeInto(LibraryManager.library, {
         if (!fn) return 0;
         var args = argsH === 0 ? [] : rt.unwrap(argsH);
         if (args === null) args = [];
+        args = Array.from(args);
         try {
-            // Brython's $call supports positional only; for kwargs, the
-            // caller object usually accepts them via a special dict.
-            return rt.wrapNewRef(rt.$B.$call.apply(null, [fn].concat(Array.from(args))));
+            // Forward keyword args via Brython's $kw marker — same as
+            // PyObject_Vectorcall. Dropping kwargsH silently skipped EVERY
+            // keyword for any C code that forwards a (args, kwargs) call
+            // through PyObject_Call (e.g. sqlite3.connect(..., kw) -> factory).
+            var kwargs = kwargsH === 0 ? null : rt.unwrap(kwargsH);
+            if (kwargs) {
+                var kwMap = {};
+                var items = rt._b_.list.$factory(
+                    rt.$B.$call(rt.$B.$getattr(kwargs, 'items')));
+                for (var p = 0; p < items.length; p++) {
+                    var nm = rt.asJSStr(items[p][0]);
+                    if (nm === null) nm = String(items[p][0]);
+                    kwMap[nm] = items[p][1];
+                }
+                args.push({ $kw: [kwMap] });
+            }
+            return rt.wrapNewRef(rt.$B.$call.apply(null, [fn].concat(args)));
         } catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
