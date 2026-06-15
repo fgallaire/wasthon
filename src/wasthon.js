@@ -6270,11 +6270,15 @@ mergeInto(LibraryManager.library, {
                         }
                         HEAP32[outPtr >> 2] = rt.wrap(value);
                     } else if (c === 'p') {
-                        /* predicate: store 1 byte int 0/1. Brython 3.14
-                         * made _b_.bool a PyTypeObject mirror, no longer
-                         * callable directly; use $factory like the
-                         * trampoline's 'p'-format handler at ~8218. */
-                        HEAPU8[outPtr] = rt._b_.bool.$factory(value) ? 1 : 0;
+                        /* predicate: store a full int 0/1. CPython's 'p' writes
+                         * an int* (4 bytes); writing only the low byte (HEAPU8)
+                         * left the high 3 bytes of the C int uninitialized, so a
+                         * False predicate could read back as a garbage-nonzero
+                         * int — _json's make_encoder(allow_nan=False) then saw
+                         * allow_nan as true and never rejected nan/inf.
+                         * (_b_.bool.$factory: Brython 3.14 made _b_.bool a
+                         * PyTypeObject mirror, no longer callable directly.) */
+                        HEAP32[outPtr >> 2] = rt._b_.bool.$factory(value) ? 1 : 0;
                     } else if (c === 'C') {
                         /* single Python str char as C int (codepoint) */
                         var s = rt.asJSStr(value);
