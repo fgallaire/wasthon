@@ -652,6 +652,32 @@ mergeInto(LibraryManager.library, {
             return null;
         },
 
+        // Split a JS string into Unicode codepoints (one entry per astral
+        // surrogate pair). wchar_t / Py_UCS4 are 4 bytes, so the materializers
+        // want one element per codepoint, not per UTF-16 unit — shared by
+        // PyUnicode_AsWideChar / AsWideCharString / AsUCS4 / AsUCS4Copy /
+        // 4BYTE_DATA (was copy-pasted five times).
+        strCodePoints: function(s) {
+            var cps = [];
+            for (var i = 0; i < s.length;) {
+                var cp = s.codePointAt(i);
+                cps.push(cp);
+                i += cp > 0xFFFF ? 2 : 1;
+            }
+            return cps;
+        },
+
+        // malloc a NUL-terminated UCS4 buffer holding `cps`; caller owns it.
+        mallocUCS4: function(cps) {
+            var len = cps.length;
+            var ptr = _malloc((len + 1) * 4);
+            for (var i = 0; i < len; i++) {
+                HEAP32[(ptr + i * 4) >> 2] = cps[i];
+            }
+            HEAP32[(ptr + len * 4) >> 2] = 0;
+            return ptr;
+        },
+
         // Argument crossing C→Brython through a call primitive: a PyUnicode
         // placeholder (linear-memory buffer from PyUnicode_New, populated by
         // C memcpy) is opaque to Python code — _pydecimal.Decimal(u) saw
@@ -7169,13 +7195,8 @@ mergeInto(LibraryManager.library, {
         if (obj && obj.__wasthon_unicode_buf__) return obj.__wasthon_unicode_buf__;
         var s = rt.asJSStr(obj);
         if (s === null) return 0;
-        var len = s.length;
-        var ptr = _malloc((len + 1) * 4);
-        for (var i = 0; i < len; i++) {
-            HEAP32[(ptr + i*4) >> 2] = s.codePointAt(i) || s.charCodeAt(i);
-        }
-        HEAP32[(ptr + len*4) >> 2] = 0;
-        return ptr;
+        // one codepoint per 4-byte element (PEP 393 UCS4), matching GET_LENGTH.
+        return rt.mallocUCS4(rt.strCodePoints(s));
     },
 
     /* PyUnicodeWriter API — public in 3.14. Each writer is a struct in
@@ -7372,11 +7393,15 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var s = rt.asJSStr(rt.unwrap(uH));
         if (s === null) return -1;
-        var len = s.length;
+        // wchar_t is 4-byte UCS4: one codepoint per wchar (rt.strCodePoints),
+        // not one UTF-16 unit — else an astral char stored a surrogate pair and
+        // didn't match a UTF-32 / frombytes reconstruction (test_array.test_unicode).
+        var cps = rt.strCodePoints(s);
+        var len = cps.length;
         if (bufPtr === 0) return len + 1;
         var copy = Math.min(len, n);
         for (var i = 0; i < copy; i++) {
-            HEAP32[(bufPtr + i*4) >> 2] = s.charCodeAt(i);
+            HEAP32[(bufPtr + i*4) >> 2] = cps[i];
         }
         if (copy < n) HEAP32[(bufPtr + copy*4) >> 2] = 0;
         return copy;
@@ -7388,14 +7413,10 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var s = rt.asJSStr(rt.unwrap(uH));
         if (s === null) return 0;
-        var len = s.length;
-        var ptr = _malloc((len + 1) * 4);
-        for (var i = 0; i < len; i++) {
-            HEAP32[(ptr + i*4) >> 2] = s.charCodeAt(i);
-        }
-        HEAP32[(ptr + len*4) >> 2] = 0;
-        if (sizePtr) HEAP32[sizePtr >> 2] = len;
-        return ptr;
+        // array('u', string) goes through here; one codepoint per 4-byte wchar.
+        var cps = rt.strCodePoints(s);
+        if (sizePtr) HEAP32[sizePtr >> 2] = cps.length;
+        return rt.mallocUCS4(cps);
     },
 
     PyUnicode_AsUCS4__deps: ['$WasthonRT'],
@@ -7403,13 +7424,16 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var s = rt.asJSStr(rt.unwrap(uH));
         if (s === null) return 0;
-        var len = s.length;
+        // one codepoint per UCS4 element (array('w', '…𠌊𠍇') stored a stray
+        // low surrogate before, test_array.test_unicode).
+        var cps = rt.strCodePoints(s);
+        var len = cps.length;
         if (n < len + (copyNull ? 1 : 0)) {
             rt.setError(rt.wrap(rt._b_.SystemError), "buffer too small");
             return 0;
         }
         for (var i = 0; i < len; i++) {
-            HEAP32[(bufPtr + i*4) >> 2] = s.codePointAt(i) || s.charCodeAt(i);
+            HEAP32[(bufPtr + i*4) >> 2] = cps[i];
         }
         if (copyNull) HEAP32[(bufPtr + len*4) >> 2] = 0;
         return bufPtr;
@@ -7420,13 +7444,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var s = rt.asJSStr(rt.unwrap(uH));
         if (s === null) return 0;
-        var len = s.length;
-        var ptr = _malloc((len + 1) * 4);
-        for (var i = 0; i < len; i++) {
-            HEAP32[(ptr + i*4) >> 2] = s.codePointAt(i) || s.charCodeAt(i);
-        }
-        HEAP32[(ptr + len*4) >> 2] = 0;
-        return ptr;
+        return rt.mallocUCS4(rt.strCodePoints(s));
     },
 
     /* PyUnicode_DecodeUTF16 / UTF32 — decode raw bytes to str. */
