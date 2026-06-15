@@ -7763,16 +7763,31 @@ mergeInto(LibraryManager.library, {
      * `PyLong_Type.tp_repr(obj)` / `PyFloat_Type.tp_repr(obj)` to stringify
      * int/float values and dict keys — needs a real function pointer here;
      * wasthon_bind_builtin_type otherwise leaves the C-allocated struct slot
-     * NULL and the call traps ("indirect call to null"). repr(obj) dispatches
-     * on the object's actual type, which matches every such direct call (the
-     * obj passed to PyLong_Type.tp_repr is always an int, etc.). */
+     * NULL and the call traps ("indirect call to null"). A builtin type's
+     * tp_repr reflects the BASE type, ignoring a subclass __repr__ override —
+     * CPython's PyLong_Type.tp_repr(x) is int.__repr__(x), not
+     * type(x).__repr__(x). _json's encoder calls PyLong_Type.tp_repr /
+     * PyFloat_Type.tp_repr on int/float subclasses (IntEnum, IntFlag, float
+     * enums); a plain repr(obj) returned the enum repr ("<BigNum.small: 1>")
+     * instead of the value ("1"), so route int/float through the base type's
+     * __repr__. Plain int/float are unaffected (same string). */
     wasthon_builtin_tp_repr__deps: ['$WasthonRT'],
     wasthon_builtin_tp_repr: function(handle) {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
         if (obj === null) return 0;
-        try { return rt.wrapNewRef(rt.$B.$call(rt._b_.repr, obj)); }
-        catch (e) { rt.forwardError(e, rt._b_.RuntimeError); return 0; }
+        try {
+            var base = null;
+            if (rt.$B.$isinstance(obj, rt._b_.int) && !rt.$B.$isinstance(obj, rt._b_.bool)) {
+                base = rt._b_.int;
+            } else if (rt.$B.$isinstance(obj, rt._b_.float)) {
+                base = rt._b_.float;
+            }
+            if (base !== null) {
+                return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(base, '__repr__'), obj));
+            }
+            return rt.wrapNewRef(rt.$B.$call(rt._b_.repr, obj));
+        } catch (e) { rt.forwardError(e, rt._b_.RuntimeError); return 0; }
     },
 
     /* tp_new for the Brython-class type-structs that ensureTypeStruct builds.
