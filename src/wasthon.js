@@ -760,7 +760,12 @@ mergeInto(LibraryManager.library, {
             if (sl[di] === 0xED) { hasED = true; break; }
         }
         if (!hasED) {
-            return WasthonRT.wrapNewRef(new TextDecoder('utf-8').decode(sl));
+            // ignoreBOM: true — a leading U+FEFF is data, not a byte-order mark.
+            // TextDecoder defaults to stripping it, so a string starting with
+            // '﻿' decoded to '' (pickle round-trip of array('u',
+            // '...﻿') lost the char). CPython's UTF-8 codec never strips it.
+            return WasthonRT.wrapNewRef(
+                new TextDecoder('utf-8', { ignoreBOM: true }).decode(sl));
         }
         var chars = [];
         for (var p = 0; p < sl.length;) {
