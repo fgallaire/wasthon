@@ -2582,9 +2582,16 @@ mergeInto(LibraryManager.library, {
         var d = rt.unwrap(handle);
         if (d === null) return 0;
         try {
-            var items = rt._b_.list.$factory(rt._b_.dict.items(d));
-            return rt.wrapNewRef(items);
-        } catch (e) { return 0; }
+            // d.items() via Brython attribute lookup. dict.items is NOT a
+            // direct JS property on _b_.dict (Brython keeps it in the type's
+            // method table, like __delitem__/__mul__), so `rt._b_.dict.items`
+            // was undefined → "is not a function" → caught → silent NULL. The
+            // C encoder's PyMapping_Items(dct) under sort_keys / for non-exact
+            // dicts then returned NULL → "tp_call returned NULL". (OrderedDict
+            // happened to work: its pure-Python class exposes items directly.)
+            var view = rt.$B.$call(rt.$B.$getattr(d, 'items'));
+            return rt.wrapNewRef(rt._b_.list.$factory(view));
+        } catch (e) { rt.forwardError(e, rt._b_.RuntimeError); return 0; }
     },
 
     PyBytes_Join__deps: ['$WasthonRT'],
