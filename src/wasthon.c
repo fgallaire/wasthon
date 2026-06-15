@@ -459,6 +459,17 @@ void *wasthon_get_builtin_tp_iternext(void) {
     return (void *)wasthon_builtin_tp_iternext;
 }
 
+/* tp_repr for the builtin type-structs. wasthon_bind_builtin_type installs
+ * this at offset 52 so C code that calls a builtin's tp_repr directly — e.g.
+ * _json's encoder does `PyLong_Type.tp_repr(obj)` / `PyFloat_Type.tp_repr(obj)`
+ * to stringify ints/floats — gets a real function pointer, not a NULL slot
+ * (which trapped as an indirect call to null). */
+extern PyObject *wasthon_builtin_tp_repr(PyObject *self);
+EMSCRIPTEN_KEEPALIVE
+void *wasthon_get_builtin_tp_repr(void) {
+    return (void *)wasthon_builtin_tp_repr;
+}
+
 /* tp_new for Brython-class type-structs (JS-library). ensureTypeStruct installs
  * this at offset 60 so C code that reconstructs instances from such a struct —
  * e.g. _pickle load_newobj's `cls->tp_new(cls, args, kwargs)` — works. */

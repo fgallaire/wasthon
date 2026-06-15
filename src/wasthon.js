@@ -7639,6 +7639,33 @@ mergeInto(LibraryManager.library, {
         rt.handles.set(structPtr, cls);
         rt.builtinTypeForClass = rt.builtinTypeForClass || new Map();
         rt.builtinTypeForClass.set(cls, structPtr);
+        // Wire tp_repr (offset 52) on the C-allocated struct so direct slot
+        // calls like _json's `PyLong_Type.tp_repr(obj)` / `PyFloat_Type.tp_repr`
+        // don't trap on a NULL pointer. Only-if-zero: never clobber a real
+        // C-provided tp_repr. (tp_iternext at offset 56 is installed lazily by
+        // ensureTypeStruct for on-demand structs; the builtin singletons skip
+        // that path, so they need it set here.)
+        if (rt._builtinTpRepr === undefined) {
+            rt._builtinTpRepr = _wasthon_get_builtin_tp_repr();
+        }
+        if (HEAP32[(structPtr + 52) >> 2] === 0) {
+            HEAP32[(structPtr + 52) >> 2] = rt._builtinTpRepr;
+        }
+        // tp_name (offset 12): a C string. Error messages format it with
+        // %.200s — e.g. _json's "keys must be ... not %.100s" / make_encoder's
+        // "argument 1 must be dict or None, not %.200s" read Py_TYPE(x)->tp_name.
+        // Left NULL it printed "(null)" instead of "int"/"tuple"/etc.
+        if (HEAP32[(structPtr + 12) >> 2] === 0) {
+            var bname = (cls.$infos && cls.$infos.__name__) || cls.__name__;
+            if (bname) {
+                try {
+                    var blen = lengthBytesUTF8(bname) + 1;
+                    var bptr = _malloc(blen);
+                    stringToUTF8(bname, bptr, blen);
+                    HEAP32[(structPtr + 12) >> 2] = bptr;
+                } catch (e) {}
+            }
+        }
     },
 
     /* Generic tp_iter for built-in type singletons. Called via member
@@ -7680,6 +7707,23 @@ mergeInto(LibraryManager.library, {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
         }
+    },
+
+    /* Generic tp_repr for the builtin type-structs (offset 52). C code that
+     * calls a builtin type's tp_repr directly — e.g. _json's encoder does
+     * `PyLong_Type.tp_repr(obj)` / `PyFloat_Type.tp_repr(obj)` to stringify
+     * int/float values and dict keys — needs a real function pointer here;
+     * wasthon_bind_builtin_type otherwise leaves the C-allocated struct slot
+     * NULL and the call traps ("indirect call to null"). repr(obj) dispatches
+     * on the object's actual type, which matches every such direct call (the
+     * obj passed to PyLong_Type.tp_repr is always an int, etc.). */
+    wasthon_builtin_tp_repr__deps: ['$WasthonRT'],
+    wasthon_builtin_tp_repr: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        try { return rt.wrapNewRef(rt.$B.$call(rt._b_.repr, obj)); }
+        catch (e) { rt.forwardError(e, rt._b_.RuntimeError); return 0; }
     },
 
     /* tp_new for the Brython-class type-structs that ensureTypeStruct builds.
