@@ -4688,15 +4688,17 @@ return true}catch(err){return false}}
 _b_.hash=function(obj){check_nb_args_no_kw('hash',1,arguments)
 return $B.$hash(obj)}
 $B.$hash=function(obj){if(obj.__hashvalue__ !==undefined){return obj.__hashvalue__}
-if(typeof obj==="boolean"){return obj ? 1 :0}else if(typeof obj==="number"){return obj}
-var klass=$B.get_class(obj)
+var res
+if(typeof obj==="boolean"){return obj ? 1 :0}else if(typeof obj==="number"){res=obj}
+else{var klass=$B.get_class(obj)
 var hash_func=$B.search_slot(klass,'tp_hash',$B.NULL)
-if(hash_func !==$B.NULL && hash_func !==_b_.None){var res=hash_func(obj)
-if(! $B.is_int(res)){$B.RAISE(_b_.TypeError,'__hash__ method should return an integer')}
-return res}
-$B.RAISE(_b_.TypeError,"unhashable type: '"+
+if(hash_func !==$B.NULL && hash_func !==_b_.None){res=hash_func(obj)
+if(! $B.is_int(res)){$B.RAISE(_b_.TypeError,'__hash__ method should return an integer')}}
+else{$B.RAISE(_b_.TypeError,"unhashable type: '"+
 _b_.str.$factory($B.jsobj2pyobj(obj))+"'"
-)}
+)}}
+if(res===-1){res=-2}
+return res}
 var help=_b_.help=function(obj){if(obj===undefined){obj='help'}
 if(typeof obj=='string'){var lib_url='https://docs.python.org/3/library'
 var parts=obj.split('.'),head=[],url
@@ -6847,12 +6849,11 @@ var self=$.self,prefix=$.prefix,start=$.start
 var cls=this 
 if($B.$isinstance($.prefix,[bytes,bytearray])){let res=true
 for(let i=0;i < prefix.source.length && res;i++){res=self.source[start+i]==prefix.source[i]}
-return res}else if($B.is_tuple(prefix)){let items=[]
-for(let i=0;i < prefix.length;i++){if($B.$isinstance(prefix[i],[bytes,bytearray])){items=items.concat(prefix[i].source)}else{$B.RAISE(_b_.TypeError,"startswith first arg must be "+
+return res}else if($B.is_tuple(prefix)){for(let sub of prefix){if(! $B.$isinstance(sub,[bytes,bytearray])){$B.RAISE(_b_.TypeError,"startswith first arg must be "+
 "bytes or a tuple of bytes, not "+
-$B.class_name(prefix))}}
-let prefix=cls.$factory(items)
-return startswith.call(cls,self,prefix,start)}else{$B.RAISE(_b_.TypeError,"startswith first arg must be bytes "+
+$B.class_name(prefix))}
+if(startswith.call(cls,self,sub,start)){return true}}
+return false}else{$B.RAISE(_b_.TypeError,"startswith first arg must be bytes "+
 "or a tuple of bytes, not "+$B.class_name(prefix))}}
 function upper(){var self=self_arg('upper',arguments)
 var _res=[],pos=0
@@ -9964,7 +9965,7 @@ if(value.indexOf('__')>-1){$B.RAISE(_b_.ValueError,'invalid float literal '+
 value)}
 value=value.charAt(0)+value.substr(1).replace(/_/g,"")
 value=to_digits(value)
-if(isFinite(value)){return fast_float(parseFloat(value))}else{$B.RAISE(_b_.ValueError,"could not convert string to float: "+
+if(isFinite(value)){return fast_float(parseFloat(value))}else{var num=Number(value);if(num===Infinity||num===-Infinity){return fast_float(num)}$B.RAISE(_b_.ValueError,"could not convert string to float: "+
 _b_.repr(original_value))}}}
 let klass=$B.get_class(value),float_method=$B.$getattr(klass,'__float__',null)
 if(float_method===null){var index_method=$B.$getattr(klass,'__index__',null)

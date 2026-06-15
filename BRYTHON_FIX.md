@@ -18,6 +18,69 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `float(str)` raises ValueError on an overflowing literal instead of returning inf
+
+**Impact: +2 test_json** (`test_out_of_range`, C and Py float paths). Source:
+`www/src/py_float.js` (string parse), vendored in `loader/brython/brython.js`.
+
+Symptom: `float('1e999')` raised `ValueError: could not convert string to float`.
+Root: the parser validates the cleaned string with `isFinite(value)` (which
+coerces via `Number()`), then `parseFloat`. `isFinite` is false for BOTH an
+invalid string (`Number()` → NaN) AND a valid literal that overflows the double
+range (`Number()` → ±Infinity), so a real overflow was rejected. CPython returns
+inf for overflow. Fix: in the `else` branch, return `inf`/`-inf` when
+`Number(value)` is `±Infinity`; only NaN stays an error.
+
+```python
+>>> float('1e999')
+ValueError: could not convert string to float: '1e999'  # before
+inf                                                      # after
+```
+
+## [x] `bytes.startswith(tuple)` crashes (let-shadow TDZ) and concatenated the prefixes
+
+**Impact: +2 test_json** (`test_bytes`, C and Py decoders — `json.detect_encoding`
+does `b.startswith((BOM_UTF32_BE, BOM_UTF32_LE))`). Source: `www/src/py_bytes.js`
+(`startswith`), vendored in `loader/brython/brython.js`.
+
+Symptom: `b'abc'.startswith((b'x', b'ab'))` threw `can't access lexical
+declaration 'prefix' before initialization`.
+Root: two bugs, one masking the other. (1) the tuple branch ended with
+`let prefix = cls.$factory(items)`; being block-hoisted, that put the `prefix`
+parameter in the temporal dead zone for the whole branch, so the earlier
+references (`prefix.length`, `prefix[i]`, `class_name(prefix)`) threw. (2) even
+without the crash the logic was wrong — it concatenated all tuple items into one
+bytes and tested that, instead of matching if ANY prefix matches. Fix: mirror
+`endswith` — iterate the tuple and return true on the first matching prefix
+(short-circuiting before validating later items, as CPython does).
+
+```python
+>>> b'abc'.startswith((b'x', b'ab'))
+JavascriptError: can't access lexical declaration 'prefix' before initialization  # before
+True                                                                              # after
+```
+
+## [x] `hash()` does not remap a computed -1 to -2
+
+**Impact: +0 on the wasthon suites** (surfaced by decimal's `test_hash_method`,
+whose remaining failure has a separate deeper root) — but a real CPython
+faithfulness bug: `hash(-1)` is `-2`, not `-1`. Source:
+`www/src/py_builtin_functions.js` (`$B.$hash`), vendored in `loader/brython/brython.js`.
+
+Symptom: `hash(-1) == -1` (CPython: `-2`), and likewise any object whose hash
+computes to -1. Root: CPython reserves a hash of -1 as the "hash failed"
+sentinel, so a value that would hash to -1 is remapped to -2 (in `hash()` / each
+`tp_hash`). `$B.$hash` returned the raw value from both the number fast-path and
+`tp_hash`, never applying that remap. Fix: funnel both paths through a single
+exit and remap `-1 -> -2` there.
+
+```python
+>>> hash(-1)
+-1  # before
+>>> hash(-1)
+-2  # after
+```
+
 ## [x] `slice.$conv_for_seq` over-runs on `stop`/`start` < -len with step < 0
 
 **Impact: +14 test_array** (`test_extended_getslice` across all 14 typecodes; the
