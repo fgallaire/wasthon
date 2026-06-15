@@ -76,9 +76,19 @@
         // resolve os.PathLike (anything with __fspath__) to a str path
         function toPath(file) {
             if (typeof file === 'string' || typeof file === 'number') return file;
+            // os.PathLike → __fspath__() (which may itself return str OR bytes)
             try {
                 const fs = B.$getattr(file, '__fspath__', null);
-                if (fs) return B.$call(fs);
+                if (fs) file = B.$call(fs);
+            } catch (e) {}
+            if (typeof file === 'string' || typeof file === 'number') return file;
+            // bytes / bytearray filename → decode to str (the browser FS is
+            // UTF-8), so open() accepts bytes paths like CPython's os.fsdecode.
+            // Without this a bytes filename fell through and was used as-is,
+            // surfacing as "invalid file: [object Object]" (bz2/lzma/zstd/random).
+            try {
+                const dec = B.$getattr(file, 'decode', null);
+                if (dec) return B.$call(dec, 'utf-8');
             } catch (e) {}
             return file;
         }
