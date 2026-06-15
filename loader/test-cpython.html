@@ -224,6 +224,26 @@ def _mod(name):
 test_pkg = _mod('test')
 support = _mod('test.support')
 
+# Real test.support.subTests (3.13+): parametrize a test method over a list of
+# arg values, each run as a subTest. Without this the module's catch-all stub
+# returned the method unwrapped, so it was called with no value for the arg
+# (test_array's @subTests("dtype", [...]) -> "missing argument 'dtype'").
+import functools as _functools
+def subTests(arg_names, arg_values):
+    def deco(func):
+        @_functools.wraps(func)
+        def wrapper(self, *args, **kw):
+            names = (arg_names.replace(',', ' ').split()
+                     if isinstance(arg_names, str) else list(arg_names))
+            for values in arg_values:
+                vt = (values,) if len(names) == 1 else tuple(values)
+                skw = dict(zip(names, vt))
+                with self.subTest(**skw):
+                    func(self, *args, **kw, **skw)
+        return wrapper
+    return deco
+support.subTests = subTests
+
 # Explicit overrides — skip what can't/shouldn't run in-browser:
 support.cpython_only        = _skip      # refcount / impl detail
 support.refcount_test       = _skip      # @refcount_test loops create+leak C ctx (no refcount in Brython) -> OOM cascade
@@ -620,7 +640,18 @@ testcase.ExceptionIsLikeMixin       = _ExceptionIsLikeMixin
 script_helper = _mod('test.support.script_helper')
 def _assert_python_ok(*a, **k):
     raise unittest.SkipTest('subprocess not available in browser')
+def _assert_python_failure(*a, **k):
+    raise unittest.SkipTest('subprocess not available in browser')
 script_helper.assert_python_ok = _assert_python_ok
+script_helper.assert_python_failure = _assert_python_failure
+# @support.requires_subprocess() gates whole TestCase classes (e.g. json's
+# test_tool TestMain/TestTool, which spawn 'python -m json.tool'). The browser
+# has no subprocess (os.pipe -> NotImplementedError), so make the decorator skip
+# the class outright — matching the stated policy that subprocess tests skip,
+# environment limit not a wasthon bug.
+def _requires_subprocess(*a, **k):
+    return unittest.skip('subprocess not available in browser')
+support.requires_subprocess = _requires_subprocess
 
 for n, m in [('test.support.import_helper', import_helper),
              ('test.support.os_helper', os_helper),
