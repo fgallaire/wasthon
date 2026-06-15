@@ -301,11 +301,15 @@ link_module() {
     local out="$1" init="$2" export_name="$3"; shift 3
     # EXTRA_LD_FLAGS lets per-module cases inject flags (e.g. -flto for
     # size-tuned builds). Empty by default — no impact on existing modules.
+    # EXTRA_RUNTIME_METHODS appends to EXPORTED_RUNTIME_METHODS (e.g. _sqlite3
+    # adds "FS" to clear its Emscripten-FS file DBs). Empty by default.
+    local rtm='"HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8"'
+    [[ -n "${EXTRA_RUNTIME_METHODS:-}" ]] && rtm="${rtm},${EXTRA_RUNTIME_METHODS}"
     emcc -O2 ${EXTRA_LD_FLAGS:-} "$@" wasthon.o \
         --js-library "${SRC}/wasthon.js" \
         -s ALLOW_MEMORY_GROWTH=1 -s ALLOW_TABLE_GROWTH=1 \
         -s EXPORTED_FUNCTIONS="[\"_${init}\",\"_wasthon_init\",\"_wasthon_module_create\",\"_malloc\",\"_free\"]" \
-        -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' \
+        -s EXPORTED_RUNTIME_METHODS="[${rtm}]" \
         -s MODULARIZE=1 -s EXPORT_ES6=1 -s EXPORT_NAME="${export_name}" \
         -o "${out}.mjs"
     echo "Built: ${out}.mjs + ${out}.wasm"
@@ -556,13 +560,19 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
     # a small .wasm cost (~2%) and is not needed by the light bundle.
     [[ "${BUNDLE_NAME}" == "wasthon-full" ]] && STACK_FLAG="${STACK_FLAG} -sSTACK_OVERFLOW_CHECK=2"
 
+    # FS only in the full bundle (it ships _sqlite3, whose file DBs live in the
+    # Emscripten FS — the harness clears them there). The light bundle has no
+    # _sqlite3, so omit FS to avoid the dead weight.
+    BUNDLE_RTM='"HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8"'
+    [[ "${BUNDLE_NAME}" == "wasthon-full" ]] && BUNDLE_RTM="${BUNDLE_RTM},\"FS\""
+
     emcc -O2 ${STACK_FLAG} ${EXTRA_LD_FLAGS:-} "${OBJS[@]}" \
         --js-library "${SRC}/wasthon.js" \
         -sUSE_ZLIB=1 \
         -s ALLOW_MEMORY_GROWTH=1 -s ALLOW_TABLE_GROWTH=1 \
         -s MAXIMUM_MEMORY=4GB \
         -s EXPORTED_FUNCTIONS="[${EXPORTS}]" \
-        -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8","FS"]' \
+        -s EXPORTED_RUNTIME_METHODS="[${BUNDLE_RTM}]" \
         -s MODULARIZE=1 -s EXPORT_ES6=1 -s EXPORT_NAME="${BUNDLE_EXPORT_NAME}" \
         -o "${BUNDLE_NAME}.mjs"
 
@@ -818,6 +828,10 @@ _sqlite3)
              "${unit}.c" -o "${unit}.o"
         SQLITE_OBJS+=( "${unit}.o" )
     done
+    # _sqlite3 writes file DBs into the Emscripten FS (SQLite's default unix
+    # VFS), separate from Brython's pure-JS os FS — so export FS to let the
+    # harness/os_helper.unlink drop those DB files there too.
+    EXTRA_RUNTIME_METHODS='"FS"' \
     link_module "_sqlite3" "PyInit__sqlite3" "_sqlite3_init" \
         "${SQLITE_OBJS[@]}" "${SQLITE_DIR}/sqlite3.o"
     ;;
