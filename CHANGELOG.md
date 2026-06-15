@@ -7,6 +7,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyDict_DelItem` uses the `dict.$delitem` primitive** (+9 json). It called `rt._b_.dict.__delitem__(d, k)`, but `__delitem__` is not a direct attribute on `_b_.dict` (Brython keeps it in slots) -> `undefined(d,k)` -> always -1. _json's encoder bails cleaning up its circular-reference marker, so `json.dumps([1])` raised "tp_call returned NULL". Now uses `dict.$delitem` (like `$setitem`/`$contains`).
+
 - [x] **`PyArg_Parse` integer formats coerce via `__index__` only** (+7 array).
       The `b/h/i/l/L/q` converters accepted a Python float through Brython's
       boxed-`{value}` fast-path, silently truncating it into an integer array —

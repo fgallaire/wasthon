@@ -1610,7 +1610,11 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var d = rt.unwrap(dictH);
         var k = rt.unwrap(keyH);
-        try { rt._b_.dict.__delitem__(d, k); return 0; } catch (e) { return -1; }
+        // dict.$delitem (the internal primitive, like $setitem/$contains) —
+        // dict.__delitem__ is NOT a direct attribute (Brython keeps it in slots),
+        // so the old call was `undefined(d,k)` → always -1. _json's encoder bailed
+        // on the circular-ref marker cleanup → "tp_call returned NULL" on dumps.
+        try { rt._b_.dict.$delitem(d, k); return 0; } catch (e) { return -1; }
     },
 
     PyDict_Clear__deps: ['$WasthonRT'],
