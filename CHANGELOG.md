@@ -7,6 +7,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyList_Sort` sorts with Python `__lt__`** (+2 json -- completes sort_keys with the `PyMapping_Items` fix above). It called JS `arr.sort()` (lexicographic string sort), which stringifies elements and throws on Brython objects with no usable `toString`. _json's encoder sorts a list of (key, value) tuples under `sort_keys=True`; the bare sort corrupted the order or threw -> "tp_call returned NULL". Now sorts via Brython's `rich_comp('__lt__', ...)`; an unorderable-keys TypeError is the faithful CPython result.
+
 - [x] **`PyMapping_Items` calls `d.items()` via `$getattr`** (+3 json; pairs with the `PyList_Sort` fix below for the full sort_keys path). It did `rt._b_.dict.items(d)`, but `dict.items` is not a direct JS property on `_b_.dict` (Brython keeps it in the type method table, like `__delitem__`) -> `undefined` -> "is not a function" -> caught -> silent NULL. The C encoder's `PyMapping_Items(dct)` (sort_keys / non-exact dicts) then returned NULL -> "tp_call returned NULL". Now resolves `d.items` through Brython attribute lookup (works for any mapping).
 
 - [x] **`tp_repr` + `tp_name` wired on builtin type structs** (+1 json; general). Builtin singletons (`PyLong_Type`, `PyFloat_Type`, ...) bound by `wasthon_bind_builtin_type` left their C struct's `tp_repr` (offset 52) and `tp_name` (offset 12) NULL. _json's encoder calls `PyLong_Type.tp_repr(obj)` / `PyFloat_Type.tp_repr(obj)` to stringify ints/floats -> indirect call to null; and `Py_TYPE(key)->tp_name` in its TypeError messages printed "(null)". Now wired only-if-zero (never clobbering a real C slot): tp_repr -> a `repr(obj)` trampoline, tp_name -> the class name. Mirrors the earlier `tp_iternext` fix.

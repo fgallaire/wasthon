@@ -1342,10 +1342,30 @@ mergeInto(LibraryManager.library, {
 
     PyList_Sort__deps: ['$WasthonRT'],
     PyList_Sort: function(listHandle) {
-        var arr = WasthonRT.unwrap(listHandle);
-        if (!Array.isArray(arr)) return -1;
-        arr.sort();
-        return 0;
+        var rt = WasthonRT;
+        var arr = rt.unwrap(listHandle);
+        if (!Array.isArray(arr)) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "PyList_Sort: not a list");
+            return -1;
+        }
+        // Sort with Python's __lt__, not JS's default arr.sort() — the latter
+        // stringifies elements lexicographically (wrong for ints/tuples) and
+        // throws on Brython objects with no usable toString. _json's encoder
+        // sorts a list of (key, value) tuples here under sort_keys=True; the
+        // bare arr.sort() produced a corrupt order or threw, surfacing as
+        // "tp_call returned NULL" out of the C encoder. A raised TypeError
+        // (e.g. unorderable mixed keys) is the faithful CPython behaviour.
+        try {
+            arr.sort(function (a, b) {
+                if (rt.$B.rich_comp('__lt__', a, b)) return -1;
+                if (rt.$B.rich_comp('__lt__', b, a)) return 1;
+                return 0;
+            });
+            return 0;
+        } catch (e) {
+            rt.forwardError(e, rt._b_.TypeError);
+            return -1;
+        }
     },
 
     PyList_Insert__deps: ['$WasthonRT'],
