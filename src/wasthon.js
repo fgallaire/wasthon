@@ -6099,7 +6099,7 @@ mergeInto(LibraryManager.library, {
      * Returns 1 on success, 0 on failure (with TypeError set). Out pointers
      * for absent optional args are left as-is (caller initializes them).
      */
-    PyArg_ParseTupleAndKeywords__deps: ['$WasthonRT'],
+    PyArg_ParseTupleAndKeywords__deps: ['$WasthonRT', 'PyUnicode_AsUTF8', 'PyFloat_AsDouble'],
     PyArg_ParseTupleAndKeywords: function(argsH, kwdsH, formatPtr, kwlistPtr, varargs) {
         var rt = WasthonRT;
         var args = rt.unwrap(argsH);
@@ -6187,7 +6187,8 @@ mergeInto(LibraryManager.library, {
             else if (c !== 'O' && c !== 'i' && c !== 'I' && c !== 'k' &&
                 c !== 'l' && c !== 'L' && c !== 'K' && c !== 'n' &&
                 c !== 'b' && c !== 'B' && c !== 'h' && c !== 'H' &&
-                c !== 'p' && c !== 'C' && c !== 'U') {
+                c !== 'p' && c !== 'C' && c !== 'U' &&
+                c !== 's' && c !== 'z' && c !== 'f' && c !== 'd') {
                 rt.setError(rt.wrap(rt._b_.SystemError),
                     "PyArg_ParseTuple[AndKeywords]: format char '" + c + "' not implemented");
                 return 0;
@@ -6262,6 +6263,24 @@ mergeInto(LibraryManager.library, {
                             return 0;
                         }
                         HEAP32[outPtr >> 2] = s.codePointAt(0) || s.charCodeAt(0);
+                    } else if (c === 's' || c === 'z') {
+                        /* str -> C UTF-8 string (reuses PyUnicode_AsUTF8: cached
+                         * and kept alive with the str). 'z' accepts None->NULL. */
+                        if (c === 'z' && value === rt._b_.None) {
+                            HEAP32[outPtr >> 2] = 0;
+                        } else {
+                            var sp = _PyUnicode_AsUTF8(rt.wrap(value));
+                            if (sp === 0) return 0;   /* str-expected TypeError set */
+                            HEAP32[outPtr >> 2] = sp;
+                        }
+                    } else if (c === 'f' || c === 'd') {
+                        /* float ('f') / double ('d'): reuse PyFloat_AsDouble
+                         * (handles int/float/bool & __float__, sets TypeError
+                         * on a bad operand). */
+                        var dv = _PyFloat_AsDouble(rt.wrap(value));
+                        if (dv === -1 && rt.pendingException) return 0;
+                        if (c === 'f') HEAPF32[outPtr >> 2] = dv;
+                        else HEAPF64[outPtr >> 3] = dv;
                     } else {
                         /* numeric (all remaining codes are integer formats):
                          * CPython getargs accepts int/bool/__index__ and
