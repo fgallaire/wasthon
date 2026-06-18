@@ -92,6 +92,16 @@
             } catch (e) {}
             return file;
         }
+        // like toPath but WITHOUT the bytes→str decode: resolves os.PathLike yet
+        // keeps str/bytes as-is, matching what CPython stores as FileIO.name
+        function toName(file) {
+            if (typeof file === 'string' || typeof file === 'number') return file;
+            try {
+                const fs = B.$getattr(file, '__fspath__', null);
+                if (fs) return B.$call(fs);
+            } catch (e) {}
+            return file;
+        }
         function makeDispatch(orig) {
             return function () {
                 const $ = B.args('open', 8,
@@ -106,11 +116,13 @@
                 const hasOpener = $.opener && $.opener !== _b_.None;
                 const inFs = !isFd && !hasOpener && exists(file);
                 if (isFd || writable || hasOpener || inFs) {
-                    return wasthonOpen(file, mode, $.encoding, $.errors,
+                    // pass the ORIGINAL file (FileIO keeps it as .name, like
+                    // CPython; it toPath()s internally for the actual fs ops)
+                    return wasthonOpen($.file, mode, $.encoding, $.errors,
                         $.newline, $.closefd, $.opener);
                 }
                 if (orig) return orig.apply(this, arguments);   // legacy read
-                return wasthonOpen(file, mode, $.encoding, $.errors,
+                return wasthonOpen($.file, mode, $.encoding, $.errors,
                     $.newline, $.closefd, $.opener);
             };
         }
@@ -195,7 +207,7 @@
             self.$wfd = fd;
             self.fd = fd;                       // >=0 so the "closed" guards pass
             self.$closefd = $.closefd !== false;
-            self.$name = name;
+            self.$name = toName($.name);   // CPython .name: PathLike resolved, str/bytes kept
             self.readable = /[r+]/.test(mode) ? 1 : 0;
             self.writable = /[wax+]/.test(mode) ? 1 : 0;
             self.appending = /a/.test(mode) ? 1 : 0;

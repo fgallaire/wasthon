@@ -81,6 +81,107 @@ exit and remap `-1 -> -2` there.
 -2  # after
 ```
 
+## [x] `int` does not expose `__float__`
+
+**Impact: +0 on the wasthon suites** (surfaced via the C `nb_float` slot, which
+looked up `__float__` on an int and found nothing) — but a real CPython
+faithfulness gap: `(5).__float__()` raised `AttributeError` (CPython provides it
+via `long_float`). Source: `www/src/py_int.js`, vendored in
+`loader/brython/brython.js`.
+
+Symptom: `(5).__float__()` → `AttributeError: 'int' object has no attribute
+'__float__'`. Root: `int` defines the `nb_float` slot but never exposes it as the
+`__float__` method/dunder. **Gotcha:** the naive `int.__float__ = float.$factory(self)`
+recurses infinitely — `float.$factory` itself dispatches to `__float__` when the
+operand defines one. Fix: reuse the existing `nb_float` conversion directly
+(`$B.fast_float(Number(int_value(self)))`) and add `__float__` to `int.tp_methods`.
+
+```python
+>>> (5).__float__()
+AttributeError: 'int' object has no attribute '__float__'  # before
+5.0                                                        # after
+>>> (2**300).__float__()
+AttributeError                                             # before
+2.037035976334486e+90                                      # after
+```
+
+## [x] `iso8859` encoding label not recognised (LookupError)
+
+**Impact: +1 test_pyexpat** (`test_parse_only_xml_data` — the XML declares
+`encoding='iso8859'`, so `xml.encode('iso8859')` and expat's decode must both
+accept it). Source: the latin-1 alias group of the `encode`/`decode` switches,
+vendored in `loader/brython/brython.js`.
+
+Symptom: `'abc'.encode('iso8859')` raised `LookupError: unknown encoding:
+iso8859`. Root: the latin-1 alias group lists `latin1`, `iso8859_1`, `8859`,
+`cp819`, `windows1252`, … but not the bare `iso8859` label — CPython's
+`encodings/aliases.py` maps `'iso8859' -> 'latin_1'`. Fix: add `iso8859` to the
+latin-1 cases in both the encode and decode switches.
+
+```python
+>>> 'abc'.encode('iso8859')
+LookupError: unknown encoding: iso8859  # before
+b'abc'                                  # after
+```
+
+## [x] `open()` rejects a bytes filename ("invalid file: [object Object]")
+
+**Impact: +1 test_bz2** (`testOpenBytesFilename`). Source: `_io_open_impl`,
+vendored in `loader/brython/brython.js`.
+
+Symptom: `open(b'/tmp/x', 'wb')` (and `BZ2File(b'...')`) raised `TypeError:
+invalid file: [object Object]`. Root: `_io_open_impl` resolves `__fspath__` but
+then requires a str, so a bytes filename fell straight through to the error.
+CPython's `open()` accepts bytes paths (decoded via `os.fsdecode`). Fix: decode a
+bytes/bytearray path before the str check.
+
+```python
+>>> open(b'/tmp/x', 'wb')
+TypeError: invalid file: [object Object]  # before
+<_io.BufferedWriter ...>                  # after
+```
+
+## [x] `function.__annotations__` crashes on a function with no annotations
+
+**Impact: +21 test_hmac** (no-annotation functions in two test classes' setUpClass
+crashed, erroring the whole classes). Source: the `function.__annotations__`
+getter, vendored in `loader/brython/brython.js`.
+
+Symptom: `(lambda: None).__annotations__` raised `JavascriptError:
+self.__annotate__ is not a function`. Root: the getter lazily computes annotations
+via `self.__annotate__(1)` (PEP 649), but a function with no annotations has no
+`__annotate__` — CPython returns an empty dict in that case. Fix: when
+`__annotate__` is not callable, return `{}`.
+
+```python
+>>> (lambda: None).__annotations__
+JavascriptError: self.__annotate__ is not a function  # before
+
+>>> (lambda: None).__annotations__
+{}                                                    # after
+```
+
+## [x] An instance attribute does not override a builtin method (non-data descriptor)
+
+**Impact: +3** (test_bz2 / test_lzma / test_zstd `test_seekable` — `BZ2File(src).seekable()`
+with `src.seekable = lambda: False` must be False). Source: `$B.call_attr` (the `obj.m()`
+method-call optimization) and the `$B.$getattr` builtin-type fast path, vendored in
+`loader/brython/brython.js`. **Two independent upstream PRs** (call_attr / getattr) — distinct paths.
+
+Symptom: an instance attribute shadowing a builtin method was ignored (`b.seekable()` still
+ran the class method). Root: both `$B.call_attr` (builtin_method branch) and the `$B.$getattr`
+fast path returned the class method without first checking the instance dict. CPython's
+`__getattribute__` precedence is data descriptor > instance `__dict__` > non-data descriptor
+(method). Fix: in both paths an instance attribute (via `search_in_dict`) wins over a non-data
+descriptor; data descriptors (getset/member) still win.
+
+```python
+>>> b = io.BytesIO(b''); b.seekable = lambda: False
+>>> b.seekable()
+True   # before
+False  # after
+```
+
 ## [x] `slice.$conv_for_seq` over-runs on `stop`/`start` < -len with step < 0
 
 **Impact: +14 test_array** (`test_extended_getslice` across all 14 typecodes; the
@@ -1737,3 +1838,165 @@ Three defects in the native `_IOBase` layer (vendored brython.js):
   no-seek read(1) fallback for stream raws (DecompressReader) measured
   −31 as well (2nd confirmation after the zstd −57 scar). Real design:
   buffer inside the BufferedReader.
+
+## [x] io stack: faithful `__exit__` + in-`BufferedReader` stream buffer + the cascade it unmasked
+
+**Impact: bz2 95→97, lzma 115→117, zstd 105→108, zero regression** (full sweep
+of all 21 suites). This is the "dedicated session" the two landmines above
+called for. Source: `www/src/py_io.js` + the JS-defined io in `www/src/libs.js`
+(BytesIO) + `www/src/py_memoryview.js`, vendored in `loader/brython/brython.js`
+and `loader/brython/brython_stdlib.js`.
+
+Root: `_BufferedIOBase.__exit__` returned `true`, suppressing every exception
+raised inside a `with` block. That single lie masked a cascade of broken file
+operations — every test whose body raised got swallowed and "passed". The −31
+"interaction" was never an interaction: it was the unmasked latent bugs
+surfacing once `__exit__` stopped hiding them. Making `__exit__` faithful
+(return `None`, like CPython `IOBase.__exit__ = self.close()`) then fixing each
+unmasked bug:
+
+1. **streaming `BufferedReader`** — read/readline/peek/read1 assumed a
+   `raw.$bytes` whole-file snapshot, which streaming raws
+   (`_compression.DecompressReader` behind bz2/lzma) don't have. Now an
+   in-reader `$pending` byte buffer is fed by `raw.read()`; `read_fast` drains
+   it then reads *exactly* n (never reads ahead, so the raw position stays in
+   sync for `seek`). The "buffer inside the BufferedReader" the landmine asked for.
+2. **`BufferedReader.seek`** — `$B.args('seek',2,…)` had argcount 2 for a 3-arg
+   signature (`takes 2 positional but 3 given` on every `seek(off,whence)`); and
+   it poked `$byte_pos` instead of delegating. Now argcount 3 + delegates to
+   `raw.seek` for streaming raws.
+3. **`BufferedReader.read1` / `read` validation** — added `read1`; `read`/`read1`
+   run the arg through `PyNumber_Index` so `read(1.0)` raises TypeError.
+4. **`BufferedReader.name`/`fileno` + `FileIO.name`/`closed`** — name forwards to
+   the raw; `FileIO.name` is writable (tempfile assigns `raw.name = fd`);
+   `FileIO.closed` reflects the fd-backed `self.closed`/`self.fd` the io-write
+   layer tracks (the inherited `_IOBase.closed` read the unset `self._closed`).
+5. **`io.BytesIO.close`** — called `$B._BufferedIOBase.close(self)` (undefined;
+   the method lives in `.tp_funcs.close`) → `is not a function` on every
+   `BytesIO().close()`, swallowed by the old `__exit__`.
+6. **`io.BytesIO.readlines`** — returned a raw JS array, not a `list`
+   (`assertListEqual` "second sequence is not a list").
+7. **`TextIOWrapper.readline`** — ignored the `newline` arg (always split on
+   `\n`); now honors None/'' (universal: `\n`/`\r`/`\r\n`) vs a literal separator,
+   with `\r\n` handling and None→`\n` translation.
+8. **`io.UnsupportedOperation`** — was `make_type([OSError])`; CPython is
+   `(OSError, ValueError)`, so `assertRaises(ValueError, f.read)` on a write-mode
+   file (the `_bad_args` tests) now matches.
+9. **`memoryview(array).nbytes`** — the factory hard-codes `itemsize:1`, so nbytes
+   over an `array('Q')` was the element count not the byte length; `nbytes_get`
+   now falls back to the source object's real itemsize (and used the loop var `x`
+   instead of `product`).
+10. **read-only `getset_descriptor` setter** (`descriptors.js`) — the root behind
+   the read-only getsets in (4). A read-only getset stores its setter as
+   `_b_.None`, but `closed_set`/`name_set` are assigned in `py_io.js` before
+   `_b_.None` exists (load order), so they land `undefined`. `tp_descr_set`
+   tested `self.setter === _b_.None`, so a read-only write fell through to
+   `self.setter(obj, value)` → `self.setter is not a function`. Now it tests
+   `typeof self.setter !== 'function'`, raising AttributeError for any
+   non-callable setter.
+
+```python
+>>> open('x', 'wb').closed = True
+TypeError: self.setter is not a function                              # before
+>>> open('x', 'wb').closed = True
+AttributeError: attribute 'closed' of '_io.FileIO' objects is not writable  # after
+```
+
+## [x] `open(bytes_filename)` decodes the name, losing the original bytes
+
+**Impact: +1 test_bz2** (`testOpenBytesFilename`: `BZ2File(os.fsencode(name)).name`
+must be the bytes filename, not a str). Source: `www/src/py_io.js` (`_io_open_impl`).
+
+CPython's `open()` fsdecodes a bytes filename only to perform the actual open; it
+keeps the original bytes object as the file's `.name`. `_io_open_impl` decoded
+`path_or_fd` in place and passed the str on to `_FileIO`, so `.name` came back a
+str. Fix: remember the filename before the fsdecode and, when it was decoded,
+restore the original on the raw object after construction.
+
+```python
+>>> open(b'/tmp/x', 'wb').name
+'/tmp/x'    # before
+>>> open(b'/tmp/x', 'wb').name
+b'/tmp/x'   # after
+```
+
+## [x] `_warnings.warn` with an `'error'` filter crashes on a non-SyntaxWarning
+
+**Impact: +1 test_hmac** (`test_legacy_block_size_warnings`: under
+`simplefilter('error', RuntimeWarning)`, `hmac.HMAC(...)` must raise the
+RuntimeWarning). Source: `www/src/builtin_modules.js` (`_warnings.warn`).
+
+When the active filter's action is `'error'`, `warn()` unconditionally built a
+`SyntaxError` from `message.args[0]` / `message.filename` / `.offset` — fields
+only a `SyntaxWarning` instance carries. For any other warning (and for the
+common `warn("text", SomeWarning)` form where `message` is a *str*),
+`message.args` is `undefined` → `JavascriptError: can't access property 0`.
+CPython's `'error'` action raises the warning itself. Fix: keep the
+SyntaxWarning→SyntaxError path, otherwise raise the warning instance (or
+`category(message)` when `message` is a plain string).
+
+```python
+>>> import warnings
+>>> warnings.simplefilter('error', RuntimeWarning)
+>>> warnings.warn('boom', RuntimeWarning)
+JavascriptError: can't access property 0, message.args is undefined   # before
+>>> warnings.warn('boom', RuntimeWarning)
+RuntimeWarning: boom                                                  # after
+```
+
+## [x] `bytes.decode('utf-8')` strips a leading BOM (U+FEFF)
+
+**Impact: +2 test_json** (`test_string_with_utf8_bom`, C + Py: `json.loads` must
+raise on a leading BOM). Source: `www/src/py_bytes.js` (`$B.decode`).
+
+`$B.decode`'s utf-8 fast path did `new TextDecoder('utf-8', {fatal: true})`, and
+`TextDecoder` defaults to `ignoreBOM: false` — so a leading U+FEFF was silently
+dropped. CPython's utf-8 codec keeps it (only `utf-8-sig` strips it), so
+`b'\xef\xbb\xbf[1,2,3]'.decode('utf-8')` came back `'[1,2,3]'` instead of
+`'﻿[1,2,3]'`, and json's BOM guard never fired. Now `{fatal: true,
+ignoreBOM: true}` (matching the C-side DecodeUTF8 fix).
+
+```python
+>>> len('[1,2,3]'.encode('utf-8-sig').decode('utf-8'))
+7   # before
+>>> len('[1,2,3]'.encode('utf-8-sig').decode('utf-8'))
+8   # after
+```
+
+## [x] `sys.set_int_max_str_digits` / `get_int_max_str_digits` missing
+
+**Impact: +2 test_json** (`test_limit_int`, C + Py — with the harness modelling
+`test.support.adjust_int_max_str_digits`). Source: `www/src/builtin_modules.js`
+(the `sys` module object).
+
+The int<->str conversion limit was a fixed `$B.int_max_str_digits = 4300`; the
+int parser already consulted it dynamically, but `sys` exposed no getter/setter,
+so `sys.set_int_max_str_digits(5000)` raised AttributeError and the limit could
+never be raised or lowered at runtime. Added both functions (the setter validates
+`0` or `>= 640` like CPython and recomputes the str-side `$B.max_printable`).
+
+```python
+>>> import sys
+>>> sys.get_int_max_str_digits()
+AttributeError: module 'sys' has no attribute 'get_int_max_str_digits'   # before
+>>> sys.get_int_max_str_digits()
+4300                                                                     # after
+```
+
+## [x] `float` is missing `__float__`
+
+**Impact: enables +3 test_cmath** (with the bridge `PyComplex_AsCComplex` fix:
+`test_input_type`, `test_decimals`, `test_fractions`). Source: `www/src/py_float.js`
+(`float.tp_funcs` + `tp_methods`).
+
+`int` had `__float__` but `float` did not, so `(2.0).__float__()` raised
+AttributeError (CPython returns the float itself). The method was absent from both
+`float.tp_funcs` and the `tp_methods` registration list. Added
+`float_funcs.__float__` (returns `self`) and `"__float__"` to `tp_methods`.
+
+```python
+>>> (2.0).__float__()
+AttributeError: 'float' object has no attribute '__float__'   # before
+>>> (2.0).__float__()
+2.0                                                           # after
+```

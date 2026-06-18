@@ -1832,7 +1832,9 @@ var is_class=obj?.tp_name !==undefined
 if(! is_class){var klass=$B.get_class(obj)
 if(klass.tp_funcs &&
 Object.hasOwn(klass.tp_funcs,attr)){var func=klass.tp_funcs[attr]
-if($B.get_class(func)===$B.builtin_method){return func(obj,...args)}}
+if($B.get_class(func)===$B.builtin_method){var ov=$B.search_in_dict(obj,attr,$B.NULL)
+if(ov!==$B.NULL){return $B.$call_with_position(ov,inum,...args)}
+return func(obj,...args)}}
 var own_dict=$B.get_dict(obj)
 if($B.get_class(klass)===_b_.type){var in_klass_dict=$B.get_dict(klass)[attr]
 if(in_klass_dict?.ob_type===$B.function){$B.nb_call_attr++
@@ -3433,7 +3435,7 @@ $B.set_func_names($B.classmethod_descriptor,'builtins')
 $B.getset_descriptor.$factory=function(klass,attr,getset){var[getter,setter]=getset
 var res={ob_type:$B.getset_descriptor,__doc__:_b_.None,d_type:klass,d_name:attr,getter,setter}
 return res}
-$B.getset_descriptor.tp_descr_set=function(self,obj,value){if(self.setter===_b_.None){$B.RAISE_ATTRIBUTE_ERROR(
+$B.getset_descriptor.tp_descr_set=function(self,obj,value){if(typeof self.setter!=="function"){$B.RAISE_ATTRIBUTE_ERROR(
 `attribute '${self.d_name}' of '${self.d_type.tp_name}' objects is not writable`,self,self.d_name)}
 return self.setter(obj,value)}
 $B.getset_descriptor.tp_repr=function(self){return `<attribute '${self.d_name}' of '${$B.get_name(self.d_type)}' objects>`}
@@ -3612,7 +3614,7 @@ var function_funcs=$B.function.tp_funcs={}
 function_funcs.__annotate___get=function(self){return self.__annotate__ ?? _b_.None}
 function_funcs.__annotate___set=function(self,value){self.__annotate__=value}
 function_funcs.__annotations___get=function(self){$B.check_infos(self)
-if(self.__annotations__ !==undefined){return self.__annotations__}else{return self.__annotations__=self.__annotate__(1)}}
+if(self.__annotations__ !==undefined){return self.__annotations__}else if(typeof self.__annotate__==='function'){return self.__annotations__=self.__annotate__(1)}else{return self.__annotations__=_b_.dict.$factory()}}
 function_funcs.__annotations___set=function(self,value){$B.check_infos(self)
 if(! $B.is_dict(value)){$B.RAISE(_b_.TypeError,'__annotations__ must be set to a dict object')}
 self.__annotations__=value}
@@ -3823,7 +3825,7 @@ pos=ix+1}}
 self.$lines=lines}}}
 var IOUnsupported
 const DEFAULT_BUFFER_SIZE=(128*1024)
-$B.make_IOUnsupported=function(){if($B._IOUnsupported===undefined){$B._IOUnsupported=$B.make_type('UnsupportedOperation',[_b_.OSError])
+$B.make_IOUnsupported=function(){if($B._IOUnsupported===undefined){$B._IOUnsupported=$B.make_type('UnsupportedOperation',[_b_.OSError,_b_.ValueError])
 $B._IOUnsupported.__module__='_io'
 $B.finalize_type($B._IOUnsupported)}}
 function _io_unsupported(value){$B.make_IOUnsupported()
@@ -3975,9 +3977,9 @@ var closed=false
 try{closed=$B.$bool($B.$getattr(self,'closed'))}catch(e){closed=!!self._closed}
 if(closed){$B.RAISE(_b_.ValueError,'I/O operation on closed file')}
 return self}
-_BufferedIOBase_funcs.__exit__=function(self,type,value,traceback){try{$B.$call($B.$getattr(self,'close'))
+_BufferedIOBase_funcs.__exit__=function(self,type,value,traceback){$B.$call($B.$getattr(self,'close'))
 self.__closed=true
-return true}catch(err){return false}}
+return _b_.None}
 _BufferedIOBase_funcs.readinto=function(_self,buffer){return _bufferediobase_readinto_generic(_self,buffer,0);}
 _BufferedIOBase_funcs.readinto1=function(_self,buffer){return _bufferediobase_readinto_generic(_self,buffer,1);}
 _BufferedIOBase_funcs.close=function(_self){
@@ -3994,10 +3996,34 @@ _BufferedIOBase_funcs.write=function(){_io_unsupported("write")}
 $B._BufferedIOBase.tp_methods=["__enter__","__exit__","readinto","readinto1","close","detach","read","read1","write"
 ]
 $B.set_func_names($B._BufferedIOBase,'_io')
-function _bufferedreader_read_all(_self){return $B.$call($B.$getattr(_self.raw,'readall'))}
+// Streaming raw (e.g. _compression.DecompressReader behind bz2/lzma files) has
+// no preloaded $bytes snapshot; buffer its read() output in _self.$pending so
+// read/readline/peek share one cursor.
+function _br_fill(_self){ // append one read() chunk to $pending; false at EOF
+if(_self.$pending===undefined){_self.$pending=[];_self.$pending_eof=false}
+if(_self.$pending_eof){return false}
+var data=$B.$call($B.$getattr(_self.raw,'read'),DEFAULT_BUFFER_SIZE)
+if(data===_b_.None||_b_.len(data)===0){_self.$pending_eof=true;return false}
+for(var src=data.source,i=0,L=src.length;i<L;i++){_self.$pending.push(src[i])}
+return true}
+function _bufferedreader_read_all(_self){
+if(_self.raw.$bytes===undefined){
+if(_self.$pending===undefined){_self.$pending=[];_self.$pending_eof=false}
+while(_br_fill(_self)){}
+return $B.fast_bytes(_self.$pending.splice(0))}
+return $B.$call($B.$getattr(_self.raw,'readall'))}
 function _bufferedreader_read_fast(_self,n){var raw=_self.raw
-// fd-backed raw (no preloaded $bytes snapshot): delegate to raw.read
 if(raw.$bytes===undefined){
+// drain any buffered (peek/readline) bytes first, then read EXACTLY the rest
+// directly — never read ahead, so the raw stream position stays in sync for
+// seek()
+var pend=_self.$pending
+if(pend!==undefined && pend.length > 0){
+if(pend.length >=n){return $B.fast_bytes(pend.splice(0,n))}
+var head=pend.splice(0)
+var more=$B.$call($B.$getattr(raw,'read'),n-head.length)
+if(more!==_b_.None && _b_.len(more)>0){for(var ms=more.source,mi=0;mi<ms.length;mi++){head.push(ms[mi])}}
+return $B.fast_bytes(head)}
 var _r=$B.$call($B.$getattr(raw,'read'),n)
 if(_r===_b_.None||_b_.len(_r)===0){return _b_.None}
 return _r}
@@ -4007,6 +4033,12 @@ raw.$byte_pos+=n
 raw.$byte_pos=Math.min(raw.$byte_pos,raw.$bytes.length)
 return $B.fast_bytes(b)}
 function _bufferedreader_readline(_self){var raw=_self.raw
+if(raw.$bytes===undefined){
+if(_self.$pending===undefined){_self.$pending=[];_self.$pending_eof=false}
+var nl=_self.$pending.indexOf(10)
+while(nl===-1 && _br_fill(_self)){nl=_self.$pending.indexOf(10)}
+var end=nl===-1 ? _self.$pending.length : nl+1
+return $B.fast_bytes(_self.$pending.splice(0,end))}
 if(raw.$byte_pos >=raw.$bytes.length){return $B.fast_bytes()}
 var eof=raw.$byte_pos
 while(eof < raw.$bytes.length){if(raw.$bytes[eof]==10){break}
@@ -4016,26 +4048,45 @@ raw.$byte_pos=eof+1
 raw.$byte_pos=Math.min(raw.$byte_pos,raw.$bytes.length)
 return $B.fast_bytes(b)}
 $B._BufferedReader=$B.make_builtin_class('_BufferedReader',[$B._BufferedIOBase])
-$B._BufferedReader.tp_getset=['raw']
+$B._BufferedReader.tp_getset=['raw','name']
 $B._BufferedReader.tp_init=function(_self,raw,buffer_size=DEFAULT_BUFFER_SIZE){_self.raw=raw
 _self.buffer_size=buffer_size}
 var _BufferedReader_funcs=$B._BufferedReader.tp_funcs={
 // expose the underlying raw stream, like CPython's BufferedReader.raw
 // (test pattern: decomp._buffer.raw.tell())
 raw_get:function(_self){return _self.raw},
+// CPython BufferedReader.name forwards to the wrapped raw stream's name
+name_get:function(_self){return $B.$getattr(_self.raw,'name')},
+name_set:_b_.None,
+raw_set:_b_.None,
 }
 _BufferedReader_funcs.peek=function(_self,size){var $=$B.args('peek',2,{self:null,size:null},arguments,{size:0})
 var _self=$.self,size=$.size
 var raw=_self.raw
+// streaming raw: return buffered bytes without consuming (fill one chunk if
+// empty, like CPython peek which returns >=1 byte unless at EOF)
+if(raw.$bytes===undefined){
+if(_self.$pending===undefined){_self.$pending=[];_self.$pending_eof=false}
+if(_self.$pending.length===0){_br_fill(_self)}
+return $B.fast_bytes(_self.$pending.slice(0,size > 0 ? size : _self.$pending.length))}
 return $B.fast_bytes(raw.$bytes.slice(raw.$byte_pos,raw.$byte_pos+size))}
-_BufferedReader_funcs.seek=function(_self,offset,whence){var $=$B.args('seek',2,{self:null,offset:null,whence:null},arguments,{whence:0})
+_BufferedReader_funcs.seek=function(_self,offset,whence){var $=$B.args('seek',3,{self:null,offset:null,whence:null},arguments,{whence:0})
 var _self=$.self,offset=$.offset,whence=$.whence
 if(_self.closed){$B.RAISE(_b_.ValueError,'I/O operation on closed file')}
 if(whence===undefined){whence=0}
-if(whence===0){_self.$byte_pos=offset}else if(whence===1){_self.$byte_pos+=offset}else if(whence===2){_self.$byte_pos=self.$bytes.length+offset}
-return _b_.None}
+var raw=_self.raw
+// streaming raw (no $bytes snapshot, e.g. _compression.DecompressReader behind
+// bz2/lzma files): delegate seeking to the raw stream and drop the line buffer
+if(raw.$bytes===undefined){
+_self.$pending=undefined;_self.$pending_eof=false
+return $B.$call($B.$getattr(raw,'seek'),offset,whence)}
+// in-memory snapshot raw: move the cursor read()/readline() consult on the raw
+if(whence===0){raw.$byte_pos=offset}else if(whence===1){raw.$byte_pos=(raw.$byte_pos||0)+offset}else{raw.$byte_pos=raw.$bytes.length+offset}
+return raw.$byte_pos}
 function CHECK_CLOSED(fileobj,msg){if(fileobj.closed){$B.RAISE(_b_.ValueError,msg)}}
 _BufferedReader_funcs.read=function(self,n=-1){var res
+if(n===_b_.None){n=-1}
+n=$B.PyNumber_Index(n)
 if(n <-1){$B.RAISE(_b_.ValueError,"read length must be non-negative or -1")}
 CHECK_CLOSED(self,"read of closed file")
 if(n==-1){
@@ -4044,11 +4095,22 @@ if(res !=_b_.None){return res}
 return $B.fast_bytes()}
 return res}
 _BufferedReader_funcs.readline=function(_self,size=-1){return _bufferedreader_readline(_self)}
+// read1(size): up to size bytes with at most one read of the raw stream
+_BufferedReader_funcs.read1=function(_self,size){var $=$B.args('read1',2,{self:null,size:null},arguments,{size:-1})
+var _self=$.self,size=$.size
+if(size===_b_.None){size=-1}
+size=$B.PyNumber_Index(size)
+CHECK_CLOSED(_self,"read of closed file")
+if(size<0){size=DEFAULT_BUFFER_SIZE}
+var res=_bufferedreader_read_fast(_self,size)
+if(res !=_b_.None){return res}
+return $B.fast_bytes()}
 _BufferedReader_funcs.seekable=function(_self){return $B.$call($B.$getattr(_self.raw,'seekable'))}
 _BufferedReader_funcs.readable=function(_self){return $B.$call($B.$getattr(_self.raw,'readable'))}
 _BufferedReader_funcs.writable=function(_self){return $B.$call($B.$getattr(_self.raw,'writable'))}
-$B._BufferedReader.tp_methods=["peek","seek","read","readline",
-"seekable","readable","writable"
+_BufferedReader_funcs.fileno=function(_self){return $B.$call($B.$getattr(_self.raw,'fileno'))}
+$B._BufferedReader.tp_methods=["peek","seek","read","readline","read1",
+"seekable","readable","writable","fileno"
 ]
 $B.set_func_names($B._BufferedReader,'_io')
 $B._FileIO=$B.make_builtin_class('_FileIO',[$B._RawIOBase])
@@ -4061,6 +4123,7 @@ $B.init_dict(res)
 return res}
 $B._FileIO.tp_init=function(){var $=$B.args('__init__',5,{self:null,name:null,mode:null,closefd:null,opener:null},arguments,{mode:'r',closefd:true,opener:_b_.None})
 var _self=$.self,name=$.name,mode=$.mode,closefd=$.closefd,opener=$.opener
+_self.$name=name
 var flags=0
 var ret=0
 var rwa=0,plus=0
@@ -4149,6 +4212,19 @@ _FileIO_funcs.seekable=function(_self){if(_self.fd < 0){err_closed()}
 return $B.$bool(_self.seekable)}
 _FileIO_funcs.writable=function(_self){if(_self.fd < 0){err_closed()}
 return $B.$bool(_self.writable)}
+// CPython FileIO exposes .name (the filename/fd it was opened with); bz2/lzma
+// file objects forward to it (BZ2File.name -> self._fp.name).
+_FileIO_funcs.name_get=function(_self){
+if(_self.$name===undefined){throw $B.$call(_b_.AttributeError,'name')}
+return _self.$name}
+// CPython FileIO.name is a writable attribute (tempfile.TemporaryFile assigns
+// raw.name = fd), so the setter stores rather than rejecting
+_FileIO_funcs.name_set=function(_self,value){_self.$name=value}
+// fd-backed FileIO (wasthon-io-write) tracks closed in self.closed/self.fd, not
+// the _IOBase self._closed the inherited getset reads; expose the real state
+_FileIO_funcs.closed_get=function(_self){return $B.$bool(_self.closed===true || _self.fd < 0)}
+_FileIO_funcs.closed_set=_b_.None
+$B._FileIO.tp_getset=["name","closed"]
 $B._FileIO.tp_methods=["readable","readall","readinto","seekable","writable"
 ]
 $B.set_func_names($B._FileIO,'_io')
@@ -4205,18 +4281,27 @@ _TextIOWrapper_funcs.readline=function(){var $=$B.args("read",2,{self:null,size:
 var _self=$.self,size=$B.PyNumber_Index($.size)
 if(_self.closed===true){$B.RAISE(_b_.ValueError,'I/O operation on closed file')}
 if(_self.$text===undefined){_self.$text=$B.decode(_self.$bytes,_self.$encoding,_self.$errors)
-_self.$text_iterator=_self.$text[Symbol.iterator]()
-_self.$text_pos=0
-_self.$text_length=_b_.len(_self.$text)}
-var res=''
-var nb=0
-if(size < 0){size=_self.$text_length}
-while(1){var char=_self.$text_iterator.next()
-if(char.done){break}else if(char.value=='\n'){res+=char.value
-break}else{res+=char.value
-nb++
-if(nb > size){break}}}
-return $B.String(res)}
+_self.$text_pos=0}
+var text=_self.$text,pos=_self.$text_pos,len=text.length
+if(pos >=len){return $B.String('')}
+// Line terminator per the newline argument (CPython TextIOWrapper): None or
+// '' recognise \n, \r and \r\n (universal); any other string is the literal
+// separator. newline=None also translates the terminator to '\n'.
+var nl=_self.$newline
+var universal=(nl===_b_.None||nl===undefined||nl==='')
+var end=-1,termlen=0
+if(universal){
+for(var i=pos;i<len;i++){var c=text.charCodeAt(i)
+if(c===10){end=i;termlen=1;break}
+if(c===13){end=i;termlen=(i+1<len && text.charCodeAt(i+1)===10)?2:1;break}}}
+else{var idx=text.indexOf(nl,pos)
+if(idx!==-1){end=idx;termlen=nl.length}}
+var stop=(end===-1)?len:end+termlen
+if(size>=0 && stop-pos>size){stop=pos+size;_self.$text_pos=stop
+return $B.String(text.substring(pos,stop))}
+_self.$text_pos=stop
+if(nl===_b_.None && end!==-1){return $B.String(text.substring(pos,end)+'\n')}
+return $B.String(text.substring(pos,stop))}
 _TextIOWrapper_funcs.write=function(_self,s){
 if(_self.closed===true){$B.RAISE(_b_.ValueError,'I/O operation on closed file')}
 // delegate to the underlying binary buffer (text over compression files)
@@ -4251,6 +4336,11 @@ path_or_fd=file
 // accepts any path-like object).
 if(! $B.is_str(path_or_fd)){var _fsp=$B.$getattr(file,'__fspath__',null)
 if(_fsp !==null){path_or_fd=$B.$call(_fsp)}}
+// bytes path: CPython open() accepts bytes filenames (os.fsdecode), but keeps
+// the original bytes as FileIO.name; fsdecode only feeds the actual open.
+var $name_obj=path_or_fd
+if(! $B.is_str(path_or_fd) && $B.$isinstance(path_or_fd,[_b_.bytes,_b_.bytearray])){
+path_or_fd=$B.$call($B.$getattr(path_or_fd,'decode'),'utf-8')}
 if(! $B.is_str(path_or_fd)){$B.RAISE(_b_.TypeError,`invalid file: ${file}`)}
 if(encoding=='locale'){
 encoding='utf-8'}
@@ -4295,6 +4385,7 @@ if(binary && buffering==1){$B.RAISE(_b_.RuntimeWarning,"line buffering (bufferin
 "binary mode, the default buffer size will be used")}
 var RawIO_class=$B._FileIO
 raw=$B.$call(RawIO_class,path_or_fd,rawmode,closefd ? true :false,opener)
+if($name_obj!==path_or_fd){raw.$name=$name_obj}
 result=raw
 modeobj=mode
 if(buffering < 0){isatty=false}
@@ -4617,7 +4708,12 @@ if(test){console.log('klass',klass)}
 if(klass.tp_funcs && klass.$getattribute===_b_.object.tp_getattro){
 var func=$B.get_from_dict(klass,attr,$B.NULL)
 if(func !==$B.NULL){var res=$B.NULL
+// A non-data descriptor (method) yields to an instance attribute of the same
+// name (CPython __getattribute__ precedence); data descriptors still win.
+var inst_ov
 switch(func.ob_type){case $B.builtin_method:
+inst_ov=$B.search_in_dict(obj,attr,$B.NULL)
+if(inst_ov!==$B.NULL){return inst_ov}
 res=function(){return func(obj,...arguments)}
 res.ob_type=func.ob_type
 return res
@@ -4627,9 +4723,13 @@ case $B.member_descriptor:
 return obj[func.d_member.attr]
 case $B.method_descriptor:
 case $B.wrapper_descriptor:
+inst_ov=$B.search_in_dict(obj,attr,$B.NULL)
+if(inst_ov!==$B.NULL){return inst_ov}
 return func.ob_type.tp_descr_get(func,obj,klass)
 case $B.builtin_function_or_method:
 case _b_.staticmethod:
+inst_ov=$B.search_in_dict(obj,attr,$B.NULL)
+if(inst_ov!==$B.NULL){return inst_ov}
 return func
 default:
 break}}}
@@ -7173,7 +7273,7 @@ case "utf-8":
 case "utf8":
 case "U8":
 case "UTF":
-if(globalThis.TextDecoder){var decoder=new TextDecoder('utf-8',{fatal:true}),array=new Uint8Array(b)
+if(globalThis.TextDecoder){var decoder=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}),array=new Uint8Array(b)
 try{return decoder.decode(array)}catch(err){}}
 var pos=0,err_info
 while(pos < b.length){let byte=b[pos]
@@ -7221,6 +7321,7 @@ byte.toString(16)+" in position "+pos+
 ": invalid start byte")}}}
 return s
 case "latin_1":
+case "iso8859":
 case "windows1252":
 case "iso-8859-1":
 case "iso8859-1":
@@ -7277,6 +7378,7 @@ case "latin1":
 case "latin-1":
 case "latin_1":
 case "L1":
+case "iso8859":
 case "iso8859_1":
 case "iso_8859_1":
 case "8859":
@@ -7614,7 +7716,13 @@ memoryview_funcs.itemsize_get=function(self){return self.itemsize}
 memoryview_funcs.itemsize_set=_b_.None
 memoryview_funcs.nbytes_get=function(self){var product=1
 for(var x of self.shape){product*=x}
-return x*self.itemsize}
+// the factory stores itemsize=1 even over a multi-byte buffer (e.g. an
+// array('Q')); fall back to the source object's real itemsize so nbytes is the
+// true byte length (array.array.write relies on memoryview(arr).nbytes)
+var isize=self.itemsize
+if(isize===1){var src=$B.$getattr(self.obj,'itemsize',null)
+if(src!==null && $B.is_int(src)){isize=src}}
+return product*isize}
 memoryview_funcs.nbytes_set=_b_.None
 memoryview_funcs.ndim_get=function(self){return self.ndim}
 memoryview_funcs.ndim_set=_b_.None
@@ -9656,6 +9764,7 @@ return int_or_long(num-_mult)}
 int_funcs.imag_get=function(self){return 0}
 int_funcs.imag_set=_b_.None
 int_funcs.is_integer=function(self){return true}
+int_funcs.__float__=function(self){return $B.fast_float(Number(int_value(self)))}
 int_funcs.numerator_get=function(self){return int_value(self)}
 int_funcs.numerator_set=_b_.None
 int_funcs.real_get=function(self){return int_value(self)}
@@ -9678,7 +9787,7 @@ if(byteorder=="big"){res.reverse()}
 return{
 ob_type:_b_.bytes,source:res}}
 _b_.int.functions_or_methods=["__new__"]
-_b_.int.tp_methods=["conjugate","bit_length","bit_count","to_bytes","as_integer_ratio","__trunc__","__floor__","__ceil__","__round__","__getnewargs__","__format__","__sizeof__","is_integer"]
+_b_.int.tp_methods=["conjugate","bit_length","bit_count","to_bytes","as_integer_ratio","__trunc__","__floor__","__ceil__","__round__","__getnewargs__","__format__","__sizeof__","is_integer","__float__"]
 _b_.int.classmethods=["from_bytes"]
 _b_.int.tp_getset=["real","imag","numerator","denominator"]
 $B.$bool=function(obj,bool_class){
@@ -10130,6 +10239,8 @@ var float_funcs=_b_.float.tp_funcs={}
 float_funcs.__ceil__=function(self){check_self_is_float(self,'__ceil__')
 if(isnan(self)){$B.RAISE(_b_.ValueError,'cannot convert float NaN to integer')}else if(isinf(self)){$B.RAISE(_b_.OverflowError,'cannot convert float infinity to integer')}
 return Math.ceil(self.value)}
+float_funcs.__float__=function(self){check_self_is_float(self,'__float__')
+return self}
 float_funcs.__floor__=function(self){check_self_is_float(self,'__floor__')
 if(isnan(self)){$B.RAISE(_b_.ValueError,'cannot convert float NaN to integer')}else if(isinf(self)){$B.RAISE(_b_.OverflowError,'cannot convert float infinity to integer')}
 return Math.floor(self.value)}
@@ -10266,7 +10377,7 @@ float_funcs.is_integer=function(self){return Number.isInteger(self.value)}
 float_funcs.real_get=function(self){return self}
 float_funcs.real_set=_b_.None
 _b_.float.classmethods=["from_number","fromhex","__getformat__"]
-_b_.float.tp_methods=["conjugate","__trunc__","__floor__","__ceil__","__round__","as_integer_ratio","hex","is_integer","__getnewargs__","__format__"
+_b_.float.tp_methods=["conjugate","__trunc__","__floor__","__ceil__","__round__","as_integer_ratio","hex","is_integer","__getnewargs__","__format__","__float__"
 ]
 _b_.float.tp_getset=["real","imag"]
 7
@@ -13987,7 +14098,9 @@ return $B.$list($B.import_info[filename].meta_path)},__set__:function(self,value
 $B.import_info[filename].meta_path=value}},path_hooks:{__get__:function(){var filename=$B.get_filename()
 return $B.$list($B.import_info[filename].path_hooks)},__set__:function(self,value){var filename=$B.get_filename()
 $B.import_info[filename].path_hooks=value}},path_importer_cache:{__get__:function(){return _b_.dict.$factory($B.jsobj2pyobj($B.path_importer_cache))},__set__:function(){$B.RAISE(_b_.TypeError,"Read only property"+
-" 'sys.path_importer_cache'")}},setrecursionlimit:function(value){$B.recursion_limit=value},settrace:function(){var $=$B.args("settrace",1,{tracefunc:null},arguments)
+" 'sys.path_importer_cache'")}},get_int_max_str_digits:function(){return $B.int_max_str_digits},set_int_max_str_digits:function(value){if(value!==0 && value<640){$B.RAISE(_b_.ValueError,'maxdigits must be 0 or larger than 640, not '+value)}
+$B.int_max_str_digits=value
+if(value){$B.max_printable=10n**BigInt(value)}},setrecursionlimit:function(value){$B.recursion_limit=value},settrace:function(){var $=$B.args("settrace",1,{tracefunc:null},arguments)
 $B.tracefunc=$.tracefunc
 $B.frame_obj.frame.$f_trace=$B.tracefunc
 $B.tracefunc.$current_frame_id=$B.frame_obj.frame[0]
@@ -14006,13 +14119,14 @@ var message=$.message,category=$.category,stacklevel=$.stacklevel
 if($B.$isinstance(message,_b_.Warning)){category=$B.get_class(message)}
 var filters
 if($B.imported.warnings){filters=$B.module_getattr($B.imported.warnings,'filters')}else{filters=$B.module_getattr(modules._warnings,'filters')}
-if(filters[0][0]=='error'){var syntax_error=$B.EXC(_b_.SyntaxError,message.args[0])
+if(filters[0][0]=='error'){if($B.$isinstance(message,_b_.SyntaxWarning)){var syntax_error=$B.EXC(_b_.SyntaxError,message.args[0])
 syntax_error.args[1]=[message.filename,message.lineno,message.offset,message.line]
 syntax_error.filename=message.filename
 syntax_error.lineno=message.lineno
 syntax_error.offset=message.offset
 syntax_error.line=message.line
 throw syntax_error}
+throw $B.$isinstance(message,_b_.Warning) ? message : $B.$call(category,message)}
 var warning_message,filename,file,lineno,line
 if(category===_b_.SyntaxWarning){filename=$B.get_from_dict(message,'filename'),lineno=$B.get_from_dict(message,'lineno'),line=$B.get_from_dict(message,'text','')
 var src=$B.file_cache[file]
