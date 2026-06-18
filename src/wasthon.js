@@ -3565,23 +3565,43 @@ mergeInto(LibraryManager.library, {
      * calling convention is: first arg is `ret*`, then `self`. */
     PyComplex_AsCComplex__deps: ['$WasthonRT'],
     PyComplex_AsCComplex: function(retPtr, handle) {
-        var obj = WasthonRT.unwrap(handle);
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
         var real = 0, imag = 0;
         function asNum(v) {
             if (typeof v === 'number') return v;
             if (typeof v === 'bigint') return Number(v);
             if (v && typeof v.value === 'number') return v.value;  /* Brython float */
             if (v && typeof v.value === 'bigint') return Number(v.value);
-            return Number(v) || 0;
+            return Number(v);
         }
-        if (obj && obj.real !== undefined) {
+        if (obj && obj.real !== undefined && obj.imag !== undefined) {
             /* Brython complex object: {real: <float wrapper>, imag: <float wrapper>} */
             real = asNum(obj.real);
             imag = asNum(obj.imag);
-        } else if (typeof obj === 'number') {
-            real = obj;
+        } else if (typeof obj === 'number' || typeof obj === 'bigint') {
+            real = Number(obj);
+        } else if (obj && (typeof obj.value === 'number' || typeof obj.value === 'bigint')) {
+            real = Number(obj.value);  /* Brython float */
         } else {
-            real = asNum(obj);
+            /* CPython coerces via __complex__, then __float__/__index__; a value
+               with none (e.g. a str) raises TypeError instead of silently 0. */
+            var m = rt.$B.$getattr(obj, '__complex__', null);
+            if (m !== null) {
+                var c = rt.$B.$call(m);
+                real = asNum(c.real);
+                imag = asNum(c.imag);
+            } else {
+                m = rt.$B.$getattr(obj, '__float__', null);
+                if (m === null) { m = rt.$B.$getattr(obj, '__index__', null); }
+                if (m === null) {
+                    rt.setError(rt.wrap(rt._b_.TypeError),
+                        "must be real number, not " + rt.$B.class_name(obj));
+                    real = -1;
+                } else {
+                    real = asNum(rt.$B.$call(m));
+                }
+            }
         }
         // Py_complex layout: double real (offset 0), double imag (offset 8)
         var buf = new ArrayBuffer(16);
