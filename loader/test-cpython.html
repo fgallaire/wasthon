@@ -244,6 +244,22 @@ def subTests(arg_names, arg_values):
     return deco
 support.subTests = subTests
 
+# Real test.support.adjust_int_max_str_digits: a context manager that sets the
+# int<->str conversion limit via sys.set_int_max_str_digits and restores it. The
+# catch-all stub returned a no-op, so tests that raise the limit never actually
+# changed it (test_json.test_limit_int still saw the default 4300).
+import contextlib as _ctxlib
+@_ctxlib.contextmanager
+def adjust_int_max_str_digits(maxdigits):
+    import sys as _s
+    current = _s.get_int_max_str_digits()
+    _s.set_int_max_str_digits(maxdigits)
+    try:
+        yield
+    finally:
+        _s.set_int_max_str_digits(current)
+support.adjust_int_max_str_digits = adjust_int_max_str_digits
+
 # Explicit overrides — skip what can't/shouldn't run in-browser:
 support.cpython_only        = _skip      # refcount / impl detail
 support.refcount_test       = _skip      # @refcount_test loops create+leak C ctx (no refcount in Brython) -> OOM cascade
@@ -358,6 +374,21 @@ import_helper.import_fresh_module = _import_fresh_module
 if test_name == 'test_hmac':
     import_helper.import_fresh_module = lambda name, *a, **k: __import__(name)
 import_helper.import_module = lambda name, *a, **k: __import__(name)
+# _testcapi is partially available (struct/sqlite3/pyexpat use e.g. ULLONG_MAX),
+# but set_nomemory (inject a malloc failure) can't be emulated. Make just that
+# entry-point a SkipTest so test_error_path_no_crash skips as on a build without
+# it, instead of erroring AttributeError — without skipping the whole module.
+try:
+    import _testcapi as _tc_mod
+    if not hasattr(_tc_mod, 'set_nomemory'):
+        import unittest as _tc_ut
+        def _tc_no_nomemory(*a, **k):
+            raise _tc_ut.SkipTest('cannot inject a malloc failure (no _testcapi.set_nomemory)')
+        _tc_mod.set_nomemory = _tc_no_nomemory
+        if not hasattr(_tc_mod, 'remove_mem_hooks'):
+            _tc_mod.remove_mem_hooks = lambda *a, **k: None
+except Exception:
+    pass
 os_helper = _mod('test.support.os_helper')
 # Real temp filenames + file helpers, now that wasthon has writable file I/O.
 # These used to fall through to _Flex, so open(TESTFN) raised "invalid file"
@@ -935,6 +966,23 @@ try:
                 log('  (submodule ' + _sub + ' failed: ' + type(_e).__name__ + ': ' + str(_e) + ')')
     else:
         mod = __import__(test_name)
+        # test_bz2 builds BIG_DATA/BIG_TEXT at import by globbing .py files,
+        # but glob is stubbed to [] in-browser so they stay empty and
+        # testDecompressorChunksMaxsize decompresses nothing. Rebuild them from
+        # synthetic input via the real bz2 module: a multi-block level-1 stream
+        # (BZ2Compressor block = 100 KiB) that round-trips back to BIG_TEXT, so a
+        # partial feed leaves unconsumed input (needs_input False) as intended.
+        if test_name == 'test_bz2':
+            try:
+                import bz2 as _bz2mod
+                _bt = (b'wasthon bz2 multi-block decompression corpus line.\\n'
+                       * 2200)
+                _c = _bz2mod.BZ2Compressor(1)
+                _bd = _c.compress(_bt) + _c.flush()
+                mod.BaseTest.BIG_TEXT = _bt
+                mod.BaseTest.BIG_DATA = _bd
+            except Exception as _e:
+                log('  (bz2 BIG_DATA rebuild failed: ' + str(_e) + ')')
         if test_name in _KNOWN_HANGS:
             _skip_known_hangs(mod, _KNOWN_HANGS[test_name],
                               _KNOWN_HANG_PREFIXES.get(test_name, []))
