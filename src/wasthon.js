@@ -4654,6 +4654,15 @@ mergeInto(LibraryManager.library, {
         if (obj === null || obj === undefined) return -1;
         if (Array.isArray(obj)) return obj.length;
         if (typeof obj === 'string') return obj.length;
+        // CPython's PySequence_Size needs the sequence protocol (sq_length); a
+        // mapping such as dict has only mp_length and raises "is not a sequence"
+        // (e.g. lzma.decompress(filters={}) must be TypeError, not LZMAError).
+        if (rt.$B.$isinstance(obj, rt._b_.dict)) {
+            var tname;
+            try { tname = rt.$B.class_name(obj); } catch (_) { tname = 'object'; }
+            rt.setError(rt.wrap(rt._b_.TypeError), tname + " is not a sequence");
+            return -1;
+        }
         try { return rt._b_.len(obj) | 0; }
         catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError),
