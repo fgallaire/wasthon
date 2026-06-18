@@ -3139,7 +3139,17 @@ mergeInto(LibraryManager.library, {
     PyLong_AsLong__deps: ['$WasthonRT'],
     PyLong_AsLong: function(handle) {
         var rt = WasthonRT;
-        var n = rt.coerceInt(rt.unwrap(handle));
+        var obj = rt.unwrap(handle);
+        // CPython's PyLong_AsLong goes through __index__, which floats lack — a
+        // float raises TypeError, never a silent truncation. coerceInt would
+        // accept it via __int__, so reject floats explicitly (the conversion an
+        // INT_HANDLER return like pyexpat's NotStandaloneHandler runs through).
+        if (rt.$B.$isinstance(obj, rt._b_.float)) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "'float' object cannot be interpreted as an integer");
+            return -1;
+        }
+        var n = rt.coerceInt(obj);
         if (n === undefined) {
             rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
             return -1;
