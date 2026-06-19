@@ -1129,7 +1129,14 @@ log(f'skipped       = {unique_skipped}  ({len(result.skipped)} entries)')
 
 def _tail(tb):
     lines = [l for l in tb.strip().split('\\n') if l.strip()]
-    return lines[-1][:170] if lines else ''
+    # The real exception is the last line that is not a chained note / caret /
+    # diff-continuation / frame header — those get appended AFTER it.
+    for l in reversed(lines):
+        s = l.strip()
+        if (not s.startswith('when serializing') and not s.startswith('File ')
+                and s[0] not in '^+?~'):
+            return s[:200]
+    return lines[-1][:200] if lines else ''
 if result.failures:
     log('\\n--- FAILURES ---')
     for t, tb in result.failures:
