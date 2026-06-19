@@ -4462,6 +4462,14 @@ mergeInto(LibraryManager.library, {
         }
         var args = argsHandle === 0 ? [] : rt.unwrap(argsHandle);
         if (args === null) args = [];
+        // Fold any C-written linear-memory buffer (__wasthon_cstr__) into the
+        // arg's .source BEFORE the Brython callee reads it: pickle's proto-5
+        // load_reduce calls a Python reconstructor with a bytearray filled by
+        // _Unpickler_ReadInto (content in __wasthon_cstr__, .source still the
+        // zero placeholder) — the post-call syncBytes pass is too late, the
+        // callee (e.g. ZeroCopyBytes._reconstruct -> memoryview(obj).obj) reads
+        // .source and rebuilt all-zero bytes. Idempotent for read-only buffers.
+        for (var i = 0; i < args.length; i++) rt.syncCstrBytes(args[i]);
         try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
