@@ -1532,7 +1532,16 @@ mergeInto(LibraryManager.library, {
         try {
             var v = rt.$B.$getitem(t, i);
             return rt.wrap(v);
-        } catch (e) { return 0; }
+        } catch (e) {
+            // CPython's PyTuple_GetItem sets IndexError ("tuple index out of
+            // range") on an out-of-range index. The bridge swallowed it and
+            // returned NULL with no pending exception, so a C caller that
+            // returns that NULL straight through (sqlite3 row_subscript /
+            // row_item) produced `row[bad_index]` with no error raised
+            // (test_row_getitem, test_sqlite_row_index). Forward it.
+            rt.forwardError(e, rt._b_.IndexError);
+            return 0;
+        }
     },
 
     PyTuple_Size__deps: ['$WasthonRT'],
