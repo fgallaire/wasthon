@@ -8848,6 +8848,38 @@ mergeInto(LibraryManager.library, {
         catch (e) { return 0; }
     },
 
+    /* Like wasthon_isinstance_of_builtin but EXACT — no subclass match.
+     * Used by the *_CheckExact slots (CPython's PyLong_CheckExact etc. are
+     * `Py_TYPE(o) == &PyXxx_Type`, NOT isinstance). An exact int is an
+     * unboxed JS number/bigint; a bool / IntEnum / int subclass is boxed
+     * with its own __class__ and is NOT exact. */
+    wasthon_exacttype_of_builtin__deps: ['$WasthonRT'],
+    wasthon_exacttype_of_builtin: function(handle, tag) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        var target;
+        switch (tag) {
+            case 1: target = rt._b_.str;   break;
+            case 2: target = rt._b_.bytes; break;
+            case 3: target = rt._b_.dict;  break;
+            case 4: target = rt._b_.tuple; break;
+            case 5: target = rt._b_.list;  break;
+            case 6: target = rt._b_.int;   break;
+            case 7: target = rt._b_.float; break;
+            default: return 0;
+        }
+        if (obj.__class__ === target) return 1;
+        if (target === rt._b_.str && typeof obj === 'string') return 1;
+        if (target === rt._b_.int &&
+                ((typeof obj === 'number' && Number.isInteger(obj)) ||
+                 typeof obj === 'bigint')) return 1;
+        if (target === rt._b_.float && typeof obj === 'number' &&
+                !Number.isInteger(obj)) return 1;
+        if (target === rt._b_.tuple && Array.isArray(obj)) return 1;
+        return 0;
+    },
+
     /* --------------------------------------------------------------- *
      * Buffer protocol                                                 *
      *                                                                 *

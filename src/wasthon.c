@@ -271,6 +271,7 @@ PyTypeObject *_wasthon_Py_TYPE(PyObject *op) {
 
 /* ---- Type-check predicates: thin wrappers around JS-side helpers ---- */
 extern int wasthon_isinstance_of_builtin(PyObject *op, int builtinTag);
+extern int wasthon_exacttype_of_builtin(PyObject *op, int builtinTag);
 
 #define WT_TAG_UNICODE  1
 #define WT_TAG_BYTES    2
@@ -289,7 +290,7 @@ int PyDict_CheckExact(PyObject *o)    { return wasthon_isinstance_of_builtin(o, 
 int PyTuple_Check(PyObject *o)        { return wasthon_isinstance_of_builtin(o, WT_TAG_TUPLE);   }
 int PyList_Check(PyObject *o)         { return wasthon_isinstance_of_builtin(o, WT_TAG_LIST);    }
 int PyLong_Check(PyObject *o)         { return wasthon_isinstance_of_builtin(o, WT_TAG_LONG);    }
-int PyLong_CheckExact(PyObject *o)    { return wasthon_isinstance_of_builtin(o, WT_TAG_LONG);    }
+int PyLong_CheckExact(PyObject *o)    { return wasthon_exacttype_of_builtin(o, WT_TAG_LONG);    }
 int PyFloat_Check(PyObject *o)        { return wasthon_isinstance_of_builtin(o, WT_TAG_FLOAT);   }
 
 /* ---------------------------------------------------------------- *
