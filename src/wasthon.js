@@ -7965,6 +7965,22 @@ mergeInto(LibraryManager.library, {
             for (var i = 0; i < args.length; i++) callArgs.push(args[i]);
         }
         try {
+            // Forward keyword args via Brython's $kw marker: NEWOBJ_EX
+            // reconstructs as cls.__new__(cls, *args, **kwargs); dropping them
+            // made e.g. an int subclass pickled via __getnewargs_ex__ rebuild
+            // with the default base 10 (int('FACE') -> ValueError).
+            var kwargs = kwargsHandle ? rt.unwrap(kwargsHandle) : null;
+            if (kwargs) {
+                var kwMap = {};
+                var items = rt._b_.list.$factory(
+                    rt.$B.$call(rt.$B.$getattr(kwargs, 'items')));
+                for (var p = 0; p < items.length; p++) {
+                    var nm = rt.asJSStr(items[p][0]);
+                    if (nm === null) nm = String(items[p][0]);
+                    kwMap[nm] = items[p][1];
+                }
+                callArgs.push({ $kw: [kwMap] });
+            }
             var newm = rt.$B.$getattr(cls, '__new__');
             var inst = rt.$B.$call.apply(rt.$B, [newm].concat(callArgs));
             return rt.wrapNewRef(inst);
