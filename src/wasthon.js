@@ -664,6 +664,38 @@ mergeInto(LibraryManager.library, {
             return null;
         },
 
+        // Encode a JS string to UTF-8 bytes (Uint8Array). A valid high+low
+        // surrogate pair always encodes as the 4-byte astral form. A *lone*
+        // surrogate: with surrogatepass=true it becomes its 3-byte CESU
+        // sequence (ed a0-bf ..) so it round-trips (pickle's "surrogatepass"
+        // handler, paired with DecodeUTF8's CESU path); with
+        // surrogatepass=false (CPython's strict default — PyUnicode_AsUTF8,
+        // sqlite3 bind) the function returns null so the caller raises
+        // UnicodeEncodeError. Pure-BMP strings take the TextEncoder fast path.
+        encodeUTF8: function(s, surrogatepass) {
+            if (!/[\uD800-\uDFFF]/.test(s)) return new TextEncoder().encode(s);
+            var out = [];
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charCodeAt(i);
+                if (c < 0x80) { out.push(c); }
+                else if (c < 0x800) { out.push(0xC0 | (c >> 6), 0x80 | (c & 63)); }
+                else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length &&
+                         s.charCodeAt(i + 1) >= 0xDC00 && s.charCodeAt(i + 1) <= 0xDFFF) {
+                    var c2 = s.charCodeAt(++i);
+                    var cp = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
+                    out.push(0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 63),
+                             0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+                } else if (c >= 0xD800 && c <= 0xDFFF) {
+                    // Lone surrogate.
+                    if (!surrogatepass) return null;
+                    out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+                } else {
+                    out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+                }
+            }
+            return new Uint8Array(out);
+        },
+
         // Split a JS string into Unicode codepoints (one entry per astral
         // surrogate pair). wchar_t / Py_UCS4 are 4 bytes, so the materializers
         // want one element per codepoint, not per UTF-16 unit — shared by
@@ -873,7 +905,18 @@ mergeInto(LibraryManager.library, {
         var errors = errPtr === 0 ? "strict" : UTF8ToString(errPtr);
         var encNorm = enc.toLowerCase().replace(/_/g, '-');
         if (encNorm === 'utf-8' || encNorm === 'utf8') {
-            return _PyUnicode_AsUTF8String(sH);
+            // Honor the error handler for lone surrogates: "surrogatepass"
+            // (and "surrogateescape") CESU-encode them so they round-trip —
+            // this is pickle's fallback after the strict PyUnicode_AsUTF8
+            // returns NULL. "strict" (default) raises UnicodeEncodeError.
+            var sp = (errors === 'surrogatepass' || errors === 'surrogateescape');
+            var bytes = rt.encodeUTF8(s, sp);
+            if (bytes === null) {
+                rt.setError(rt.wrap(rt._b_.UnicodeEncodeError),
+                    "'utf-8' codec can't encode character: surrogates not allowed");
+                return 0;
+            }
+            return rt.wrapNewRef(rt._b_.bytes.$factory(Array.from(bytes)));
         }
         try {
             return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(s, 'encode'),
@@ -4223,30 +4266,17 @@ mergeInto(LibraryManager.library, {
         // Strings aren't weak-keyable. Use a small Map keyed by string content.
         if (!rt._utf8CacheStr) rt._utf8CacheStr = new Map();
         if (rt._utf8CacheStr.has(obj)) return rt._utf8CacheStr.get(obj);
-        /* surrogatepass: TextEncoder replaces lone surrogates with U+FFFD,
-         * but CPython pickles them as 3-byte CESU sequences (ed a0-bf ..)
-         * and round-trips them — '\ud800' came back as the replacement
-         * char. Slow path only when a surrogate is present. */
-        var bytes;
-        if (/[\uD800-\uDFFF]/.test(obj)) {
-            var out = [];
-            for (var si = 0; si < obj.length; si++) {
-                var c = obj.charCodeAt(si);
-                if (c < 0x80) out.push(c);
-                else if (c < 0x800) out.push(0xC0 | (c >> 6), 0x80 | (c & 63));
-                else if (c >= 0xD800 && c <= 0xDBFF && si + 1 < obj.length &&
-                         obj.charCodeAt(si + 1) >= 0xDC00 && obj.charCodeAt(si + 1) <= 0xDFFF) {
-                    var c2 = obj.charCodeAt(++si);
-                    var cp = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
-                    out.push(0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 63),
-                             0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
-                } else {
-                    out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
-                }
-            }
-            bytes = new Uint8Array(out);
-        } else {
-            bytes = new TextEncoder().encode(obj);
+        /* CPython's PyUnicode_AsUTF8 is strict: a lone surrogate raises
+         * UnicodeEncodeError (returns NULL). pickle's write_unicode_binary
+         * catches that NULL and retries via PyUnicode_AsEncodedString(...,
+         * "surrogatepass") (CESU, which our DecodeUTF8 round-trips); sqlite3
+         * bind lets it propagate (test_*_surrogates). A valid surrogate pair
+         * (astral char) still encodes fine. */
+        var bytes = rt.encodeUTF8(obj, /*surrogatepass=*/false);
+        if (bytes === null) {
+            rt.setError(rt.wrap(rt._b_.UnicodeEncodeError),
+                "'utf-8' codec can't encode character: surrogates not allowed");
+            return 0;
         }
         var ptr = _malloc(bytes.length + 1);
         HEAPU8.set(bytes, ptr);
