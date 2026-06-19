@@ -8564,11 +8564,28 @@ mergeInto(LibraryManager.library, {
         }
     },
 
-    /* _PyErr_ChainExceptions1(exc) — chain as __context__. The bridge
-     * keeps a single pending exception (no chaining machinery), so the
-     * passed-in `exc` is effectively dropped and the current pending
-     * exception (if any) is kept. */
-    _PyErr_ChainExceptions1: function(_excH) {},
+    /* _PyErr_ChainExceptions1(exc) — CPython: with a currently-set
+     * exception, `exc` becomes its __context__; with none, `exc` is
+     * re-raised. The bridge keeps a single pending slot and no chaining, so
+     * a currently-pending exception still wins (as before) — but when
+     * NOTHING is pending we must re-raise `exc`, else it is silently lost.
+     * sqlite3's bind_parameters relies on this: a failed bind grabs the
+     * Python error via PyErr_GetRaisedException, calls set_error_from_db
+     * (which sets nothing when the DB error is SQLITE_OK — a pure Python
+     * failure such as a surrogate UnicodeEncodeError), then
+     * _PyErr_ChainExceptions1 to re-raise it. As a no-op the error was
+     * dropped and the parameter bound NULL (test_string_with_surrogates,
+     * test_param_surrogates, test_surrogates, test_bind_mutating_list). */
+    _PyErr_ChainExceptions1__deps: ['$WasthonRT'],
+    _PyErr_ChainExceptions1: function(excH) {
+        var rt = WasthonRT;
+        if (excH === 0 || excH === rt.SLOT_NONE) return;
+        if (rt.pendingException) return;
+        var exc = rt.unwrap(excH);
+        if (!exc) return;
+        rt.setError(rt.wrap(exc.__class__ ? exc.__class__ : rt._b_.Exception),
+                    String(exc), exc);
+    },
 
     /* PyIter_Check(o) — has __next__? */
     PyIter_Check__deps: ['$WasthonRT'],
