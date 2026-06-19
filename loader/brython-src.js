@@ -14,7 +14,7 @@
 (function () {
     var params = new URLSearchParams(location.search);
     var cdn = params.get('brython') === 'cdn';
-    var base = cdn ? 'https://cdn.jsdelivr.net/npm/brython@3.14.1/' : './brython/';
+    var base = cdn ? 'https://cdn.jsdelivr.net/npm/brython@3.14.3/' : './brython/';
     var core = cdn ? 'brython.min.js' : 'brython.js';
     document.write('<script src="' + base + core + '"><\/script>');
     document.write('<script src="' + base + 'brython_stdlib.js"><\/script>');
