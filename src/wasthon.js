@@ -1717,7 +1717,16 @@ mergeInto(LibraryManager.library, {
             rt.incref(keyH);
             rt.incref(valueH);
             return 0;
-        } catch (e) { return -1; }
+        } catch (e) {
+            // CPython's PyDict_SetItem returns -1 AND sets the exception
+            // (e.g. TypeError "unhashable type" for an unhashable key). The
+            // bridge swallowed it to a bare -1, so a C caller returning that
+            // NULL (sqlite3 register_adapter({}, ...) -> microprotocols_add ->
+            // SetItem with a dict in the key tuple) produced no error
+            // (test_register_adapter). Forward it.
+            rt.forwardError(e, rt._b_.TypeError);
+            return -1;
+        }
     },
 
     PyDict_Contains__deps: ['$WasthonRT'],
