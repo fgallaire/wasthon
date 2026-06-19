@@ -7627,7 +7627,7 @@ mergeInto(LibraryManager.library, {
         //   [...]     list of inner values
         //   {}        empty dict (k:v pairs not supported)
         var p = varargs, i = 0;
-        function takeScalar(c) {
+        function takeScalar(c, hasLen) {
             // Every recognised code MUST advance p by the vararg's width —
             // an unhandled code that leaves p put misaligns every following
             // argument. e.g. raise_errmsg's PyObject_CallFunction(
@@ -7639,9 +7639,28 @@ mergeInto(LibraryManager.library, {
             switch (c) {
                 case 'O': case 'N': case 'S':
                     { var vo = rt.unwrap(HEAP32[p >> 2]); p += 4; return vo; }
-                case 's': case 'z': case 'U': case 'y':
+                case 's': case 'z': case 'U':
+                    // 's#'/'z#'/'U#' take a trailing Py_ssize_t length vararg.
                     { var sp = HEAP32[p >> 2]; p += 4;
-                      return sp === 0 ? null : UTF8ToString(sp); }
+                      var slen;
+                      if (hasLen) { slen = HEAP32[p >> 2]; p += 4; }
+                      if (sp === 0) return null;
+                      return hasLen ? UTF8ToString(sp, slen) : UTF8ToString(sp); }
+                case 'y':
+                    // 'y'/'y#' build a bytes object from raw bytes (NOT a str
+                    // via UTF8ToString) — sqlite3's _pysqlite_fetch_one_row
+                    // does CallFunction(text_factory, "y#", text, nbytes) for a
+                    // custom/bytes text_factory; it must receive bytes, and the
+                    // data may contain embedded NULs ("a\x00b"). Length is the
+                    // explicit '#' vararg, or strlen for bare 'y'.
+                    { var yp = HEAP32[p >> 2]; p += 4;
+                      var ylen;
+                      if (hasLen) { ylen = HEAP32[p >> 2]; p += 4; }
+                      if (yp === 0) return null;
+                      if (ylen === undefined) { ylen = 0; while (HEAPU8[yp + ylen] !== 0) ylen++; }
+                      var ybuf = new Array(ylen);
+                      for (var yk = 0; yk < ylen; yk++) ybuf[yk] = HEAPU8[yp + yk];
+                      return rt._b_.bytes.$factory(ybuf); }
                 case 'i': case 'b': case 'h': case 'l': case 'n': case 'c':
                     { var vi = HEAP32[p >> 2]; p += 4; return vi; }
                 case 'I': case 'k': case 'B': case 'H':
@@ -7672,7 +7691,11 @@ mergeInto(LibraryManager.library, {
                     continue;
                 }
                 i++;
-                var v = takeScalar(c);
+                // A trailing '#' (e.g. "y#", "s#") signals an explicit
+                // Py_ssize_t length vararg after the pointer.
+                var hasLen = (fmt[i] === '#');
+                if (hasLen) i++;
+                var v = takeScalar(c, hasLen);
                 if (v !== undefined) out.push(v);
             }
             return out;
