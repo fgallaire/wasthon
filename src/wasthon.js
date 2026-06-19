@@ -649,6 +649,18 @@ mergeInto(LibraryManager.library, {
                 obj.__wasthon_unicode_cached__ = chars.join('');
                 return obj.__wasthon_unicode_cached__;
             }
+            // Brython str-subclass instance (`class S(str)`): the primitive
+            // string is boxed in `$brython_value` and `__class__` is the
+            // subclass, so the exact check above misses it. CPython's
+            // PyUnicode_AsUTF8 accepts str subclasses — a sqlite3
+            // `con.isolation_level = CustomStr("DEFERRED")` (test_set_/
+            // del_isolation_level) reaches _PyUnicode_AsUTF8NoNUL with one.
+            if (obj && obj.$brython_value !== undefined &&
+                    this.$B.$isinstance && this.$B.$isinstance(obj, this._b_.str)) {
+                var sv = obj.$brython_value;
+                if (typeof sv === 'string') return sv;
+                if (sv instanceof String) return sv.valueOf();
+            }
             return null;
         },
 
