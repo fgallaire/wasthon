@@ -3377,9 +3377,15 @@ mergeInto(LibraryManager.library, {
     PyLong_AsSize_t: function(handle) {
         var rt = WasthonRT;
         var n = rt.coerceInt(rt.unwrap(handle));
+        // CPython returns (size_t)-1 on error, NOT 0 — callers test
+        // `val == (size_t)-1 && PyErr_Occurred()` (e.g. _zstd's
+        // calculate_samples_stats over the samples-size tuple). Returning 0
+        // made those checks miss the error, so a bad size (float / 2**1000 /
+        // negative) slipped through to ZDICT instead of raising. (size_t)-1 on
+        // wasm32 is 0xFFFFFFFF.
         if (n === undefined) {
             rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
-            return 0;
+            return 0xFFFFFFFF;
         }
         // size_t is 32-bit unsigned on wasm32: [0, 2**32-1]. Raise on negative
         // or overflow like CPython (was a silent `>>> 0` mask → struct 'N'
@@ -3389,7 +3395,7 @@ mergeInto(LibraryManager.library, {
             rt.setError(rt.wrap(rt._b_.OverflowError),
                 b < 0n ? "can't convert negative value to size_t"
                        : "Python int too large to convert to C size_t");
-            return 0;
+            return 0xFFFFFFFF;
         }
         return Number(b);
     },
