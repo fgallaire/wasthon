@@ -1253,7 +1253,15 @@ mergeInto(LibraryManager.library, {
             if (typeof f === 'number') return f;
             if (f && typeof f.value === 'number') return f.value;
         } catch (e) {
-            /* fall through to TypeError below */
+            /* An int beyond the double range raises OverflowError (math.hypot(1,
+             * 10**400)) — propagate that. Everything else (a str, an object
+             * with no __float__) is a TypeError for PyFloat_AsDouble: unlike
+             * float(), it does NOT parse strings, so float.$factory's ValueError
+             * for 'string' must still surface as TypeError (test_input_exceptions). */
+            if (rt.$B.$isinstance(e, rt._b_.OverflowError)) {
+                rt.forwardError(e);
+                return -1;
+            }
         }
         rt.setError(rt.wrap(rt._b_.TypeError),
             "PyFloat_AsDouble: argument is not a float");
@@ -5079,7 +5087,17 @@ mergeInto(LibraryManager.library, {
                 if (r >= -2147483648n && r <= 2147483647n) return rt.wrapNewRef(Number(r));
                 return rt.wrapNewRef(r);
             }
-            return rt.wrapNewRef(rt.$B.rich_op1('__mul__', a, b));
+            var r = rt.$B.rich_op1('__mul__', a, b);
+            /* Brython's rich_op1 can return the NotImplemented sentinel when
+             * neither __mul__ nor __rmul__ applies (e.g. [1]*[2]); CPython's
+             * PyNumber_Multiply raises TypeError there (math.prod([[1],[2]])). */
+            if (r === rt._b_.NotImplemented) {
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                    "unsupported operand type(s) for *: '" +
+                    rt.$B.class_name(a) + "' and '" + rt.$B.class_name(b) + "'");
+                return 0;
+            }
+            return rt.wrapNewRef(r);
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -11069,6 +11087,12 @@ mergeInto(LibraryManager.library, {
                 } else if ((flags & FASTCALL) && (flags & KEYWORDS)) {
                     resultHandle = fn(selfHandle, argsBufPtr, nargs, kwnamesHandle);
                 } else if (flags & FASTCALL) {
+                    // METH_FASTCALL without METH_KEYWORDS: CPython's
+                    // cfunction_vectorcall_FASTCALL rejects any keyword
+                    // (_PyArg_NoKwnames), so math.hypot(x=1)/math.dist(p=..)
+                    // must raise instead of silently dropping the kwnames.
+                    if (kwNames.length > 0) throw rt.$B.$call(rt._b_.TypeError,
+                        methName + "() takes no keyword arguments");
                     resultHandle = fn(selfHandle, argsBufPtr, nargs);
                 } else if (flags & NOARGS) {
                     // METH_NOARGS: CPython rejects any positional arg.
