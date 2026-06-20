@@ -406,13 +406,20 @@ mergeInto(LibraryManager.library, {
             for (var mi = 0; mi < maps.length; mi++) {
                 var m = maps[mi];
                 if (!m || typeof m !== 'object') continue;
-                // Brython 3.14 instances use `ob_type` (PyTypeObject mirror)
-                // rather than `__class__`. Accept both shapes for the
-                // detection; fall back to $isinstance for subclasses.
-                var isBrythonDict = (m.ob_type === this._b_.dict) ||
+                // Elements 1+ of $kw are `**X` expansions. A Brython dict is
+                // detected via $isinstance (it does NOT expose ob_type/__class__
+                // as plain JS props), and a mappingproxy (from
+                // **types.MappingProxyType) via its ob_type. Both are walked via
+                // .items() so the REAL entries are read, not the object's
+                // internal JS props — an empty MappingProxyType otherwise leaked
+                // a phantom kwarg (hmac's compute_* called with
+                // **MappingProxyType({})). Element 0 is a plain JS object
+                // (explicit name=value kwargs), no type tag → read its own keys.
+                var isBrythonMapping = (m.ob_type === this._b_.dict) ||
+                    (m.ob_type === this.$B.mappingproxy) ||
                     (m.__class__ && m.__class__ === this._b_.dict) ||
                     (this.$B.$isinstance && this.$B.$isinstance(m, this._b_.dict));
-                if (isBrythonDict) {
+                if (isBrythonMapping) {
                     // Walk via .items() — same canonical pattern as
                     // PyDict_Next snapshotting (see line ~1700).
                     try {
