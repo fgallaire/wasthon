@@ -7,6 +7,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`fma` corrects the sign of an underflow-to-zero result** (+1 math; general). emscripten/musl's `fma` is correctly fused but returns `+0.0` for `fma(1e-300, -1e-300, 0.0)` where IEEE/CPython give `-0.0` (the rounded zero follows the underflowed product's sign). The `pycore_pymath.h` shim now wraps `fma` (calling `__builtin_fma` to keep the real fused result) and, only when the result is zero with a zero addend and finite nonzero factors, sets the sign to `sign(x)*sign(y)` (test_fma_zero_result).
+
 - [x] **`PyNumber_Add`/`PyNumber_Multiply` restrict the BigInt fast-path to int×int** (+1 math; general). The branch fired whenever either operand was a BigInt and coerced the other with `BigInt(Math.trunc(Number(x)))`, so `int*float` did integer math (`10**1000 * 1.0` returned `10**1000` instead of overflowing) and `int+Fraction`/`int*Decimal` hit `BigInt(NaN)`. Now both operands must be `int`; a float/Fraction/Decimal operand falls through to `$B.rich_op1`, so `math.sumprod([10**1000], [1.0])` raises OverflowError (via the int→float conversion) and Fraction/Decimal reach their `__radd__`/`__rmul__`. (Needs the harness `test.test_iter.BasicIterClass` stub for testSumProd to run.)
 
 - [x] **`_PyLong_GCD` returns a gcd beyond the safe-integer range instead of throwing** (+1 math; general). It set `n = Number(aa)` then tested `BigInt(n) === aa`, but for a gcd larger than 2^53 `Number(aa)` is `Infinity` and `BigInt(Infinity)` throws — `math.gcd(2**1074, 2**1074)`, reached via `fractions.Fraction._sub` in test_remainder's subnormal cases. Reordered so `Number.isSafeInteger(n)` short-circuits before the `BigInt()`, returning the BigInt directly when out of range.
