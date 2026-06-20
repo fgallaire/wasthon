@@ -6946,16 +6946,29 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(objH);
         var name = rt.asJSStr(rt.unwrap(nameH));
         if (!obj || name === null) return 0;
+        // CPython's _PyObject_LookupSpecial looks the method up on the TYPE
+        // (MRO) only, never the instance dict — so math.ceil(t) with an
+        // instance attribute t.__ceil__ must IGNORE it and fall through to
+        // PyFloat_AsDouble -> TypeError. The old $getattr walked the instance
+        // too, so the instance __ceil__/__floor__ was wrongly called.
         // Absence of the special method = NULL with NO error (the "Maybe": the
         // C caller, e.g. math_floor, then tries PyFloat_AsDouble). But if the
         // method IS present and RAISES, the exception must propagate — the
         // caller checks PyErr_Occurred() right after a NULL. The old bare
         // catch swallowed it, so math.floor(Decimal('NaN')) returned None
         // instead of raising ValueError. Forward the real exception.
-        var m = rt.$B.$getattr(obj, name, null);
-        if (m === null || m === undefined) return 0;
+        var klass = rt.$B.get_class(obj);
+        var m = rt.$B.search_in_mro(klass, name, rt.$B.NULL);
+        if (m === rt.$B.NULL || m === undefined) return 0;
+        var bound;
         try {
-            return rt.wrapNewRef(rt.$B.$call(m));
+            if (rt.$B.get_class(m) === rt.$B.function) {
+                bound = rt.$B.method.tp_new(rt.$B.method, [m, obj]);
+            } else {
+                var getter = rt.$B.get_class(m).tp_descr_get;
+                bound = (getter && getter !== rt.$B.NULL) ? getter(m, obj, klass) : m;
+            }
+            return rt.wrapNewRef(rt.$B.$call(bound));
         } catch (e) {
             rt.forwardError(e);
             return 0;
