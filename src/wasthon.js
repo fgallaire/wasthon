@@ -2681,8 +2681,16 @@ mergeInto(LibraryManager.library, {
          * comparisons (e.g. round-tripped pickle output) aren't perturbed
          * by leftover iteration state. */
         if (!rt._dictNextSnap) rt._dictNextSnap = new WeakMap();
+        var pos = HEAP32[pposPtr >> 2];
         var snap = rt._dictNextSnap.get(d);
-        if (!snap) {
+        /* Rebuild at the start of every iteration (pos === 0). A prior
+         * iteration that bailed early — e.g. a caller's PyDict_Next loop
+         * that `return`s on the first item because a value conversion
+         * raised (zstd set_d_parameters + PyLong_AsInt(2**1000)) — never
+         * runs to the end-delete, so a stale snapshot would otherwise
+         * poison the next iteration after the dict was mutated, yielding
+         * the old value for a reused key. */
+        if (!snap || pos === 0) {
             snap = [];
             try {
                 var items_view = rt.$B.$call(rt.$B.$getattr(d, 'items'));
@@ -2697,7 +2705,6 @@ mergeInto(LibraryManager.library, {
             } catch (e) { return 0; }
             rt._dictNextSnap.set(d, snap);
         }
-        var pos = HEAP32[pposPtr >> 2];
         if (pos < 0 || pos >= snap.length) {
             rt._dictNextSnap.delete(d);
             return 0;
