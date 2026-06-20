@@ -9859,7 +9859,14 @@ mergeInto(LibraryManager.library, {
         // sequence, so 29/32 belong to sq_length/sq_item. Otherwise they're
         // nb_multiply/nb_positive. (None of our currently-ported modules
         // mix sequence and numeric protocols in the same type.)
-        var isSequence = !!(slotMap[39] || slotMap[41]);
+        // A type carrying the colliding slot 29/32 but NO unambiguous numeric
+        // slot (nb_add, nb_subtract, …) isn't a number — it's a length-only
+        // type like _zstd's ZstdDict (sq_length only, no sq_ass_item/sq_contains)
+        // — so its 29/32 are sq_length/sq_item (which gives it __len__).
+        var hasNumber = [7, 36, 8, 31, 38, 28, 35, 12, 37, 34, 10, 33, 30, 6, 11, 9]
+            .some(function(s) { return slotMap[s]; });
+        var isSequence = !!(slotMap[39] || slotMap[41] ||
+            ((slotMap[29] || slotMap[32]) && !hasNumber));
         var slotDispatch = {
             7:  ['nb_add',                    ['__add__'],           'b'],
             36: ['nb_subtract',               ['__sub__'],           'b'],
