@@ -18,6 +18,116 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] Slicing a `bytearray` returns `bytes` instead of `bytearray`
+
+**Impact: `bytearray(b'abc')[0:2]` is now a `bytearray` (general correctness; removes a JS `$factory` crash when `readinto()` targets a sliced bytearray).** `bytearray.mp_subscript` delegated to `bytes.mp_subscript`, which always built the slice result with `bytes.$factory`, so a bytearray slice came back read-only `bytes` — unlike CPython where it is a writable `bytearray`. Now the slice result type is taken from the operand's class (`bytearray` → `bytearray`, `bytes` → `bytes`). Source: `bytes.mp_subscript`, vendored in `loader/brython/brython.js`.
+
+## [x] `BytesIO.read` returned a `bytearray` (companion to the bytearray-slice fix)
+
+**Impact: keeps `io.BytesIO.read()` returning `bytes` (no `_Unpickler`-over-BytesIO regression; pickle stays at baseline).** `BytesIO` stores its buffer as a `bytearray` and `read()` slices it with `bytes.mp_subscript`; once that slice correctly yields a `bytearray`, `read()` started returning a `bytearray`, so pure-Python unpickling read bytes payloads as bytearray. `read()` now wraps the slice in `bytes.$factory` (like CPython's `_pyio.BytesIO.read` returning `bytes(b)`). Source: `BytesIO.read` in the `_io_classes` module, vendored in `loader/brython/brython_stdlib.js`.
+
+## [x] `BufferedReader.seek` on a non-seekable stream silently delegates instead of raising
+
+**Impact: `ZstdFile`/`bz2`/`lzma` over a non-seekable raw stream now raise `io.UnsupportedOperation` on `seek()` (test_zstd test_seek_not_seekable); +1 zstd.** `_BufferedReader.seek` forwarded straight to the raw stream's `seek` without checking `seekable()`, so seeking a wrapper over a non-seekable source succeeded (or emulated) instead of failing like CPython, whose `BufferedReader.seek` raises `UnsupportedOperation("File or stream is not seekable.")`. Now it checks `self.seekable()` first and raises the same exception/message. Source: `_BufferedReader.seek`, vendored in `loader/brython/brython.js`.
+
+## [x] `bytes.join`/`bytearray.join` reject a buffer-protocol item (e.g. `array.array`)
+
+**Impact: `b''.join([array.array(...), …])` now works (test_zstd test_train_buffer_protocol_samples); +1 zstd, general.** `join` concatenated each item with `bytes.sq_concat` (the `+` operator), which only accepts bytes/bytearray (`is_bytes_like` checks `__buffer__`, which `array.array` lacks). CPython's `bytes.join` accepts any buffer-protocol object. Now a non-bytes/bytearray item is converted via `$B.to_bytes` (its `tobytes()`). Source: the shared `join` for bytes/bytearray, vendored in `loader/brython/brython.js`.
+
+## [x] `property.__set__` on a read-only property crashes when the getter has no `$function_infos`
+
+**Impact: setting a read-only C-bridge property (e.g. `ZstdDict.dict_content = x`, test_zstd test_is_raw) now raises AttributeError instead of a JS error; +1 zstd, general.** `property.tp_descr_set` built the "has no setter" message via `prop_get.$function_infos[__name__]`, but a property whose getter is a wasthon C-bridge function has no `$function_infos` → "can't access property … is undefined". Now it falls back to the property's `prop_name`/`__name__`. Source: the `property` type's `tp_descr_set`, vendored in `loader/brython/brython.js`.
+
+## [x] `object.__repr__` omits the module prefix and the address
+
+**Impact: `<hmac.HMAC object at 0x...>` instead of `<HMAC object>` (test_hmac test_repr); +1 hmac, general.** `object.tp_repr` read `klass.__module__` as a JS property — always `undefined`, since `__module__` is a Brython attribute (in the type's dict), not a direct JS prop — so the `<module.qualname>` branch never fired for user classes, and CPython's `at 0x{addr}` was missing entirely. Now it reads `__module__` via `$getattr` and appends ` at 0x{id(self).toString(16)}`, matching CPython's `<module.qualname object at 0xADDR>`. Source: the `object` type's `tp_repr`, vendored in `loader/brython/brython.js`.
+
+## [x] `0 ** negative_int` returns `inf` instead of raising `ZeroDivisionError`
+
+**Impact: `0 ** -1` now raises `ZeroDivisionError: zero to a negative power` (test_math's ieee754 doctest); +1 math.** `int.nb_power`'s negative-exponent branch did `fast_float(Number(x) ** Number(y))`, and JS `0 ** -1` is `Infinity`. Added an `x == 0` guard raising ZeroDivisionError like CPython. Source: the `int` type's `nb_power`, vendored in `loader/brython/brython.js`.
+
+## [x] A binary operator on same-type operands leaks `NotImplemented` instead of raising `TypeError`
+
+**Impact: `[1] * [2]` / `[] * [1]` now raise `TypeError: can't multiply sequence by non-int of type 'list'` (CPython parity); +0 measured** (the C-module suites reach multiply through the bridge, which already maps a `NotImplemented` result). `$B.rich_op1`'s same-type branch returned `__op__`'s result directly, so a `NotImplemented` (e.g. `list.__mul__([1], [2])`) leaked to user code. Now it raises — the "can't multiply sequence by non-int of type X" message for `__mul__` on a sequence, the generic "unsupported operand type(s)" otherwise. Companion to the `sq_repeat` fix below (which lets `[] * [1]` reach this path). Source: `www/src/py_utils.js` (`rich_op1`), vendored in `loader/brython/brython.js`.
+
+## [x] `list`/`tuple` repeat (`sq_repeat`) returns empty for an empty sequence before validating the count type
+
+**Impact: `math.prod([[1], [2], [3]], start=[])` now raises TypeError.** `sq_repeat` short-circuited `if (self.length == 0) return empty` *before* `PyNumber_Index(other)`, so `[] * [1]` returned `[]` instead of rejecting the non-int multiplier. Moved the index conversion and the big-int overflow check ahead of the empty/negative short-circuit, so `[] * [1]` raises (CPython validates the count regardless of emptiness) while `[] * 3` still yields `[]`. Source: the list/tuple `sq_repeat`, vendored in `loader/brython/brython.js`.
+
+## [x] `int.__float__`/`int.nb_float` return `inf` for an int beyond the double range instead of raising `OverflowError`
+
+**Impact: enables `OverflowError` for `float(10**1000)` and `math.hypot(1, 10**400)` (test_math).** CPython's `int.__float__` raises `OverflowError: int too large to convert to float`; Brython did `fast_float(Number(int_value(self)))`, and `Number(bigint)` silently yields `Infinity`. Added a finite check before `fast_float`. Source: the `int` type implementation, vendored in `loader/brython/brython.js`.
+
+## [x] `SomeType.__name__`/`__qualname__` returns a *descriptor* instead of the name when the type defines its own member of that name
+
+**Impact: +0 measured on the suite, but a correct fix that enables nested-class pickling** (`Outer.Inner` now round-trips) and matches CPython for builtin descriptor types. Source: `www/src/py_type.js` (`$B.$getattr` class branch + `type.__qualname___get`), vendored in `loader/brython/brython.js`. Zero regression across the full 21-suite set.
+
+Symptom: `type(str.count).__name__` returned `<member '__name__' of 'method_descriptor' objects>` (the descriptor) instead of `'method_descriptor'`; likewise `__qualname__`. This broke `_pickle`'s `save_global`/`PyUnicode_Split`/`find_class`, which read `obj.__qualname__` expecting a string.
+Root: in `$B.$getattr`'s class branch, attribute access on a *type* looked the name up in the type's own dict first and, for a `member_descriptor`/`method_descriptor` (the descriptor types define `__name__`/`__qualname__` for *their instances*, e.g. `str.count.__name__ == 'count'`), returned that descriptor — without first honoring a data descriptor on the metatype. CPython's `type_getattro`: a **data descriptor on the metatype wins** over the type's own attribute, and `type.__name__`/`__qualname__` are data getsets. Separately, `type.__qualname___get` did `get_from_dict(cls, '__qualname__', …)`, which for those types returns the instance getset stored under the same key.
+Fix: in the class branch, when the metatype (`type`) has a *data* getset for the attr (`attr+'_get'` exists and `attr+'_set'` is a real function), return the metatype getter applied to the type — before the type's own dict entry. And `type.__qualname___get` returns the dict value only when it's a string, else the type name.
+
+```python
+>>> type(str.count).__name__
+<member '__name__' of 'method_descriptor' objects>  # before
+'method_descriptor'                                 # after
+```
+
+## [x] Builtin method/descriptor types ship empty `__reduce__` stubs (return `undefined` → unpicklable)
+
+**Impact: +6 test_pickle** (and clears the dominant failure mode in the harness — `RuntimeError: dumps: call returned NULL` dropped from 440 to 21 subtest occurrences). Source: `www/src/py_*.js` (per-type `tp_funcs.__reduce__`), vendored in `loader/brython/brython.js`.
+
+Symptom: pickling a bound method / `method_descriptor` / slot wrapper / member descriptor / `__getitem__`-based iterator failed. Under wasthon's C `_pickle` it surfaced as `RuntimeError: dumps: call returned NULL`: the C `save` calls `obj.__reduce__()`, Brython returns JS `undefined`, and the C code (a NULL with no exception set) raises the generic error.
+Root: these types defined `__reduce__ = function(self){}` — an empty stub returning `undefined` instead of CPython's reduce.
+Fix: implement them — the descriptor/method family (`method_descriptor`, `member_descriptor`, `wrapper_descriptor`, `method`, `method_wrapper`, and bound `builtin_function_or_method`) as CPython's `(getattr, (owner, name))`; the `__getitem__`-fallback `iterator` as `(iter, (it_seq,), it_index)` with a real `__setstate__`. (The JS-iterator-wrapping iterators — `filter`/`map`/`zip`/`enumerate`/`tuple_iterator`/`dict_reverse*iterator` — and `GenericAlias` still need a deeper change: their constructor wraps the source in a non-picklable JS iterator, or the reduce references a type that isn't itself picklable by reference.)
+
+```python
+>>> str.count.__reduce__()
+<Javascript undefined>                                   # before
+(<built-in function getattr>, (<class 'str'>, 'count'))  # after
+```
+
+## [x] `%x`/`%X`/`%o` and `int.__format__` give `'NaN'`/`'[object Object]'` for an int subclass instance
+
+**Impact: +0 measured** (correct; reproduces on stock CDN brython@3.14.3; the int-subclass pickle tests that exercise it fail further along their own deeper layers). Source: `www/src/py_string.js` (`signed_hex_format`, `octal_format`), `www/src/py_int.js` (`preformat`), vendored in `loader/brython/brython.js`.
+
+Symptom: for `class S(int): pass` and `x = S(0xface)`, `'%x' % x` → `'NaN'`, `'%X' % x` → `'NAN'`, `'%o' % x` → `'NaN'`, `format(x, 'x')` → `'[object Object]'`. Plain `int` and `'%d' % x` are correct, and a *big* int subclass is correct (it takes the `is_big_int` branch).
+Root: a Brython int subclass instance boxes its value in `.value`. The hex/octal printf path did `parseInt(val)` for the non-big-int case — `parseInt` on the boxed object is `NaN` → `.toString(16)` → `'NaN'`. `int.__format__`'s `preformat` did `self.toString(16)` on the boxed object → `'[object Object]'`. `%d` only worked because it routes through `str.$factory(val)`.
+Fix: unbox with `$B.int_value(val)` (`obj.value ?? obj` — handles plain number, boxed subclass, and bigint uniformly; already used by the float `preformat` and by the `is_big_int` branch here). `preformat` reads `var value = $B.int_value(self)` once and uses it for the `b`/`o`/`x`/`X`/`d` conversions and the sign test.
+
+```python
+>>> class S(int): pass
+>>> '%X' % S(0xface)
+'NAN'   # before
+'FACE'  # after
+>>> format(S(0xface), 'x')
+'[object Object]'  # before
+'face'             # after
+```
+
+## [x] `__reduce_ex__` drops `__getnewargs_ex__` keyword args (always `__newobj__`, never `__newobj_ex__`)
+
+**Impact: +0 measured** (correct; reproduces on stock CDN; `test_complex_newobj_ex` still fails at protocol 2/3 on a separate `object.__new__.__qualname__` issue). Source: `www/src/py_object.js` (`object.__reduce_ex__`), vendored in `loader/brython/brython.js`.
+
+Symptom: pickling (protocol >= 2) an object whose `__getnewargs_ex__` returns non-empty kwargs lost the kwargs. `S(0xface).__reduce_ex__(2)` returned `(copyreg.__newobj__, (S, 'FACE'), ...)` — the `{'base': 16}` was gone — so unpickling did `int('FACE')` (base 10) → `ValueError`.
+Root: `object.__reduce_ex__` always used `copyreg.__newobj__` and only concatenated `newargs.args`, ignoring `newargs.kwargs` from `getNewArguments`. CPython's `reduce_2`: when kwargs is non-empty, use `copyreg.__newobj_ex__` with the tuple `(cls, args, kwargs)`; otherwise `__newobj__` with `(cls,) + args`.
+Fix: branch on `_b_.dict.mp_length(newargs.kwargs) > 0` → emit `__newobj_ex__` with `(cls, args, kwargs)`; else keep the `__newobj__` path unchanged.
+
+```python
+>>> class S(int):
+...     def __getnewargs_ex__(self): return (('%X' % self,), {'base': 16})
+>>> S(0xface).__reduce_ex__(2)[:2]
+(<function __newobj__>, (<class 'S'>, 'FACE'))                      # before
+(<function __newobj_ex__>, (<class 'S'>, ('FACE',), {'base': 16}))  # after
+```
+
+## [x] `object.__reduce_ex__` calls `__getnewargs_ex__` via `$B.$call`, not a raw JS call
+
+**Impact: +0 measured** (removes a real error; the affected tests — test_complex_newobj_ex, test_compat_pickle, test_buffers_numpy — then fail further along their own deeper layers). Source: `www/src/py_object.js` (`getNewArguments`), vendored in `loader/brython/brython.js`.
+
+Symptom: pickling an object whose `__getnewargs_ex__` is a Python method raised `RuntimeError: newargs_ex is not a function` from `_pickle`/copyreg reduce.
+Root: `getNewArguments` did `let newargs = newargs_ex()` — a direct JS call — on the result of `$B.$getattr(self, '__getnewargs_ex__', null)`. A Brython bound method is an *object* (`__class__` = method), not a JS function, so the direct call throws "not a function". The parallel `__getnewargs__` branch a few lines below already calls it correctly via `$B.$call(newargs, self)`.
+Fix: `let newargs = $B.$call(newargs_ex)` (the method is already bound to `self`). `$B.$call` dispatches both JS functions and Brython callables, so the C-method case that worked before is unaffected.
+
 ## [x] `float(str)` raises ValueError on an overflowing literal instead of returning inf
 
 **Impact: +2 test_json** (`test_out_of_range`, C and Py float paths). Source:
