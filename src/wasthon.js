@@ -6998,6 +6998,17 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var fc = String.fromCharCode(formatCode);
         var s;
+        if (!isFinite(val)) {
+            /* CPython's PyOS_double_to_string prints "inf"/"-inf"/"nan", not
+             * JS's "Infinity"/"NaN" — e.g. math.asin(inf)'s ValueError message
+             * "...got inf" (the ieee754 doctest) and repr of an inf float. */
+            s = isNaN(val) ? 'nan' : (val < 0 ? '-inf' : 'inf');
+            var nlen = lengthBytesUTF8(s);
+            var nptr = _malloc(nlen + 1);
+            stringToUTF8(s, nptr, nlen + 1);
+            if (typePtr) HEAP32[typePtr >> 2] = 0;
+            return nptr;
+        }
         if (fc === 'r') s = val.toString();
         else if (fc === 'g') s = val.toPrecision(precision || 6);
         else if (fc === 'e') s = val.toExponential(precision);

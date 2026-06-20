@@ -7,6 +7,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyOS_double_to_string` prints `inf`/`-inf`/`nan` like CPython** (+0 measured; general). It formatted every value via JS `val.toString()`, so a non-finite double came out as `"Infinity"`/`"NaN"` — `math.asin(inf)`'s ValueError read "...got Infinity" instead of "...got inf" (the ieee754 doctest), and any C-side string of an inf/nan float was wrong. A non-finite value now returns the Python spelling directly.
+
 - [x] **METH_FASTCALL methods reject keyword arguments** (+1 math; general). The `flags & FASTCALL` dispatch branch passed only the positional args and silently dropped `kwnames`, so `math.hypot(x=1)`/`math.dist(p=.., q=..)` returned a value (or crashed converting the wrong arg) instead of raising. CPython's `cfunction_vectorcall_FASTCALL` calls `_PyArg_NoKwnames`, so a FASTCALL method without `METH_KEYWORDS` now raises `TypeError: hypot() takes no keyword arguments` when any keyword is given.
 
 - [x] **`PyNumber_Multiply` raises `TypeError` on an unsupported pair** (+0 alone; general). Brython's `rich_op1('__mul__', a, b)` can return the `NotImplemented` sentinel when neither `__mul__` nor `__rmul__` applies (e.g. `[1] * [2]`); the bridge returned it as a value, so `math.prod([[1], [2]])` produced `NotImplemented` instead of raising. Now a `NotImplemented` result becomes `TypeError: unsupported operand type(s) for *: 'list' and 'list'`.
