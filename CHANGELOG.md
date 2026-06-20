@@ -7,6 +7,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyNumber_Add`/`PyNumber_Multiply` restrict the BigInt fast-path to int×int** (+1 math; general). The branch fired whenever either operand was a BigInt and coerced the other with `BigInt(Math.trunc(Number(x)))`, so `int*float` did integer math (`10**1000 * 1.0` returned `10**1000` instead of overflowing) and `int+Fraction`/`int*Decimal` hit `BigInt(NaN)`. Now both operands must be `int`; a float/Fraction/Decimal operand falls through to `$B.rich_op1`, so `math.sumprod([10**1000], [1.0])` raises OverflowError (via the int→float conversion) and Fraction/Decimal reach their `__radd__`/`__rmul__`. (Needs the harness `test.test_iter.BasicIterClass` stub for testSumProd to run.)
+
 - [x] **`_PyLong_GCD` returns a gcd beyond the safe-integer range instead of throwing** (+1 math; general). It set `n = Number(aa)` then tested `BigInt(n) === aa`, but for a gcd larger than 2^53 `Number(aa)` is `Infinity` and `BigInt(Infinity)` throws — `math.gcd(2**1074, 2**1074)`, reached via `fractions.Fraction._sub` in test_remainder's subnormal cases. Reordered so `Number.isSafeInteger(n)` short-circuits before the `BigInt()`, returning the BigInt directly when out of range.
 
 - [x] **`PyOS_double_to_string` prints `inf`/`-inf`/`nan` like CPython** (+0 measured; general). It formatted every value via JS `val.toString()`, so a non-finite double came out as `"Infinity"`/`"NaN"` — `math.asin(inf)`'s ValueError read "...got Infinity" instead of "...got inf" (the ieee754 doctest), and any C-side string of an inf/nan float was wrong. A non-finite value now returns the Python spelling directly.

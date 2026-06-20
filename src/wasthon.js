@@ -5052,7 +5052,12 @@ mergeInto(LibraryManager.library, {
                 return rt.wrapNewRef(BigInt(a) + BigInt(b));
             }
             if (typeof a === 'number' && typeof b === 'number') return rt.wrapNewRef(a + b);
-            if (typeof a === 'bigint' || typeof b === 'bigint') {
+            if ((typeof a === 'bigint' || typeof b === 'bigint') &&
+                rt.$B.$isinstance(a, rt._b_.int) && rt.$B.$isinstance(b, rt._b_.int)) {
+                /* both int (one beyond JS-number range) — exact BigInt sum.
+                 * Only int+int qualifies: int+float/Fraction/Decimal must reach
+                 * the other type's __radd__ via rich_op1 below, not BigInt(NaN)
+                 * (math.sumprod accumulating a big int total with a Fraction). */
                 var ba = typeof a === 'bigint' ? a : BigInt(Math.trunc(Number(a)));
                 var bb = typeof b === 'bigint' ? b : BigInt(Math.trunc(Number(b)));
                 var r = ba + bb;
@@ -5083,7 +5088,13 @@ mergeInto(LibraryManager.library, {
                 return rt.wrapNewRef(BigInt(a) * BigInt(b));
             }
             if (typeof a === 'number' && typeof b === 'number') return rt.wrapNewRef(a * b);
-            if (typeof a === 'bigint' || typeof b === 'bigint') {
+            if ((typeof a === 'bigint' || typeof b === 'bigint') &&
+                rt.$B.$isinstance(a, rt._b_.int) && rt.$B.$isinstance(b, rt._b_.int)) {
+                /* both int (one beyond JS-number range) — exact BigInt product.
+                 * Only int*int qualifies: int*float goes through rich_op1 below
+                 * (so a huge int raises OverflowError on the float conversion,
+                 * math.sumprod([10**1000], [1.0])), and int*Fraction/Decimal must
+                 * reach the other type's __rmul__ rather than BigInt(NaN). */
                 var ba = typeof a === 'bigint' ? a : BigInt(Math.trunc(Number(a)));
                 var bb = typeof b === 'bigint' ? b : BigInt(Math.trunc(Number(b)));
                 var r = ba * bb;
