@@ -3662,8 +3662,14 @@ mergeInto(LibraryManager.library, {
             var m = rt.$B.$getattr(obj, '__complex__', null);
             if (m !== null) {
                 var c = rt.$B.$call(m);
-                real = asNum(c.real);
-                imag = asNum(c.imag);
+                if (! rt.$B.$isinstance(c, rt._b_.complex)) {
+                    rt.setError(rt.wrap(rt._b_.TypeError),
+                        "__complex__ should return a complex object");
+                    real = -1;
+                } else {
+                    real = asNum(c.real);
+                    imag = asNum(c.imag);
+                }
             } else {
                 m = rt.$B.$getattr(obj, '__float__', null);
                 if (m === null) { m = rt.$B.$getattr(obj, '__index__', null); }
