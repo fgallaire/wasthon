@@ -1242,26 +1242,27 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(handle);
         if (typeof obj === 'number') return obj;
         if (obj && typeof obj.value === 'number') return obj.value;
-        /* Coerce non-floats via Brython's float() constructor — mirrors
-         * CPython's PyFloat_AsDouble which calls nb_float / __float__
-         * (and falls back to __index__) on non-float operands. Used by
-         * math.floor(IntEnum), math.hypot(decimal.Decimal, ...), etc.
-         * Same pattern as coerceInt for PyLong_As*. Discovered
-         * 2026-05-26 chasing 6 testCeil/Dist/Floor/Hypot/Log1p/ulp fails. */
+        /* PyFloat_AsDouble, unlike float(), does NOT parse strings/bytes — they
+         * have no __float__/__index__, so they are a TypeError, not a parse
+         * (test_input_exceptions, math.hypot(1.1, 'string', 2.2)). */
+        if (rt.$B.$isinstance(obj, [rt._b_.str, rt._b_.bytes, rt._b_.bytearray])) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "PyFloat_AsDouble: argument is not a float");
+            return -1;
+        }
+        /* Coerce other non-floats via Brython's float() constructor — mirrors
+         * CPython's PyFloat_AsDouble calling nb_float / __float__ (then __index__)
+         * (math.floor(IntEnum), math.hypot(decimal.Decimal, ...)). Any exception
+         * the conversion raises propagates: a huge int's OverflowError, a
+         * __float__ descriptor's ValueError (math.dist with a BadFloat), or
+         * float.$factory's own TypeError for an object with no __float__. */
         try {
             var f = rt._b_.float.$factory(obj);
             if (typeof f === 'number') return f;
             if (f && typeof f.value === 'number') return f.value;
         } catch (e) {
-            /* An int beyond the double range raises OverflowError (math.hypot(1,
-             * 10**400)) — propagate that. Everything else (a str, an object
-             * with no __float__) is a TypeError for PyFloat_AsDouble: unlike
-             * float(), it does NOT parse strings, so float.$factory's ValueError
-             * for 'string' must still surface as TypeError (test_input_exceptions). */
-            if (rt.$B.$isinstance(e, rt._b_.OverflowError)) {
-                rt.forwardError(e);
-                return -1;
-            }
+            rt.forwardError(e);
+            return -1;
         }
         rt.setError(rt.wrap(rt._b_.TypeError),
             "PyFloat_AsDouble: argument is not a float");
