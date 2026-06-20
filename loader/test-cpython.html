@@ -702,6 +702,25 @@ test_pkg.support = support
 sys.modules['test'] = test_pkg
 sys.modules['test.support'] = support
 
+# test_math.testSumProd does "from test.test_iter import BasicIterClass" to
+# feed sumprod a plain (non-sequence) iterator; provide just that class.
+test_iter = _mod('test.test_iter')
+class BasicIterClass:
+    def __init__(self, n):
+        self.n = n
+        self.i = 0
+    def __next__(self):
+        res = self.i
+        if res >= self.n:
+            raise StopIteration
+        self.i = res + 1
+        return res
+    def __iter__(self):
+        return self
+test_iter.BasicIterClass = BasicIterClass
+test_pkg.test_iter = test_iter
+sys.modules['test.test_iter'] = test_iter
+
 # Stubs for stdlib modules pickletester (and others) import at top but
 # don't really need: brython_stdlib lacks dbm; stubbing it as a flexible
 # _mod lets \`import dbm\` succeed and any attribute access return _flex.
