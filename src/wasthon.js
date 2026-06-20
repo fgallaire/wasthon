@@ -570,7 +570,19 @@ mergeInto(LibraryManager.library, {
          * because they reach C-side as Brython objects, not JS primitives.
          * Mirrors CPython's PyLong_AsLong which dispatches through nb_int. */
         coerceInt: function(obj) {
-            if (typeof obj === 'number' || typeof obj === 'bigint') return obj;
+            if (typeof obj === 'bigint') return obj;
+            // A non-integer JS number is a Python float — CPython's PyLong_As*
+            // require an integer (via __index__, which float lacks) and never
+            // truncate, so reject it (-> caller raises TypeError). Was
+            // `return obj`, which truncated e.g. zstd compression_level=5.1 and
+            // a samples size 99.1 instead of raising.
+            if (typeof obj === 'number') {
+                return Number.isInteger(obj) ? obj : undefined;
+            }
+            // Boxed objects: a boxed float must also be rejected (not truncated
+            // by int()); accept exact ints and __index__-bearing types.
+            try { if (this.$B.$isinstance(obj, this._b_.float)) return undefined; }
+            catch (_) {}
             try {
                 var n = this._b_.int.$factory(obj);
                 if (typeof n === 'number' || typeof n === 'bigint') return n;
