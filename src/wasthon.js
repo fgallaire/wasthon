@@ -2920,7 +2920,10 @@ mergeInto(LibraryManager.library, {
         var aa = toBig(a), bb = toBig(b);
         while (bb !== 0n) { var t = bb; bb = aa % bb; aa = t; }
         var n = Number(aa);
-        if (BigInt(n) === aa && Number.isSafeInteger(n)) return rt.wrapNewRef(n);
+        /* isSafeInteger first: for a gcd beyond the double range Number(aa) is
+         * Infinity, and BigInt(Infinity) throws — so guard the BigInt() with the
+         * range check (math.gcd(2**1074, 2**1074), reached via Fraction's _sub). */
+        if (Number.isSafeInteger(n) && BigInt(n) === aa) return rt.wrapNewRef(n);
         return rt.wrapNewRef(aa);
     },
 

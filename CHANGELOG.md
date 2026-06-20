@@ -7,6 +7,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`_PyLong_GCD` returns a gcd beyond the safe-integer range instead of throwing** (+1 math; general). It set `n = Number(aa)` then tested `BigInt(n) === aa`, but for a gcd larger than 2^53 `Number(aa)` is `Infinity` and `BigInt(Infinity)` throws — `math.gcd(2**1074, 2**1074)`, reached via `fractions.Fraction._sub` in test_remainder's subnormal cases. Reordered so `Number.isSafeInteger(n)` short-circuits before the `BigInt()`, returning the BigInt directly when out of range.
+
 - [x] **`PyOS_double_to_string` prints `inf`/`-inf`/`nan` like CPython** (+0 measured; general). It formatted every value via JS `val.toString()`, so a non-finite double came out as `"Infinity"`/`"NaN"` — `math.asin(inf)`'s ValueError read "...got Infinity" instead of "...got inf" (the ieee754 doctest), and any C-side string of an inf/nan float was wrong. A non-finite value now returns the Python spelling directly.
 
 - [x] **METH_FASTCALL methods reject keyword arguments** (+1 math; general). The `flags & FASTCALL` dispatch branch passed only the positional args and silently dropped `kwnames`, so `math.hypot(x=1)`/`math.dist(p=.., q=..)` returned a value (or crashed converting the wrong arg) instead of raising. CPython's `cfunction_vectorcall_FASTCALL` calls `_PyArg_NoKwnames`, so a FASTCALL method without `METH_KEYWORDS` now raises `TypeError: hypot() takes no keyword arguments` when any keyword is given.
