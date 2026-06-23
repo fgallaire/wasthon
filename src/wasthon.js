@@ -9061,7 +9061,14 @@ mergeInto(LibraryManager.library, {
         if (target === rt._b_.str   && typeof obj === 'string')  return 1;
         if (target === rt._b_.int   && (typeof obj === 'number' && Number.isInteger(obj))) return 1;
         if (target === rt._b_.float && typeof obj === 'number')  return 1;
-        if (target === rt._b_.tuple && Array.isArray(obj))       return 1;
+        // A Brython list is ALSO a JS Array, so Array.isArray over-matches
+        // tuple. Distinguish by the tuple's identity (fast_tuple carries
+        // ob_type, not an own __class__) — same test as PyTuple_CheckExact.
+        // Was `Array.isArray(obj)`, which made PyTuple_Check([]) true and let
+        // _zstd.train_dict/finalize_dict accept a list where CPython's clinic
+        // requires a tuple (should be TypeError).
+        if (target === rt._b_.tuple &&
+            (obj.ob_type === rt._b_.tuple || obj.__class__ === rt._b_.tuple)) return 1;
         // Subclass check via Brython's $isinstance.
         try { return rt.$B.$isinstance(obj, target) ? 1 : 0; }
         catch (e) { return 0; }
