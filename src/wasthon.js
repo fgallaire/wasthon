@@ -10338,7 +10338,10 @@ mergeInto(LibraryManager.library, {
                     }
                 }
                 var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
-                var argsH = rt.wrap(jsArgs);
+                // CPython hands tp_init/tp_call an args TUPLE, not a bare list;
+                // tag it so PyTuple_Check(args) holds (e.g. _decimal's
+                // context_init asserts it) while it still iterates as an array.
+                var argsH = rt.wrap(rt.$B.fast_tuple(jsArgs));
                 // Build a real Brython dict (same primitives PyDict_SetItem
                 // uses) so PyArg_ParseTupleAndKeywords' dict.get / $getitem
                 // lookups land in real hash storage.
@@ -10395,7 +10398,10 @@ mergeInto(LibraryManager.library, {
                 }
                 var selfH = self && self.__wasthon_ptr__
                     ? self.__wasthon_ptr__ : rt.wrap(self);
-                var argsH = rt.wrap(jsArgs);
+                // CPython hands tp_init/tp_call an args TUPLE, not a bare list;
+                // tag it so PyTuple_Check(args) holds (e.g. _decimal's
+                // context_init asserts it) while it still iterates as an array.
+                var argsH = rt.wrap(rt.$B.fast_tuple(jsArgs));
                 // Flatten the marker to a real dict; an empty payload (the
                 // common bare-call case) must arrive as NULL — C callables
                 // like connection_call reject any non-NULL kwargs.
