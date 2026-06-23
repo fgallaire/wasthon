@@ -18,6 +18,38 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `int.from_bytes(b'')` crashes instead of returning 0
+
+**Impact: `int.from_bytes(b'', 'big')` now returns `0`.** The empty case read `_bytes[0]` (undefined) into `BigInt()`, raising a JS error. Now an empty input returns `0`. Source: `int.from_bytes` in `py_int.js`.
+
+## [x] `int(float('nan'))` / `int(float('inf'))` return the float instead of raising
+
+**Impact: `int(float('nan'))` raises `ValueError`, `int(float('inf'))` raises `OverflowError`.** `float` has no `__int__`, so `int()` fell through to `__trunc__` and kept `NaN`/`Infinity`. Now a float operand is checked first. Source: `int.$factory` in `py_int.js`.
+
+## [x] `MyInt()` (int subclass, no arg) returns the shared literal 0
+
+**Impact: a no-arg int subclass call builds a distinct instance — `type(MyInt())` is `MyInt`, `MyInt() is not MyInt()`.** `int.tp_new` returned `0` for the zero-arg case regardless of `cls`. Now only `int` returns the literal; a subclass builds its own instance. Source: `int.tp_new` in `py_int.js`.
+
+## [x] `str.expandtabs` emits zero spaces for a tab on a tabstop
+
+**Impact: `'\t'.expandtabs(4)` is now `'    '`, and `expandtabs(0)` removes tabs.** `while (col % s > 0)` added nothing when the tab sat on a tabstop. Now a do-while advances to the next tabstop, with a `s <= 0` guard. Source: `str.expandtabs` in `py_string.js`.
+
+## [x] `itertools.repeat` rejects a `__index__` object for `times`
+
+**Impact: `repeat(obj, MyIndex(5))` works.** `range(times)` was used only as a TypeError check, leaving `times` as the original object, so `times < 0` raised. Now `operator.index(times)` coerces it. Source: `repeat` in `Lib/itertools.py`.
+
+## [x] `os.urandom` does not validate its argument
+
+**Impact: `os.urandom(1.5)` → `TypeError`, `os.urandom(-1)` → `ValueError`, oversized → `OverflowError`.** `new Uint8Array(n)` raised a raw JS error or truncated. Now the count goes through `__index__` with range/overflow checks. Source: `os.urandom` in `libs/posix.js`.
+
+## [x] `hashlib` rejects a `bytearray` and raises a JS error
+
+**Impact: `hashlib.md5(bytearray(b'x'))` works.** `bytes2WordArray` rejected bytearray and did `throw _b_.TypeError(...)` (a type object is not callable → JS error). Now it accepts bytearray and raises via `$B.RAISE`. Source: `bytes2WordArray` in `libs/hashlib.js`.
+
+## [x] `BufferedIOBase.readinto` rejects a typed buffer (`array.array`)
+
+**Impact: `readinto(array('I', ...))` fills the array (test_zstd test_readinto).** It read the element count (not byte length) and did `buffer[0:n] = bytes`, which an array rejects. Now it requests `len*itemsize` bytes and, on a typed buffer, decodes into a same-type temp and copies element-wise. Source: `_bufferediobase_readinto_generic` in `py_io.js`.
+
 ## [x] Slicing a `bytearray` returns `bytes` instead of `bytearray`
 
 **Impact: `bytearray(b'abc')[0:2]` is now a `bytearray` (general correctness; removes a JS `$factory` crash when `readinto()` targets a sliced bytearray).** `bytearray.mp_subscript` delegated to `bytes.mp_subscript`, which always built the slice result with `bytes.$factory`, so a bytearray slice came back read-only `bytes` — unlike CPython where it is a writable `bytearray`. Now the slice result type is taken from the operand's class (`bytearray` → `bytearray`, `bytes` → `bytes`). Source: `bytes.mp_subscript`, vendored in `loader/brython/brython.js`.
@@ -2110,3 +2142,27 @@ AttributeError: 'float' object has no attribute '__float__'   # before
 >>> (2.0).__float__()
 2.0                                                           # after
 ```
+
+## [x] `range` fast-iterator mixes BigInt and Number on a large-int range (`list(range(2**60, 2**60+2))` crashes)
+
+**Impact: iterating a range with a bigint bound no longer raises.** `range.tp_iter`/`tp_iternext` normalise the bounds with `to_bigint` when the range is not `$safe`, but the faster `range[FAST_ITER]` path (used by `list()`/`set()`/`for` via `make_js_iterator`) read `self.start`/`self.step` directly: a bigint `start` with a Number `step` made `ix += step` a `BigInt + Number` mix, which SpiderMonkey rejects ("can't convert BigInt to number"). Now FAST_ITER mirrors `tp_iter` — bigint-normalise when not `$safe` and yield `int.$int_or_long(value)`. Source: `www/src/py_range.js` (`range[$B.FAST_ITER]`).
+
+```python
+>>> list(range(2**60, 2**60 + 2))
+JavascriptError: can't convert BigInt to number   # before
+>>> list(range(2**60, 2**60 + 2))
+[1152921504606846976, 1152921504606846977]        # after
+```
+
+## [x] `set`/`frozenset` discards a hash-colliding element (`set([-2, -1])` loses one)
+
+**Impact: a set keeps distinct elements that share a hash.** With `hash(-1) == hash(-2) == -2` (see the `hash(-1) -> -2` fix above), adding the second element took the `else` branch of `set_add`, which did `so.$store[hash] = []` — replacing the whole bucket and dropping the element already stored there, while still bumping `$used`. The set then reported `len == 2` but `-2 in s` was `False`, and iteration / `==` saw only one element. Now `set_add` appends to an existing bucket instead of recreating it. Source: `www/src/py_set.js` (`set_add`).
+
+```python
+>>> s = set([-2, -1]); len(s), (-2 in s), s == set([-1, -2])
+(2, False, False)   # before
+>>> s = set([-2, -1]); len(s), (-2 in s), s == set([-1, -2])
+(2, True, True)     # after
+```
+
+Together these two fix **+2 test_random** (`test_rangelimits` for MersenneTwister and SystemRandom: `set(range(start, stop)) == set(randrange(...) samples)` over both small-negative and `±2**60` ranges).

@@ -3977,14 +3977,30 @@ return false}
 function _bufferediobase_readinto_generic(_self,buffer,readinto1){var len,data
 if(! $B.is_buffer(buffer)){$B.RAISE(_b_.TypeError," readinto() argument must be "+
 `read-write bytes-like object, not ${$B.class_name(buffer)}`)}
+// Fill the buffer's RAW bytes, like CPython's buffer-protocol readinto.
+// A typed buffer such as array('I') holds len*itemsize bytes (not its
+// element count), so request that many; the old code used _b_.len(buffer)
+// (the element count) and then buffer[0:n]=bytes, which a typed buffer
+// rejects ("can only assign array ... to array slice").
+var isz=$B.$getattr(buffer,'itemsize',null)
+var nbytes=(isz!==null&&isz!==_b_.None)?(_b_.len(buffer)*isz):_b_.len(buffer)
 var attr=readinto1 ? "read1" :"read"
-data=$B.$call($B.$getattr(_self,attr),_b_.len(buffer))
+data=$B.$call($B.$getattr(_self,attr),nbytes)
 if(! $B.is_bytes(data)){$B.RAISE(_b_.TypeError,"read() should return bytes")}
 len=_b_.bytes.mp_length(data)
-if(len > _b_.len(buffer)){$B.RAISE(_b_.ValueError,"read() returned too much data: "
-`${_b_.len(buffer)} bytes requested, ${len} returned`)}
-var setitem=$B.search_in_mro($B.get_class(buffer),'__setitem__')
-$B.$call(setitem,buffer,_b_.slice.$factory(0,len),data)
+if(len > nbytes){$B.RAISE(_b_.ValueError,"read() returned too much data: "+
+`${nbytes} bytes requested, ${len} returned`)}
+var kls=$B.get_class(buffer)
+var setitem=$B.search_in_mro(kls,'__setitem__')
+try{$B.$call(setitem,buffer,_b_.slice.$factory(0,len),data)}
+catch(_e){
+// A typed buffer (array.array) rejects a raw byte slice — decode the bytes
+// into a same-type temp and copy element-wise through the buffer protocol.
+var tc=$B.$getattr(buffer,'typecode')
+var tmp=$B.$call(kls,tc)
+$B.$call($B.$getattr(tmp,'frombytes'),data)
+var ne=Math.floor(len/isz)
+for(var _i=0;_i<ne;_i++){$B.$call(setitem,buffer,_i,$B.$getitem(tmp,_i))}}
 return len}
 var _BufferedIOBase_funcs=$B._BufferedIOBase.tp_funcs={}
 _BufferedIOBase_funcs.__enter__=function(self){
@@ -6389,18 +6405,20 @@ throw err}})(__BRYTHON__);
 (function($B){var _b_=$B.builtins,None=_b_.None,range=_b_.range
 range.$match_sequence_pattern=true 
 range.$is_sequence=true
-_b_.range[$B.FAST_ITER]=function(self,set_lineno,frame,lineno){var obj={ix:self.start}
-if(self.step > 0){return{
+_b_.range[$B.FAST_ITER]=function(self,set_lineno,frame,lineno){var safe=self.$safe,start,stop,step
+if(safe){start=self.start;stop=self.stop;step=self.step}else{start=$B.to_bigint(self.start);stop=$B.to_bigint(self.stop);step=$B.to_bigint(self.step)}
+var obj={ix:start}
+if(step > 0){return{
 [Symbol.iterator](){return this},next(){set_lineno(frame,lineno)
-if(obj.ix >=self.stop){return{done:true,value:null}}
+if(obj.ix >=stop){return{done:true,value:null}}
 var value=obj.ix
-obj.ix+=self.step
-return{done:false,value}}}}else{return{
+obj.ix+=step
+return{done:false,value:safe ? value :_b_.int.$int_or_long(value)}}}}else{return{
 [Symbol.iterator](){return this},next(){set_lineno(frame,lineno)
-if(obj.ix <=self.stop){return{done:true,value:null}}
+if(obj.ix <=stop){return{done:true,value:null}}
 var value=obj.ix
-obj.ix+=self.step
-return{done:false,value}}}}}
+obj.ix+=step
+return{done:false,value:safe ? value :_b_.int.$int_or_long(value)}}}}}
 function range_eq(self,other){if($B.$isinstance(other,range)){var len=range.mp_length(self)
 if(! $B.rich_comp('__eq__',len,range.mp_length(other))){return false}
 if(len==0){return true}
@@ -7798,10 +7816,10 @@ set.$factory():
 frozenset.$factory()}
 function set_add(so,item,hash){hash=hash ?? $B.$hash(item)
 var stored=so.$store[hash]
-if(stored && set_contains(so,item,hash)){return}else{stored=so.$store[hash]=[]
-stored[stored.length]=item
+if(stored){if(set_contains(so,item,hash)){return}
+stored[stored.length]=item}else{so.$store[hash]=[item]}
 so.$used++
-so.$version++}}
+so.$version++}
 $B.set_add=set_add
 function set_contains(so,key,hash){return !! set_lookkey(so,key,hash)}
 $B.set_has=set_contains
@@ -8918,10 +8936,11 @@ return false}
 str_funcs.expandtabs=function(self){var $=$B.args("expandtabs",2,{self:null,tabsize:null},arguments,{tabsize:8},null,null),_self=to_string($.self)
 var s=$B.PyNumber_Index($.tabsize),col=0,pos=0,res="",chars=to_chars(_self)
 if(s==1){return _self.replace(/\t/g," ")}
+if(s<=0){return _self.replace(/\t/g,"")}
 while(pos < chars.length){var car=chars[pos]
 switch(car){case "\t":
-while(col % s > 0){res+=" ";
-col++}
+do{res+=" ";
+col++}while(col % s != 0)
 break
 case "\r":
 case "\n":
@@ -9512,6 +9531,10 @@ default:
 $B.RAISE(_b_.TypeError,`int expected at most 2 arguments, got ${args.length}`
 )}
 var initial_value=value
+if($B.$isinstance(value,_b_.float)){
+var _fv=(typeof value=='number')?value:value.value
+if(isNaN(_fv)){$B.RAISE(_b_.ValueError,"cannot convert float NaN to integer")}
+if(!isFinite(_fv)){$B.RAISE(_b_.OverflowError,"cannot convert float infinity to integer")}}
 if($B.$isinstance(value,[_b_.bytes,_b_.bytearray])){
 value=$B.$getattr(value,'decode')('latin-1')}else if($B.$isinstance(value,_b_.memoryview)){value=$B.$getattr(_b_.memoryview.tp_funcs.tobytes(value),'decode')('latin-1')}
 if(! $B.is_str(value)){if(base !==_b_.None){console.log('value',value,'base',base)
@@ -9725,7 +9748,13 @@ if(nb_args > 2){$B.RAISE(_b_.TypeError,`int() takes at most 2 arguments (${nb_ar
 )}
 $B.check_expected_keywords('int',kw,['base'])
 switch(nb_args){case 0:
-return 0
+// int() is 0, but a subclass with no args (e.g. _ZeroSentinel() where
+// class _ZeroSentinel(int): pass) must build a distinct instance, not the
+// shared literal 0 — otherwise `x is not MyInt()` is false for x==0.
+if(cls===int){return 0}
+value=0
+base=_b_.None
+break
 case 1:
 if(args.length==0){$B.RAISE(_b_.TypeError,"int() missing string argument")}
 value=args[0]
@@ -9779,6 +9808,7 @@ _len=x.source.length}else{_bytes=_b_.list.$factory(x)
 _len=_bytes.length
 for(let i=0;i < _len;i++){_b_.bytes.$factory([_bytes[i]])}}
 if(byteorder=="big"){_bytes.reverse()}else if(byteorder !="little"){$B.RAISE(_b_.ValueError,"byteorder must be either 'little' or 'big'")}
+if(_len == 0){return 0}
 var num=_bytes[0]
 // the sign lives in the MOST significant byte — handled at the end via
 // the final two's-complement; pre-complementing the LOW byte here
