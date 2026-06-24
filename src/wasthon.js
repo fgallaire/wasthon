@@ -1332,9 +1332,27 @@ mergeInto(LibraryManager.library, {
     /* 64-bit unsigned converter — _random uses this for seed values. */
     _PyLong_UInt64_Converter__deps: ['$WasthonRT'],
     _PyLong_UInt64_Converter: function(handle, ptr) {
-        var obj = WasthonRT.unwrap(handle);
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
         var bv;
+        // Honor __index__ (CPython's UInt64 converter calls PyNumber_Index):
+        // _random.getrandbits(MyIndex(100)) must work, while a float — which
+        // has no __index__ — still raises. A non-integer JS number is a float.
+        if (typeof obj !== 'number' && typeof obj !== 'bigint') {
+            var idx = null;
+            try { idx = rt.$B.$getattr(obj, '__index__', null); } catch (_) {}
+            if (!idx) {
+                rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
+                return 0;
+            }
+            try { obj = rt.$B.$call(idx); }  // __index__() returns a Brython int (value, not a handle)
+            catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+        }
         if (typeof obj === 'number') {
+            if (!Number.isInteger(obj)) {
+                rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
+                return 0;
+            }
             if (obj < 0) {
                 // CPython's clinic UInt converters raise ValueError here
                 WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.ValueError),
