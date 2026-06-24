@@ -1440,8 +1440,15 @@ mergeInto(LibraryManager.library, {
         for (var i = 0; i < size; i++) arr[i] = WasthonRT._b_.None;
         // Tag as a Brython list: get_class short-circuits Array.isArray
         // BEFORE reading __class__; native lists carry the OB_TYPE Symbol.
+        // ALSO set the .ob_type string property — Brython's fast $B.is_list /
+        // is_tuple checks read `obj.ob_type.tp_flags & LIST_SUBCLASS`, and
+        // list.tp_richcompare gates on $B.is_list(self): without .ob_type a
+        // bridge list (e.g. an _sre split result) had is_list()===false, so
+        // `bridge_list == anything` short-circuited to NotImplemented and
+        // even `x == x` came out False.
         arr[WasthonRT.$B.OB_TYPE] = WasthonRT._b_.list;
         arr.__class__ = WasthonRT._b_.list;
+        arr.ob_type = WasthonRT._b_.list;
         return WasthonRT.wrapNewRef(arr);
     },
 
