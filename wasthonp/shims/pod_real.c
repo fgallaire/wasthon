@@ -183,17 +183,33 @@ void Py_LeaveRecursiveCall(void)                           { }
 int _Py_ReachedRecursionLimitWithMargin(PyThreadState *t, int n){ (void)t;(void)n; return 0; }
 int _Py_CheckRecursiveCall(PyThreadState *t, const char *w){ (void)t;(void)w; return 0; }
 
-/* --- Unicode character classification (the tokenizer's real need). ASCII-
- *     correct; non-ASCII approximated — enough for the experiment. Real
- *     Strategy C would compile Objects/unicodectype.c (~7KB, self-contained). --- */
-int _PyUnicode_IsPrintable(Py_UCS4 ch)   { return !(ch < 0x20 || ch == 0x7f); }
-int _PyUnicode_IsWhitespace(Py_UCS4 ch)  { return ch==' '||ch=='\t'||ch=='\n'||ch=='\r'||ch=='\f'||ch==0x0b; }
-int _PyUnicode_IsXidStart(Py_UCS4 ch)    { return (ch=='_')||(ch>='a'&&ch<='z')||(ch>='A'&&ch<='Z')||ch>=128; }
-int _PyUnicode_IsXidContinue(Py_UCS4 ch) { return _PyUnicode_IsXidStart(ch)||(ch>='0'&&ch<='9'); }
-int _PyUnicode_IsLinebreak(Py_UCS4 ch)   { return ch=='\n'||ch=='\r'||ch==0x0b||ch==0x0c; }
-/* tokenizer's non-ASCII identifier check: return the length (treat as a valid
- * identifier — the dumper reads the name's bytes verbatim anyway). */
-Py_ssize_t _PyUnicode_ScanIdentifier(PyObject *self){ return ((PyASCIIObject*)self)->length; }
+/* Unicode character classification (IsXidStart, IsXidContinue, IsPrintable,
+   IsWhitespace, IsLinebreak and the case helpers) all come from CPython's real
+   Objects/unicodectype.c, compiled into the build, so identifiers follow the
+   exact UAX #31 XID properties. No stubs here. */
+extern int _PyUnicode_IsXidStart(Py_UCS4 ch);
+extern int _PyUnicode_IsXidContinue(Py_UCS4 ch);
+/* Non-ASCII identifier check (the lexer's verify_identifier calls this): decode
+   the minimal str UTF-8 and validate each code point with the real XID tables
+   (first = XID_Start or '_', rest = XID_Continue). Returns the index of the
+   first invalid code point, or the length if the whole thing is a valid
+   identifier -- CPython's _PyUnicode_ScanIdentifier contract. This rejects a
+   currency sign and the like as identifiers. */
+Py_ssize_t _PyUnicode_ScanIdentifier(PyObject *self){
+    const unsigned char *p = (const unsigned char*)str_data(self);
+    Py_ssize_t i = 0; int first = 1;
+    while(*p){
+        Py_UCS4 ch;
+        if(*p < 0x80){ ch = *p; p += 1; }
+        else if((*p & 0xE0) == 0xC0){ ch = ((Py_UCS4)(*p & 0x1F)<<6) | (p[1] & 0x3F); p += 2; }
+        else if((*p & 0xF0) == 0xE0){ ch = ((Py_UCS4)(*p & 0x0F)<<12) | ((Py_UCS4)(p[1]&0x3F)<<6) | (p[2]&0x3F); p += 3; }
+        else { ch = ((Py_UCS4)(*p & 0x07)<<18) | ((Py_UCS4)(p[1]&0x3F)<<12) | ((Py_UCS4)(p[2]&0x3F)<<6) | (p[3]&0x3F); p += 4; }
+        int ok = first ? (_PyUnicode_IsXidStart(ch) || ch == 0x5F) : _PyUnicode_IsXidContinue(ch);
+        if(!ok) return i;
+        first = 0; i++;
+    }
+    return i;
+}
 
 /* --- error-reporting path: correct signatures so it completes (rather than
  *     traps) when the grammar rejects our deliberately-opaque fake tokens. --- */

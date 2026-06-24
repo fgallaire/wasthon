@@ -20,7 +20,7 @@ OUT="${REPO}/build"
 mkdir -p "${OUT}"
 source "${EMSDK}/emsdk_env.sh" >/dev/null 2>&1
 
-INC="-I ${REPO}/cpy-build -I ${CPY}/Include -I ${CPY}/Include/internal -I ${CPY}/Include/internal/mimalloc -I ${CPY} -I ${CPY}/Parser"
+INC="-I ${REPO}/cpy-build -I ${CPY}/Include -I ${CPY}/Include/internal -I ${CPY}/Include/internal/mimalloc -I ${CPY} -I ${CPY}/Parser -I ${CPY}/Objects"
 CF="-O2 -DPy_BUILD_CORE -fno-strict-aliasing ${INC}"
 
 # CPython parser frontend translation units (frontend only — no interpreter).
@@ -30,6 +30,7 @@ PARSER_TUS=(
   Parser/lexer/lexer.c Parser/lexer/buffer.c Parser/lexer/state.c
   Parser/tokenizer/string_tokenizer.c Parser/tokenizer/utf8_tokenizer.c Parser/tokenizer/helpers.c
   Python/Python-ast.c Python/asdl.c Python/pyarena.c Python/pyctype.c
+  Objects/unicodectype.c   # real UAX #31 XID tables (rejects e.g. "€" as an id)
 )
 
 echo "=== compile parser TUs ==="
