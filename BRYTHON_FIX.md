@@ -18,6 +18,48 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] 3-arg `pow()` doesn't dispatch on the modulus's type
+
+**Impact: `pow(10, 2, Decimal(7))` is now `Decimal('2')`.** For `pow(x, y, z)` with `x` and `y` ints and a non-int modulus `z`, `_b_.pow` raised `TypeError: pow() 3rd argument not allowed unless all arguments are integers` upfront. CPython instead dispatches the ternary power on all three operands' `nb_power` slot, including the modulus — `Decimal` implements 3-arg power, so it handles it. The fix tries `type(z).__pow__(x, y, z)` (unless `z` is a `float`, which has no 3-arg power) and falls back to the original `TypeError` if it returns `NotImplemented` or raises (e.g. pure-Python `decimal`, whose `__pow__` expects a `Decimal` self — matching CPython, which raises `TypeError` there too). Source: `_b_.pow` in `py_builtin_functions.js`. (test_decimal test_implicit_context, C and Py.)
+
+```python
+>>> pow(10, 2, Decimal(7))
+TypeError: pow() 3rd argument not allowed unless all arguments are integers  # before
+
+>>> pow(10, 2, Decimal(7))
+Decimal('2')                                                                 # after
+```
+
+## [x] `memoryview` compares equal only to another `memoryview`, never to `bytes`/`bytearray`
+
+**Impact: `memoryview(b"x") == b"x"` is now `True`.** `memoryview.tp_richcompare` returned `NotImplemented` for any non-`memoryview` operand, so a comparison to a `bytes`/`bytearray` of the same contents fell through to identity and was always `False`/`True` (eq/ne). CPython compares a memoryview to any buffer-like by contents. The guard now also accepts `bytes`/`bytearray`, and `memoryview_eq` reads the other operand directly instead of `other.obj`. Source: `_b_.memoryview.tp_richcompare` / `memoryview_eq` in `memoryobject.js`. (test_sqlite3 test_func_params: a `memoryview(b"blob")` parameter round-trips through SQLite as `b"blob"`, and `dataset == results` then needs `memoryview(b"blob") == b"blob"`.)
+
+```python
+>>> memoryview(b"blob") == b"blob"
+False  # before
+>>> memoryview(b"blob") == b"blob"
+True   # after
+```
+
+## [x] `<class>.__class__` returns the descriptor instead of the metaclass
+
+**Impact: `object.__class__` is now `type`, not the `__class__` getset descriptor.** Accessing `__class__` on a class goes through `$getattr`'s class branch, where a getset descriptor found in the class dict only has its getter invoked when it lives in `type.tp_funcs`. `__class__` is an `object`-level getset (inherited by everything, classes included), so it fell through to returning the raw descriptor. `isinstance(<a class>, <an ABC>)` then broke — `ABCMeta.__instancecheck__` does `instance.__class__` and handed the descriptor to `issubclass` (`issubclass() arg 1 must be a class`). The class branch now resolves `__class__` to `$B.get_class(obj)` (the metaclass) up front. Source: `$B.$getattr` in `py_builtin_functions.js`. (test_decimal test_comparison_operators C+Py: `Decimal('23.42') != object`.)
+
+```python
+>>> object.__class__
+<attribute '__class__' of 'object' objects>  # before
+>>> object.__class__
+<class 'type'>                                # after
+```
+
+## [x] `int('-<non-ASCII digits>')` drops the sign
+
+**Impact: `int('-٣')` (minus + Arabic-Indic digits) is now `-3`, not `3`.** When the string holds non-ASCII Unicode digits the ASCII fast-path regex misses, so `int()` takes the per-character `\p{Nd}` branch — which returned the magnitude before the `if (sign == '-') res = -res` step ran (that step sits after the early `return`). The sign is now applied in that branch too. Source: `int.$factory` (string path) in `py_int.js`. (test_decimal PyExplicitConstructionTest.test_unicode_digits: `Decimal('٠.٠٣٧٢e-٣')` → `0.0000372`.)
+
+## [x] `pow(x, y, z)` returns `undefined` for a non-int/float/complex base
+
+**Impact: 3-arg `pow()` now works for any base with `__pow__`/`__rpow__` — `pow(Decimal(10), 2, 7)` is `Decimal('2')` (was JS `undefined`).** The 3-arg branch only handled `int`, `float` and `complex` bases; any other base (a `Decimal`, a user class with `__pow__`) matched none of them and fell off the end of the function, returning JavaScript `undefined`. After the integer fast path and the float/complex error checks it now dispatches the ternary power slot — `x.__pow__(y, z)`, then `y.__rpow__(x, z)` on `NotImplemented` — like CPython's `PyNumber_Power`. Source: `_b_.pow` in `py_builtin_functions.js`. (test_decimal test_implicit_context.)
+
 ## [x] `int.from_bytes(b'')` crashes instead of returning 0
 
 **Impact: `int.from_bytes(b'', 'big')` now returns `0`.** The empty case read `_bytes[0]` (undefined) into `BigInt()`, raising a JS error. Now an empty input returns `0`. Source: `int.from_bytes` in `py_int.js`.
@@ -2166,3 +2208,41 @@ JavascriptError: can't convert BigInt to number   # before
 ```
 
 Together these two fix **+2 test_random** (`test_rangelimits` for MersenneTwister and SystemRandom: `set(range(start, stop)) == set(randrange(...) samples)` over both small-negative and `±2**60` ranges).
+
+## [x] A bound `method-wrapper`'s `__name__` returns the bound object's name, not the method's
+
+**Impact: `"".__len__.__name__` returns `'__len__'`.** The `method-wrapper` `__name__` getter returned `self.self.__name__` — `self.self` is the *bound object*, so the name came from the instance (which usually has no `__name__`) instead of the wrapped slot. The slot name is already stored as `self.d_name` (used by the wrapper's `repr`); `__name__` now returns it. Source: `www/src/descriptors.js` (`method_wrapper.__name__`).
+
+```python
+>>> "".__len__.__name__
+AttributeError: 'str' object has no attribute '__name__'  # before
+
+>>> "".__len__.__name__
+'__len__'                                                 # after
+```
+
+## [x] `object.__setattr__` accepts a non-string attribute name
+
+**Impact: `object().__setattr__(range(3), 0)` raises `TypeError`.** `object.tp_setattro` never checked that the name is a string, so a non-string fell through to the no-`__dict__` path and raised `AttributeError`. The builtin `setattr`/`getattr`/`delattr` already reject a non-string name, but the generic setattr — reached by a direct `__setattr__` call — did not. Now it raises `TypeError`. Source: `www/src/py_object.js` (`object.tp_setattro`).
+
+```python
+>>> object().__setattr__(range(3), 0)
+AttributeError: 'object' object has no attribute 'range...' and no __dict__ for setting new attributes  # before
+
+>>> object().__setattr__(range(3), 0)
+TypeError: attribute name must be string, not 'range'  # after
+```
+
+Together these two fix **+1 test_pyexpat** (`test_invalid_attributes`): unittest's `assertRaises(TypeError, parser.__setattr__, range(0xF), 0)` does `self.obj_name = callable.__name__` in `handle()`, so a `method-wrapper.__name__` of `undefined` poisoned that setattr (raising the misleading "can't set attributes of object type") before the call under test even ran.
+
+## [x] `mappingproxy` comparison is broken — `tp_richcompare` is empty
+
+**Impact: `MappingProxyType({'a': 1}) == {'a': 1}` returns `True`.** `mappingproxy.tp_richcompare` was an empty function returning `undefined`, so any rich comparison of a mappingproxy was wrong (e.g. `re.Pattern.groupindex`, a C type's `__dict__`). Now it compares the underlying mapping via `$B.rich_comp`. Source: `www/src/py_dict.js` (`mappingproxy.tp_richcompare`).
+
+```python
+>>> from types import MappingProxyType
+>>> MappingProxyType({'a': 1}) == {'a': 1}
+False  # before
+>>> MappingProxyType({'a': 1}) == {'a': 1}
+True   # after
+```

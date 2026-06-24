@@ -2201,8 +2201,9 @@ default:
 res=_b_.NotImplemented
 break}
 return res}
-_b_.object.tp_setattro=function(self,attr,value){var test=false 
+_b_.object.tp_setattro=function(self,attr,value){var test=false
 var klass=$B.get_class(self)
+if(! $B.is_str(attr)){$B.RAISE(_b_.TypeError,"attribute name must be string, not '"+$B.class_name(attr)+"'")}
 var in_mro=$B.search_in_mro(klass,attr,$B.NULL)
 if(test){console.log('object.tp_setattro',self,attr,value)}
 if(value===$B.NULL){
@@ -3318,7 +3319,7 @@ return `<method-wrapper '${name}' of ${class_name} object>`}
 $B.method_wrapper.tp_hash=function(self){}
 $B.method_wrapper.tp_call=function(self,...args){return self.wrapped(self.self,...args)}
 var method_wrapper_funcs=$B.method_wrapper.tp_funcs={}
-method_wrapper_funcs.__name___get=function(self){return self.self.__name__}
+method_wrapper_funcs.__name___get=function(self){return self.d_name}
 method_wrapper_funcs.__name___set=function(self){}
 method_wrapper_funcs.__objclass___get=function(self){return self.self.__objclass__}
 method_wrapper_funcs.__objclass___set=function(self){}
@@ -4785,7 +4786,8 @@ if(in_own_dict===$B.NULL){return in_klass_dict}
 break}}}catch(err){console.log('error',err)
 console.log('obj',obj,'klass',klass)
 throw err}
-var res=$B.object_getattribute(obj,klass,attr)}else{var in_dict=$B.get_dict(obj)[attr]
+var res=$B.object_getattribute(obj,klass,attr)}else{if(attr==='__class__'){return $B.get_class(obj)}
+var in_dict=$B.get_dict(obj)[attr]
 if(in_dict && $B.get_class(obj)===_b_.type){var res=$B.NULL
 // CPython type_getattro: a DATA descriptor on the metatype wins over the
 // type's own same-named attribute. type's __name__/__qualname__/... are data
@@ -5079,8 +5081,10 @@ var all_ints=()=> $B.EXC(_b_.TypeError,'pow() 3rd argument not '+
 'allowed unless all arguments are integers')
 _b_.pow=function(){var $=$B.args('pow',3,{x:null,y:null,mod:null},arguments,{mod:None},null,null)
 var x=$.x,y=$.y,z=$.mod
-if(z===_b_.None){return $B.rich_op('__pow__',x,y)}else{if($B.is_int(x)){if($B.$isinstance(y,_b_.float)){throw all_ints()}else if($B.$isinstance(y,_b_.complex)){throw complex_modulo()}else if($B.is_int(y)){if($B.$isinstance(z,_b_.complex)){throw complex_modulo()}else if(! $B.is_int(z)){throw all_ints()}}
-return _b_.int.nb_power(x,y,z)}else if($B.$isinstance(x,_b_.float)){throw all_ints()}else if($B.$isinstance(x,_b_.complex)){throw complex_modulo()}}}
+if(z===_b_.None){return $B.rich_op('__pow__',x,y)}else{if($B.is_int(x)){if($B.$isinstance(y,_b_.float)){throw all_ints()}else if($B.$isinstance(y,_b_.complex)){throw complex_modulo()}else if($B.is_int(y)){if($B.$isinstance(z,_b_.complex)){throw complex_modulo()}else if(! $B.is_int(z)){var zpow=$B.$isinstance(z,_b_.float)?null:$B.$getattr($B.get_class(z),'__pow__',null);if(zpow){try{var zr=$B.$call(zpow,x,y,z);if(zr!==_b_.NotImplemented){return zr}}catch(_zpe){}}throw all_ints()}return _b_.int.nb_power(x,y,z)}}else if($B.$isinstance(x,_b_.float)){throw all_ints()}else if($B.$isinstance(x,_b_.complex)){throw complex_modulo()}}
+var res=$B.$call($B.$getattr(x,'__pow__'),y,z)
+if(res!==_b_.NotImplemented){return res}
+return $B.$call($B.$getattr(y,'__rpow__'),x,z)}
 var $print=_b_.print=function(){var[args,kw]=$B.parse_args_kw('print',arguments)
 var end=$B.str_dict_get(kw,'end','\n'),sep=$B.str_dict_get(kw,'sep',' '),file=$B.str_dict_get(kw,'file',$B.get_stdout())
 var writer=$B.$getattr(file,'write')
@@ -7649,9 +7653,10 @@ memoryview.$match_sequence_pattern=true,
 memoryview.$buffer_protocol=true
 memoryview.$not_basetype=true 
 memoryview.$is_sequence=true
-function memoryview_eq(self,other){if($B.get_class(other)!==memoryview){return false}
+function memoryview_eq(self,other){
+var other_obj=($B.get_class(other)===memoryview)?other.obj:other
 var eq=$B.$getattr($B.get_class(self.obj),'__eq__')
-return $B.$call(eq,self.obj,other.obj)}
+return $B.$call(eq,self.obj,other_obj)===true}
 var struct_format={'x':{'size':1},'b':{'size':1},'B':{'size':1},'c':{'size':1},'s':{'size':1},'p':{'size':1},'h':{'size':2},'H':{'size':2},'i':{'size':4},'I':{'size':4},'l':{'size':4},'L':{'size':4},'q':{'size':8},'Q':{'size':8},'f':{'size':4},'d':{'size':8},'P':{'size':8}}
 const MEMORYVIEW={RELEASED:0x001,
 C:0x002,
@@ -7660,7 +7665,7 @@ SCALAR:0x008,
 PIL:0x010,
 RESTRICTED:0x020 }
 memoryview.tp_dealloc=function(self){if(! self.$released){memoryview.tp_funcs.release(self)}}
-_b_.memoryview.tp_richcompare=function(self,other,op){if(! $B.$isinstance(other,_b_.memoryview)){return _b_.NotImplemented}
+_b_.memoryview.tp_richcompare=function(self,other,op){if(! $B.$isinstance(other,[_b_.memoryview,_b_.bytes,_b_.bytearray])){return _b_.NotImplemented}
 var res
 switch(op){case '__eq__':
 res=memoryview_eq(self,other)
@@ -9597,6 +9602,7 @@ for(let start of $B.digits_starts){if(cp-start < 10){digit=cp-start
 break}}}else{if(base > 10 && _digits.indexOf(char.toUpperCase())>-1){digit=char.toUpperCase().charCodeAt(0)-55}else{invalid(base)}}
 if(digit < base){res=$B.rich_op('__mul__',res,base)
 res=$B.rich_op('__add__',res,digit)}else{invalid(base)}}
+if(sign=='-'){res=$B.rich_op('__mul__',res,-1)}
 return res}else{_value=_value.replace(/_/g,"")}
 if(base==2){res=BigInt('0b'+_value)}else if(base==8){res=BigInt('0o'+_value)}else if(base==16){res=BigInt('0x'+_value)}else{if($B.int_max_str_digits !=0 &&
 _value.length > $B.int_max_str_digits){$B.RAISE(_b_.ValueError,"Exceeds the limit "+
@@ -11303,7 +11309,7 @@ res.mapping=obj
 res[VERSION]=0
 return res}
 mappingproxy.$match_mapping_pattern=true 
-$B.mappingproxy.tp_richcompare=function(self){}
+$B.mappingproxy.tp_richcompare=function(self,other,op){return $B.rich_comp(op,self.mapping,other)}
 $B.mappingproxy.nb_or=function(self){}
 $B.mappingproxy.tp_repr=function(self){return dict.tp_repr(self.mapping)}
 $B.mappingproxy.tp_hash=_b_.None
