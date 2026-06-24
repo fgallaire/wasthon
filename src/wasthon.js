@@ -2318,9 +2318,12 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(handle);
         // Mirror CPython's PyNumber_AsSsize_t(o, exc): coerce via __index__,
         // then range-check against Py_ssize_t. On overflow, raise `exc` if the
-        // caller supplied one (struct.pack_into passes IndexError), else
-        // OverflowError. An object WITHOUT __index__ (None, float, str) is a
-        // TypeError regardless of `exc` — not the overflow path.
+        // caller supplied one (struct.pack_into passes IndexError); if exc is
+        // NULL, CPython CLAMPS to PY_SSIZE_T_MIN/MAX instead of raising (so
+        // _sre.match_getindex(1<<1000, NULL) yields a huge index that the
+        // group range-check then turns into IndexError, not OverflowError).
+        // An object WITHOUT __index__ (None, float, str) is a TypeError
+        // regardless of `exc` — not the overflow path.
         var big;
         if (typeof obj === 'number' && Number.isInteger(obj)) {
             big = BigInt(obj);
@@ -2349,11 +2352,13 @@ mergeInto(LibraryManager.library, {
         }
         // Py_ssize_t is 32-bit on wasm32 (intptr_t).
         if (big < -2147483648n || big > 2147483647n) {
-            if (excH) rt.setError(excH,
-                "cannot fit 'int' into an index-sized integer");
-            else rt.setError(rt.wrap(rt._b_.OverflowError),
-                "Python int too large to convert to C ssize_t");
-            return -1;
+            if (excH) {
+                rt.setError(excH,
+                    "cannot fit 'int' into an index-sized integer");
+                return -1;
+            }
+            // No exc supplied: clamp like CPython rather than raise.
+            return big < 0n ? -2147483648 : 2147483647;
         }
         return Number(big);
     },
