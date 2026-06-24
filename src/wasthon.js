@@ -6547,6 +6547,15 @@ mergeInto(LibraryManager.library, {
                                 HEAP32[(outPtr + 4) >> 2] = ((n / 0x100000000) | 0);
                                 break;
                             case 'n':  /* Py_ssize_t: 32-bit in wasm32 */
+                                /* CPython's 'n' raises OverflowError when the
+                                 * value doesn't fit Py_ssize_t (it doesn't
+                                 * truncate) — _json.scanstring("xxx",
+                                 * sys.maxsize+1) relies on this. */
+                                if (n < -2147483648 || n > 2147483647) {
+                                    rt.setError(rt.wrap(rt._b_.OverflowError),
+                                        "Python int too large to convert to C ssize_t");
+                                    return 0;
+                                }
                                 HEAP32[outPtr >> 2] = n | 0; break;
                             case 'h': case 'H':
                                 HEAP16[outPtr >> 1] = n & 0xffff; break;
