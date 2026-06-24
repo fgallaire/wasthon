@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthonp — CPython parser (WASM) driving Brython</title>
+<style>
+  body{font:14px/1.5 system-ui,sans-serif;max-width:900px;margin:1.5em auto;padding:0 1em;color:#222}
+  h1{font-size:1.4em} .sub{color:#666;margin-top:-.6em}
+  textarea{width:100%;height:230px;font:13px/1.4 ui-monospace,monospace;padding:.6em;box-sizing:border-box;border:1px solid #bbb;border-radius:6px}
+  button{font:14px system-ui;padding:.4em 1em;border-radius:6px;border:1px solid #88a;background:#eef;cursor:pointer;margin:.5em .4em .5em 0}
+  pre{background:#f5f5f7;padding:.8em;border-radius:6px;white-space:pre-wrap;font:13px/1.4 ui-monospace,monospace}
+  .badge{display:inline-block;background:#e8f7ec;border:1px solid #4a4;color:#161;border-radius:4px;padding:1px 8px;font-size:12px}
+  .row{display:flex;gap:1em;flex-wrap:wrap} .row>div{flex:1;min-width:300px}
+  b.ok{color:#161} .t{color:#a60}
+</style>
+</head>
+<body>
+<h1>wasthonp <span class="badge" id="status">loading…</span></h1>
+<p class="sub">CPython's real PEG parser, compiled to WebAssembly (~300&nbsp;KB), driving Brython's code generator — a drop-in for Brython's own JS parser.</p>
+
+<textarea id="src">
+def fib(n):
+    return n if n < 2 else fib(n-1) + fib(n-2)
+
+class Greeter:
+    def __init__(self, who):
+        self.who = who
+    def hi(self):
+        return f"hello, {self.who}!"
+
+squares = [x*x for x in range(8)]
+print("fib(15) =", fib(15))
+print("squares =", squares)
+print(Greeter("wasthonp").hi())
+
+match (1, 2):
+    case (a, b) if a < b:
+        print("ordered pair:", a, b)
+    case _:
+        print("other")
+</textarea>
+<div>
+  <button id="run">▶ Run with wasthonp</button>
+  <button id="bench">⏱ Parse-time vs Brython</button>
+</div>
+
+<div class="row">
+  <div><h3>Output</h3><pre id="out">(click Run)</pre></div>
+  <div><h3>How it ran</h3><pre id="info"></pre></div>
+</div>
+
+<script src="./brython/brython.js"></script>
+<script src="./brython/brython_stdlib.js"></script>
+<script src="../wasthonp/build/wasthonp_mod.js"></script>
+<script type="module">
+const $B = window.__BRYTHON__, _b_ = $B.builtins, ast = $B.ast;
+const out = document.getElementById('out'), info = document.getElementById('info'), status = document.getElementById('status');
+
+// ---- wasthonp JSON AST → $B.ast (generic, driven by $B.ast_classes) ----
+// Python string literal → real runtime value, then re-encode for Brython's
+// Constant.to_js (which emits `'${value}'` with no escaping).
+function pyDecode(t){ let i=0,raw=false; while(i<t.length&&/[rbfuRBFU]/.test(t[i])){if(t[i].toLowerCase()==='r')raw=true;i++;}
+  let b=t.slice(i); let q=(b.slice(0,3)==='"""'||b.slice(0,3)==="'''")?b.slice(0,3):b[0]; b=b.slice(q.length,b.length-q.length);
+  if(raw)return b;
+  let o="",k=0,S={n:"\n",t:"\t",r:"\r","\\":"\\","'":"'",'"':'"',a:"\x07",b:"\b",f:"\f",v:"\v"};
+  while(k<b.length){let c=b[k++]; if(c!=="\\"){o+=c;continue;} let e=b[k++];
+    if(e in S)o+=S[e];
+    else if(e>="0"&&e<="7"){let x=e;while(x.length<3&&b[k]>="0"&&b[k]<="7")x+=b[k++];o+=String.fromCharCode(parseInt(x,8));}
+    else if(e==="x"){o+=String.fromCharCode(parseInt(b.substr(k,2),16));k+=2;}
+    else if(e==="u"){o+=String.fromCharCode(parseInt(b.substr(k,4),16));k+=4;}
+    else if(e==="U"){o+=String.fromCodePoint(parseInt(b.substr(k,8),16)||0);k+=8;}
+    else if(e==="\n"){}
+    else if(e==="N"&&b[k]==="{"){let j=b.indexOf("}",k);o+="\\N"+b.slice(k,j+1);k=j+1;}
+    else o+="\\"+e;
+  } return o; }
+function jsEnc(v){ const m={"\\":"\\\\","'":"\\'","\n":"\\n","\r":"\\r","\t":"\\t","\b":"\\b","\f":"\\f","\v":"\\v"};
+  return v.replace(/[\\'\n\r\t\b\f\v]/g,c=>m[c]); }
+function decodeConcat(s){ let out="",i=0;
+  while(i<s.length){ while(i<s.length&&/\s/.test(s[i]))i++; if(i>=s.length)break;
+    let start=i; while(i<s.length&&/[rbfuRBFU]/.test(s[i]))i++;
+    let q=(s.substr(i,3)==='"""'||s.substr(i,3)==="'''")?s.substr(i,3):(s[i]==='"'||s[i]==="'")?s[i]:null; if(q===null)break;
+    let raw=s.slice(start,i).toLowerCase().includes('r'); i+=q.length;
+    while(i<s.length){ if(!raw&&s[i]==='\\'){i+=2;continue;} if(s.substr(i,q.length)===q)break; i++; } i+=q.length;
+    out+=pyDecode(s.slice(start,i)); }
+  return out; }
+function litValue(t){
+  if(/^[0-9][0-9_]*$/.test(t)){const v=parseInt(t.replace(/_/g,''),10);return Number.isSafeInteger(v)?v:BigInt(t.replace(/_/g,''));}
+  if(/^0[xX][0-9a-fA-F_]+$/.test(t)){const s='0x'+t.replace(/_/g,'').slice(2);const v=Number(s);return Number.isSafeInteger(v)?v:BigInt(s);}
+  if(/^0[oO][0-7_]+$/.test(t))return parseInt(t.replace(/_/g,'').slice(2),8);
+  if(/^0[bB][01_]+$/.test(t))return parseInt(t.replace(/_/g,'').slice(2),2);
+  if(/^[0-9][0-9_.eE]*[jJ]$/.test(t))return $B.make_complex(0,parseFloat(t.slice(0,-1).replace(/_/g,'')));
+  if(/[.eE]/.test(t)&&/^[0-9]/.test(t))return $B.fast_float(parseFloat(t));
+  if(t==="True")return true; if(t==="False")return false; if(t==="None")return _b_.None;
+  if (/^[rbfuRBFU]*['"]/.test(t)){ const pfx=(t.match(/^[rbfuRBFU]*/)[0]||'').toLowerCase(); const v=decodeConcat(t); if(pfx.includes('b')){ const a=[]; for(let i=0;i<v.length;i++)a.push(v.charCodeAt(i)&255); return _b_.bytes.$factory($B.$list(a)); } return jsEnc(v); }
+  return t;
+}
+function setpos(n,j){for(const p of["lineno","col_offset","end_lineno","end_col_offset"])if(j[p]!==undefined)n[p]=j[p];return n;}
+function build(j){
+  if(j===null||j===undefined)return undefined;
+  if(Array.isArray(j))return $B.$list(j.map(build));
+  if(typeof j!=="object")return j;
+  if(j._type==="Constant")return setpos(new ast.Constant(litValue(j.value),undefined),j);
+  const spec=$B.ast_classes[j._type];
+  if(spec===undefined)throw new Error("unknown node "+j._type);
+  if(spec==="")return setpos(new ast[j._type](),j);
+  const f=spec.split(",").map(x=>x.replace(/[*?]/g,""));
+  return setpos(new ast[j._type](...f.map(x=>build(j[x]))),j);
+}
+
+let dumpMod, dumpExpr;
+const M = await createWasthonp();
+dumpMod  = M.cwrap("wasthonp_dump_module","string",["string"]);
+dumpExpr = M.cwrap("wasthonp_dump","string",["string"]);
+
+// ---- THE HOOK: replace Brython's parser with wasthonp ----
+const origRun = $B._PyPegen.run_parser;
+let useWasthonp = false, lastParser = "";
+$B._PyPegen.run_parser = function(parser){
+  if(useWasthonp && (parser.mode === 'file' || parser.mode === 'eval')){
+    try{
+      const json = parser.mode==='eval' ? dumpExpr(parser.src) : dumpMod(parser.src);
+      if(!json.startsWith('{"error')){
+        lastParser = "wasthonp (WASM CPython parser)";
+        const tree = JSON.parse(json);
+        return parser.mode==='eval' ? setpos(new ast.Expression(build(tree)), tree) : build(tree);
+      }
+    }catch(e){ /* fall through to Brython */ }
+  }
+  lastParser = "Brython (JS parser)";
+  return origRun.apply(this, arguments);
+};
+
+status.textContent = "ready — WASM parser loaded";
+status.className = "badge";
+
+// capture print (Brython print → console.log)
+function withCapture(fn){
+  const lines=[]; const orig=console.log;
+  console.log=(...a)=>lines.push(a.map(x=>typeof x==='string'?x:String(x)).join(' '));
+  try{ fn(); } finally{ console.log=orig; }
+  return lines.join('\n');
+}
+
+document.getElementById('run').onclick = () => {
+  const src = document.getElementById('src').value;
+  useWasthonp = true; lastParser = "";
+  let t0 = performance.now(), printed, err=null;
+  try { printed = withCapture(() => $B.runPythonSource(src, "wasthonp_demo_"+Date.now())); }
+  catch(e){ err = e; printed = ""; }
+  finally { useWasthonp = false; }
+  const ms = (performance.now()-t0).toFixed(1);
+  out.textContent = (printed||"(no output)") + (err ? "\n[error] "+(err.message||err) : "");
+  info.innerHTML = `parser: <b class="ok">${lastParser}</b>\n`+
+    `pipeline: source → wasthonp(WASM) → \$B.ast → Brython codegen → eval\n`+
+    `total run: <b>${ms} ms</b>`;
+};
+
+document.getElementById('bench').onclick = () => {
+  const src = document.getElementById('src').value, N=300;
+  // wasthonp parse-only
+  let t=performance.now(); for(let i=0;i<N;i++) dumpMod(src); const w=(performance.now()-t)/N;
+  // Brython parse-only
+  t=performance.now(); for(let i=0;i<N;i++){ const p=new $B.Parser(src,"<b>","file"); origRun.call($B._PyPegen,p);} const b=(performance.now()-t)/N;
+  info.innerHTML = `parse-only, ${N}×:\n  wasthonp: <b>${w.toFixed(3)} ms</b>\n  Brython:  <b>${b.toFixed(3)} ms</b>\n  → wasthonp <b class="t">${(b/w).toFixed(1)}× faster</b>`;
+};
+</script>
+</body>
+</html>
