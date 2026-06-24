@@ -1,122 +1,128 @@
 # wasthonp — the wasthon parser
 
-**Goal:** compile *only* CPython's frontend (tokenizer + PEG parser → AST) to
-WebAssembly and use it inside Brython as a drop-in replacement for Brython's
-hand-written JS parser. Unlike Pyodide, we do **not** compile the interpreter
-(no eval loop, no compiler-to-bytecode, no stdlib).
+**What it is:** CPython's real frontend — the tokenizer + PEG parser → AST —
+compiled to WebAssembly (~300 KB) and used inside Brython as a **drop-in
+replacement for Brython's hand-written JS parser**. Unlike Pyodide, it does
+**not** compile the interpreter (no eval loop, no bytecode compiler, no stdlib):
+just the parser. It is the "frontend" sibling of `../wasthon` (the "backend":
+CPython C extension modules → WASM + a JS bridge).
 
-Sibling project to `../wasthon` (the "backend": CPython C extension modules
-compiled to WASM + a JS bridge to Brython). wasthonp is the "frontend".
+It plugs in by monkeypatching `$B._PyPegen.run_parser`; the whole glue is one
+file (`wasthonp.js`). Proposed as-is for Brython to adopt — the integration is
+Pierre's call, this repo never modifies Brython itself.
 
-## Why
+---
 
-1. **Correctness**: CPython's parser is the reference — exact grammar (walrus,
-   match, PEP 695, PEP 701 f-strings), exact `SyntaxError` messages/offsets, a
-   faithful `ast` module. Brython's JS parser perennially lags and has bugs
-   (e.g. the `_parser.getuntil` Tokenizer bug and `\N{}` handling seen in
-   `../wasthon` test_re).
-2. **Performance** (potential): the C tokenizer/PEG parser over a bump-pointer
-   arena should beat Brython's allocation-heavy JS parser on the *parse* itself.
-   The net end-to-end win depends entirely on how cheaply we hand the AST back
-   to JS (see "the boundary" below).
+## Why wasthonp beats Brython's parser (all measured)
 
-## Architecture decision: Strategy A (real CPython subset)
+wasthonp **is** CPython's parser, so by construction it can't lag the grammar or
+invent quirks. Concretely, against the vendored Brython:
 
-The wasthon backend uses *shim* headers (`src/Python.h` → `wasthon.h`) and lets a
-JS bridge implement an opaque PyObject-handle C-API. **That approach does NOT
-work for the parser**: the tokenizer/pegen/parser code needs the *concrete*
-internal struct layouts (`mod_ty`, `Parser`, tokenizer state, `PyArena`, the
-`_ast` node structs) and many private `_Py*` functions. So wasthonp compiles
-against CPython's **real** `Include/` + `Include/internal/` headers and links a
-*minimal real subset* of CPython:
+### 1. Correctness — exact CPython 3.14 grammar
+- **Full CPython 3.14 stdlib round-trip** (`node validate2.js`, 1851 files):
+  **1830 parse + build + codegen with 0 wasthonp crashes**; **1147 byte-identical**
+  to Brython's own codegen, the rest cosmetic (position/pretty-print) diffs.
+- **Files Brython's hand-written parser crashes on, wasthonp handles** (`node
+  superiority.js`): t-strings with the debug specifier `t"{x=}"`, some f-string
+  and unicode-identifier edges — 5 stdlib files where Brython's parser throws an
+  internal error and wasthonp parses cleanly. Brython rejecting valid 3.14 code
+  that wasthonp accepts: the reverse never happens.
 
-- `Parser/` — `lexer/*.c`, `tokenizer/*.c`, `pegen.c`, `parser.c` (generated),
-  `pegen_errors.c`, `string_parser.c`, `action_helpers.c`, `token.c`
-- `Python/` — `Python-ast.c` (AST node ctors), `pyarena.c`, `asdl.c`
-- `Objects/` — the object types the parser actually touches when building
-  constants/identifiers: unicode, long, float, complex, bytes (+ their deps).
-  **This set is the open question the dependency audit answers.**
+### 2. Error fidelity — faithful `SyntaxError` (v2)
+wasthonp reports CPython's **exact** error message and position, not an
+approximation. On CPython's own error corpus (`test_syntax.py`, 71 cases,
+regex-matched like CPython's `_check_error`):
 
-The seam into Brython is its AST: Brython already mirrors CPython's ASDL 1:1 in
-`$B.ast_classes`. Two routes:
-- (later) `PyAST_mod2obj(mod_ty)` → `_ast` objects, if we align `_ast` types
-  with Brython's ast classes, **or**
-- **(preferred for perf)** serialize the `mod_ty` to one compact buffer in WASM,
-  cross the JS boundary **once**, and rebuild Brython AST node objects in a tight
-  JS loop (string table for literals/identifiers — no per-node bridge calls).
-  This is the only way to not give the parse-speed win back at the boundary.
+| | wasthonp | Brython |
+|---|---:|---:|
+| message matches CPython's expected pattern | **52 / 71** | 45 / 71 |
+| wins where the other is wrong | **7** | 0 |
+| parse-stage errors missed | **0** | — |
 
-## Status
+The 19 cases both "miss" are post-parse (codegen-stage) errors — outside a
+parser's job. On the parse errors wasthonp catches, message fidelity is 100%,
+including tokenizer errors (`invalid non-printable character U+0017`,
+`unterminated triple-quoted string literal`) and the helpful 3.x hints
+(`'(' was never closed`, `Maybe you meant '==' instead of '='?`). Position is at
+parity with Brython.
 
-🚧 Prototype, day 0 — **milestone 1 (audit) done**. All 15 parser translation
-units **compile** to WASM against CPython's real internal headers. Link audit
-(`build/missing.txt`): of **165 Py-level symbols** the parser needs, **109 (66%)
-are already implemented by the wasthon bridge**; the **gap is 56**, all
-categorizable (singletons, a ~dozen-stub minimal runtime, ~9 Unicode internals,
-error helpers, a few bytes/set bits). → wasthonp can likely **reuse the bridge**
-(Strategy B) instead of compiling `Objects/*.c`; plausibly weekend-scale, not
-Pyodide-scale. Open question = ABI compatibility of bridge objects under the
-parser's macros/refcounts (milestone 2). Full write-up: `BUILD_NOTES.md`.
+### 3. Performance — 3.5–6× faster parse
+Parse-only, wasthonp vs Brython's JS parser (`node bench.js`, WASM boundary cost
+included): **~3.5–5× on typical code, up to ~6× on numeric-heavy code**
+(`_pydecimal.py` 5.9×, `argparse.py` 4.5×, `typing.py` 3.3×), ~3× in-browser.
 
-## Milestones
+### 4. Size — a ~300 KB drop-in (vs ~10 MB Pyodide)
+The parser is structurally separable from the interpreter: ~300 KB of WASM, no
+object layer, no eval loop. Because the codegen stays Brython's, adopting
+wasthonp could let Brython **retire its hand-written parser** (`gen_parse.js` &
+co, ~40% of the engine's JS source, ~550 KB off `brython.js`) — an argument for
+the integration, on Brython's side.
 
-1. [x] **Audit**: compile parser TUs; list undefined symbols. ✅ (56-symbol gap)
-2. [x] **Parse to mod_ty**: ✅ **DONE.** Every test expression (`x`, `1`, `3.14`,
-       `1+2*3`, `f(a, b)`, `[1, 2, 3]`) parses to a real Expression AST
-       (`mod->kind == 3`) in a **234 KB** WASM (`build/wasthonp.wasm`) with NO
-       object layer, NO eval loop, NO runtime — just the parser + `Python/
-       pyctype.c` (8 KB char tables) + minimal POD/compat shims (`shims/`).
-       Run: `node build/wasthonp.js`. The two earlier walls were resolved by
-       Strategy C: a ~40-function real-signature shim layer (`shims/pod_real.c`)
-       with ABI-compatible minimal str/bytes (compact `PyASCIIObject`/
-       `PyBytesObject`, pinned refcount) and opaque pinned leaves for int/float/
-       tuple/list. See BUILD_NOTES "Strategy-C experiment".
-3. [x] **Serialize**: ✅ `shims/ast_dump.c` walks `mod_ty` → JSON, identifiers
-       from the real minimal str, **literals from the source span**
-       (col_offset..end_col_offset — the production hand-off design). Correct
-       precedence/associativity proven: `1+2*3` → `BinOp(+,1,BinOp(*,2,3))`,
-       `a.b.c` → nested Attribute, etc. `node build/wasthonp.js`. 240 KB WASM.
-4. [x] **JS rebuild**: ✅ **DONE** (`m3b_stmt.js`). wasthonp dumps a whole module
-       to JSON aligned with `$B.ast_classes`; a **single generic builder** (~15
-       lines, driven by the ASDL field specs) rebuilds the `$B.ast` tree; Brython's
-       `js_from_root` codegen compiles it to JS **logic-identical** to Brython's
-       own parser+codegen. **5/5 real modules** pass — covering def/class/for/
-       while/if/with/lambda/ternary/import/from/global/del/assert/augassign/
-       comprehensions(list/set/dict/gen)/unpack/starred/slices/dict/compare.
-       (Diffs only in per-compile UUID suffixes + Brython's own `__file__`
-       inconsistency in comprehension frames.) Run: `node m3b_stmt.js`.
-       wasthonp is a **drop-in** for Brython's parser, statements included.
-       **FULL grammar (9/9)**: now also match/case + patterns, try/except/finally,
-       async def/await/async-for/with, generators/yield, f-strings (JoinedStr/
-       FormattedValue), type aliases + PEP 695 type params. Real stdlib files
-       (`node realfile.js re/_parser.py`) parse+build+compile **99.6% identical**
-       (11/2728 lines); residual diffs are only string-literal value encoding
-       (exotic escapes `\a`/octal, implicit concatenation) — no grammar/structure
-       gap. Found a Brython bug: wrong `match_case` lineno (uses the next case's).
-5. [x] **Bench**: ✅ parse-only, wasthonp vs Brython's JS parser on a realistic
-       module body (`node bench.js`): **wasthonp ~5.7–6× faster** (0.6 ms vs
-       3.4 ms/parse), WASM boundary cost included. The perf thesis holds.
-6. [x] **Execute end-to-end**: ✅ `node m3c_exec.js` — parse with wasthonp →
-       `$B.ast` → **Brython's real `exec`** → read the result. **7/7 programs run
-       correctly** (fib(10)=55, comprehensions, class+method, dict-comp, match,
-       try/except+f-string, generators+closures+lambda). Inject the wasthonp AST
-       via a code object `{ob_type:$B.code,_ast:{$js_ast},mode:'exec'}` to
-       `_b_.exec` (root frame set with `$B.enter_frame`). "codegen identical" is
-       now "**runs correctly**".
-7. [x] **Browser integration**: ✅ `web/index.html` (headless-tested via
-       `web_test.py`) loads Brython + the wasthonp `.wasm` and **monkeypatches
-       `$B._PyPegen.run_parser` with wasthonp**, then runs a real Python script
-       (fib, class, f-string, comprehension, match) → correct output in Chromium:
-       `fib(15)=610`, `hello, wasthonp!`, etc. In-browser parse bench ~2.5× faster.
-       The full PoC — "Brython, but with the exact CPython parser, in WASM" —
-       runs in a browser.
-8. [ ] **Polish/product**: exotic string-escape encoding; ES6-module packaging +
-       auto-hook of `text/python` tags; compact binary AST serialization; a
-       faithful `ast.parse`.
+---
 
-## Build
+## Architecture (Strategy C)
 
+The parser is compiled against CPython's **real** internal headers — it needs the
+concrete `mod_ty`, `Parser`, tokenizer-state and `_ast` struct layouts. Two dead
+ends were ruled out first: reusing the wasthon bridge for objects (Strategy B)
+breaks on ABI — the bridge's `PyObject` is an opaque handle, the parser inlines
+real struct macros; and compiling the real object layer (Strategy A) pulls in the
+eval loop, GC, import and codecs — i.e. ~all of libpython. Full write-up in
+`BUILD_NOTES.md`.
+
+**Strategy C** keeps it small by never materializing real Python objects:
+- minimal **ABI-correct** `str`/`bytes` (`shims/pod_real.c`) so the parser's
+  macros read the right offsets, opaque pinned leaves for numbers, and CPython's
+  `Python/pyctype.c` classification tables;
+- literals carried as **source spans**; the **JS side** rebuilds the real Brython
+  AST objects (`wasthonp.js`, a single generic builder driven by `$B.ast_classes`);
+- `shims/ast_dump.c` serializes the `mod_ty` → JSON, crossing the JS boundary once.
+
+**Errors (v2)** use the same trick: instead of building a `SyntaxError` object in
+C (which would pull in the exception/type/ceval machinery), `wasm-ld --wrap`
+intercepts CPython's error funnel (`_PyPegen_raise_error_known_location`) and the
+two tokenizer entry points; the message (formatted verbatim by CPython) + position
+are captured into a struct, serialized as JSON, and `wasthonp.js` raises a faithful
+Brython `SyntaxError` via `$B.raise_error_known_location`. CPython's exact wording
+comes for free — it's compiled into the parser.
+
+---
+
+## Status — proof of concept complete
+
+All milestones done; wasthonp is a working drop-in (parse → `$B.ast` → Brython
+codegen → real `exec`), validated on the full stdlib, with faithful errors, in
+node and the browser.
+
+1. [x] **Audit** — parser TUs compile against CPython's real headers.
+2. [x] **Parse → `mod_ty`** — real AST, no object layer / eval / runtime.
+3. [x] **Serialize** — `mod_ty` → JSON (`shims/ast_dump.c`).
+4. [x] **JS rebuild → codegen** — full 3.14 grammar (def/class/async/match/try/
+       f-strings/PEP 695…), codegen logic-identical to Brython (`node m3b_stmt.js`).
+5. [x] **Bench** — 3.5–6× faster parse-only (`node bench.js`).
+6. [x] **Execute end-to-end** — 7/7 programs run correctly (`node m3c_exec.js`).
+7. [x] **Browser** — `loader/wasthonp.html` (run real Python on wasthonp + in-page
+       bench); also standalone `web/index.html`.
+8. [x] **Faithful errors (v2)** — exact CPython `SyntaxError` message+position
+       (corpus 52/71 vs Brython 45/71). See "Error fidelity" above.
+9. [ ] **Product polish** — ES6-module packaging + auto-hook of `text/python`
+       tags; compact binary AST serialization; non-ASCII caret offset; faithful
+       `ast.parse`.
+
+---
+
+## Build & run
+
+```sh
+./build.sh            # → build/wasthonp_mod.{js,wasm}  (~300 KB)
 ```
-CPYTHON_SRC=../wasthon/external/Python-3.14.6 ./build.sh
+Reuses the wasthon checkout's emsdk + CPython 3.14 source under `../external`;
+the cross `pyconfig.h` is committed (`cpy-build/`). Then:
+
+```sh
+node bench.js         # parse-speed vs Brython
+node validate2.js     # full-stdlib round-trip
+node superiority.js   # files Brython's parser chokes on
+node m3c_exec.js      # parse → $B.ast → exec, end to end
 ```
-Reuses the emsdk already installed under `../wasthon/external/emsdk`.
+Browser demo: serve the repo root and open `/loader/wasthonp.html`.
