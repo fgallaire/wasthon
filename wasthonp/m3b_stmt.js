@@ -1,60 +1,11 @@
 /* wasthonp milestone: FULL statements. wasthonp dumps a whole module to JSON
- * (aligned with $B.ast_classes); a GENERIC builder rebuilds the $B.ast tree;
+ * (aligned with $B.ast_classes); the canonical builder rebuilds the $B.ast tree;
  * Brython's codegen compiles it; we compare to Brython's own parser+codegen. */
 const $B = require("./bry_boot.js");
 globalThis.$B = $B; globalThis._b_ = $B.builtins;
 const createWasthonp = require("./build/wasthonp_mod.js");
-const ast = $B.ast;
-// proper Python literal → JS value (the "rebuild from source" step)
-function decodeStr(t){
-  let i=0, raw=false, bytes=false;
-  while(i<t.length && /[rbfuRBFU]/.test(t[i])){ const c=t[i].toLowerCase(); if(c==='r')raw=true; if(c==='b')bytes=true; i++; }
-  let body=t.slice(i);
-  let q = body.slice(0,3)==='"""'||body.slice(0,3)==="'''" ? body.slice(0,3) : body[0];
-  body = body.slice(q.length, body.length-q.length);
-  if(raw) return body;
-  // process escapes
-  return body.replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[0-7]{1,3}|N\{[^}]*\}|.|\n)/g, (m,e)=>{
-    const c=e[0];
-    if(c==='n')return'\n'; if(c==='t')return'\t'; if(c==='r')return'\r'; if(c==='\\')return'\\';
-    if(c==="'")return"'"; if(c==='"')return'"'; if(c==='a')return'\x07'; if(c==='b')return'\b';
-    if(c==='f')return'\f'; if(c==='v')return'\v'; if(c==='0'&&e.length===1)return'\0'; if(c==='\n')return'';
-    if(c==='x')return String.fromCharCode(parseInt(e.slice(1),16));
-    if(c==='u')return String.fromCharCode(parseInt(e.slice(1),16));
-    if(c==='U')return String.fromCodePoint(parseInt(e.slice(1),16));
-    if(/[0-7]/.test(c))return String.fromCharCode(parseInt(e,8));
-    if(c==='N')return m; // \N{...} — leave (needs unicodedata); rare
-    return m;
-  });
-}
-function litValue(t){
-  if (/^[0-9][0-9_]*$/.test(t)){ const v=parseInt(t.replace(/_/g,''),10); return Number.isSafeInteger(v)?v:BigInt(t.replace(/_/g,'')); }
-  if (/^0[xX][0-9a-fA-F_]+$/.test(t)){ const s='0x'+t.replace(/_/g,'').slice(2); const v=Number(s); return Number.isSafeInteger(v)?v:BigInt(s); }
-  if (/^0[oO][0-7_]+$/.test(t)){ return parseInt(t.replace(/_/g,'').slice(2),8); }
-  if (/^0[bB][01_]+$/.test(t)){ return parseInt(t.replace(/_/g,'').slice(2),2); }
-  if (/[.eEjJ]/.test(t) && /^[0-9]/.test(t)) return $B.fast_float(parseFloat(t));
-  if (t==="True") return true; if (t==="False") return false; if (t==="None") return _b_.None;
-  if (/^[rbfuRBFU]*['"]/.test(t)) return decodeStr(t);
-  return t;
-}
-
-
-function setpos(n,j){ for(const p of ["lineno","col_offset","end_lineno","end_col_offset"]) if(j[p]!==undefined) n[p]=j[p]; return n; }
-
-/* ONE generic constructor, driven by $B.ast_classes field specs */
-function build(j){
-  if (j === null || j === undefined) return undefined;
-  if (Array.isArray(j)) return $B.$list(j.map(build));
-  if (typeof j !== "object") return j;             // string / number primitive
-  const type = j._type;
-  if (type === "Constant") return setpos(new ast.Constant(litValue(j.value), undefined), j);
-  const spec = $B.ast_classes[type];
-  if (spec === undefined) throw new Error("unknown node "+type);
-  if (spec === "") return setpos(new ast[type](), j); // operators/ctx (no pos in j) + Pass/Break/Continue (pos in j)
-  const fields = spec.split(",").map(f=>f.replace(/[*?]/g,""));
-  const node = new ast[type](...fields.map(f=>build(j[f])));
-  return setpos(node, j);
-}
+const WP = require("./wasthonp.js").bind($B);
+const { build } = WP;
 
 function compile(mod, src){
   const filename="<string>";
