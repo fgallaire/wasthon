@@ -124,15 +124,38 @@
       const ctl = { enabled:false, lastParser:"", origRun, dumpMod, dumpExpr };
       $B._PyPegen.run_parser = function(parser){
         if(ctl.enabled && (parser.mode==='file'||parser.mode==='eval')){
-          try{
-            const json = parser.mode==='eval' ? dumpExpr(parser.src) : dumpMod(parser.src);
+          let json = null;
+          try{ json = parser.mode==='eval' ? dumpExpr(parser.src) : dumpMod(parser.src); }
+          catch(e){ if(!fallback) throw e; }   // wasm crash → fall back to Brython
+          if(json !== null){
             if(!json.startsWith('{"error')){
               ctl.lastParser = "wasthonp (WASM CPython parser)";
               const tree = JSON.parse(json);
               return parser.mode==='eval' ? setpos(new ast.Expression(build(tree)), tree) : build(tree);
             }
+            // wasthonp returned an error
+            let parsed = null; try{ parsed = JSON.parse(json); }catch(_){}
+            if(parsed && parsed.error && typeof parsed.error === 'object'){
+              // a real SyntaxError caught by the CPython parser — raise the
+              // faithful Brython exception (message+position from C); propagates.
+              ctl.lastParser = "wasthonp (WASM CPython parser)";
+              const e = parsed.error;
+              const line = (parser.src.split('\n')[e.lineno-1]) || "";
+              // C errtype reads NULL (stubbed) → infer the subclass from CPython's
+              // exact message wording (TabError's "inconsistent use of tabs"
+              // contains "indent", so test it first).
+              const et = /inconsistent use of tabs/.test(e.msg) ? _b_.TabError
+                       : /indent/.test(e.msg) ? _b_.IndentationError : _b_.SyntaxError;
+              // Brython's raiser adds 1 to col_offset for display; the captured
+              // offsets are already 1-based-equivalent, so pass them −1.
+              const col = e.offset - 1;
+              const endcol = (e.end_offset > 0 ? e.end_offset : e.offset) - 1;
+              $B.raise_error_known_location(et, parser.filename, e.lineno, col,
+                  e.end_lineno > 0 ? e.end_lineno : e.lineno, endcol, line, e.msg);
+            }
+            // a wasthonp internal limitation (not a syntax error) → fall back
             if(!fallback) throw new Error("wasthonp parse: "+json.slice(0,90));
-          }catch(e){ if(!fallback) throw e; /* else fall through to Brython */ }
+          }
         }
         ctl.lastParser = "Brython (JS parser)";
         return origRun.apply(this, arguments);
