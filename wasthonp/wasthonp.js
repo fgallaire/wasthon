@@ -70,6 +70,16 @@
     return out;
   }
 
+  // Convert a UTF-8 byte offset into a line to a code-point (character) offset —
+  // what CPython reports for SyntaxError.offset (its byte_offset_to_character_
+  // offset). No-op for ASCII lines; matters when non-ASCII precedes the caret.
+  function byteToChar(line, byteOff){
+    if(!byteOff || byteOff <= 0) return byteOff || 0;
+    const enc = new TextEncoder().encode(line || "");
+    const n = Math.min(byteOff, enc.length);
+    return [...new TextDecoder().decode(enc.subarray(0, n))].length;
+  }
+
   // PEP 263 coding-cookie source decode (loader-level; node Buffer input).
   function decodePySource(buf){
     const head = buf.slice(0, 200).toString("latin1");
@@ -140,18 +150,21 @@
               // faithful Brython exception (message+position from C); propagates.
               ctl.lastParser = "wasthonp (WASM CPython parser)";
               const e = parsed.error;
-              const line = (parser.src.split('\n')[e.lineno-1]) || "";
+              const lines = parser.src.split('\n');
+              const line = lines[e.lineno-1] || "";
+              const endLineNo = e.end_lineno > 0 ? e.end_lineno : e.lineno;
+              const endLine = lines[endLineNo-1] || line;
               // C errtype reads NULL (stubbed) → infer the subclass from CPython's
               // exact message wording (TabError's "inconsistent use of tabs"
               // contains "indent", so test it first).
               const et = /inconsistent use of tabs/.test(e.msg) ? _b_.TabError
                        : /indent/.test(e.msg) ? _b_.IndentationError : _b_.SyntaxError;
-              // Brython's raiser adds 1 to col_offset for display; the captured
-              // offsets are already 1-based-equivalent, so pass them −1.
-              const col = e.offset - 1;
-              const endcol = (e.end_offset > 0 ? e.end_offset : e.offset) - 1;
+              // captured offsets are UTF-8 byte offsets → convert to character
+              // offsets (CPython's SyntaxError.offset); Brython's raiser adds 1.
+              const col = byteToChar(line, e.offset) - 1;
+              const endcol = byteToChar(endLine, e.end_offset > 0 ? e.end_offset : e.offset) - 1;
               $B.raise_error_known_location(et, parser.filename, e.lineno, col,
-                  e.end_lineno > 0 ? e.end_lineno : e.lineno, endcol, line, e.msg);
+                  endLineNo, endcol, line, e.msg);
             }
             // a wasthonp internal limitation (not a syntax error) → fall back
             if(!fallback) throw new Error("wasthonp parse: "+json.slice(0,90));
