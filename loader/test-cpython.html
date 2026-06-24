@@ -51,15 +51,15 @@ const INSTALL_MAP = {
     test_array: ['array', '_pickle', '_struct'],
     test_hmac: ['_hmac', '_md5', '_sha1', '_sha2', '_sha3', '_blake2', 'binascii', '_random'],
     test_statistics: ['_statistics', '_decimal', 'math', '_pickle', '_random'],
-    test_zstd: ['_zstd', 'array', '_random', '_sre'],
-    test_random: ['_random', 'math', '_pickle'],
+    test_zstd: ['_zstd', 'array', '_random', '_sre', '_bz2', '_lzma', 'zlib'],
+    test_random: ['_random', 'math', '_pickle', '_md5', '_sha1', '_sha2', '_sha3', '_blake2', '_statistics'],
     test_zlib: ['zlib', 'binascii', '_pickle', '_random'],
-    test_bz2: ['_bz2', 'array', '_pickle', '_random'],
-    test_lzma: ['_lzma', 'array', '_pickle', '_random'],
-    test_unicodedata: ['unicodedata'], test_pyexpat: ['pyexpat', '_sre'],
-    test_pickle: ['_pickle', '_struct'], test_re: ['_sre', 'array', '_pickle'],
-    test_sqlite3: ['_sqlite3'],
-    test_json: ['_json', '_pickle', '_sre'],
+    test_bz2: ['_bz2', 'array', '_pickle', '_random', '_lzma', 'zlib'],
+    test_lzma: ['_lzma', 'array', '_pickle', '_random', '_bz2', 'zlib'],
+    test_unicodedata: ['unicodedata', '_md5', '_sha1', '_sha2', '_sha3', '_blake2'], test_pyexpat: ['pyexpat', '_sre'],
+    test_pickle: ['_pickle', '_struct', '_sre', '_random', 'math'], test_re: ['_sre', 'array', '_pickle', 'unicodedata'],
+    test_sqlite3: ['_sqlite3', '_sre', 'array', 'zlib'],
+    test_json: ['_json', '_pickle', '_sre', 'unicodedata', '_decimal', 'math'],
     test_hashlib: ['_md5','_sha1','_sha2','_sha3','_blake2', 'array', 'binascii', '_sre'],
 };
 const installList = params.get('install')
@@ -195,7 +195,19 @@ test_name = window.__wasthon_test_name
 # --- value. Covers the long tail of test.support helpers we don't model.
 class _Flex:
     def __call__(self, *a, **k):
-        if len(a) == 1 and callable(a[0]) and not k:
+        # @decorator passthrough — but ONLY for a real function/method/class,
+        # not any callable: a unittest.TestCase instance is callable (it has
+        # __call__), so check_no_warnings(self) would wrongly return the
+        # testcase instead of a context manager and \`with helper(self):\`
+        # raised "object does not support the context manager protocol"
+        # (test_decimal test_deprecated_N_format). When called with a non-
+        # function arg, fall through to returning self, which IS usable as a
+        # context manager (__enter__/__exit__ below).
+        if len(a) == 1 and not k and (
+                isinstance(a[0], type) or
+                type(a[0]).__name__ in (
+                    'function', 'method', 'builtin_function_or_method',
+                    'staticmethod', 'classmethod', 'method-wrapper')):
             return a[0]            # @decorator passthrough
         return self
     def __getattr__(self, n): return self
@@ -900,6 +912,20 @@ _KNOWN_HANGS = {
     # threading() — does not hold here. Environment-excluded, not a wasthon
     # bug: the single-threaded compress path itself is covered elsewhere.
     'test_zstd': ['test_compress_locking', 'test_decompress_locking'],
+    # test_re_tests/test_re_benchmarks import the external data module
+    # test.re_tests (the legacy regex test corpus), which is not bundled in
+    # the in-browser VFS -> ModuleNotFoundError. test_locale_caching/compiled
+    # need C LC_CTYPE locales (en_US.iso88591/utf8) that do not exist in the
+    # browser; upstream self-skips on locale.Error, but only the locale data
+    # absence is the real limit. All four are environment-limited.
+    'test_re': ['test_re_tests', 'test_re_benchmarks',
+                'test_locale_caching', 'test_locale_compiled'],
+    # ThreadTests check that using a connection/cursor created in one thread
+    # from ANOTHER thread raises ProgrammingError (sqlite check_same_thread).
+    # Brython has no real thread concurrency: threading.Thread runs the target
+    # synchronously in the same thread with the same ident, so the cross-thread
+    # access is never detected. Environment-limited free-threading, not a bug.
+    'test_sqlite3': ['test_check_connection_thread', 'test_check_cursor_thread'],
 }
 # Honest SkipTest reasons for forced skips that are not actually hangs
 # (keyed by method name; default below is the hang wording).
@@ -918,6 +944,18 @@ _SKIP_REASONS = {
     'test_compress_locking':
         'requires working free-threading (no real thread concurrency in WASM/Brython)',
     'test_decompress_locking':
+        'requires working free-threading (no real thread concurrency in WASM/Brython)',
+    'test_re_tests':
+        'external test data module test.re_tests is not bundled in the VFS',
+    'test_re_benchmarks':
+        'external test data module test.re_tests is not bundled in the VFS',
+    'test_locale_caching':
+        'no C LC_CTYPE locale support in the browser (en_US.iso88591/utf8 absent)',
+    'test_locale_compiled':
+        'no C LC_CTYPE locale support in the browser (en_US.iso88591/utf8 absent)',
+    'test_check_connection_thread':
+        'requires working free-threading (no real thread concurrency in WASM/Brython)',
+    'test_check_cursor_thread':
         'requires working free-threading (no real thread concurrency in WASM/Brython)',
 }
 # Prefix patterns — skip ANY method whose name starts with one of these.
