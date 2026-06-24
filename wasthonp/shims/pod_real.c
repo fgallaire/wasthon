@@ -197,24 +197,30 @@ Py_ssize_t _PyUnicode_ScanIdentifier(PyObject *self){ return ((PyASCIIObject*)se
 
 /* --- error-reporting path: correct signatures so it completes (rather than
  *     traps) when the grammar rejects our deliberately-opaque fake tokens. --- */
-PyObject *PyUnicode_FromFormatV(const char *f, va_list v)  { (void)f;(void)v; return mkobj(); }
 /* Real %-format: needed for dotted import names (_PyPegen_join_names_with_dot
- * builds "a.b" via "%U.%U") and assorted messages. Handles %U %s %d/%i %c %%. */
-PyObject *PyUnicode_FromFormat(const char *f, ...){
-    char buf[8192]; int n=0; va_list ap; va_start(ap,f);
+ * builds "a.b" via "%U.%U"), SyntaxError messages (FromFormatV at the error
+ * funnel) and assorted messages. Handles %U %s %d/%i %c %%. */
+static int wp_vformat(char *buf, const char *f, va_list ap){
+    int n=0;
     for(const char *p=f; *p && n<8100; p++){
         if(*p!='%'){ buf[n++]=*p; continue; }
         p++;
         while(*p && strchr("0123456789.-+ #lzt",*p)) p++;
         if(*p=='U'){ PyObject*o=va_arg(ap,PyObject*); const char*s=o?str_data(o):""; while(*s&&n<8100)buf[n++]=*s++; }
         else if(*p=='s'){ const char*s=va_arg(ap,const char*); if(!s)s=""; while(*s&&n<8100)buf[n++]=*s++; }
-        else if(*p=='d'||*p=='i'){ int v=va_arg(ap,int); n+=snprintf(buf+n,sizeof(buf)-n,"%d",v); }
+        else if(*p=='d'||*p=='i'){ int v=va_arg(ap,int); n+=snprintf(buf+n,8192-n,"%d",v); }
         else if(*p=='c'){ int v=va_arg(ap,int); buf[n++]=(char)v; }
         else if(*p=='R'||*p=='A'||*p=='V'||*p=='S'){ va_arg(ap,void*); }   /* skip object */
         else if(*p=='%'){ buf[n++]='%'; }
         else { buf[n++]='%'; if(*p) buf[n++]=*p; }
     }
-    va_end(ap); buf[n]=0; return mkstr(buf,n);
+    buf[n]=0; return n;
+}
+PyObject *PyUnicode_FromFormat(const char *f, ...){
+    char buf[8192]; va_list ap; va_start(ap,f); int n=wp_vformat(buf,f,ap); va_end(ap); return mkstr(buf,n);
+}
+PyObject *PyUnicode_FromFormatV(const char *f, va_list v){
+    char buf[8192]; va_list ap; va_copy(ap,v); int n=wp_vformat(buf,f,ap); va_end(ap); return mkstr(buf,n);
 }
 PyObject *PyTuple_Pack(Py_ssize_t n, ...)                  { (void)n; return mkobj(); }
 void PyErr_SetObject(PyObject *t, PyObject *v)             { (void)t;(void)v; }

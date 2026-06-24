@@ -39,8 +39,8 @@ for tu in "${PARSER_TUS[@]}"; do
     && echo "  ok  ${tu}" || { echo "  FAIL ${tu}"; tail -8 "${OUT}/compile.log"; exit 1; }
 done
 
-echo "=== compile shims (Strategy C: minimal POD object layer + AST→JSON) ==="
-for s in pod_real pod_stubs ast_dump; do
+echo "=== compile shims (Strategy C: minimal POD object layer + AST→JSON + errors) ==="
+for s in pod_real pod_stubs ast_dump wp_errors; do
   emcc ${CF} -c "${REPO}/shims/${s}.c" -o "${OUT}/${s}.o" 2>>"${OUT}/compile.log" \
     && echo "  ok  shims/${s}.c" || { echo "  FAIL shims/${s}.c"; tail -12 "${OUT}/compile.log"; exit 1; }
 done
@@ -48,7 +48,8 @@ done
 echo "=== link build/wasthonp_mod.js (CommonJS) ==="
 OBJS="$(ls "${OUT}"/*.o)"
 EXP='-s EXPORTED_FUNCTIONS=["_wasthonp_dump","_wasthonp_dump_module","_wasthonp_parse_only","_malloc","_free"] -s EXPORTED_RUNTIME_METHODS=["ccall","cwrap","UTF8ToString","stringToUTF8","lengthBytesUTF8"]'
-emcc -O2 ${OBJS} -s ALLOW_MEMORY_GROWTH=1 -s STACK_SIZE=8MB -s MODULARIZE=1 \
+emcc -O2 ${OBJS} -Wl,--wrap=_PyPegen_raise_error_known_location \
+     -s ALLOW_MEMORY_GROWTH=1 -s STACK_SIZE=8MB -s MODULARIZE=1 \
      -s EXPORT_NAME=createWasthonp -s INVOKE_RUN=0 ${EXP} \
      -o "${OUT}/wasthonp_mod.js" 2>"${OUT}/link.log" \
   && echo "Built: build/wasthonp_mod.{js,wasm}  ($(stat -c%s "${OUT}/wasthonp_mod.wasm") B wasm)" \

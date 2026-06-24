@@ -7,6 +7,7 @@
 #include "internal/pycore_ast.h"
 #include "internal/pycore_pyarena.h"
 #include "../Parser/pegen.h"
+#include "wp_errors.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -219,11 +220,20 @@ int wasthonp_parse_only(const char *src){
 
 /* dump a whole module (file input) */
 const char *wasthonp_dump_module(const char *src){
-    LEN=0; BUF[0]=0; SRC=src; build_lineoff(src);
+    wp_error_reset(); LEN=0; BUF[0]=0; SRC=src; build_lineoff(src);
     PyArena *arena=_PyArena_New(); if(!arena) return "{\"error\":\"arena\"}";
     PyObject *fn=PyUnicode_FromString("<w>");
     mod_ty mod=_PyPegen_run_parser_from_string(src,Py_file_input,fn,NULL,arena);
-    if(!mod){ _PyArena_Free(arena); return "{\"error\":\"parse failed\"}"; }
+    if(!mod){ _PyArena_Free(arena);
+        if(wp_error.set){ LEN=0; BUF[0]=0;
+            raw("{\"error\":{\"type\":"); qstr(wp_error.type);
+            raw(",\"msg\":"); qstr(wp_error.msg);
+            raw(",\"lineno\":"); inum(wp_error.lineno);
+            raw(",\"offset\":"); inum(wp_error.col);
+            raw(",\"end_lineno\":"); inum(wp_error.end_lineno);
+            raw(",\"end_offset\":"); inum(wp_error.end_col);
+            raw("}}"); wp_error_reset(); return BUF; }
+        return "{\"error\":\"parse failed\"}"; }
     if(mod->kind==Module_kind){ open_("Module"); SSEQ("body",mod->v.Module.body); raw(",\"type_ignores\":[]"); close_(); }
     else raw("{\"error\":\"not a module\"}");
     _PyArena_Free(arena);
@@ -232,11 +242,20 @@ const char *wasthonp_dump_module(const char *src){
 
 /* expression dump kept for the old demo */
 const char *wasthonp_dump(const char *src){
-    LEN=0; BUF[0]=0; SRC=src; build_lineoff(src);
+    wp_error_reset(); LEN=0; BUF[0]=0; SRC=src; build_lineoff(src);
     PyArena *arena=_PyArena_New(); if(!arena) return "{\"error\":\"arena\"}";
     PyObject *fn=PyUnicode_FromString("<w>");
     mod_ty mod=_PyPegen_run_parser_from_string(src,Py_eval_input,fn,NULL,arena);
-    if(!mod){ _PyArena_Free(arena); return "{\"error\":\"parse failed\"}"; }
+    if(!mod){ _PyArena_Free(arena);
+        if(wp_error.set){ LEN=0; BUF[0]=0;
+            raw("{\"error\":{\"type\":"); qstr(wp_error.type);
+            raw(",\"msg\":"); qstr(wp_error.msg);
+            raw(",\"lineno\":"); inum(wp_error.lineno);
+            raw(",\"offset\":"); inum(wp_error.col);
+            raw(",\"end_lineno\":"); inum(wp_error.end_lineno);
+            raw(",\"end_offset\":"); inum(wp_error.end_col);
+            raw("}}"); wp_error_reset(); return BUF; }
+        return "{\"error\":\"parse failed\"}"; }
     if(mod->kind==Expression_kind) d_expr(mod->v.Expression.body);
     else raw("{\"error\":\"not expr\"}");
     _PyArena_Free(arena);
