@@ -2981,11 +2981,22 @@ mergeInto(LibraryManager.library, {
             rt.setError(rt.wrap(rt._b_.TypeError), "PyFloat_FromString: not a str");
             return 0;
         }
-        var v = parseFloat(s);
-        if (Number.isNaN(v) && s.trim().toLowerCase() !== 'nan') {
-            rt.setError(rt.wrap(rt._b_.ValueError),
-                "could not convert string to float: '" + s + "'");
-            return 0;
+        // CPython float() accepts nan / inf / infinity with an optional sign
+        // (case-insensitive). Decimal.__float__ routes NaN/Inf here as
+        // 'nan' / '-nan' / 'inf' / '-inf', which parseFloat can't read.
+        var t = s.trim().toLowerCase(), v;
+        var _neg = t[0] === '-', _body = (t[0] === '-' || t[0] === '+') ? t.slice(1) : t;
+        if (_body === 'nan') {
+            v = _neg ? -NaN : NaN;   // preserve the sign bit for copysign
+        } else if (_body === 'inf' || _body === 'infinity') {
+            v = _neg ? -Infinity : Infinity;
+        } else {
+            v = parseFloat(s);
+            if (Number.isNaN(v)) {
+                rt.setError(rt.wrap(rt._b_.ValueError),
+                    "could not convert string to float: '" + s + "'");
+                return 0;
+            }
         }
         // Route through PyFloat_FromDouble so the result is wrapped as
         // a proper _b_.float (with both ob_type and __class__) — otherwise
@@ -8631,6 +8642,14 @@ mergeInto(LibraryManager.library, {
             return -1.0;
         }
         var s = UTF8ToString(strPtr);
+        /* nan / inf / infinity (optional sign, case-insensitive) like CPython. */
+        var _nm = s.match(/^\s*([-+]?)(nan|inf(?:inity)?)/i);
+        if (_nm) {
+            var _sign = _nm[1] === '-' ? -1 : 1;
+            var _v = /^nan$/i.test(_nm[2]) ? (_sign < 0 ? -NaN : NaN) : _sign * Infinity;
+            if (endptrPtr !== 0) { HEAP32[endptrPtr >> 2] = strPtr + _nm[0].length; }
+            return _v;
+        }
         /* Find the longest numeric prefix JS can parse. parseFloat handles
          * leading whitespace, +/-, exponent. */
         var m = s.match(/^\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/);
