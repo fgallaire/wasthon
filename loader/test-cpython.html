@@ -59,7 +59,7 @@ const INSTALL_MAP = {
     test_unicodedata: ['unicodedata'], test_pyexpat: ['pyexpat', '_sre'],
     test_pickle: ['_pickle', '_struct'], test_re: ['_sre', 'array', '_pickle'],
     test_sqlite3: ['_sqlite3'],
-    test_json: ['_json', '_pickle'],
+    test_json: ['_json', '_pickle', '_sre'],
     test_hashlib: ['_md5','_sha1','_sha2','_sha3','_blake2', 'array', 'binascii', '_sre'],
 };
 const installList = params.get('install')
@@ -139,7 +139,11 @@ try {
         window.__BRYTHON__.VFS['random'] = ['.py', _rsrc, []];
         log('test_random: random → CPython random.py over wasthon _random');
     }
-    if (testName === 'test_re' && params.get('brython') !== 'cdn') {
+    // The pure-Python json decoder/encoder lean on `re` (WHITESPACE.match,
+    // ESCAPE_ASCII.sub, STRINGCHUNK) — Brython's own re mis-handles some of
+    // these (empty match -> None, sub -> Undefined), so test_json's Py side
+    // needs the CPython re package over wasthon _sre too, exactly like test_re.
+    if ((testName === 'test_re' || testName === 'test_json') && params.get('brython') !== 'cdn') {
         const _rebase = './cpython-tests/re/';
         const _ini = await (await fetch(_rebase + '__init__.py?t=' + Date.now())).text();
         window.__BRYTHON__.VFS['re'] = ['.py', _ini, [], 1];
@@ -147,7 +151,7 @@ try {
             const _s = await (await fetch(_rebase + _sub + '.py?t=' + Date.now())).text();
             window.__BRYTHON__.VFS['re.' + _sub] = ['.py', _s, []];
         }
-        log('test_re: re → CPython re package over wasthon _sre');
+        log(testName + ': re → CPython re package over wasthon _sre');
     }
     if (testName === 'test_json') {
         // Brython ships an old simplejson (single module, no JSONDecoder/
@@ -877,22 +881,44 @@ _KNOWN_HANGS = {
     # so the test actually runs and allocates 2 billion bits. Firefox
     # refuses (BigInt too large to allocate, raises as error), Chrome
     # genuinely tries and spins indefinitely.
-    'test_random': ['test_getrandbits_2G_bits'],
+    # test_autoseed/test_after_fork/test_bug_1727780 always fail in the
+    # browser for environment reasons (no blocking sleep, no os.fork, and
+    # the randv2/randv3 pickle fixtures are not in the VFS).
+    'test_random': ['test_getrandbits_2G_bits', 'test_autoseed',
+                    'test_after_fork', 'test_bug_1727780'],
     # No cyclic garbage collector: wasthon refcounts (a JS Map), and JS has
     # no synchronous forced GC, so gc.collect() can't reclaim a module kept
     # alive by a reference cycle. The wasthon _struct C module is also a
     # persistent singleton (import_fresh_module returns it, never a fresh
     # copy), so the weakref never clears. Genuinely unsupported, not a bug.
     'test_struct': ['test__struct_reference_cycle_cleaned_up'],
+    # FreeThreadingMethodTests assert that a per-instance lock serialises
+    # CONCURRENT compress()/decompress() calls from N threads to the same
+    # bytes a sequential run produces. WASM/Brython has no working free-
+    # threading (no real parallelism; the GIL/lock is a no-op and threads
+    # do not run with true concurrency), so the premise — @requires_working_
+    # threading() — does not hold here. Environment-excluded, not a wasthon
+    # bug: the single-threaded compress path itself is covered elsewhere.
+    'test_zstd': ['test_compress_locking', 'test_decompress_locking'],
 }
 # Honest SkipTest reasons for forced skips that are not actually hangs
 # (keyed by method name; default below is the hang wording).
 _SKIP_REASONS = {
+    'test_autoseed':
+        'no blocking time.sleep in the browser (NotImplementedError)',
+    'test_after_fork':
+        'no os.fork/posix.pipe in the browser',
+    'test_bug_1727780':
+        'randv2/randv3 pickle fixtures absent from the in-browser VFS',
     'test__struct_reference_cycle_cleaned_up':
         'no cyclic GC (refcount-only runtime, no synchronous JS GC)',
     'test_weakref':
         'no synchronous GC: a dropped Brython ref does not fire tp_dealloc, so '
         'weakref.proxy never clears (refcount-only runtime, gc.collect is a no-op)',
+    'test_compress_locking':
+        'requires working free-threading (no real thread concurrency in WASM/Brython)',
+    'test_decompress_locking':
+        'requires working free-threading (no real thread concurrency in WASM/Brython)',
 }
 # Prefix patterns — skip ANY method whose name starts with one of these.
 # Pattern observed: tests calling _check_multiple_unpicklings, framing-
