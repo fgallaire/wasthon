@@ -46,10 +46,19 @@ including tokenizer errors (`invalid non-printable character U+0017`,
 (`'(' was never closed`, `Maybe you meant '==' instead of '='?`). Position is at
 parity with Brython.
 
-### 3. Performance — 3.5–6× faster parse
-Parse-only, wasthonp vs Brython's JS parser (`node bench.js`, WASM boundary cost
-included): **~3.5–5× on typical code, up to ~6× on numeric-heavy code**
-(`_pydecimal.py` 5.9×, `argparse.py` 4.5×, `typing.py` 3.3×), ~3× in-browser.
+### 3. Performance — ~3.5–6× faster parse, ~1.5× end-to-end
+Two honest numbers, measured (`node bench.js`, `node breakdown.js`):
+- **Parse-only** — the parser itself, vs Brython's JS parser (WASM boundary cost
+  included): **~3.5–5× on typical code, up to ~6× on numeric-heavy code**
+  (`_pydecimal.py` 5.9×, `argparse.py` 4.5×, `typing.py` 3.3×), ~3× in-browser.
+- **End-to-end** — source → JS (parse + serialize + rebuild `$B.ast` + codegen):
+  **~1.5×** (`_pydecimal.py` 55 vs 89 ms = 1.6×; `typing.py` 1.5×). The full
+  compile is gated by Brython's **code generator** (`js_from_root` + symtable,
+  ~37% of the time) and the `$B.ast` node construction — both shared with the
+  native path — so the parser's large lead dilutes across the rest of the
+  pipeline. (A binary AST hand-off was tried to shave the serialize/`JSON.parse`
+  step; measured as a wash — V8's `JSON.parse` is not the bottleneck, the node
+  construction and Brython's codegen are.)
 
 ### 4. Size — a ~300 KB drop-in (vs ~10 MB Pyodide)
 The parser is structurally separable from the interpreter: ~300 KB of WASM, no
