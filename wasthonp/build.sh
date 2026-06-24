@@ -48,7 +48,10 @@ done
 echo "=== link build/wasthonp_mod.js (CommonJS) ==="
 OBJS="$(ls "${OUT}"/*.o)"
 EXP='-s EXPORTED_FUNCTIONS=["_wasthonp_dump","_wasthonp_dump_module","_wasthonp_parse_only","_malloc","_free"] -s EXPORTED_RUNTIME_METHODS=["ccall","cwrap","UTF8ToString","stringToUTF8","lengthBytesUTF8"]'
-emcc -O2 ${OBJS} -Wl,--wrap=_PyPegen_raise_error_known_location \
+emcc -O2 ${OBJS} \
+     -Wl,--wrap=_PyPegen_raise_error_known_location \
+     -Wl,--wrap=_PyTokenizer_syntaxerror \
+     -Wl,--wrap=_PyTokenizer_syntaxerror_known_range \
      -s ALLOW_MEMORY_GROWTH=1 -s STACK_SIZE=8MB -s MODULARIZE=1 \
      -s EXPORT_NAME=createWasthonp -s INVOKE_RUN=0 ${EXP} \
      -o "${OUT}/wasthonp_mod.js" 2>"${OUT}/link.log" \

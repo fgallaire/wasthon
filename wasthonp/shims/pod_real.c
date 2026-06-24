@@ -205,10 +205,14 @@ static int wp_vformat(char *buf, const char *f, va_list ap){
     for(const char *p=f; *p && n<8100; p++){
         if(*p!='%'){ buf[n++]=*p; continue; }
         p++;
-        while(*p && strchr("0123456789.-+ #lzt",*p)) p++;
+        const char *fs=p; while(*p && strchr("0123456789.-+ #lzt",*p)) p++;
+        int fl=(int)(p-fs); if(fl>12) fl=12;   /* width/flags, e.g. the 04 in %04X */
         if(*p=='U'){ PyObject*o=va_arg(ap,PyObject*); const char*s=o?str_data(o):""; while(*s&&n<8100)buf[n++]=*s++; }
         else if(*p=='s'){ const char*s=va_arg(ap,const char*); if(!s)s=""; while(*s&&n<8100)buf[n++]=*s++; }
-        else if(*p=='d'||*p=='i'){ int v=va_arg(ap,int); n+=snprintf(buf+n,8192-n,"%d",v); }
+        else if(*p=='d'||*p=='i'||*p=='u'||*p=='x'||*p=='X'){
+            char sp[16]; sp[0]='%'; memcpy(sp+1,fs,fl); sp[1+fl]=(*p=='i'?'d':*p); sp[2+fl]=0;
+            if(*p=='d'||*p=='i'){ int v=va_arg(ap,int); n+=snprintf(buf+n,8192-n,sp,v); }
+            else { unsigned v=va_arg(ap,unsigned); n+=snprintf(buf+n,8192-n,sp,v); } }
         else if(*p=='c'){ int v=va_arg(ap,int); buf[n++]=(char)v; }
         else if(*p=='R'||*p=='A'||*p=='V'||*p=='S'){ va_arg(ap,void*); }   /* skip object */
         else if(*p=='%'){ buf[n++]='%'; }
