@@ -570,6 +570,13 @@ mergeInto(LibraryManager.library, {
          * because they reach C-side as Brython objects, not JS primitives.
          * Mirrors CPython's PyLong_AsLong which dispatches through nb_int. */
         coerceInt: function(obj) {
+            // bool is a Python int subclass: int(True) == 1, int(False) == 0.
+            // Brython's True/False don't reach the int.$factory path as 1/0
+            // (they coerce to 0), so a user value of True crossing PyLong_As*
+            // (e.g. sqlite3 set_result -> result_int64) became 0. Handle first.
+            if (obj === this._b_.True)  return 1;
+            if (obj === this._b_.False) return 0;
+            if (typeof obj === 'boolean') return obj ? 1 : 0;
             if (typeof obj === 'bigint') return obj;
             // A non-integer JS number is a Python float — CPython's PyLong_As*
             // require an integer (via __index__, which float lacks) and never
@@ -7151,8 +7158,13 @@ mergeInto(LibraryManager.library, {
     PyLong_AsLongLongAndOverflow: function(objH, overflowPtr) {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
-        var bi = (typeof obj === 'bigint') ? obj :
-                 (typeof obj === 'number') ? BigInt(Math.trunc(obj)) : 0n;
+        // coerceInt handles bool (True->1/False->0, int subclass) and boxed
+        // ints; the old inline check defaulted everything non-number to 0n, so
+        // a user value of True bound or returned via sqlite3 (PyLong_AsLong-
+        // LongAndOverflow in _sqlite/util.c) became 0 instead of 1.
+        var n = rt.coerceInt(obj);
+        var bi = (n === undefined) ? 0n :
+                 (typeof n === 'bigint') ? n : BigInt(Math.trunc(n));
         var max = 9223372036854775807n, min = -9223372036854775808n;
         if (bi > max) {
             if (overflowPtr) HEAP32[overflowPtr >> 2] = 1;
