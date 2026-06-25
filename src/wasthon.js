@@ -1589,8 +1589,18 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var t = rt.unwrap(tupH);
         if (!t) return 0;
+        // CPython's PyTuple_GetItem is C-level: valid only for 0 <= i < len and
+        // does NOT wrap negatives (that's PySequence_GetItem). $B.$getitem wraps
+        // Python-style, so row[-3] on a 2-item row returned the last item
+        // instead of raising IndexError (test_sqlite_row_index).
+        var n = rt._b_.len(t) | 0;
+        var ii = (typeof i === 'bigint') ? Number(i) : i;
+        if (ii < 0 || ii >= n) {
+            rt.setError(rt.wrap(rt._b_.IndexError), "tuple index out of range");
+            return 0;
+        }
         try {
-            var v = rt.$B.$getitem(t, i);
+            var v = rt.$B.$getitem(t, ii);
             return rt.wrap(v);
         } catch (e) {
             // CPython's PyTuple_GetItem sets IndexError ("tuple index out of

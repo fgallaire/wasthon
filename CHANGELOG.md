@@ -7,6 +7,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyTuple_GetItem` wrapped negative indices Python-style** (+1 sqlite3; general). It delegated to `$B.$getitem`, which (like `PySequence_GetItem`) wraps a negative index to `len + i` — but CPython's `PyTuple_GetItem` is C-level, valid only for `0 <= i < len`, and raises `IndexError` otherwise. So `row[-3]` on a 2-column `sqlite3.Row` (whose C code does `PyTuple_GetItem(data, -3 + 2)` = `PyTuple_GetItem(data, -1)`) returned the last item instead of raising. Now it bounds-checks against `len` before indexing (test_sqlite3 test_sqlite_row_index).
+
 - [x] **`PySlice_Unpack` truncated a float slice index instead of raising** (+1 sqlite3; general). It read each bound with `x | 0`, so `obj[5:5.5]` silently became `obj[5:5]` rather than a `TypeError`. CPython requires slice indices to be `None` or to have `__index__`; a `float` has none. Now each non-None bound goes through `coerceInt` (which rejects non-integers) and a bad one raises `TypeError: slice indices must be integers or None or have an __index__ method` (test_sqlite3 test_blob_mapping_invalid_index_type: `blob[5:5.5]`).
 
 - [x] **`PySequence_Size` masked the length method's own exception** (+1 sqlite3; general). On any error from `len(obj)` it set a generic `TypeError: object has no len()`, swallowing the real exception. CPython's `PySequence_Size` only raises "has no len()" when there is no `__len__`; if `__len__` exists and raises, that exception propagates. Now it checks for `__len__` first and forwards the original error otherwise (test_sqlite3 Issue41662: a parameter object whose `__len__` does `1/0` must surface `ZeroDivisionError`, not be reported as unsized).
