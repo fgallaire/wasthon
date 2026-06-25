@@ -3365,7 +3365,16 @@ mergeInto(LibraryManager.library, {
             return -1;
         }
         var n = typeof coerced === 'bigint' ? Number(coerced) : coerced;
-        if (!Number.isInteger(n) || n < 0 || n > 0xFFFFFFFF) {
+        // CPython's LONG_TO_UINT (Py_ASNATIVEBYTES_REJECT_NEGATIVE) raises
+        // ValueError on a negative value, OverflowError only when it overflows
+        // the width — don't collapse both to OverflowError (test_sqlite3
+        // test_invalid_array_size: cursor.arraysize = -3 must be ValueError).
+        if (n < 0) {
+            rt.setError(rt.wrap(rt._b_.ValueError),
+                "can't convert negative value to unsigned int");
+            return -1;
+        }
+        if (!Number.isInteger(n) || n > 0xFFFFFFFF) {
             rt.setError(rt.wrap(rt._b_.OverflowError),
                 "Python int too large to convert to C uint32_t");
             return -1;
