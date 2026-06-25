@@ -1470,9 +1470,22 @@ mergeInto(LibraryManager.library, {
 
     PyList_GetItem__deps: ['$WasthonRT'],
     PyList_GetItem: function(listHandle, i) {
-        var arr = WasthonRT.unwrap(listHandle);
-        if (!Array.isArray(arr) || i < 0 || i >= arr.length) return 0;
-        return WasthonRT.wrap(arr[i]);
+        var rt = WasthonRT;
+        var arr = rt.unwrap(listHandle);
+        if (!Array.isArray(arr)) {
+            rt.setError(rt.wrap(rt._b_.SystemError), "bad argument to internal function");
+            return 0;
+        }
+        // CPython's PyList_GetItem sets IndexError on an out-of-range index
+        // (and does NOT wrap negatives). Returning NULL silently let a C caller
+        // propagate a NULL with no pending exception, so the error vanished —
+        // e.g. sqlite3 bind_parameters reading past a list that __conform__
+        // cleared mid-bind raised nothing (test_sqlite3 test_bind_mutating_list).
+        if (i < 0 || i >= arr.length) {
+            rt.setError(rt.wrap(rt._b_.IndexError), "list index out of range");
+            return 0;
+        }
+        return rt.wrap(arr[i]);
     },
 
     PyList_SetItem__deps: ['$WasthonRT'],

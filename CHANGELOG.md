@@ -7,6 +7,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- [x] **`PyList_GetItem` returned NULL on an out-of-range index without setting `IndexError`** (+1 sqlite3; general). A C caller (sqlite3 `bind_parameters`) propagated that bare NULL with no pending exception, so the error silently vanished. CPython's `PyList_GetItem` sets `IndexError: list index out of range` (and `SystemError` for a non-list) — now the bridge does too, so binding a parameter list that `__conform__` clears mid-bind raises `IndexError` (test_sqlite3 test_bind_mutating_list, Issue41662).
+
 - [x] **`PyLong_AsUInt32` raised `OverflowError` for a negative value instead of `ValueError`** (+1 sqlite3; general). It collapsed `n < 0` and `n > UINT32_MAX` into one `OverflowError`, but CPython's `LONG_TO_UINT` macro passes `Py_ASNATIVEBYTES_REJECT_NEGATIVE` — a negative value is a `ValueError`, only a width overflow is an `OverflowError`. Now the two are split (test_sqlite3 test_invalid_array_size: `cursor.arraysize = -3` → `ValueError`, `= UINT32_MAX+1` → `OverflowError`).
 
 - [x] **`PyTuple_GetItem` wrapped negative indices Python-style** (+1 sqlite3; general). It delegated to `$B.$getitem`, which (like `PySequence_GetItem`) wraps a negative index to `len + i` — but CPython's `PyTuple_GetItem` is C-level, valid only for `0 <= i < len`, and raises `IndexError` otherwise. So `row[-3]` on a 2-column `sqlite3.Row` (whose C code does `PyTuple_GetItem(data, -3 + 2)` = `PyTuple_GetItem(data, -1)`) returned the last item instead of raising. Now it bounds-checks against `len` before indexing (test_sqlite3 test_sqlite_row_index).
