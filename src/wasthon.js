@@ -11231,7 +11231,9 @@ mergeInto(LibraryManager.library, {
                         methName + "() takes no keyword arguments");
                     resultHandle = fn(selfHandle, argsBufPtr, nargs);
                 } else if (flags & NOARGS) {
-                    // METH_NOARGS: CPython rejects any positional arg.
+                    // METH_NOARGS: CPython rejects any positional AND keyword arg.
+                    if (kwNames.length > 0) throw rt.$B.$call(rt._b_.TypeError,
+                        methName + "() takes no keyword arguments");
                     if (nargs > 0) throw rt.$B.$call(rt._b_.TypeError,
                         methName + "() takes no arguments (" + nargs + " given)");
                     resultHandle = fn(selfHandle, 0);
