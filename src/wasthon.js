@@ -7722,15 +7722,24 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var s = rt.unwrap(sliceH);
         if (!s) return -1;
-        var start = s.start === rt._b_.None ? null :
-                    (typeof s.start === 'number' ? s.start :
-                     (typeof s.start === 'bigint' ? Number(s.start) : 0));
-        var stop  = s.stop === rt._b_.None ? null :
-                    (typeof s.stop === 'number' ? s.stop :
-                     (typeof s.stop === 'bigint' ? Number(s.stop) : 0));
-        var step  = s.step === rt._b_.None ? 1 :
-                    (typeof s.step === 'number' ? s.step :
-                     (typeof s.step === 'bigint' ? Number(s.step) : 1));
+        // Each non-None index must be an integer (CPython requires __index__);
+        // a float has no __index__, so it is a TypeError — NOT silently
+        // truncated via `x|0` (test_sqlite3 blob[5:5.5], slicing in general).
+        var bad = false;
+        function idx(v, dflt) {
+            if (v === rt._b_.None || v === null || v === undefined) return dflt;
+            var n = rt.coerceInt(v);
+            if (n === undefined) { bad = true; return dflt; }
+            return (typeof n === 'bigint') ? Number(n) : n;
+        }
+        var start = idx(s.start, null);
+        var stop  = idx(s.stop,  null);
+        var step  = idx(s.step,  1);
+        if (bad) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "slice indices must be integers or None or have an __index__ method");
+            return -1;
+        }
         var PY_SSIZE_T_MAX = 0x7fffffff;
         HEAP32[startPtr >> 2] = start === null ? (step < 0 ? PY_SSIZE_T_MAX : 0) : (start | 0);
         HEAP32[stopPtr  >> 2] = stop  === null ? (step < 0 ? (-PY_SSIZE_T_MAX-1) : PY_SSIZE_T_MAX) : (stop | 0);
