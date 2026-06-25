@@ -5365,7 +5365,14 @@ mergeInto(LibraryManager.library, {
             var m = rt.$B.$getattr(obj, name);
             return rt.wrapNewRef(rt.$B.$call.apply(null, [m].concat(args)));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.AttributeError), name + ": " + (e.message || e));
+            // Forward the REAL exception (a missing method -> AttributeError,
+            // but the called method's own error -> its own class). Replacing
+            // everything with AttributeError(name + ': ' + (e.message||e)) hid
+            // the actual error AND stringified a Brython exception (no
+            // .message) to '[object Object]' — e.g. Connection.executescript
+            // routes through here and its DataError 'query string is too large'
+            // was masked (test_sqlite3 test_cursor_executescript_too_large_script).
+            rt.forwardError(e, rt._b_.AttributeError);
             return 0;
         }
     },
