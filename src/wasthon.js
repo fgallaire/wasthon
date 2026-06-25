@@ -4859,12 +4859,19 @@ mergeInto(LibraryManager.library, {
             rt.setError(rt.wrap(rt._b_.TypeError), tname + " is not a sequence");
             return -1;
         }
-        try { return rt._b_.len(obj) | 0; }
-        catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError),
-                "object has no len()");
+        // Distinguish "no __len__" (TypeError "has no len()") from "__len__
+        // raised": CPython's PySequence_Size lets the length method's OWN
+        // exception through instead of masking it (test_sqlite3 Issue41662 —
+        // a param object whose __len__ does 1/0 must surface ZeroDivisionError).
+        var lenMeth;
+        try { lenMeth = rt.$B.$getattr(obj, '__len__', undefined); }
+        catch (_) { lenMeth = undefined; }
+        if (lenMeth === undefined) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "object has no len()");
             return -1;
         }
+        try { return rt._b_.len(obj) | 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
     },
 
     /* PyList_CheckExact(o) — is exactly a list (not a subclass). */
