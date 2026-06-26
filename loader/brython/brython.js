@@ -2443,7 +2443,7 @@ while(frame_obj.prev){var frame=frame_obj.frame
 if(frame[0]==frame[2]){break}
 stack.push(frame_obj.frame[0]+'.')
 frame_obj=frame_obj.prev}
-var qualname=`${stack.join('')}${class_name}`
+var qualname=`${stack.reverse().join('')}${class_name}`
 $B.str_dict_set(dict,'__qualname__',qualname)
 if($B.str_dict_get(dict,'__eq__',$B.NULL)!==$B.NULL &&
 $B.str_dict_get(dict,'__hash__',$B.NULL)===$B.NULL){$B.str_dict_set(dict,'__hash__',_b_.None)}
@@ -2839,10 +2839,11 @@ console.log('instance type is cls ?',$B.type_check(instance,cls))}
 if($B.type_check(instance,cls)){
 var init_func=instance_class.tp_init
 if(test){console.log('init func',init_func)}
-if(init_func !==$B.NULL && init_func !==_b_.object.tp_init &&
-typeof init_func=='function'){
+if(init_func !==$B.NULL && init_func !==_b_.object.tp_init){
+if(typeof init_func=='function'){
 try{if(kw_len > 0){var kwarg=$B.dict2kwarg(kw)
-init_func.call(null,instance,...$.args,kwarg)}else{init_func.call(null,instance,...$.args)}}catch(err){throw err}}}
+init_func.call(null,instance,...$.args,kwarg)}else{init_func.call(null,instance,...$.args)}}catch(err){throw err}}
+else if(init_func!==undefined && _b_.callable(init_func)){if(kw_len > 0){$B.$call(init_func,...$.args,$B.dict2kwarg(kw))}else{$B.$call(init_func,...$.args)}}}}
 if(test){console.log('type.tp_call returns instance',instance)}
 return instance}
 _b_.type.tp_getattro=function(obj,name){var test=false 
@@ -2940,8 +2941,8 @@ if(test){console.log('set name',item)}
 var set_name=$B.type_getattribute($B.get_class(v),"__set_name__")
 if(set_name !==$B.NULL){$B.$call(set_name,v,class_obj,key)}
 if(typeof v=="function"){if(v.$function_infos===undefined){
-if(v.$infos){v.$infos.__qualname__=name+'.'+v.$infos.__name__}}else{v.$function_infos[$B.func_attrs.method_class]=class_obj
-v.$function_infos[$B.func_attrs.__qualname__]=name+'.'+
+if(v.$infos){v.$infos.__qualname__=qualname+'.'+v.$infos.__name__}}else{v.$function_infos[$B.func_attrs.method_class]=class_obj
+v.$function_infos[$B.func_attrs.__qualname__]=qualname+'.'+
 v.$function_infos[$B.func_attrs.__name__]}}}
 if(test){console.log('class obj',class_obj)}
 if(test){console.log('call init subclass',init_subclass)
@@ -3011,6 +3012,7 @@ for(var klass of mro){if(klass===cls){return true}}
 return false}
 type_funcs.__module___get=function(self){if($B.get_dict(self)){var module=$B.get_from_dict(self,'__module__',$B.NULL)
 if(module !==$B.NULL){return module}}
+if(self.__module__!==undefined){return self.__module__}
 return 'builtins'}
 type_funcs.__module___set=function(self,value){$B.set_to_dict(self,'__module__',value)}
 type_funcs.__mro___get=function(self){return $B.fast_tuple($B.get_mro(self))}
@@ -3845,7 +3847,7 @@ self.$lines=lines}}}
 var IOUnsupported
 const DEFAULT_BUFFER_SIZE=(128*1024)
 $B.make_IOUnsupported=function(){if($B._IOUnsupported===undefined){$B._IOUnsupported=$B.make_type('UnsupportedOperation',[_b_.OSError,_b_.ValueError])
-$B._IOUnsupported.__module__='_io'
+$B.set_to_dict($B._IOUnsupported,'__module__','io')
 $B.finalize_type($B._IOUnsupported)}}
 function _io_unsupported(value){$B.make_IOUnsupported()
 throw $B.$call($B._IOUnsupported,value)}
@@ -5055,6 +5057,8 @@ $B.RAISE(_b_.TypeError,"'"+$B.class_name(obj)+
 var NotImplementedType=$B.NotImplementedType
 NotImplementedType.$factory=function(){return NotImplemented}
 NotImplementedType.tp_repr=function(){return "NotImplemented"}
+NotImplementedType.tp_funcs={__reduce__:function(){return 'NotImplemented'}}
+NotImplementedType.tp_methods=['__reduce__']
 $B.set_func_names(NotImplementedType,"builtins")
 var NotImplemented=_b_.NotImplemented={ob_type:NotImplementedType}
 _b_.oct=function(obj){check_nb_args_no_kw('oct',1,arguments)
@@ -5084,7 +5088,9 @@ var x=$.x,y=$.y,z=$.mod
 if(z===_b_.None){return $B.rich_op('__pow__',x,y)}else{if($B.is_int(x)){if($B.$isinstance(y,_b_.float)){throw all_ints()}else if($B.$isinstance(y,_b_.complex)){throw complex_modulo()}else if($B.is_int(y)){if($B.$isinstance(z,_b_.complex)){throw complex_modulo()}else if(! $B.is_int(z)){var zpow=$B.$isinstance(z,_b_.float)?null:$B.$getattr($B.get_class(z),'__pow__',null);if(zpow){try{var zr=$B.$call(zpow,x,y,z);if(zr!==_b_.NotImplemented){return zr}}catch(_zpe){}}throw all_ints()}return _b_.int.nb_power(x,y,z)}}else if($B.$isinstance(x,_b_.float)){throw all_ints()}else if($B.$isinstance(x,_b_.complex)){throw complex_modulo()}}
 var res=$B.$call($B.$getattr(x,'__pow__'),y,z)
 if(res!==_b_.NotImplemented){return res}
-return $B.$call($B.$getattr(y,'__rpow__'),x,z)}
+var rres=$B.$call($B.$getattr(y,'__rpow__'),x,z)
+if(rres!==_b_.NotImplemented){return rres}
+$B.RAISE(_b_.TypeError,"unsupported operand type(s) for pow(): '"+$B.class_name(x)+"', '"+$B.class_name(y)+"', '"+$B.class_name(z)+"'")}
 var $print=_b_.print=function(){var[args,kw]=$B.parse_args_kw('print',arguments)
 var end=$B.str_dict_get(kw,'end','\n'),sep=$B.str_dict_get(kw,'sep',' '),file=$B.str_dict_get(kw,'file',$B.get_stdout())
 var writer=$B.$getattr(file,'write')
@@ -5310,6 +5316,8 @@ var ellipsis=$B.ellipsis
 ellipsis.$factory=function(){return Ellipsis}
 ellipsis.tp_repr=function(){return 'Ellipsis'}
 ellipsis.tp_new=function(){return Ellipsis}
+ellipsis.tp_funcs={__reduce__:function(){return 'Ellipsis'}}
+ellipsis.tp_methods=['__reduce__']
 var Ellipsis=_b_.Ellipsis={ob_type:ellipsis}
 $B.set_func_names(ellipsis)
 _b_.__BRYTHON__=__BRYTHON__})(__BRYTHON__);
@@ -7370,6 +7378,34 @@ pos++}else{$B.RAISE(_b_.UnicodeDecodeError,"'utf-8' codec can't decode byte 0x"+
 byte.toString(16)+" in position "+pos+
 ": invalid start byte")}}}
 return s
+// BRYTHON_FIX: utf-16 / utf-32 / utf-8-sig bytes.decode inline (like utf-8 /
+// latin-1 above). The Python _codecs fallbacks are broken in this build:
+// utf_8_decode has a spurious leading arg (so utf_8_sig's CPython-style
+// codecs.utf_8_decode(input,errors,True) decodes the errors string),
+// utf_16_decode inverts the BOM endianness, and utf_32_decode is a `pass`
+// stub. json.loads(bytes) (detect_encoding -> bytes.decode) needs these.
+case "utf_8_sig":
+if(globalThis.TextDecoder){try{return new TextDecoder('utf-8',{fatal:errors=='strict',ignoreBOM:false}).decode(new Uint8Array(b))}catch(err){$B.RAISE(_b_.UnicodeDecodeError,"'utf-8-sig' codec can't decode input")}}
+var bb=(b[0]==0xef&&b[1]==0xbb&&b[2]==0xbf)?b.slice(3):b
+return decode({source:bb},'utf-8',errors)
+case "utf_16":
+case "utf_16_le":
+case "utf_16_be":{
+var label='utf-16le',strip=false
+if(enc=='utf_16_be'){label='utf-16be'}
+else if(enc=='utf_16'){strip=true;if(b[0]==0xfe&&b[1]==0xff){label='utf-16be'}}
+if(globalThis.TextDecoder){try{return new TextDecoder(label,{fatal:errors=='strict',ignoreBOM:!strip}).decode(new Uint8Array(b))}catch(err){$B.RAISE(_b_.UnicodeDecodeError,"'"+label+"' codec can't decode input")}}
+$B.RAISE(_b_.LookupError,"unknown encoding: "+enc)}
+case "utf_32":
+case "utf_32_le":
+case "utf_32_be":{
+var little=true,i0=0
+if(enc=='utf_32_be'){little=false}
+else if(enc=='utf_32'){if(b[0]==0&&b[1]==0&&b[2]==0xfe&&b[3]==0xff){little=false;i0=4}else if(b[0]==0xff&&b[1]==0xfe&&b[2]==0&&b[3]==0){i0=4}}
+for(var i32=i0;i32+3 < b.length;i32+=4){var cp32=little?(b[i32]+b[i32+1]*0x100+b[i32+2]*0x10000+b[i32+3]*0x1000000):(b[i32+3]+b[i32+2]*0x100+b[i32+1]*0x10000+b[i32]*0x1000000)
+if(cp32 > 0x10ffff){$B.RAISE(_b_.UnicodeDecodeError,"'utf-32' codec can't decode: code point not in range(0x110000)")}
+s+=String.fromCodePoint(cp32)}
+return s}
 case "latin_1":
 case "iso8859":
 case "windows1252":
@@ -7423,6 +7459,32 @@ return fast_bytes(Array.from(array))}catch(err){}}
 for(let i=0,len=s.length;i < len;i++){let cp=s.charCodeAt(i)
 if(cp <=0x7f){t.push(cp)}else if(cp <=0x7ff){t.push(0xc0+(cp >> 6),0x80+(cp & 0x3f))}else if(cp <=0xffff){t.push(0xe0+(cp >> 12),0x80+((cp & 0xfff)>> 6),0x80+(cp & 0x3f))}else{console.log("4 bytes")}}
 break
+// BRYTHON_FIX: utf-16 / utf-32 / utf-8-sig encode (TextEncoder is utf-8 only;
+// the Python _codecs fallbacks produce out-of-range bytes for non-ASCII). JS
+// strings are UTF-16, so emit code units directly for utf-16; combine
+// surrogates via codePointAt for utf-32. Mirrors the decode cases above.
+case "utf_8_sig":{
+t.push(0xef,0xbb,0xbf)
+var u8=encode(s,'utf-8',errors).source
+for(var k8=0;k8 < u8.length;k8++){t.push(u8[k8])}
+break}
+case "utf_16":
+case "utf_16_le":
+case "utf_16_be":{
+var be16=enc=='utf_16_be'
+if(enc=='utf_16'){t.push(0xff,0xfe)}
+for(let i=0;i < s.length;i++){let u=s.charCodeAt(i)
+if(be16){t.push((u >> 8)& 0xff,u & 0xff)}else{t.push(u & 0xff,(u >> 8)& 0xff)}}
+break}
+case "utf_32":
+case "utf_32_le":
+case "utf_32_be":{
+var be32=enc=='utf_32_be'
+if(enc=='utf_32'){t.push(0xff,0xfe,0,0)}
+for(let i=0;i < s.length;){let cp=s.codePointAt(i)
+if(be32){t.push((cp >> 24)& 0xff,(cp >> 16)& 0xff,(cp >> 8)& 0xff,cp & 0xff)}else{t.push(cp & 0xff,(cp >> 8)& 0xff,(cp >> 16)& 0xff,(cp >> 24)& 0xff)}
+i+=cp > 0xffff ? 2 : 1}
+break}
 case "latin":
 case "latin1":
 case "latin-1":
@@ -8162,12 +8224,8 @@ $B.set_func_names(frozenset,"builtins")})(__BRYTHON__);
 "use strict";
 (function($B){var _b_=$B.builtins
 var escape2cp=$B.escape2cp={b:'\b',f:'\f',n:'\n',r:'\r',t:'\t',v:'\v'}
-$B.surrogates=function(s){var s1='',escaped=false
-for(var char of s){if(escaped){var echar=escape2cp[char]
-if(echar !==undefined){s1+=echar}else{s1+='\\'+char}
-escaped=false}else if(char=='\\'){escaped=true}else{s1+=char}}
-var surrogates=[],j=0
-for(var i=0,len=s1.length;i < len;i++){var cp=s1.codePointAt(i)
+$B.surrogates=function(s){var surrogates=[],j=0
+for(var i=0,len=s.length;i < len;i++){var cp=s.codePointAt(i)
 if(cp >=0x10000){surrogates.push(j)
 i++}
 j++}
@@ -10167,7 +10225,8 @@ return float.$factory(res.value)}
 $B.RAISE(_b_.TypeError,'__float__ returned non-float'+
 ` (type ${$B.class_name(res)})`)}
 return res}
-_b_.float.tp_richcompare=function(self,other,op){var other_type=$B.get_class(other)
+_b_.float.tp_richcompare=function(self,other,op){if(! $B.$isinstance(other,[_b_.int,_b_.float])){return _b_.NotImplemented}
+var other_type=$B.get_class(other)
 var other_nb_float=$B.search_slot(other_type,'nb_float',$B.NULL)
 if(other_nb_float===$B.NULL){return _b_.NotImplemented}
 var other_value=other_nb_float(other).value
@@ -11330,16 +11389,15 @@ mapping=$B.str_dict_get(kw,'mapping')}else{mapping=args[0]}
 return{
 ob_type:cls,mapping}}
 $B.mappingproxy.nb_inplace_or=function(self){}
-$B.mappingproxy.mp_length=function(self){return Object.keys(self.mapping).length}
-$B.mappingproxy.mp_subscript=function(self,key){if(self.mapping.hasOwnProperty(key)){return self.mapping[key]}
-$B.RAISE(_b_.KeyError,key)}
-$B.mappingproxy.sq_contains=function(self,key){return self.mapping.hasOwnProperty(key)}
+$B.mappingproxy.mp_length=function(self){return dict.mp_length(self.mapping)}
+$B.mappingproxy.mp_subscript=function(self,key){return dict.$getitem(self.mapping,key)}
+$B.mappingproxy.sq_contains=function(self,key){return dict.$contains(self.mapping,key)}
 var mappingproxy_funcs=$B.mappingproxy.tp_funcs={}
 mappingproxy_funcs.__class_getitem__=function(self){}
 mappingproxy_funcs.__reversed__=function(self){}
 mappingproxy_funcs.copy=function(self){var copy_func=$B.type_getattribute(_b_.dict,'copy')
 return $B.mappingproxy.tp_new($B.mappingproxy,[copy_func(self.mapping)])}
-mappingproxy_funcs.get=function(self,key,_default){if(self.mapping.hasOwnProperty(key)){return self.mapping[key]}
+mappingproxy_funcs.get=function(self,key,_default){if(dict.$contains(self.mapping,key)){return dict.$getitem(self.mapping,key)}
 return _default ?? _b_.None}
 mappingproxy_funcs.items=function(self){return _b_.dict.tp_funcs.items(self.mapping)}
 mappingproxy_funcs.keys=function(self){return{
@@ -11349,7 +11407,7 @@ $B.mappingproxy.functions_or_methods=["__new__"]
 $B.mappingproxy.tp_methods=["get","keys","values","items","copy","__reversed__"]
 $B.mappingproxy.classmethods=["__class_getitem__"]
 $B.set_func_names(mappingproxy,"builtins")
-function*mappingproxy_iter_items(self){for(var key in self.mapping){yield{key,value:self.mapping[key]}}}
+function*mappingproxy_iter_items(self){for(var item of dict.$iter_items(self.mapping)){yield{key:item.key,value:item.value}}}
 function jsobj2dict(x,exclude){exclude=exclude ||function(){return false}
 var d=$B.empty_dict()
 for(var attr in x){if(attr.charAt(0)!="$" && ! exclude(attr)){if(x[attr]===null){dict.$setitem(d,attr,_b_.None)}else if(x[attr]===undefined){continue}else{dict.$setitem(d,attr,$B.jsobj2pyobj(x[attr]))}}}
@@ -11358,11 +11416,14 @@ return d}})(__BRYTHON__);
 "use strict";
 (function($B){var _b_=$B.builtins,isinstance=$B.$isinstance
 function check_not_tuple(self,attr){if($B.exact_type(self,tuple)){throw $B.attr_error(attr,self)}}
-_b_.list[$B.FAST_ITER]=_b_.tuple[$B.FAST_ITER]=function(t,set_lineno,frame,lineno){var obj={ix:-1,stop:t.length}
+_b_.list[$B.FAST_ITER]=_b_.tuple[$B.FAST_ITER]=function(t,set_lineno,frame,lineno){var obj={ix:-1}
 return{
 [Symbol.iterator](){return this},next(){set_lineno(frame,lineno)
 obj.ix++
-if(obj.ix >=obj.stop){return{done:true,value:null}}
+// BRYTHON_FIX: re-read t.length each step (CPython listiter is live); a list
+// that shrinks mid-iteration (e.g. del during a for-loop) must stop, not yield
+// undefined for the removed tail.
+if(obj.ix >= t.length){return{done:true,value:null}}
 var value=t[obj.ix]
 return{done:false,value}}}}
 function count(self){var $=$B.args("count",2,{self:null,x:null},arguments)
@@ -12126,7 +12187,8 @@ return false}}
 $B.IterableJSObj.tp_iter=function(self){self.it=self[Symbol.iterator]()
 return self}
 $B.IterableJSObj.sq_length=function(self){return self.length}
-$B.IterableJSObj.tp_iternext=function*(self){for(var value of self.it){yield value}}
+$B.IterableJSObj.tp_iternext=function*(self){if(self.it===undefined){self.it=self[Symbol.iterator]()}
+for(var value of self.it){yield value}}
 $B.set_func_names($B.IterableJSObj,'builtins')
 var js_array_iterator=$B.make_builtin_class('JSArray_iterator')
 js_array_iterator.$factory=function(obj){return{
@@ -13327,7 +13389,7 @@ module_funcs.__dict___set=_b_.None
 module_funcs.__dir__=function(self){var dir_func=$B.module_getattr(self,'__dir__')
 if(dir_func !==$B.NULL){return $B.$call(dir_func)}
 var names=[]
-for(var item of _b_.dict.$iter_items($B.get_dict(self))){names.push(item.key)}
+for(var item of _b_.dict.$iter_items($B.get_dict(self))){if(item.key[0]!=='$'){names.push(item.key)}}
 return $B.$list(names.sort())}
 $B.module.tp_methods=["__dir__"]
 $B.module.tp_getset=["__annotations__","__annotate__","__dict__" 
@@ -15722,7 +15784,7 @@ return js}
 $B.ast.Constant.prototype.to_js=function(){if(this.kind===$B.JSObj){console.log('constant kind',this.kind)}
 if(this.value===true ||this.value===false){return this.value+''}else if(this.value===_b_.None){return '_b_.None'}else if(typeof this.value=="string"){var s=this.value,srg=$B.surrogates(s)
 if(srg.length==0){return `'${s}'`}
-return `$B.make_String('${s}', [${srg}])`}
+return `$B.String('${s}')`}
 var klass=$B.get_class(this.value)
 if(klass===_b_.bytes){return `_b_.bytes.$factory([${this.value.source}])`}else if(typeof this.value=="number"){if(Number.isInteger(this.value)){return this.value}else{return `(new $B.Float(this.value))`}}else if(typeof this.value=="bigint"){return `${this.value}n`}else if(klass===_b_.float){return `(new $B.Float(${this.value.value}))`}else if(klass===_b_.complex){return `$B.make_complex(${this.value.real.value}, ${this.value.imag.value})`}else if(this.value===_b_.Ellipsis){return `_b_.Ellipsis`}else{console.log('invalid value',this.value)
 console.log(Error('trace').stack)
@@ -16236,7 +16298,10 @@ return `[${this.value.to_js(scopes)}, '${this.value.id}', `+
 `${conversion}, ${this.format_spec ?? "''"}]`}
 $B.ast.JoinedStr.prototype.to_js=function(scopes){var items=this.values.map(s=> $B.js_from_ast(s,scopes))
 if(items.length==0){return "''"}
-return items.join(' + ')}
+// BRYTHON_FIX: join the parts with JS '+' (loses the surrogate boxing of an
+// astral str), then re-wrap with $B.String so len()/indexing stay codepoint-
+// based — e.g. f'"{chr(0x1d120)}"' must have length 5, not 6.
+return '$B.String(' + items.join(' + ') + ')'}
 $B.ast.Lambda.prototype.to_js=function(scopes){
 var id=make_id(),name='lambda_'+$B.lambda_magic+'_'+id
 var f=new $B.ast.FunctionDef(name,this.args,this.body,[])

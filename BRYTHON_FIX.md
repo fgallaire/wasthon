@@ -18,6 +18,62 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] Nested class / method `__qualname__` is scrambled past one level
+
+**Impact: the `__qualname__` of a class or method nested 2+ levels deep is correct (+5 pickle).** `$class_constructor` builds the qualname prefix by walking the enclosing frames innermost-first and joining as-is, so `Outer.Inner.Deep` became `Inner.Outer.Deep` (the prefix was reversed); a method took the class's bare `__name__` rather than its `__qualname__`, so `Outer.Inner.meth` became `Inner.meth`. This blocked pickling any 2+-level-nested class or method (`Can't pickle X: it's not found as module.Inner.Outer.Deep`). The frame stack is now reversed (outermost-first) and methods use the class qualname. Source: `$B.$class_constructor` in `py_type.js`.
+
+```python
+>>> class Outer:
+...     class Inner:
+...         class Deep: pass
+...
+>>> Outer.Inner.Deep.__qualname__
+'Inner.Outer.Deep'  # before
+>>> Outer.Inner.Deep.__qualname__
+'Outer.Inner.Deep'  # after
+```
+
+## [x] `Ellipsis` / `NotImplemented` can't be pickled (no `__reduce__`)
+
+**Impact: pickling `Ellipsis` or `NotImplemented` works at every protocol (+10 pickle).** Their types had no `__reduce__`, so `object.__reduce_ex__` fell to the protocol-2 `copyreg.__newobj__` path `(__newobj__, (ellipsis,), None)` — which crashed the pickler (`can't access property "hasOwnProperty", d is undefined`) — and raised `cannot pickle 'ellipsis' object` at protocol 0/1. CPython pickles both singletons as global references via a `__reduce__` returning their name (`"Ellipsis"` / `"NotImplemented"`). The `ellipsis` and `NotImplementedType` types now carry that `__reduce__`. Source: `ellipsis` / `NotImplementedType` in `py_builtin_functions.js`.
+
+```python
+>>> import pickle
+>>> pickle.loads(pickle.dumps(..., 2)) is ...
+JavascriptError: can't access property "hasOwnProperty", d is undefined  # before
+>>> pickle.loads(pickle.dumps(..., 2)) is ...
+True  # after
+```
+
+## [x] Instantiation ignores a non-function callable `__init__`
+
+**Impact: instantiating a class whose `__init__` is a callable that isn't a plain function (e.g. a `unittest.mock.Mock`, or any object with `__call__`) now calls it (+1 sqlite3).** CPython calls any callable `__init__`, without binding the instance (a non-descriptor callable receives no `self`). Brython required `typeof tp_init == 'function'`: `type.tp_call` silently skipped a non-function `__init__`, and (upstream) the `make_factory` fast path crashed on `cls.tp_init.call` (undefined on a non-function). Both now call it via `$B.$call(init_func, ...args)` (no instance), guarded by `_b_.callable`. Surfaced by sqlite3's window-function test, which `patch.object(cls, '__init__', side_effect=BadWindow)` and expects instantiation to raise (test_sqlite3 test_win_exception_in_method). Source: `_b_.type.tp_call` (+ `make_factory` upstream) in `py_type.js`; the vendored Brython here predates `make_factory`, so only `tp_call` is patched. Branch `type-call-callable-init` off `upstream/master`, pushed to `origin` — Florent opens the PR.
+
+```python
+>>> class Boom:
+...     def __call__(self): raise ValueError
+...
+>>> class C: pass
+...
+>>> C.__init__ = Boom()
+>>> C()
+JavascriptError: cls.tp_init.call is not a function  # before
+>>> C()
+ValueError                                           # after
+```
+
+## [x] `type.__module__` getter ignored a class's JS-property `__module__` ⚠ VENDORED-ONLY
+
+**Impact: a class created by the C bridge reports its real module instead of `'builtins'` (+3 decimal).** `type_funcs.__module___get` reads `__module__` from the type's dict, then defaults to `'builtins'`. wasthon's `PyErr_NewException` sets `cls.__module__` as a JS own-property (e.g. `'decimal'` for `decimal.InvalidOperation`) but doesn't write it to the tp_dict, so the getter returned `'builtins'`: `pickle` then couldn't find `InvalidOperation`/`Clamped` as `builtins.X` when pickling a Context's `flags`/`traps` (whose keys are those C signal classes), and a signal class's `__module__` read wrong elsewhere too. The getter now falls back to the JS-property `self.__module__` before defaulting to `'builtins'`. Source: `type_funcs.__module___get` in `py_type.js`. (test_decimal test_pickle CContextAPItests/PyContextAPItests, test_flag_comparisons CContextFlags.)
+
+⚠ **VENDORED-ONLY — this getter fix stays upstream.** In pure Brython `finalize_type` always writes a dict `__module__` (computed from the dotted `tp_name`, → `'builtins'` for a dot-less name like `UnsupportedOperation`), so the type dict is never empty and this getter fallback never fires; the only classes with a JS-property `__module__` and no dict entry come from wasthon's C bridge. No PR for the getter.
+
+**→ A related genuine upstream bug, vendored here AND PR'd.** In Brython, `io.UnsupportedOperation.__module__` is `'builtins'` instead of `'io'`: `make_IOUnsupported` set `$B._IOUnsupported.__module__ = '_io'` as a JS property, which `finalize_type` then overwrote in the dict with the `tp_name`-derived `'builtins'` (the name has no dot) — so the value was lost entirely. Fix = set it in the type dict (like the `ast` classes do) with the CPython value `'io'` (applied here in the vendored `brython.js`; also a separate one-line change to `py_io.js`). Verified before/after on brython-dev: `'builtins'` → `'io'` (matches CPython 3.14), `__name__='UnsupportedOperation'`, `int`/user-class/`collections.OrderedDict` unchanged; vendored side swept clean (bz2/lzma/zstd/decimal unchanged, +0). Branch `io-unsupportedoperation-module` off `upstream/master`, pushed to `origin` (fork) — Florent opens the PR.
+
+## [x] An `IterableJavascriptObject` can't be advanced with `next()` before `iter()`
+
+**Impact: `next(it)` on an `IterableJavascriptObject` no longer raises `self.it is undefined`.** Its `tp_iternext` iterates `self.it`, which is only set by `tp_iter`. CPython iterators are self-contained — `tp_iternext` must not require `tp_iter` to have run first (`next(it)` calls `tp_iternext` directly). It now lazily sets `self.it = self[Symbol.iterator]()` when undefined. Surfaced by `re.finditer`, whose C result reaches the bridge as an IterableJSObj over the scanner's `search`, so `next(re.finditer(...))` crashed (test_re test_bug_581080 / test_bug_817234 / test_finditer; needs the wasthon bridge `GetAttrString` companion for the scanner to actually yield). Source: `$B.IterableJSObj.tp_iternext` (the `IterableJavascriptObject` definition).
+
 ## [x] 3-arg `pow()` doesn't dispatch on the modulus's type
 
 **Impact: `pow(10, 2, Decimal(7))` is now `Decimal('2')`.** For `pow(x, y, z)` with `x` and `y` ints and a non-int modulus `z`, `_b_.pow` raised `TypeError: pow() 3rd argument not allowed unless all arguments are integers` upfront. CPython instead dispatches the ternary power on all three operands' `nb_power` slot, including the modulus — `Decimal` implements 3-arg power, so it handles it. The fix tries `type(z).__pow__(x, y, z)` (unless `z` is a `float`, which has no 3-arg power) and falls back to the original `TypeError` if it returns `NotImplemented` or raises (e.g. pure-Python `decimal`, whose `__pow__` expects a `Decimal` self — matching CPython, which raises `TypeError` there too). Source: `_b_.pow` in `py_builtin_functions.js`. (test_decimal test_implicit_context, C and Py.)
@@ -2246,3 +2302,66 @@ False  # before
 >>> MappingProxyType({'a': 1}) == {'a': 1}
 True   # after
 ```
+
+## [x] `mappingproxy` len / `[]` / `in` / `get` / iteration miss non-string keys
+
+**Impact: a key that is not stored as a plain JS string property — an astral `str`, a tuple, any boxed/object key — is invisible through a `mappingproxy`.** The read methods used raw JS (`Object.keys(self.mapping).length`, `self.mapping.hasOwnProperty(key)`, `self.mapping[key]`, `for (key in self.mapping)`) instead of delegating to the underlying mapping, so they only saw keys held as enumerable JS string properties. An astral group name in `re.Pattern.groupindex` (a `mappingproxy`) reported `len 0`, `name in proxy` False and `proxy[name]` KeyError even though the wrapped dict held it. Now `mp_length` / `mp_subscript` / `sq_contains` / `get` / `mappingproxy_iter_items` delegate to `dict.mp_length` / `$getitem` / `$contains` / `$iter_items`, which handle both the fast string-property store and the hash table. Source: `www/src/py_dict.js`.
+
+```python
+>>> import re
+>>> p = re.compile('(?P<𝔘𝔫𝔦𝔠𝔬𝔡𝔢>x)')
+>>> len(p.groupindex), '𝔘𝔫𝔦𝔠𝔬𝔡𝔢' in p.groupindex
+(0, False)  # before
+>>> len(p.groupindex), '𝔘𝔫𝔦𝔠𝔬𝔡𝔢' in p.groupindex
+(1, True)   # after
+```
+
+## [x] astral string literal containing a backslash has wrong surrogate positions
+
+**Impact: indexing a `str` literal that has an astral char somewhere after a backslash returns surrogate halves.** A string constant was emitted as `$B.make_String('<value>', [<surrogates>])`, the positions computed by `$B.surrogates(<value>)` over the still-escaped source. `$B.surrogates` re-resolved escapes but counted `\\` as two code points, while the emitted JS string literal evaluates `\\` to one — so every astral position shifted by +1 for any literal with a backslash before an astral char (e.g. the raw template `r'\g<𝔘…>'`). `$B.surrogates` is now a plain code-point scan, and the codegen emits `$B.String('<value>')`, recomputing the positions on the evaluated value. Source: `www/src/py_string.js` (`$B.surrogates`), `www/src/ast_to_js.js` (`Constant.to_js`).
+
+```python
+>>> s = '\\g<𝔘>'
+>>> [hex(ord(s[i])) for i in range(len(s))]
+['0x5c', '0x67', '0x3c', '0x1d518', '0xdd18']  # before — s[4] is a lone low surrogate
+>>> [hex(ord(s[i])) for i in range(len(s))]
+['0x5c', '0x67', '0x3c', '0x1d518', '0x3e']    # after — s[4] is '>'
+```
+
+## [x] 3-arg `pow()` leaks NotImplemented instead of raising TypeError
+
+**Impact: `pow(Decimal(1), 2, "3")` returns NotImplemented instead of raising TypeError.** When the base is not int/float/complex, `pow(x, y, z)` tries `x.__pow__(y, z)` then `y.__rpow__(x, z)` — but returned the latter's result verbatim. When both are NotImplemented (here `_decimal`'s nb_power rejects the str modulus by returning NotImplemented, and `int.__rpow__` of a Decimal base does too), the NotImplemented leaked out as the value of `pow()`. CPython raises `TypeError: unsupported operand type(s) for pow()`. `pow` now raises TypeError once the ternary `__pow__`/`__rpow__` are exhausted. Source: `www/src/py_builtin_functions.js` (`pow`).
+
+```python
+>>> from decimal import Decimal
+>>> pow(Decimal(1), 2, "3")
+NotImplemented   # before
+>>> pow(Decimal(1), 2, "3")
+TypeError: unsupported operand type(s) for pow(): 'decimal.Decimal', 'int', 'str'   # after
+```
+
+## [x] `dir(module)` exposes Brython's `$annotations` internal
+
+**Impact: `dir(m)` lists `$annotations`.** A module whose source carries annotations gets a `$annotations` entry in its namespace (the codegen emits `locals.$annotations = {}`), and `module.__dir__` returned every namespace key — so the compiler artifact leaked into `dir()`. No Python identifier can start with `$`, so these internals must stay hidden. `module.__dir__` now skips `$`-prefixed keys.
+
+```python
+>>> import _decimal
+>>> '$annotations' in dir(_decimal)
+True    # before
+>>> '$annotations' in dir(_decimal)
+False   # after
+```
+
+## [x] `float` comparison coerces any `__float__` operand, losing precision
+
+**Impact: `0.1 == Decimal('0.1')` returns True.** `float.tp_richcompare` converted any operand carrying an `nb_float`/`__float__` to a float and compared raw values — so a `Decimal` was rounded to the float `0.1` and compared equal. CPython's `float_richcompare` compares directly only against int and float (exactly); for any other type it returns NotImplemented and lets the other operand's reflected comparison decide. `float.tp_richcompare` now returns NotImplemented unless the operand is an int or float, so `Decimal.__eq__` runs and compares the exact value. Source: `www/src/py_float.js`.
+
+```python
+>>> from decimal import Decimal
+>>> 0.1 == Decimal('0.1')
+True    # before (float coerced the Decimal to 0.1)
+>>> 0.1 == Decimal('0.1')
+False   # after (compared against the exact float value 0.1000…0055)
+```
+
+> ⚠ **VENDORED-ONLY — the bug stays in upstream Brython.** It only surfaces when the operand carries the C `nb_float` slot on a non-int/float type, i.e. a C-accelerated `_decimal` (wasthon's). Brython's own `decimal` is pure-Python `_pydecimal` with no `nb_float` slot, and a Python class with `__float__` doesn't get one either — so there is no failing case in a vanilla Brython. The fix matches CPython's `float_richcompare`, but with no reproducer it isn't worth an upstream PR. Branch `float-compare-int-float-only` is pushed to the fork for the record but should NOT be opened; the latent bug remains upstream.
