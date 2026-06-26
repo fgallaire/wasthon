@@ -9955,6 +9955,22 @@ mergeInto(LibraryManager.library, {
                                       typeStructForInst || typeHandle,
                 };
                 rt.bindInstance(instancePtr, inst);
+                /* A Python subclass of a C-type that ships NO Py_tp_new slot
+                 * (here in the raw-alloc fallback) still needs an instance
+                 * __dict__, exactly like the tp_new-slot path above: CPython's
+                 * type_new adds tp_dictoffset to such a subclass. Without it,
+                 * `class C(sqlite3.Connection)` instances had self.__dict__ ==
+                 * Undefined (Connection has Py_tp_init but no Py_tp_new), so the
+                 * C connection_init -> lru_cache(self) -> functools.update_wrapper
+                 * did getattr(self, '__dict__', {}).update(Undefined) and raised
+                 * "'UndefinedType' object is not iterable" — every
+                 * connect(factory=<subclass>) failed (test_factory
+                 * ConnectionFactoryTests). Only for a real subclass with no
+                 * __slots__, matching the slot-path guard. */
+                if (brythonCls !== cls &&
+                    rt.$B.get_from_dict(brythonCls, '__slots__', rt.$B.NULL) === rt.$B.NULL) {
+                    rt.$B.init_dict(inst);
+                }
                 return inst;
             };
             cls.tp_new.$is_slot = true;
