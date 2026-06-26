@@ -1920,7 +1920,10 @@ mergeInto(LibraryManager.library, {
             rt._b_.setattr(obj, name, v);
             rt.incref(valueH);  // no-steal: attribute slot takes its own ref
             return 0;
-        } catch (e) { return -1; }
+        } catch (e) {
+            rt.forwardError(e, rt._b_.AttributeError);
+            return -1;
+        }
     },
 
     /* PyType_GetSlot — read a slot off a type at runtime. */
@@ -10648,6 +10651,41 @@ mergeInto(LibraryManager.library, {
                         "'" + (cls.tp_name || 'object') + "' object has no attribute '" + name + "'");
                 } finally {
                     if (self) delete self.__wasthon_in_getattro__;
+                }
+            });
+        }
+
+        // Wire Py_tp_setattro (slot 59) — symmetric to tp_getattro above.
+        // A C type with a custom setattr (e.g. _decimal Context's
+        // context_setattr, which intercepts `flags`/`traps`) was unwritable
+        // without this: Brython's $setattr found no data descriptor and no
+        // __dict__, raising "object has no attribute '…'". Same C-first +
+        // re-entry-guard strategy as getattro (the C side falls through to
+        // PyObject_GenericSetAttr for non-intercepted names).
+        var tpSetattroPtr = slotMap[59 /* Py_tp_setattro */];
+        if (tpSetattroPtr) {
+            var _objSetattr = rt._b_.object.tp_setattro;
+            cls.tp_setattro = rt.scoped(function(self, name, value) {
+                if (self && self.__wasthon_in_setattro__ === name) {
+                    return _objSetattr(self, name, value);
+                }
+                if (self) self.__wasthon_in_setattro__ = name;
+                try {
+                    var selfH = self && self.__wasthon_ptr__
+                        ? self.__wasthon_ptr__ : rt.wrap(self);
+                    var nameH = rt.wrap(name);
+                    var valH = rt.wrap(value);
+                    rt.pendingException = null;
+                    getWasmTableEntry(tpSetattroPtr)(selfH, nameH, valH);
+                    if (rt.pendingException) {
+                        var pe = rt.pendingException;
+                        rt.pendingException = null;
+                        var exc = rt.unwrap(pe.exc) || rt._b_.AttributeError;
+                        throw rt.pendingExc(pe, exc);
+                    }
+                    return rt._b_.None;
+                } finally {
+                    if (self) delete self.__wasthon_in_setattro__;
                 }
             });
         }
