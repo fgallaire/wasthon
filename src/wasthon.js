@@ -6000,8 +6000,18 @@ mergeInto(LibraryManager.library, {
     /* Dict size — clinic glue uses this to count kwargs. */
     PyDict_GET_SIZE__deps: ['$WasthonRT'],
     PyDict_GET_SIZE: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
         if (obj === null) return 0;
+        // Any dict, INCLUDING a subclass: use the real length. The key walk
+        // below was gated on get_class(obj) === _b_.dict (exact only), so a
+        // dict subclass reported 0 and _json's listencode_dict took its
+        // empty-dict "{}" fast path (test_encode_evil_dict).
+        try {
+            if (rt.$B.$isinstance(obj, rt._b_.dict)) {
+                return rt._b_.dict.mp_length(obj);
+            }
+        } catch (_e) {}
         // Brython dicts: prefer .__len__ if a Python dict; else JS object key count.
         if (obj && typeof obj.size === 'number') return obj.size;
         if (obj && obj.$jsobj) return Object.keys(obj.$jsobj).length;
