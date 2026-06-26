@@ -5646,6 +5646,16 @@ mergeInto(LibraryManager.library, {
                 rt.setError(rt.wrap(rt._b_.AttributeError), "no attribute '" + name + "'");
                 return 0;
             }
+            // CPython binds a method holding a NEW ref to __self__, so the self
+            // survives a later DECREF of the object. _sre pattern_finditer does
+            // `search = GetAttrString(scanner,"search"); Py_DECREF(scanner)` and
+            // hands `search` to PyCallIter_New — without this the scanner reaches
+            // refcount 0, scanner_dealloc runs state_fini, and search() returns
+            // None (re.finditer was empty). Only for a refcounted C self, so the
+            // (unmatched) extra ref is bounded to C-method lookups.
+            if ((v.__self__ === obj || v.m_self === obj) && rt.refcounts.has(objHandle)) {
+                rt.incref(objHandle);
+            }
             return rt.wrapMaybeType(v);
         }
         catch (e) {
