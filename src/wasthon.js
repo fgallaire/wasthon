@@ -8581,10 +8581,24 @@ mergeInto(LibraryManager.library, {
     PyUnicode_Join__deps: ['$WasthonRT'],
     PyUnicode_Join: function(sepH, seqH) {
         var rt = WasthonRT;
-        var sep = rt.unwrap(sepH);
+        var sep = rt.asJSStr(rt.unwrap(sepH));
         var seq = rt.unwrap(seqH);
-        if (typeof sep !== 'string' || !Array.isArray(seq)) return 0;
-        try { return rt.wrapNewRef(seq.join(sep)); } catch (e) { return 0; }
+        if (sep === null || !Array.isArray(seq)) return 0;
+        // Type-check each item: a native seq.join() stringifies a non-str (e.g.
+        // a bytes literal from re.sub with a bytes replacement on a str pattern)
+        // to "[object Object]" instead of failing. CPython's PyUnicode_Join
+        // raises TypeError on the first non-str (test_re test_bytes_str_mixing).
+        var parts = [];
+        for (var i = 0; i < seq.length; i++) {
+            var part = rt.$B.$isinstance(seq[i], rt._b_.str) ? rt.asJSStr(seq[i]) : null;
+            if (part === null) {
+                rt.setError(rt.wrap(rt._b_.TypeError), "sequence item " + i +
+                    ": expected str instance, " + rt.$B.class_name(seq[i]) + " found");
+                return 0;
+            }
+            parts.push(part);
+        }
+        try { return rt.wrapNewRef(parts.join(sep)); } catch (e) { return 0; }
     },
 
     PyUnicode_MAX_CHAR_VALUE__deps: ['$WasthonRT'],
