@@ -285,6 +285,7 @@ support.cpython_only        = _skip      # refcount / impl detail
 support.refcount_test       = _skip      # @refcount_test loops create+leak C ctx (no refcount in Brython) -> OOM cascade
 support.requires_resource   = lambda *a, **k: _skip
 support.bigmemtest          = lambda *a, **k: _skip
+support.bigaddrspacetest    = _skip      # @bigaddrspacetest (no call): skip as CPython does without -M (test_json test_overflow allocs ~1.4GB -> OOM)
 support.requires_resource   = lambda *a, **k: _skip
 support.run_doctest         = lambda *a, **k: (0, 0)
 support.run_unittest        = lambda *a, **k: None
