@@ -7779,6 +7779,15 @@ mergeInto(LibraryManager.library, {
                 "slice indices must be integers or None or have an __index__ method");
             return -1;
         }
+        // CPython's PySlice_Unpack rejects a zero step before any length math,
+        // so a C caller (sqlite3 Blob slice assignment) reports the step error
+        // rather than a later "wrong size" mismatch (test_sqlite3
+        // test_blob_set_slice_error: blob[5:10:0] = ...).
+        if (step === 0) {
+            rt.setError(rt.wrap(rt._b_.ValueError),
+                "slice step cannot be zero");
+            return -1;
+        }
         var PY_SSIZE_T_MAX = 0x7fffffff;
         HEAP32[startPtr >> 2] = start === null ? (step < 0 ? PY_SSIZE_T_MAX : 0) : (start | 0);
         HEAP32[stopPtr  >> 2] = stop  === null ? (step < 0 ? (-PY_SSIZE_T_MAX-1) : PY_SSIZE_T_MAX) : (stop | 0);
