@@ -10905,7 +10905,14 @@ mergeInto(LibraryManager.library, {
             var fset = capSet ? (function(setP, closP) {
                 return rt.scoped(function(self, value) {
                     var selfH = (self && self.__wasthon_ptr__) ? self.__wasthon_ptr__ : rt.wrap(self);
-                    var valH = rt.wrap(value);
+                    // `del obj.attr` reaches the setter as setter(obj, $B.NULL).
+                    // CPython getset setters get value==NULL for deletion (e.g.
+                    // connection.c's isolation_level setter then raises
+                    // AttributeError "cannot delete attribute"). Wrapping the
+                    // sentinel into a handle made the C side see a non-NULL
+                    // value and fall through to its type check instead
+                    // (test_sqlite3 test_del_isolation_level_segfault).
+                    var valH = (value === rt.$B.NULL) ? 0 : rt.wrap(value);
                     rt.pendingException = null;
                     var rc = getWasmTableEntry(setP)(selfH, valH, closP);
                     if (rt.pendingException) {
