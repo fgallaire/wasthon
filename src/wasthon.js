@@ -173,6 +173,11 @@ mergeInto(LibraryManager.library, {
         popScope: function() {
             var s = this.scopes.pop();
             if (!s) return;
+            // The wasthon_list_items buffer caches handles wrapped in this
+            // scope; they die below, so a later call must not reuse them.
+            // (Within a single C call the cache stays valid — that's what makes
+            // a PyList_GET_ITEM loop O(n) instead of O(n^2).)
+            this._lastListItems = null;
             var so = this.scopeOf;
             for (var i = 0; i < s.length; i++) {
                 var h = s[i];
@@ -2874,6 +2879,19 @@ mergeInto(LibraryManager.library, {
         var arr = rt.unwrap(handle);
         if (!Array.isArray(arr)) return 0;
         var n = arr.length;
+        // PyList_GET_ITEM(list,i) compiles to wasthon_list_items(list)[i], so a
+        // C loop over a list (e.g. _sre_compile_impl copying a 20000-element code
+        // list element by element) calls this once per index. Re-mallocing and
+        // re-wrapping the whole list on every index is O(n^2) and leaks one
+        // buffer per index — for a big pattern that overflowed allocation
+        // (test_long_pattern, a ~5000-char literal -> 20056 codes -> ~1.6GB).
+        // Reuse the last materialisation when it's the same array at the same
+        // length (the tight-loop case). Writes made through the buffer still
+        // flush back via _wasthon_Py_SET_SIZE, which then clears the cache.
+        var lb = rt._lastListItems;
+        if (lb && lb.arr === arr && lb.n === n) {
+            return lb.ptr;
+        }
         var ptr = _malloc(Math.max(4, n * 4));
         for (var i = 0; i < n; i++) {
             HEAP32[(ptr + i * 4) >> 2] = rt.wrap(arr[i]);
@@ -3263,6 +3281,12 @@ mergeInto(LibraryManager.library, {
                     var obj = rt.unwrap(oh);
                     try { piece = String(rt._b_.repr(obj)); }
                     catch (e) { piece = '<repr-err>'; }
+                    // CPython applies the precision to %R (truncate to N chars):
+                    // re.Pattern's repr is "re.compile(%.200R)" so a long pattern
+                    // is clipped to 200 chars (test_long_pattern).
+                    if (precision >= 0 && piece.length > precision) {
+                        piece = piece.substring(0, precision);
+                    }
                     break;
                 }
                 case 'S': {
@@ -3270,12 +3294,18 @@ mergeInto(LibraryManager.library, {
                     var obj2 = rt.unwrap(oh2);
                     try { piece = String(rt._b_.str.$factory(obj2)); }
                     catch (e) { piece = '<str-err>'; }
+                    if (precision >= 0 && piece.length > precision) {
+                        piece = piece.substring(0, precision);
+                    }
                     break;
                 }
                 case 'U': case 'V': {
                     var oh3 = readPtr();
                     var obj3 = rt.unwrap(oh3);
                     piece = (obj3 == null) ? '' : (typeof obj3 === 'string' ? obj3 : String(obj3));
+                    if (precision >= 0 && piece.length > precision) {
+                        piece = piece.substring(0, precision);
+                    }
                     break;
                 }
                 case 'T': case 'N': {
