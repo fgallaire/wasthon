@@ -2554,7 +2554,12 @@ mergeInto(LibraryManager.library, {
                         return [convV, i+2];
                     }
                     var h = readPtr();
-                    var v = rt.unwrap(h);
+                    // Materialize a PyUnicode_New placeholder (linear-memory
+                    // buffer from C memcpy) into a real str — _decimal's
+                    // dec_reduce does Py_BuildValue("O(O)", type, dec_str(self))
+                    // and the raw placeholder is opaque to pickle ("cannot
+                    // pickle 'JSObject' object").
+                    var v = rt.toBrythonArg(rt.unwrap(h));
                     // 'N' steals the reference ('O'/'S' don't). Instance-exempt.
                     if (c === 'N') rt.consumeResultRef(h);
                     return [v, i+1];
