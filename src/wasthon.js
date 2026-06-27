@@ -10738,7 +10738,14 @@ mergeInto(LibraryManager.library, {
                     var selfH = self && self.__wasthon_ptr__
                         ? self.__wasthon_ptr__ : rt.wrap(self);
                     var nameH = rt.wrap(name);
-                    var valH = rt.wrap(value);
+                    // `del obj.attr` reaches tp_setattro with a NULL value in
+                    // CPython; Brython passes its delete sentinel. Forward C
+                    // NULL (0) so the C setattro takes its delete branch
+                    // (_decimal context_setattr then raises "cannot delete
+                    // attribute" instead of running the int converter on the
+                    // sentinel — "an integer is required") (test_invalid_context).
+                    var valH = (value === undefined || value === null ||
+                                value === rt.$B.NULL) ? 0 : rt.wrap(value);
                     rt.pendingException = null;
                     getWasmTableEntry(tpSetattroPtr)(selfH, nameH, valH);
                     if (rt.pendingException) {
@@ -10752,6 +10759,21 @@ mergeInto(LibraryManager.library, {
                     if (self) delete self.__wasthon_in_setattro__;
                 }
             });
+            // Brython's make_setattr_delattr captured the type's PRE-override
+            // tp_setattro into its __setattr__/__delattr__ wrapper_descriptors,
+            // so `c.__delattr__(x)` (and `del c.x` via that wrapper) bypassed
+            // the trampoline above and fed the C setattro the $B.NULL delete
+            // sentinel as a real value — _decimal context_setattr then ran its
+            // int converter on it ("an integer is required") instead of its
+            // delete branch ("cannot delete attribute"). Re-point both dunders
+            // at the trampoline so the explicit-dunder path matches $setattr
+            // (test_invalid_context).
+            var _setattroTramp = cls.tp_setattro;
+            rt.$B.set_to_dict(cls, '__setattr__',
+                rt.$B.wrapper_descriptor.$factory(cls, '__setattr__', _setattroTramp));
+            rt.$B.set_to_dict(cls, '__delattr__',
+                rt.$B.wrapper_descriptor.$factory(cls, '__delattr__',
+                    function(obj, attr) { return _setattroTramp(obj, attr, rt.$B.NULL); }));
         }
 
         // Install dealloc hook so that when Brython GCs an instance we
