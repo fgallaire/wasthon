@@ -10401,7 +10401,17 @@ mergeInto(LibraryManager.library, {
                 dispatch = function(self, item, value) {
                     var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
                     var itemH = item && item.__wasthon_ptr__ ? item.__wasthon_ptr__ : rt.wrap(item);
-                    var valH = (value === undefined || value === null || value === rt.$B.NULL) ? 0 :
+                    // A C __delitem__ reached through a **kwargs splat — e.g.
+                    // unittest's assertRaises(exc, d.__delitem__, key) does
+                    // callable(*args, **kwargs) — gets Brython's trailing {$kw}
+                    // kwargs marker as `value`. That is not a real value: treat
+                    // it (like the delete sentinel) as NULL so the C slot takes
+                    // its delete branch instead of running a truth-test on the
+                    // marker (_decimal signaldict: ValueError "signal keys
+                    // cannot be deleted", not TypeError "descriptor '__bool__'
+                    // of 'JSObject'"). A real __setitem__ value is never a {$kw}.
+                    var valH = (value === undefined || value === null || value === rt.$B.NULL ||
+                                (value && value.$kw !== undefined)) ? 0 :
                                (value && value.__wasthon_ptr__ ? value.__wasthon_ptr__ : rt.wrap(value));
                     rt.pendingException = null;
                     var rc = getWasmTableEntry(slotPtr)(selfH, itemH, valH);
