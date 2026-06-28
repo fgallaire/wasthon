@@ -510,6 +510,42 @@ mergeInto(LibraryManager.library, {
         ensureTypeStruct: function(cls) {
             if (!cls) return 0;
             if (cls.__wasthon_type_handle__) return cls.__wasthon_type_handle__;
+            // int's canonical &PyLong_Type struct (wired by
+            // wasthon_bind_builtin_type, and what Py_TYPE already returns for
+            // int instances) IS its handle — so wrap(int) == &PyLong_Type, which
+            // sqlite3's register_adapter (`type == &PyLong_Type` → BaseTypeAdapted)
+            // needs so int adapters fire. Scoped to int: the other builtins keep
+            // their own ensureTypeStruct handle (unifying str/bytes/the container
+            // & meta types regressed pickle). Enrich the struct exactly like a
+            // fresh ensureTypeStruct (below) so it's complete — an incomplete
+            // &PyLong_Type here broke pickle's load_newobj (no tp_new).
+            var canon = (cls === this._b_.int) &&
+                        this.builtinTypeForClass && this.builtinTypeForClass.get(cls);
+            if (canon) {
+                cls.__wasthon_type_handle__ = canon;
+                if (!this.types.has(canon)) {
+                    if (!this._defaultTpAlloc) this._defaultTpAlloc = _wasthon_get_default_tp_alloc();
+                    if (!this._builtinTpIter)  this._builtinTpIter  = _wasthon_get_builtin_tp_iter();
+                    if (!this._builtinTpIternext) this._builtinTpIternext = _wasthon_get_builtin_tp_iternext();
+                    if (!this._brythonTpNew)   this._brythonTpNew   = _wasthon_get_brython_tp_new();
+                    var bd = this.$B.get_dict(cls);
+                    if (!bd) { this.$B.init_dict(cls); bd = this.$B.get_dict(cls); }
+                    // Complete the canonical struct exactly like a fresh
+                    // ensureTypeStruct struct (only-if-0, never clobber a slot
+                    // wasthon_init/bind already wired). tp_new at offset 60 is
+                    // the one pickle's load_newobj dereferences — without it,
+                    // `int(NEWOBJ)` errored instead of returning 0
+                    // (test_bad_newobj/test_bad_newobj_ex).
+                    if (bd && HEAP32[(canon + 8) >> 2] === 0)  HEAP32[(canon + 8) >> 2]  = this.wrapPinned(bd);
+                    if (HEAP32[(canon + 16) >> 2] === 0) HEAP32[(canon + 16) >> 2] = this._defaultTpAlloc;
+                    if (HEAP32[(canon + 24) >> 2] === 0) HEAP32[(canon + 24) >> 2] = this._builtinTpIter;
+                    if (HEAP32[(canon + 56) >> 2] === 0) HEAP32[(canon + 56) >> 2] = this._builtinTpIternext;
+                    if (HEAP32[(canon + 60) >> 2] === 0) HEAP32[(canon + 60) >> 2] = this._brythonTpNew;
+                    var bn = cls.tp_name || (cls.$infos && cls.$infos.__name__) || '<type>';
+                    this.types.set(canon, { brythonClass: cls, shortName: bn, fullName: bn });
+                }
+                return canon;
+            }
             if (!this._defaultTpAlloc) this._defaultTpAlloc = _wasthon_get_default_tp_alloc();
             if (!this._builtinTpIter)  this._builtinTpIter  = _wasthon_get_builtin_tp_iter();
             if (!this._builtinTpIternext) this._builtinTpIternext = _wasthon_get_builtin_tp_iternext();
@@ -7596,6 +7632,17 @@ mergeInto(LibraryManager.library, {
         if (ndigits === 0 || (!pendPtr && rest < s.length)) {
             rt.setError(rt.wrap(rt._b_.ValueError),
                 "invalid literal for int() with base " + b + ": '" + s + "'");
+            return 0;
+        }
+        // sys.int_info.default_max_str_digits (CPython _PyLong_FromString): a
+        // base-10 integer with more digits than the limit raises ValueError.
+        // Brython's int() enforces this; the C fast path (e.g. _json's number
+        // parse, now that wrap(int) == &PyLong_Type) must too.
+        var maxdig = rt.$B.int_max_str_digits | 0;
+        if (b === 10 && maxdig > 0 && ndigits > maxdig) {
+            rt.setError(rt.wrap(rt._b_.ValueError),
+                "Exceeds the limit (" + maxdig + " digits) for integer string " +
+                "conversion; use sys.set_int_max_str_digits() to increase the limit");
             return 0;
         }
         if (pendPtr) HEAP32[pendPtr >> 2] = strPtr + p;
