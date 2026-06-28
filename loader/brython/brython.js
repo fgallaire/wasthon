@@ -7055,6 +7055,9 @@ var has_exports=false
 while(frame_obj !==null){var locals=frame_obj.frame[1]
 for(var key in locals){try{var value=locals[key]
 if($B.get_class(value)===_b_.memoryview && value.obj===self){has_exports=true
+break}
+var pin_view=$B.$getattr(value,'__pin_view__',null)
+if(pin_view && $B.get_class(pin_view)===_b_.memoryview && pin_view.obj===self){has_exports=true
 break}}catch(err){}}
 frame_obj=frame_obj.prev}
 if(has_exports){if(self.exports){no_resizing()}}else{

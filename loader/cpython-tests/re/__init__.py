@@ -277,12 +277,35 @@ def findall(pattern, string, flags=0):
     Empty matches are included in the result."""
     return _compile(pattern, flags).findall(string)
 
+class _BufferPinnedFinditer:
+    # wasthon: CPython pins a mutable buffer (bytearray) for the lifetime of the
+    # finditer scanner, so resizing it mid-iteration raises BufferError (bug
+    # 14212). The C _sre scanner copies the buffer rather than holding a live
+    # export, and Brython is GC- not refcount-based, so that pin never
+    # materialises. We reproduce it here: a memoryview keeps the bytearray's
+    # export count up, and bytearray's check_exports finds this holder (via
+    # __pin_view__) in the frame locals — exactly how it tracks a plain
+    # memoryview. The pin is released when this iterator leaves scope (`del it`),
+    # the same garbage-collection substitute Brython uses for memoryview.
+    def __init__(self, it, view):
+        self._it = it
+        self.__pin_view__ = view
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._it)
+
 def finditer(pattern, string, flags=0):
     """Return an iterator over all non-overlapping matches in the
     string.  For each match, the iterator returns a Match object.
 
     Empty matches are included in the result."""
-    return _compile(pattern, flags).finditer(string)
+    it = _compile(pattern, flags).finditer(string)
+    if isinstance(string, bytearray):
+        return _BufferPinnedFinditer(it, memoryview(string))
+    return it
 
 def compile(pattern, flags=0):
     "Compile a regular expression pattern, returning a Pattern object."
