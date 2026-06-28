@@ -2800,7 +2800,16 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
         if (obj === null) return 0;
-        try { return rt.$B.$hash(obj) | 0; } catch (e) { return -1; }
+        try {
+            // Py_hash_t is 32-bit on wasm32; reduce Brython's hash (which is a
+            // BigInt for floats and large ints — its modulus is 2**61-1) to a
+            // signed 32-bit value. `bigint | 0` throws, so the old `$hash | 0`
+            // returned -1 (the error sentinel) for any BigInt hash — which
+            // broke random.seed(<non-int>) (its C path hashes the argument).
+            var h = rt.$B.$hash(obj);
+            var r = (typeof h === 'bigint') ? Number(BigInt.asIntN(32, h)) : (h | 0);
+            return r === -1 ? -2 : r;
+        } catch (e) { return -1; }
     },
 
     /* PyObject_GenericHash — default tp_hash slot. Same as PyObject_Hash
