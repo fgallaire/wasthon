@@ -9671,7 +9671,7 @@ mergeInto(LibraryManager.library, {
     },
 
     /* ---- PyType_FromModuleAndSpec ----                                  */
-    PyType_FromModuleAndSpec__deps: ['$WasthonRT', '$WasthonRT_module_state', '$__wasthon_install_methods', '$__wasthon_install_getsets', '$__wasthon_install_members'],
+    PyType_FromModuleAndSpec__deps: ['$WasthonRT', '$WasthonRT_module_state', '$__wasthon_install_methods', '$__wasthon_install_getsets', '$__wasthon_install_members', '$__wasthon_text_signature'],
     PyType_FromModuleAndSpec: function(moduleHandle, specPtr, basesHandle) {
         var rt = WasthonRT;
         rt.trace('PyType_FromModuleAndSpec', 'specPtr=' + specPtr);
@@ -9707,6 +9707,11 @@ mergeInto(LibraryManager.library, {
         // constants like SALT_SIZE) can write to.
         var cls = rt.$B.make_builtin_class(shortName);
         rt.$B.init_dict(cls);
+
+        // Py_tp_doc (slot 56) carries the class docstring, whose first line may
+        // be a clinic text signature — expose it for inspect.signature(cls).
+        var typeSig = __wasthon_text_signature(shortName, slotMap[56] || 0);
+        if (typeSig) cls.$text_signature = typeSig;
         /* Py_TPFLAGS_IMMUTABLETYPE (wasthon.h: 1<<4): mark the Brython class
          * so type.tp_setattro refuses Python-level writes ("cannot set ...
          * attribute of immutable type ..."), as CPython does. Bridge-side
@@ -11271,7 +11276,22 @@ mergeInto(LibraryManager.library, {
         }
     },
 
-    $__wasthon_install_methods__deps: ['$WasthonRT', '$__wasthon_make_trampoline'],
+    /* Extract a clinic text signature from a C docstring. CPython prefixes a
+     * docstring with "<name>(<sig>)\n--\n\n" and exposes "(<sig>)" as
+     * __text_signature__ (consumed by inspect.signature). Returns the
+     * "(<sig>)" slice, or undefined when the doc carries no signature. */
+    $__wasthon_text_signature: function(name, docPtr) {
+        if (!docPtr || !name) return undefined;
+        var doc = UTF8ToString(docPtr);
+        if (doc.slice(0, name.length) !== name || doc[name.length] !== '(') {
+            return undefined;
+        }
+        var end = doc.indexOf(')\n--\n\n', name.length);
+        if (end === -1) return undefined;
+        return doc.slice(name.length, end + 1);
+    },
+
+    $__wasthon_install_methods__deps: ['$WasthonRT', '$__wasthon_make_trampoline', '$__wasthon_text_signature'],
     $__wasthon_install_methods: function(target, methodsPtr, moduleHandle, moduleScope) {
         var rt = WasthonRT;
         /* For class methods, capture the class handle so trampoline can
@@ -11286,7 +11306,13 @@ mergeInto(LibraryManager.library, {
             var flags   = HEAP32[(mp +  8)  >> 2];
             var name    = UTF8ToString(namePtr);
 
+            // ml_doc (+12): CPython stores a clinic text signature as the first
+            // line "<name>(<sig>)\n--\n\n<doc>". Extract "(<sig>)" so inspect
+            // (which reads __text_signature__) can build a Signature.
+            var textSig = __wasthon_text_signature(name, HEAP32[(mp + 12) >> 2]);
+
             var trampoline = __wasthon_make_trampoline(fnPtr, flags, moduleHandle, name, moduleScope, classHandle);
+            if (textSig) trampoline.$text_signature = textSig;
             if (moduleScope) {
                 // Mark module-scope trampolines as `builtin_function_or_method`
                 // — CPython's C-level module functions behave this way, and
@@ -11314,6 +11340,7 @@ mergeInto(LibraryManager.library, {
                         rt.$B.str_dict_set(cmDict, name, {
                             ob_type: rt._b_.classmethod,
                             cm_callable: trampoline,
+                            $text_signature: textSig,
                         });
                     }
                 } catch (_) {}
@@ -11341,6 +11368,7 @@ mergeInto(LibraryManager.library, {
                             method: trampoline,
                             d_name: name,
                             d_type: target,
+                            $text_signature: textSig,
                         };
                         rt.$B.str_dict_set(dictObj, name, descr);
                         /* Cross-ref: Brython native install does

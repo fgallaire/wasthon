@@ -3029,7 +3029,7 @@ var klass=self
 if(subclass.tp_bases===undefined){return self===_b_.object}
 return subclass.tp_bases.indexOf(klass)>-1}
 type_funcs.__subclasses__=function(cls){return $B.$list(cls.tp_subclasses)}
-type_funcs.__text_signature___get=function(self){}
+type_funcs.__text_signature___get=function(self){return self.$text_signature===undefined?_b_.None:self.$text_signature}
 type_funcs.__text_signature___set=function(self){}
 type_funcs.__type_params___get=function(self){}
 type_funcs.__type_params___set=function(self){}
@@ -3328,7 +3328,7 @@ method_wrapper_funcs.__objclass___set=function(self){}
 method_wrapper_funcs.__qualname___get=function(self){}
 method_wrapper_funcs.__qualname___set=function(self){}
 method_wrapper_funcs.__reduce__=function(self){return $B.fast_tuple([_b_.getattr,$B.fast_tuple([self.self,self.d_name])])}
-method_wrapper_funcs.__text_signature___get=function(self){}
+method_wrapper_funcs.__text_signature___get=function(self){return self.$text_signature===undefined?_b_.None:self.$text_signature}
 method_wrapper_funcs.__text_signature___set=function(self){}
 $B.method_wrapper.tp_methods=["__reduce__"]
 $B.method_wrapper.tp_members=[["__self__",$B.TYPES.OBJECT,"self",1]
@@ -3420,7 +3420,7 @@ var method_descriptor_funcs=$B.method_descriptor.tp_funcs={}
 method_descriptor_funcs.__qualname___get=function(self){return self.d_name}
 method_descriptor_funcs.__qualname___set=function(self,value){self.name=value}
 method_descriptor_funcs.__reduce__=function(self){return $B.fast_tuple([_b_.getattr,$B.fast_tuple([self.d_type,self.d_name])])}
-method_descriptor_funcs.__text_signature___get=function(self){}
+method_descriptor_funcs.__text_signature___get=function(self){return self.$text_signature===undefined?_b_.None:self.$text_signature}
 method_descriptor_funcs.__text_signature___set=function(self){}
 $B.method_descriptor.tp_methods=["__reduce__"]
 $B.method_descriptor.tp_members=[["__objclass__",$B.TYPES.OBJECT,"d_type",1],["__name__",$B.TYPES.OBJECT,"d_name",1]
@@ -3445,7 +3445,7 @@ classmethod_descriptor_funcs.__doc___get=function(self){}
 classmethod_descriptor_funcs.__doc___set=function(self){}
 classmethod_descriptor_funcs.__qualname___get=function(self){}
 classmethod_descriptor_funcs.__qualname___set=function(self){}
-classmethod_descriptor_funcs.__text_signature___get=function(self){}
+classmethod_descriptor_funcs.__text_signature___get=function(self){return self.$text_signature===undefined?_b_.None:self.$text_signature}
 classmethod_descriptor_funcs.__text_signature___set=function(self){}
 $B.classmethod_descriptor.tp_members=[["__objclass__",$B.TYPES.OBJECT,"d_type",1],["__name__",$B.TYPES.OBJECT,"d_name",1]
 ]
@@ -3579,7 +3579,7 @@ if(self.m_self !== undefined && self.m_self !== null && ! $B.$isinstance(self.m_
 return name}
 builtin_function_or_method_funcs.__self___get=function(self){return $B.imported.builtins}
 builtin_function_or_method_funcs.__self___set=_b_.None
-builtin_function_or_method_funcs.__text_signature___get=function(self){}
+builtin_function_or_method_funcs.__text_signature___get=function(self){return self.$text_signature===undefined?_b_.None:self.$text_signature}
 builtin_function_or_method_funcs.__text_signature___set=function(self){}
 $B.builtin_function_or_method.tp_methods=["__reduce__"]
 $B.builtin_function_or_method.tp_members=[["__module__",$B.TYPES.OBJECT,"m_module",0]
