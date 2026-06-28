@@ -548,6 +548,77 @@ mergeInto(LibraryManager.library, {
             return this.wrapNewRef(obj);
         },
 
+        /* Modular exponentiation in BigInt (base**exp mod m). */
+        _modpow: function(base, exp, mod) {
+            base %= mod;
+            if (base < 0n) base += mod;
+            var r = 1n;
+            while (exp > 0n) {
+                if (exp & 1n) r = (r * base) % mod;
+                exp >>= 1n;
+                base = (base * base) % mod;
+            }
+            return r;
+        },
+
+        /* Hash a _decimal.Decimal at the HOST's 61-bit modulus, in BigInt.
+         *
+         * wasm32 fixes Py_hash_t at 32-bit, so CPython compiles _decimal's
+         * _dec_hash with _PyHASH_BITS == 31 and it reduces mod 2**31-1. But
+         * Brython (the host) computes int/float/Fraction hashes mod 2**61-1,
+         * exactly like a 64-bit CPython. The two never agree — e.g.
+         * hash(Decimal(-(2**31-1))) came back 0 while hash(-(2**31-1)) is
+         * -2147483647 — so test_hash_method's `hash(d) == hash(int(d))`
+         * assertions failed. A 61-bit value can't be returned through a
+         * 32-bit Py_hash_t in the first place, so the hash of a type that is
+         * compared against Brython's belongs at the bridge, where 61-bit
+         * BigInt arithmetic already lives (Brython's own int_hash).
+         *
+         * This mirrors CPython's _dec_hash, which is defined to equal
+         * Fraction(*d.as_integer_ratio()).__hash__(): for a finite value
+         * n/d, hash = (|n| * d**-1) mod P, signed, with the -1 sentinel
+         * mapped to -2 (so d.__hash__() and hash(d) agree — Brython's $hash
+         * only remaps -1 for the value it sees). Specials match _dec_hash:
+         * a signaling NaN raises, a quiet NaN hashes by identity, ±Infinity
+         * hash to ±314159 (sys.hash_info.inf). */
+        decimalHash: function(self) {
+            var B = this.$B, _b_ = this._b_;
+            var ga = B.$getattr, call = B.$call;
+            var P = 2305843009213693951n;            // 2**61 - 1
+            if (call(ga(self, 'is_snan'))) {
+                throw call(_b_.TypeError, 'Cannot hash a signaling NaN value');
+            }
+            if (call(ga(self, 'is_nan'))) {
+                return call(ga(_b_.object, '__hash__'), self);
+            }
+            if (call(ga(self, 'is_infinite'))) {
+                return call(ga(self, 'is_signed')) ? -314159 : 314159;
+            }
+            // Finite: hash = (coeff * 10**exp) mod P, signed (CPython _dec_hash).
+            // Build the integer coefficient from as_tuple()'s single digits —
+            // NOT as_integer_ratio(), whose huge numerator is marshaled C->JS
+            // through a double and overflows to Infinity past ~308 digits
+            // (and is silently lossy before that).
+            var tup = call(ga(self, 'as_tuple'));
+            var sign = call(ga(tup, '__getitem__'), 0);   // 0 (pos) or 1 (neg)
+            var digits = call(ga(tup, '__getitem__'), 1); // tuple of 0..9
+            var exp = call(ga(tup, '__getitem__'), 2);
+            var ndig = call(ga(digits, '__len__')) | 0;
+            var s = '';
+            for (var i = 0; i < ndig; i++) {
+                s += String(call(ga(digits, '__getitem__'), i));
+            }
+            var coeff = s === '' ? 0n : BigInt(s);
+            var e = _b_.int.$to_bigint(exp);
+            var exphash = e >= 0n
+                ? this._modpow(10n, e, P)
+                : this._modpow(this._modpow(10n, P - 2n, P), -e, P); // (10**-1)**(-e)
+            var h = ((coeff % P) * exphash) % P;         // in [0, P)
+            var result = sign ? -h : h;
+            if (result === -1n) result = -2n;
+            return _b_.int.$int_or_long(result);
+        },
+
         setError: function(excHandle, msg, value) {
             // `value` (optional) is the actual exception INSTANCE. When C built
             // the exception object and set custom attributes on it (pyexpat's
@@ -10302,6 +10373,13 @@ mergeInto(LibraryManager.library, {
                     }
                     return obj;
                 };
+            } else if (shape === 'i' && brythonName === 'tp_hash' &&
+                       fullName === 'decimal.Decimal') {
+                /* wasm32's 32-bit Py_hash_t makes _dec_hash reduce mod
+                 * 2**31-1, but Brython hashes use 2**61-1, so hash(Decimal(n))
+                 * != hash(int(n)). Recompute at 61 bits in BigInt instead of
+                 * reading (and truncating) the C slot. See rt.decimalHash. */
+                dispatch = function(self) { return rt.decimalHash(self); };
             } else if (shape === 'i') {
                 dispatch = function(self) {
                     var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
