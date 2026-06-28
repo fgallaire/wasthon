@@ -303,6 +303,48 @@ mergeInto(LibraryManager.library, {
             this.handles.set(this.SLOT_TRUE,  this._b_.True);
             this.handles.set(this.SLOT_FALSE, this._b_.False);
             this.handles.set(this.SLOT_NOTIMPLEMENTED, this._b_.NotImplemented);
+
+            // Expose CPython's real Unicode case/predicate tables to Brython
+            // (linked from unicodectype.o in bundles that ship `unicodedata`),
+            // so Brython's str methods can be CPython-exact — its own tables
+            // diverge on ~2400 codepoints (test_unicodedata test_method_checksum).
+            // Closures only: no C call here (init runs at module __postset,
+            // before the wasm exports are callable); the scratch buffer and the
+            // real-table check happen lazily on first use. `available` returns
+            // false for the ASCII weak-stub fallback (bundles without the
+            // table), so Brython never delegates to a worse-than-its-own hook.
+            if (!B.$wasthon_unicode) {
+                var _ucScratch = 0, _ucReady = null;
+                // Every C symbol is named only inside a call `_func(...)`, never
+                // as a bare value — emscripten auto-keeps C functions reached
+                // by the call pattern, and a bare reference at init (before the
+                // exports are wired) would throw ReferenceError.
+                var _ucStr = function(n) {
+                    var out = '';
+                    for (var i = 0; i < n; i++) {
+                        out += String.fromCodePoint(HEAP32[(_ucScratch >> 2) + i]);
+                    }
+                    return out;
+                };
+                // flags bits: 1 alpha, 2 decimal, 4 digit, 8 numeric,
+                // 16 lower, 32 upper, 64 title, 128 space, 256 printable.
+                B.$wasthon_unicode = {
+                    available: function() {
+                        if (_ucReady === null) {
+                            // é (U+00E9) is a letter in the real table, not in
+                            // the ASCII weak-stub fallback.
+                            try { _ucReady = (_wasthon_uc_flags(0xE9) & 1) ? true : false; }
+                            catch (e) { _ucReady = false; }
+                        }
+                        return _ucReady;
+                    },
+                    flags: function(ch) { return _wasthon_uc_flags(ch); },
+                    upper: function(ch) { if (!_ucScratch) _ucScratch = _malloc(16); return _ucStr(_wasthon_uc_upper(ch, _ucScratch)); },
+                    lower: function(ch) { if (!_ucScratch) _ucScratch = _malloc(16); return _ucStr(_wasthon_uc_lower(ch, _ucScratch)); },
+                    title: function(ch) { if (!_ucScratch) _ucScratch = _malloc(16); return _ucStr(_wasthon_uc_title(ch, _ucScratch)); },
+                    fold:  function(ch) { if (!_ucScratch) _ucScratch = _malloc(16); return _ucStr(_wasthon_uc_fold(ch, _ucScratch)); },
+                };
+            }
         },
 
         _allocSentinelId: function() {

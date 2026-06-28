@@ -39,6 +39,85 @@ __attribute__((weak)) double _PyUnicode_ToNumeric(unsigned int ch) {
     return -1.0;
 }
 
+/* ---- Unicode str support ------------------------------------------ *
+ * CPython's real case/predicate tables (Objects/unicodectype.c + the
+ * 281 KB unicodetype_db.h) are linked into bundles that ship the
+ * `unicodedata` module (wasthon-full). Expose them so Brython's str
+ * methods can be CPython-exact (test_unicodedata test_method_checksum:
+ * Brython's own Unicode tables diverge on ~2400 codepoints).
+ *
+ * Weak ASCII fallbacks keep bundles WITHOUT the table linkable; the
+ * strong unicodectype.o definitions win when present. The shim
+ * wasthon_uc_flags packs every predicate into one int so the JS side
+ * crosses the boundary once per codepoint. */
+extern int _PyUnicode_IsAlpha(unsigned int ch);
+extern int _PyUnicode_IsDecimalDigit(unsigned int ch);
+extern int _PyUnicode_IsDigit(unsigned int ch);
+extern int _PyUnicode_IsNumeric(unsigned int ch);
+extern int _PyUnicode_IsLowercase(unsigned int ch);
+extern int _PyUnicode_IsUppercase(unsigned int ch);
+extern int _PyUnicode_IsTitlecase(unsigned int ch);
+extern int _PyUnicode_IsWhitespace(unsigned int ch);
+extern int _PyUnicode_IsPrintable(unsigned int ch);
+extern int _PyUnicode_IsCased(unsigned int ch);
+extern int _PyUnicode_IsCaseIgnorable(unsigned int ch);
+extern int _PyUnicode_ToLowerFull(unsigned int ch, unsigned int *res);
+extern int _PyUnicode_ToUpperFull(unsigned int ch, unsigned int *res);
+extern int _PyUnicode_ToTitleFull(unsigned int ch, unsigned int *res);
+extern int _PyUnicode_ToFoldedFull(unsigned int ch, unsigned int *res);
+
+__attribute__((weak)) int _PyUnicode_IsAlpha(unsigned int ch) {
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+}
+__attribute__((weak)) int _PyUnicode_IsDecimalDigit(unsigned int ch) { return ch >= '0' && ch <= '9'; }
+__attribute__((weak)) int _PyUnicode_IsDigit(unsigned int ch) { return ch >= '0' && ch <= '9'; }
+__attribute__((weak)) int _PyUnicode_IsNumeric(unsigned int ch) { return ch >= '0' && ch <= '9'; }
+__attribute__((weak)) int _PyUnicode_IsLowercase(unsigned int ch) { return ch >= 'a' && ch <= 'z'; }
+__attribute__((weak)) int _PyUnicode_IsUppercase(unsigned int ch) { return ch >= 'A' && ch <= 'Z'; }
+__attribute__((weak)) int _PyUnicode_IsTitlecase(unsigned int ch) { return 0; }
+__attribute__((weak)) int _PyUnicode_IsWhitespace(unsigned int ch) {
+    return ch == ' ' || (ch >= 0x09 && ch <= 0x0d);
+}
+__attribute__((weak)) int _PyUnicode_IsPrintable(unsigned int ch) { return ch >= 0x20 && ch < 0x7f; }
+__attribute__((weak)) int _PyUnicode_IsCased(unsigned int ch) {
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+}
+__attribute__((weak)) int _PyUnicode_IsCaseIgnorable(unsigned int ch) { return 0; }
+__attribute__((weak)) int _PyUnicode_ToLowerFull(unsigned int ch, unsigned int *res) {
+    res[0] = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch; return 1;
+}
+__attribute__((weak)) int _PyUnicode_ToUpperFull(unsigned int ch, unsigned int *res) {
+    res[0] = (ch >= 'a' && ch <= 'z') ? ch - 32 : ch; return 1;
+}
+__attribute__((weak)) int _PyUnicode_ToTitleFull(unsigned int ch, unsigned int *res) {
+    res[0] = (ch >= 'a' && ch <= 'z') ? ch - 32 : ch; return 1;
+}
+__attribute__((weak)) int _PyUnicode_ToFoldedFull(unsigned int ch, unsigned int *res) {
+    res[0] = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch; return 1;
+}
+
+/* One call per codepoint returns all str predicates, bit-packed. */
+int wasthon_uc_flags(unsigned int ch) {
+    int f = 0;
+    if (_PyUnicode_IsAlpha(ch))        f |= 1;
+    if (_PyUnicode_IsDecimalDigit(ch)) f |= 2;
+    if (_PyUnicode_IsDigit(ch))        f |= 4;
+    if (_PyUnicode_IsNumeric(ch))      f |= 8;
+    if (_PyUnicode_IsLowercase(ch))    f |= 16;
+    if (_PyUnicode_IsUppercase(ch))    f |= 32;
+    if (_PyUnicode_IsTitlecase(ch))    f |= 64;
+    if (_PyUnicode_IsWhitespace(ch))   f |= 128;
+    if (_PyUnicode_IsPrintable(ch))    f |= 256;
+    if (_PyUnicode_IsCased(ch))        f |= 512;
+    if (_PyUnicode_IsCaseIgnorable(ch)) f |= 1024;
+    return f;
+}
+/* Full case mappings: write up to 3 codepoints to res[], return the count. */
+int wasthon_uc_upper(unsigned int ch, unsigned int *res) { return _PyUnicode_ToUpperFull(ch, res); }
+int wasthon_uc_lower(unsigned int ch, unsigned int *res) { return _PyUnicode_ToLowerFull(ch, res); }
+int wasthon_uc_title(unsigned int ch, unsigned int *res) { return _PyUnicode_ToTitleFull(ch, res); }
+int wasthon_uc_fold(unsigned int ch, unsigned int *res)  { return _PyUnicode_ToFoldedFull(ch, res); }
+
 /* ---- Built-in type sentinels ---- */
 /* Built-in type singletons: struct storage in BSS. Fields populated
  * by wasthon_init() from JS-side helpers. The address of each

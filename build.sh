@@ -484,6 +484,9 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
     }
 
     EXPORTS='"_wasthon_init","_wasthon_module_create","_malloc","_free"'
+    # Unicode str support: the bridge calls these to expose CPython's case/
+    # predicate tables (unicodectype) to Brython's str methods.
+    EXPORTS+=',"_wasthon_uc_flags","_wasthon_uc_upper","_wasthon_uc_lower","_wasthon_uc_title","_wasthon_uc_fold"'
     for m in "${BUNDLED_MODULES[@]}"; do
         EXPORTS+=",\"_PyInit_$(pyinit_symbol "$m")\""
     done
