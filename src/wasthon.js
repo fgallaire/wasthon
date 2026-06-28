@@ -532,6 +532,47 @@ mergeInto(LibraryManager.library, {
             return typeStructPtr;
         },
 
+        /* Give a Python subclass of a C type its OWN dereferenceable type
+         * struct, so the C tp_new it inherits receives the subclass (not the
+         * parent) as `type`. CPython relies on that: the exact-type fast paths
+         * (`type == state->PyDec_Type`) must miss for a subclass, otherwise
+         * e.g. A.from_float(x) -> A(base_decimal) returns the shared base
+         * unchanged and the subtype override mutates it
+         * (test_decimal_from_float_argument_type).
+         *
+         * The struct is a byte-copy of the parent's (so every C slot deref —
+         * tp_alloc, tp_init, slot pointers — sees the parent's values) with
+         * tp_dict overridden to the subclass's dict, and registered in
+         * rt.types with the parent's basicsize/itemsize/slots but
+         * brythonClass = the subclass. Instances then come back already typed
+         * as the subclass (tp_alloc -> wasthon_object_gc_new reads this entry),
+         * and Py_TYPE becomes faithful — PyObject_TypeCheck still passes via
+         * its PyType_IsSubtype MRO walk. Cached on the class. */
+        subtypeStructFor: function(subCls, parentHandle) {
+            if (subCls.__wasthon_subtype_handle__) {
+                return subCls.__wasthon_subtype_handle__;
+            }
+            var pinfo = this.types.get(parentHandle);
+            if (!pinfo || pinfo.basicsize === undefined) return parentHandle;
+            var sub = _malloc(64);
+            HEAPU8.set(HEAPU8.subarray(parentHandle, parentHandle + 64), sub);
+            var dictObj = this.$B.get_dict(subCls);
+            if (!dictObj) { this.$B.init_dict(subCls); dictObj = this.$B.get_dict(subCls); }
+            HEAP32[(sub + 8) >> 2] = this.wrapPinned(dictObj);  // tp_dict
+            this.handles.set(sub, subCls);
+            subCls.__wasthon_subtype_handle__ = sub;
+            subCls.__wasthon_type_handle__ = subCls.__wasthon_type_handle__ || sub;
+            this.types.set(sub, {
+                basicsize: pinfo.basicsize, itemsize: pinfo.itemsize,
+                flags: pinfo.flags, slots: pinfo.slots, methods: pinfo.methods,
+                getset: pinfo.getset, brythonClass: subCls,
+                moduleHandle: pinfo.moduleHandle,
+                shortName: pinfo.shortName, fullName: pinfo.fullName,
+            });
+            if (!subCls.__wasthon_module__) subCls.__wasthon_module__ = pinfo.moduleHandle;
+            return sub;
+        },
+
         /* Wrap a Brython object as a handle, but if it's a type class give
          * it a struct-backed handle so C code can dereference its fields.
          * Every caller is a new-reference API (PyObject_Call*, GetAttr*),
@@ -9995,8 +10036,18 @@ mergeInto(LibraryManager.library, {
                 // `array.array(spam=42)` keeps raising TypeError.
                 var isSubclass = brythonCls && brythonCls !== cls;
                 var kwH   = (!isSubclass && kw && rt._b_.dict.mp_length(kw) > 0) ? rt.wrap(kw) : 0;
+                // Pass the subclass its OWN type struct (not the parent's), so
+                // the C tp_new's exact-type fast paths miss and it builds a
+                // fresh subtype instance — see rt.subtypeStructFor. Scoped to
+                // _decimal: giving array's subclasses their own struct regresses
+                // array -28 (array_new / the buffer protocol read the type
+                // struct in ways the generic subtype struct doesn't satisfy),
+                // while _decimal needs it for A.from_float (the inherited
+                // exact-type fast path must see a non-base type).
+                var typeArg = (isSubclass && fullName === 'decimal.Decimal')
+                    ? rt.subtypeStructFor(brythonCls, typeHandle) : typeHandle;
                 rt.pendingException = null;
-                var resultH = getWasmTableEntry(tpNewPtr)(typeHandle, argsH, kwH);
+                var resultH = getWasmTableEntry(tpNewPtr)(typeArg, argsH, kwH);
                 if (rt.pendingException) {
                     var pe = rt.pendingException;
                     rt.pendingException = null;
