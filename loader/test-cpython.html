@@ -47,7 +47,7 @@ const INSTALL_MAP = {
     test_cmath: ['cmath', 'math'],
     test_binascii: ['binascii', 'array', '_sre'],
     test_csv: ['_csv', 'array', '_pickle'],
-    test_decimal: ['_decimal', 'math', '_pickle', '_random'],
+    test_decimal: ['_decimal', 'math', '_pickle', '_random', '_sre', 'unicodedata'],
     test_array: ['array', '_pickle', '_struct'],
     test_hmac: ['_hmac', '_md5', '_sha1', '_sha2', '_sha3', '_blake2', 'binascii', '_random'],
     test_statistics: ['_statistics', '_decimal', 'math', '_pickle', '_random'],
@@ -143,7 +143,7 @@ try {
     // ESCAPE_ASCII.sub, STRINGCHUNK) — Brython's own re mis-handles some of
     // these (empty match -> None, sub -> Undefined), so test_json's Py side
     // needs the CPython re package over wasthon _sre too, exactly like test_re.
-    if ((testName === 'test_re' || testName === 'test_json') && params.get('brython') !== 'cdn') {
+    if ((testName === 'test_re' || testName === 'test_json' || testName === 'test_decimal') && params.get('brython') !== 'cdn') {
         const _rebase = './cpython-tests/re/';
         const _ini = await (await fetch(_rebase + '__init__.py?t=' + Date.now())).text();
         window.__BRYTHON__.VFS['re'] = ['.py', _ini, [], 1];
