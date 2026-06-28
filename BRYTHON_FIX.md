@@ -18,6 +18,12 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `str` case/predicate methods delegate to wasthon's CPython Unicode tables ⚠ VENDORED-ONLY
+
+**Impact: `str.upper/lower/title/casefold` and `is*` are CPython-exact (+1 unicodedata test_method_checksum, with the surrogatepass fix below).** Brython's own Unicode tables (`unicode_data.js` categories, JS `toUpperCase`/`toLowerCase`) diverge from CPython on ~2400 codepoints, so the checksum over every codepoint's case/predicate results failed. When wasthon's bridge has installed `$B.$wasthon_unicode` (CPython's `unicodectype` tables — see CHANGELOG), these methods now delegate to it per codepoint: predicates read the bit-packed `flags(cp)` (with the CPython `cased`/`case-ignorable` semantics for `islower`/`isupper`/`istitle`), case methods use the full 1→N `upper/lower/title/fold(cp)`, and `lower`/`title` apply CPython's word-final `Σ`→`ς` (`Final_Sigma`) via the cased/case-ignorable flags + a lookbehind/lookahead. Each method falls back to Brython's own logic when `$B.$wasthon_unicode.available()` is false. Source: `str_funcs.{upper,lower,title,casefold,isalpha,isdecimal,isdigit,isnumeric,islower,isupper,istitle,isspace,isalnum}` in `py_string.js`.
+
+⚠ **VENDORED-ONLY — no upstream PR.** The delegation only works because wasthon links CPython's `unicodectype` tables and exposes them as `$B.$wasthon_unicode`; vanilla Brython has no such hook, so this is a wasthon-architecture change, not a portable Brython fix. (The companion surrogatepass-encode fix below IS a real Brython bug → upstreamable.)
+
 ## [x] `str.encode('utf-8', 'surrogatepass')` replaces lone surrogates with U+FFFD
 
 **Impact: `'\ud800'.encode('utf-8', 'surrogatepass')` yields the WTF-8 bytes, not the replacement char (+1 unicodedata via test_method_checksum, +2 pickle; general).** Brython's `$B.encode` utf-8 path uses `new TextEncoder('utf-8', {fatal:true})`, but JS `TextEncoder` always replaces a lone surrogate with U+FFFD (`{fatal}` only affects *decoding*), so `'\ud800'.encode('utf-8','surrogatepass')` returned `b'\xef\xbf\xbd'` instead of CPython's `b'\xed\xa0\x80'`. (Its manual fallback loop only ran when `TextEncoder` is absent, and it can't reach astral — it logs `"4 bytes"`.) A `surrogatepass` branch now bypasses `TextEncoder` and encodes by hand: a valid surrogate PAIR → 4-byte UTF-8, a LONE surrogate → its 3-byte WTF-8 (`ED A0..BF 80..BF`), like CPython's surrogatepass handler. Source: `$B.encode` (utf-8 case) in `py_bytes.js`.

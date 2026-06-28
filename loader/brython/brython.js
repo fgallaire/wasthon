@@ -8957,6 +8957,10 @@ var _self=to_string(self)
 if(_self.length==0){return ""}
 return _self.charAt(0).toUpperCase()+_self.substr(1).toLowerCase()}
 str_funcs.casefold=function(self){$B.check_nb_args_no_kw('set.remove',1,arguments)
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){var fres='',_s=to_string(self)
+for(var fch of _s){fres+=uc.fold(fch.codePointAt(0))}
+return fres}
 var res="",char,cf,_self=to_string(self),chars=to_chars(_self)
 for(var i=0,len=chars.length;i < len;i++){char=chars[i]
 cf=$B.unicode_casefold[char]
@@ -9088,10 +9092,30 @@ str_funcs.index=function(){
 var res=str.tp_funcs.find.apply(null,arguments)
 if(res===-1){$B.RAISE(_b_.ValueError,"substring not found")}
 return res}
+// Wasthon: when wasthon's CPython Unicode tables are loaded ($B.$wasthon_unicode),
+// the str case/predicate methods delegate to them per codepoint, so they match
+// CPython exactly — Brython's own tables diverge on ~2400 codepoints
+// (test_unicodedata test_method_checksum). available() is false for the ASCII
+// weak-stub bundle, so Brython's own logic is the fallback. flags bits:
+// 1 alpha, 2 decimal, 4 digit, 8 numeric, 16 lower, 32 upper, 64 title,
+// 128 space, 256 printable, 512 cased, 1024 case-ignorable.
+function $wt_cps(s){var a=[];for(var ch of s){a.push(ch.codePointAt(0))}return a}
+function $wt_lower_cp(cps,i,uc){
+    if(cps[i]===0x3A3){ // Final_Sigma: Σ → ς word-final (cased before, not after), else σ
+        var before=false
+        for(var j=i-1;j>=0;j--){var f=uc.flags(cps[j]);if(f&1024){continue}before=!!(f&512);break}
+        var after=false
+        for(var k=i+1;k<cps.length;k++){var g=uc.flags(cps[k]);if(g&1024){continue}after=!!(g&512);break}
+        return (before&&!after)?'ς':'σ'
+    }
+    return uc.lower(cps[i])
+}
 str_funcs.isalnum=function(self){
 $B.check_nb_args_no_kw('str.isalnum',1,arguments)
 var _self=to_string(self);
 if(_self.length==0){return false}
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){for(var ch of _self){if(!(uc.flags(ch.codePointAt(0))&15))return false}return true}
 // CPython: isalnum == isalpha or isdecimal or isdigit or isnumeric (the
 // category set missed Numeric chars like ² ¼ — No/Nl with a Numeric_Type).
 for(var char of _self){if(! (str_funcs.isalpha(char)||str_funcs.isdecimal(char)||
@@ -9101,6 +9125,8 @@ str_funcs.isalpha=function(self){
 $B.check_nb_args_no_kw('str.isalpha',1,arguments)
 var _self=to_string(self);
 if(_self.length==0){return false}
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){for(var ch of _self){if(!(uc.flags(ch.codePointAt(0))&1))return false}return true}
 for(var char of _self){if(!unicode_categories_contain_character(alpha_categories,_b_.ord(char))){return false}}
 return true}
 str_funcs.isascii=function(self){
@@ -9111,12 +9137,16 @@ return true}
 str_funcs.isdecimal=function(self){
 $B.check_nb_args_no_kw('str.isdecimal',1,arguments)
 var cp,_self=to_string(self)
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){if(_self.length==0)return false;for(var ch of _self){if(!(uc.flags(ch.codePointAt(0))&2))return false}return true}
 for(var char of _self){cp=_b_.ord(char)
 if(! $B.in_unicode_category('Nd',cp)){return false}}
 return _self.length > 0}
 str_funcs.isdigit=function(self){
 $B.check_nb_args_no_kw('str.isdigit',1,arguments)
 var cp,_self=to_string(self)
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){if(_self.length==0)return false;for(var ch of _self){if(!(uc.flags(ch.codePointAt(0))&4))return false}return true}
 for(var char of _self){if(/\p{Nd}/u.test(char)){continue}
 cp=_b_.ord(char)
 if(! $B.in_unicode_category('No_digits',cp)){return false}}
@@ -9132,6 +9162,8 @@ return true}
 str_funcs.islower=function(self){
 $B.check_nb_args_no_kw('str.islower',1,arguments)
 var has_cased=false,cp,_self=to_string(self)
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){for(var ch of _self){var f=uc.flags(ch.codePointAt(0));if(f&(32|64))return false;if(f&16)has_cased=true}return has_cased}
 for(var char of _self){cp=_b_.ord(char)
 if($B.in_unicode_category('Ll',cp)){has_cased=true
 continue}else if($B.in_unicode_category('Lu',cp)||
@@ -9140,6 +9172,8 @@ return has_cased}
 str_funcs.isnumeric=function(self){
 $B.check_nb_args_no_kw('str.isnumeric',1,arguments)
 var _self=to_string(self)
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){if(_self.length==0)return false;for(var ch of _self){if(!(uc.flags(ch.codePointAt(0))&8))return false}return true}
 for(var char of _self){if((! numeric_re.test(char))&&
 ! $B.in_unicode_category('Lo_numeric',_b_.ord(char))){return false}}
 return _self.length > 0}
@@ -9152,6 +9186,8 @@ return true}
 str_funcs.isspace=function(self){
 $B.check_nb_args_no_kw('str.isspace',1,arguments)
 var cp,_self=to_string(self)
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){if(_self.length==0)return false;for(var ch of _self){if(!(uc.flags(ch.codePointAt(0))&128))return false}return true}
 for(var char of _self){cp=_b_.ord(char)
 if(! $B.in_unicode_category('Zs',cp)&&
 $B.unicode_bidi_whitespace.indexOf(cp)==-1){return false}}
@@ -9163,6 +9199,12 @@ $B.check_nb_args_no_kw('str.istitle',1,arguments)
 // cased char. (Was `title(s)==s`, which wrongly returns true for no-cased input
 // like '0' or ' '.)
 var _self=to_string(self),cased=false,prev_cased=false
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){for(var wch of _self){var wf=uc.flags(wch.codePointAt(0))
+if(wf&(32|64)){if(prev_cased)return false;prev_cased=true;cased=true}
+else if(wf&16){if(!prev_cased)return false;prev_cased=true;cased=true}
+else{prev_cased=false}}
+return cased}
 for(var ch of _self){var cp=_b_.ord(ch)
 if($B.in_unicode_category('Lu',cp)||$B.in_unicode_category('Lt',cp)){
 if(prev_cased){return false}
@@ -9175,6 +9217,8 @@ return cased}
 str_funcs.isupper=function(self){
 $B.check_nb_args_no_kw('str.isupper',1,arguments)
 var is_upper=false,cp,_self=to_string(self)
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){for(var ch of _self){var f=uc.flags(ch.codePointAt(0));if(f&(16|64))return false;if(f&32)is_upper=true}return is_upper}
 for(var char of _self){cp=_b_.ord(char)
 if($B.in_unicode_category('Lu',cp)){is_upper=true
 continue}else if($B.in_unicode_category('Ll',cp)||
@@ -9197,6 +9241,10 @@ if($.width <=len){return _self}
 return _self+$.fillchar.repeat($.width-len)}
 str_funcs.lower=function(self){$B.check_nb_args_no_kw('str.lower',1,arguments)
 var _self=to_string(self)
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){var cps=$wt_cps(_self),res=''
+for(var i=0;i<cps.length;i++){res+=$wt_lower_cp(cps,i,uc)}
+return res}
 return _self.toLowerCase()}
 str_funcs.lstrip=function(self){var $=$B.args("lstrip",2,{self:null,chars:null},arguments,{chars:_b_.None},null,null),_self=$.self,chars=$.chars
 if(chars===_b_.None){return _self.trimStart()}
@@ -9426,6 +9474,12 @@ str_funcs.title=function(self){$B.check_nb_args_no_kw('str.title',1,arguments)
 var TT={0x1C4:0x1C5,0x1C5:0x1C5,0x1C6:0x1C5,0x1C7:0x1C8,0x1C8:0x1C8,0x1C9:0x1C8,
 0x1CA:0x1CB,0x1CB:0x1CB,0x1CC:0x1CB,0x1F1:0x1F2,0x1F2:0x1F2,0x1F3:0x1F2}
 var state,cp,res="",_self=to_string(self)
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){var cps=$wt_cps(_self),tres='',prev_cased=false
+for(var i=0;i<cps.length;i++){
+tres+=prev_cased ? $wt_lower_cp(cps,i,uc) : uc.title(cps[i])
+prev_cased=!!(uc.flags(cps[i])&512)}
+return tres}
 for(var char of _self){cp=_b_.ord(char)
 if($B.in_unicode_category('Ll',cp)||$B.in_unicode_category('Lu',cp)||
 $B.in_unicode_category('Lt',cp)){if(! state){res+=TT[cp]!==undefined ?
@@ -9441,6 +9495,10 @@ if(repl !==_b_.None){if(typeof repl=="string"){res.push(repl)}else if(typeof rep
 return res.join("")}
 str_funcs.upper=function(self){$B.check_nb_args_no_kw('str.upper',1,arguments)
 var _self=to_string(self)
+var uc=$B.$wasthon_unicode
+if(uc && uc.available()){var res=''
+for(var ch of _self){res+=uc.upper(ch.codePointAt(0))}
+return res}
 return _self.toUpperCase()}
 str_funcs.zfill=function(self,width){$B.check_nb_args_no_kw('str.zfill',2,arguments)
 var _self=to_string(self)
