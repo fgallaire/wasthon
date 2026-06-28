@@ -10072,12 +10072,26 @@ var in_cache=$B.float_hash_cache.get(_v)
 if(in_cache !==undefined){return in_cache}
 if(_v===Infinity){return 314159}else if(_v===-Infinity){return-314159}else if(isNaN(_v)){return self.__hashvalue__=nan_hash}else if(_v===Number.MAX_VALUE){return self.__hashvalue__=2234066890152476671n}
 if(Number.isInteger(_v)){return _b_.int.tp_hash(_v)}
-var r=frexp(self)
-r[0]*=mp2_31
-var hipart=parseInt(r[0])
-r[0]=(r[0]-hipart)*mp2_31
-var x=hipart+parseInt(r[0])+(r[1]<< 15)
-x &=0xFFFFFFFF
+// CPython 3 float hash (_Py_HashDouble): modular, base 2**61-1, so it
+// agrees with the hashes of equal int/Fraction/Decimal values. The legacy
+// 32-bit version disagreed with int_hash for non-integers, e.g.
+// hash(2.5) != hash(Fraction(5, 2)).
+var P=2305843009213693951n
+var r=frexp(self),m=r[0],e=r[1],sign=1n
+if(m<0){sign=-1n;m=-m}
+var hx=0n
+while(m!=0){hx=((hx<<28n)&P)|(hx>>33n)
+m*=268435456
+e-=28
+var y=BigInt(Math.floor(m))
+m-=Number(y)
+hx+=y
+if(hx>=P){hx-=P}}
+var em=e>=0 ? BigInt(e%61) : BigInt(61-1-((-1-e)%61))
+hx=((hx<<em)&P)|(hx>>(61n-em))
+if(sign<0n){hx=-hx}
+if(hx==-1n){hx=-2n}
+var x=_b_.int.$int_or_long(hx)
 $B.float_hash_cache.set(_v,x)
 if($B.float_hash_cache.size > 10000){
 $B.float_hash_cache.clear()}
