@@ -356,9 +356,14 @@ void      PyObject_GC_Del(void *op);
  * ---------------------------------------------------------------- */
 
 PyTypeObject *_wasthon_Py_TYPE(PyObject *op);
+int _wasthon_Py_IS_TYPE(PyObject *op, PyTypeObject *t);
 
 #define Py_TYPE(op)         (_wasthon_Py_TYPE((PyObject*)(op)))
-#define Py_IS_TYPE(op, t)   (Py_TYPE(op) == (t))
+/* Exact-type, like CPython: an object's class must BE `t`, not a subclass.
+ * Py_TYPE() returns a subclass instance's parent handle (so the subtype walk
+ * in PyObject_TypeCheck still works), so a raw pointer compare here would be
+ * loose; _wasthon_Py_IS_TYPE compares the live Brython classes instead. */
+#define Py_IS_TYPE(op, t)   (_wasthon_Py_IS_TYPE((PyObject*)(op), (PyTypeObject*)(t)))
 
 /* ---------------------------------------------------------------- *
  * Mutex (single-threaded WASM: all no-ops)                         *

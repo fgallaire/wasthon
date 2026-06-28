@@ -8421,6 +8421,32 @@ mergeInto(LibraryManager.library, {
         return rt.wrap(cls);
     },
 
+    /* wasthon_is_exact_type — backs the Py_IS_TYPE(op, t) macro with a
+     * STRICT exact-type test: the object's actual Brython class must BE the
+     * type's class, never a subclass. Py_TYPE() can't answer this on its own
+     * because a Python subclass of a C type carries the PARENT's type handle
+     * in __wasthon_type__ (so PyObject_TypeCheck's subtype walk and the C
+     * module-state lookups keep working); that makes the naive
+     * Py_TYPE(op) == t pointer compare TRUE for a subclass too. CPython's
+     * Py_IS_TYPE is exact, so the _decimal fast path
+     * `if (type == PyDec_Type && PyDec_CheckExact(v)) return v;` must reject
+     * a Decimal subclass — otherwise Decimal(MyDecimal(x)) returns the same
+     * MyDecimal object instead of a fresh base Decimal (test_subclassing).
+     * Compares the live Brython classes via get_class, which the subtype
+     * override (ob_type/__class__ = subclass) makes faithful. */
+    wasthon_is_exact_type__deps: ['$WasthonRT'],
+    wasthon_is_exact_type: function(objHandle, typeHandle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objHandle);
+        if (obj === null || obj === undefined) return 0;
+        var objClass = (rt.$B.get_class && rt.$B.get_class(obj)) ||
+                       obj.__class__ || obj.ob_type;
+        // The type handle resolves to its registered Brython class.
+        var info = rt.types.get(typeHandle);
+        var typeClass = info ? info.brythonClass : rt.unwrap(typeHandle);
+        return objClass === typeClass ? 1 : 0;
+    },
+
     /* ---- PyUnicode introspection: materialize a Py_UCS4 buffer in linear
      * memory, cache it on the string object. The regex engine's hot loop
      * indexes PyUnicode_READ(kind, data, i) directly from this buffer, so

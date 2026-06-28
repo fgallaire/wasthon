@@ -269,6 +269,15 @@ PyTypeObject *_wasthon_Py_TYPE(PyObject *op) {
     return wasthon_get_type_of(op);
 }
 
+/* Strict exact-type test backing Py_IS_TYPE — see wasthon_is_exact_type
+ * (wasthon.js). Py_TYPE() returns a subclass instance's PARENT handle, so a
+ * raw Py_TYPE(op) == t compare would be loose; this compares Brython classes. */
+extern int wasthon_is_exact_type(PyObject *op, PyTypeObject *t);
+
+int _wasthon_Py_IS_TYPE(PyObject *op, PyTypeObject *t) {
+    return wasthon_is_exact_type(op, t);
+}
+
 /* ---- Type-check predicates: thin wrappers around JS-side helpers ---- */
 extern int wasthon_isinstance_of_builtin(PyObject *op, int builtinTag);
 extern int wasthon_exacttype_of_builtin(PyObject *op, int builtinTag);
