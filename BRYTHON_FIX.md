@@ -18,6 +18,17 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `str.encode('utf-8', 'surrogatepass')` replaces lone surrogates with U+FFFD
+
+**Impact: `'\ud800'.encode('utf-8', 'surrogatepass')` yields the WTF-8 bytes, not the replacement char (+1 unicodedata via test_method_checksum, +2 pickle; general).** Brython's `$B.encode` utf-8 path uses `new TextEncoder('utf-8', {fatal:true})`, but JS `TextEncoder` always replaces a lone surrogate with U+FFFD (`{fatal}` only affects *decoding*), so `'\ud800'.encode('utf-8','surrogatepass')` returned `b'\xef\xbf\xbd'` instead of CPython's `b'\xed\xa0\x80'`. (Its manual fallback loop only ran when `TextEncoder` is absent, and it can't reach astral — it logs `"4 bytes"`.) A `surrogatepass` branch now bypasses `TextEncoder` and encodes by hand: a valid surrogate PAIR → 4-byte UTF-8, a LONE surrogate → its 3-byte WTF-8 (`ED A0..BF 80..BF`), like CPython's surrogatepass handler. Source: `$B.encode` (utf-8 case) in `py_bytes.js`.
+
+```python
+>>> '\ud800'.encode('utf-8', 'surrogatepass')
+b'\xef\xbf\xbd'  # before
+>>> '\ud800'.encode('utf-8', 'surrogatepass')
+b'\xed\xa0\x80'  # after
+```
+
 ## [x] `float.__hash__` uses the legacy 32-bit algorithm, disagreeing with `int`/`Fraction`/`Decimal`
 
 **Impact: `hash(2.5) == hash(Fraction(5, 2)) == hash(Decimal('2.5'))` (enables +1 decimal of the hash cluster; general Brython correctness).** Brython's `float.$hash_func` computes a non-integer float's hash with the pre-3.x algorithm (`frexp` → `hipart + parseInt(...) + (exp << 15)`, then `& 0xFFFFFFFF`), a 32-bit value. But its `int_hash` already uses CPython 3's `2**61-1` modulus (and the function even hard-codes the 61-bit hash of `MAX_VALUE`), so `hash(2.5) = 1342242816` while `hash(Fraction(5, 2)) = 1152921504606846978` — Python requires numerically-equal `int`/`float`/`Fraction`/`Decimal` to hash equal. Replaced the non-integer branch with CPython 3's `_Py_HashDouble`: a modular base-`2**61-1` reduction (`frexp`, pull 28 bits per loop in BigInt, rotate, then shift by the exponent mod 61, sign, `-1`→`-2`). The integer-valued and `inf`/`nan`/`MAX_VALUE` fast paths are unchanged. Source: `float.$hash_func` in `py_float.js`.
