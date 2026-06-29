@@ -280,6 +280,49 @@ def adjust_int_max_str_digits(maxdigits):
         _s.set_int_max_str_digits(current)
 support.adjust_int_max_str_digits = adjust_int_max_str_digits
 
+# Real test.support.swap_item / swap_attr: temporarily set obj[item] / obj.attr
+# and restore on exit. The catch-all stub was a no-op, so the swap never took
+# effect (test_load_global's swap_item(sys.modules, 'module', ...) saw the
+# module missing; test_newobj_not_class's swap_attr(picklecommon, 'SimpleNewObj',
+# 42) saw the real class). Implemented like CPython's.
+@_ctxlib.contextmanager
+def swap_item(obj, item, new_val):
+    if item in obj:
+        real_val = obj[item]
+        obj[item] = new_val
+        try:
+            yield real_val
+        finally:
+            obj[item] = real_val
+    else:
+        obj[item] = new_val
+        try:
+            yield new_val
+        finally:
+            if item in obj:
+                del obj[item]
+support.swap_item = swap_item
+
+@_ctxlib.contextmanager
+def swap_attr(obj, attr, new_val):
+    if hasattr(obj, attr):
+        real_val = getattr(obj, attr)
+        setattr(obj, attr, new_val)
+        try:
+            yield real_val
+        finally:
+            setattr(obj, attr, real_val)
+    else:
+        setattr(obj, attr, new_val)
+        try:
+            yield new_val
+        finally:
+            try:
+                delattr(obj, attr)
+            except AttributeError:
+                pass
+support.swap_attr = swap_attr
+
 # Explicit overrides — skip what can't/shouldn't run in-browser:
 support.cpython_only        = _skip      # refcount / impl detail
 support.refcount_test       = _skip      # @refcount_test loops create+leak C ctx (no refcount in Brython) -> OOM cascade
