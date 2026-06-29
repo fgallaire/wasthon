@@ -289,7 +289,12 @@ support.bigaddrspacetest    = _skip      # @bigaddrspacetest (no call): skip as 
 support.requires_resource   = lambda *a, **k: _skip
 support.run_doctest         = lambda *a, **k: (0, 0)
 support.run_unittest        = lambda *a, **k: None
-support.gc_collect          = lambda *a, **k: None
+def _wasthon_gc_collect(*a, **k):
+    from browser import window
+    f = getattr(window.__BRYTHON__, '$wasthon_gc_collect', None)
+    if f is not None:
+        f()
+support.gc_collect          = _wasthon_gc_collect
 support.check_disallow_instantiation = lambda *a, **k: None
 support.sortdict            = lambda d: repr(d)
 support.verbose             = False
