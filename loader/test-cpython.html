@@ -6,7 +6,7 @@
 <script src="./brython-src.js"></script>
 <script src="./wasthon-loader.js"></script>
 <script src="./wasthon-io-write.js"></script>
-<script src="./wasthon-fs-mem.js"></script>
+<script src="./wasthon-fs.js"></script>
 <script src="./wasthon-dealloc.js"></script>
 </head>
 <body>
@@ -99,8 +99,8 @@ try {
     if (params.get('brython') === 'cdn') {
         log('file I/O: none (stock Brython via CDN)');
     } else {
-        installWasthonFSMem(window.__BRYTHON__);
-        log('file I/O: pure-JS in-memory FS');
+        installWasthonFS(bundle.module);
+        log('file I/O: Emscripten MEMFS (shared with C / sqlite3)');
     }
     log('Installing: ' + (installList.join(', ') || '(none)'));
     for (const m of installList) {
@@ -456,6 +456,23 @@ class _FakePath:
     def __init__(self, path): self._p = path
     def __fspath__(self): return self._p
 os_helper.FakePath = _FakePath
+# Real temp_dir context manager (Brython's os_helper lacks it -> _Flex stub,
+# which yielded a non-path so a "with temp_dir() as db: connect(db)" broke).
+# tempfile.mkdtemp works on the Emscripten MEMFS backing, so this is real.
+import contextlib as _ctxlib_h, tempfile as _tempfile_h
+@_ctxlib_h.contextmanager
+def _temp_dir(path=None, quiet=False):
+    created = path is None
+    if created:
+        path = _tempfile_h.mkdtemp()
+    try:
+        yield path
+    finally:
+        if created:
+            try: _os_fs.rmdir(path)
+            except OSError: pass
+os_helper.temp_dir = _temp_dir
+support.temp_dir = _temp_dir
 threading_helper = _mod('test.support.threading_helper')
 warnings_helper = _mod('test.support.warnings_helper')
 hashlib_helper = _mod('test.support.hashlib_helper')
@@ -809,12 +826,13 @@ except Exception:
 # Neutralize the call before the VFS file runs — preserves the import.
 
 
-# test_bz2's setUp does tempfile.mkstemp() -> os.open() (not implemented
-# in Brython browser), so all 101 tests error out before their body runs.
-# Stub mkstemp to return a fake (fd, filename) pair and os.close to ignore
-# our fake fds. In-memory tests (BZ2Compressor/Decompressor) then pass;
-# file-based ones (BZ2File*, OpenTest) still fail but in a meaningful way.
-if test_name == 'test_bz2':
+# test_bz2's setUp does tempfile.mkstemp() -> os.open(). With the Emscripten
+# MEMFS backing (wasthon-fs.js) os.open/mkstemp work for real, so the real
+# tempfile runs and the file-based tests pass — only the pure-JS store needs
+# this fake (fd, filename) + os.close-ignore stub (os.open unimplemented there).
+from browser import window as _win_emfs
+_has_emfs = getattr(_win_emfs.__BRYTHON__, '$wasthon_fs', None) is not None
+if test_name == 'test_bz2' and not _has_emfs:
     try:
         import tempfile as _tempfile_stub
         import os as _os_stub_bz2

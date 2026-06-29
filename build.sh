@@ -569,7 +569,13 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
     BUNDLE_RTM='"HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8"'
     [[ "${BUNDLE_NAME}" == "wasthon-full" ]] && BUNDLE_RTM="${BUNDLE_RTM},\"FS\""
 
-    emcc -O2 ${STACK_FLAG} ${EXTRA_LD_FLAGS:-} "${OBJS[@]}" \
+    # Force the full Emscripten FS into the full bundle so wasthon-fs.js can back
+    # Brython's posix layer with the SAME MEMFS sqlite3's file DBs live in — one
+    # shared filesystem, so os.path.exists() sees what the C side wrote.
+    FS_FLAG=""
+    [[ "${BUNDLE_NAME}" == "wasthon-full" ]] && FS_FLAG="-sFORCE_FILESYSTEM=1"
+
+    emcc -O2 ${STACK_FLAG} ${FS_FLAG} ${EXTRA_LD_FLAGS:-} "${OBJS[@]}" \
         --js-library "${SRC}/wasthon.js" \
         -sUSE_ZLIB=1 \
         -s ALLOW_MEMORY_GROWTH=1 -s ALLOW_TABLE_GROWTH=1 \
