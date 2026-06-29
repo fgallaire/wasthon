@@ -18,6 +18,73 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `object.__new__` doesn't allocate a wasthon C type's struct ⚠ VENDORED-ONLY
+
+**Impact: `sqlite3.Connection.__new__(Connection)` (and any explicit `__new__` on a C type) gets a real zeroed C struct (+1 sqlite3, test_uninit_operations).** Brython's `object.tp_new` returns a bare `{ob_type: cls}` JS object. For a wasthon C type (`cls.__wasthon_type_handle__` set), `object.__new__` must instead allocate the C struct — like CPython's `object_new` calling `type->tp_alloc` — so C code that casts the instance and reads struct fields sees a zeroed struct, not stale heap (the uninit guard otherwise misfired with index-OOB / a thread-id mismatch). `object.tp_new` now dispatches to the bridge's leaf allocator `$B.$wasthon_new_instance(cls)` (mallocs+zeroes the struct, never calls `cls.tp_new`, so no recursion) for such types; all other classes are unchanged. Source: `object.tp_new` in `py_object.js`.
+
+⚠ VENDORED-ONLY — `cls.__wasthon_type_handle__` and `$B.$wasthon_new_instance` exist only with wasthon's bridge; vanilla Brython has no C structs, so the branch never fires.
+
+## [x] a class with `'__dict__'` in `__slots__` gives no instance `__dict__` at `__new__`
+
+**Impact: `C.__new__(C).__dict__ == {}` when `C.__slots__` contains `'__dict__'` (+5 pickle; general).** `object.__new__` calls `init_dict` only when the class has no `__slots__` at all, so a class that opts back into a per-instance dict via `'__dict__'` in `__slots__` got none on a bare `__new__` instance. `setattr` created one lazily, but pickle's `load_build` writes `inst.__dict__[k] = v` directly — so unpickling a `WithSlotsAndDict` (slots + dict) crashed with `'UndefinedType' object does not support item assignment` (`test_object_with_slots`). `__new__` now also inits the dict when `cls.$slots_has_dict` (the flag already set when `'__dict__'` is in `__slots__`); pure-`__slots__` classes still get none. Source: `object.tp_new` in `py_object.js`.
+
+```python
+>>> class C:
+...     __slots__ = ('a', '__dict__')
+>>> C.__new__(C).__dict__
+<undefined>  # before
+>>> C.__new__(C).__dict__
+{}           # after
+```
+
+## [x] subclasses of `set`/`frozenset` aren't picklable with instance attributes
+
+**Impact: a `set`/`frozenset` subclass instance takes attributes and round-trips through pickle (+3 pickle; general).** Two gaps: (1) `set.tp_new`/`frozenset.tp_new` didn't `init_dict` a subclass instance (`list`/`dict`/`float`/`tuple`/`bytes` do), so `MySet().foo = 1` failed (no instance dict); (2) `set.__reduce__` hard-coded the state slot to `None`, dropping the instance `__dict__`, so even once the dict existed the attribute was lost on round-trip — CPython's `set_reduce` returns `(cls, (list(self),), self.__dict__)`. Now both tp_news `init_dict` a strict subclass (base `set`/`frozenset` keep none) and `__reduce__` returns the instance dict as state when non-empty (`test_newobj_generic`). Source: `set.tp_new`, `frozenset.tp_new`, `set.__reduce__` in `py_set.js`.
+
+```python
+>>> class S(set): pass
+>>> s = S([1, 2]); s.foo = 9; import pickle; pickle.loads(pickle.dumps(s)).foo
+AttributeError  # before
+>>> s = S([1, 2]); s.foo = 9; import pickle; pickle.loads(pickle.dumps(s)).foo
+9               # after
+```
+
+## [x] setting `cls.__qualname__` doesn't update what the getter reads
+
+**Impact: `cls.__qualname__ = 'X'; cls.__qualname__ == 'X'` (+10 pickle; general).** `type.__qualname___get` reads `__qualname__` from the class dict, but `type.__qualname___set` wrote `cls.tp_name` instead — so after `cls.__qualname__ = 'X'` the getter still returned the auto-computed qualname (the dict stayed stale) while `repr(cls)` (which uses `tp_name`) did show `'X'`. pickle reads `obj.__qualname__` through the getter, so a class with a reassigned `__qualname__` (e.g. the self-referential ones in the regression tests) was looked up under the wrong name and failed (`test_recursive_nested_names`/`2`, all picklers). The setter now writes the dict (where the getter reads) in addition to `tp_name`. Source: `type_funcs.__qualname___set` in `py_type.js`.
+
+```python
+>>> class C: pass
+>>> C.__qualname__ = 'A.B.C'
+>>> C.__qualname__
+'C'  # before
+>>> C.__qualname__
+'A.B.C'  # after
+```
+
+## [x] subclasses of `bytes`/`bytearray` get no instance `__dict__`
+
+**Impact: `class B(bytes): pass; B().__dict__ == {}` (+2 pickle; general).** `list`, `dict`, `float` and `tuple` all call `$B.init_dict(instance)` in their `tp_new` when `cls` is a subclass, so a heap subclass gets an instance dict; `bytes.tp_new` (and `bytearray.tp_new`, which delegates to it) did not, so `MyBytes().__dict__` / `MyBytearray().__dict__` was `undefined` — attributes couldn't be set, and pickling a subclass instance failed `assert_is_copy` (it compares `obj.__dict__`). `bytes.tp_new` has several return points, so it's wrapped to `init_dict` the result when `cls` is neither `bytes` nor `bytearray` (covering both families through the bytearray→bytes delegation); the base types keep no `__dict__`, as in CPython. Source: `bytes.tp_new` in `py_bytes.js`.
+
+```python
+>>> class B(bytearray): pass
+>>> B().__dict__
+<undefined>  # before
+>>> B().__dict__
+{}  # after
+```
+
+## [x] `type.__module__` returns the getset descriptor instead of `'builtins'`
+
+**Impact: `type.__module__ == 'builtins'`, so pickling `type` (and types reduced through it) works (+7 pickle; general).** `type.__module___get` reads `__module__` from the class dict and returns it as-is. For every normal class the dict holds the module string, but `type.__dict__['__module__']` is the `__module__` getset descriptor itself (`<attribute '__module__' of 'type' objects>`, exactly as CPython) — and `type` is its own metaclass, so the getter returned that descriptor instead of `'builtins'`. This broke `pickle.dumps(type)`: `whichmodule` got the descriptor as the module name and `__import__(descriptor)` blew up (`mod_name.split is not a function`), which in turn broke pickling the singleton *types* `type(None)`/`type(...)`/`type(NotImplemented)` (reduced as `(type, (None,))` etc. — `test_singleton_types`). A module name is always a string, so the getter now returns the dict value only when it is a string, else falls through to `'builtins'`. Source: `type_funcs.__module___get` in `py_type.js`.
+
+```python
+>>> type.__module__
+<attribute '__module__' of 'type' objects>  # before
+>>> type.__module__
+'builtins'  # after
+```
+
 ## [x] `str` case/predicate methods delegate to wasthon's CPython Unicode tables ⚠ VENDORED-ONLY
 
 **Impact: `str.upper/lower/title/casefold` and `is*` are CPython-exact (+1 unicodedata test_method_checksum, with the surrogatepass fix below).** Brython's own Unicode tables (`unicode_data.js` categories, JS `toUpperCase`/`toLowerCase`) diverge from CPython on ~2400 codepoints, so the checksum over every codepoint's case/predicate results failed. When wasthon's bridge has installed `$B.$wasthon_unicode` (CPython's `unicodectype` tables — see CHANGELOG), these methods now delegate to it per codepoint: predicates read the bit-packed `flags(cp)` (with the CPython `cased`/`case-ignorable` semantics for `islower`/`isupper`/`istitle`), case methods use the full 1→N `upper/lower/title/fold(cp)`, and `lower`/`title` apply CPython's word-final `Σ`→`ς` (`Final_Sigma`) via the cased/case-ignorable flags + a lookbehind/lookahead. Each method falls back to Brython's own logic when `$B.$wasthon_unicode.available()` is false. Source: `str_funcs.{upper,lower,title,casefold,isalpha,isdecimal,isdigit,isnumeric,islower,isupper,istitle,isspace,isalnum}` in `py_string.js`.
@@ -33,6 +100,17 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 b'\xef\xbf\xbd'  # before
 >>> '\ud800'.encode('utf-8', 'surrogatepass')
 b'\xed\xa0\x80'  # after
+```
+
+## [x] `str.encode('utf-8')` (strict) silently substitutes U+FFFD for a lone surrogate instead of raising
+
+**Impact: `'\ud800'.encode('utf-8')` raises `UnicodeEncodeError: ... surrogates not allowed`, as CPython does (general Brython correctness; same PR as the surrogatepass fix above).** The default strict handler shares the `new TextEncoder('utf-8', {fatal:true})` path — but `{fatal}` is a `TextDecoder`-only option, so `TextEncoder` never throws and replaces a lone surrogate with U+FFFD, returning `b'\xef\xbf\xbd'` where CPython raises. A `strict` guard now scans for a surrogate code unit (via the same regex/`codePointAt` that distinguishes a lone surrogate from a combined astral pair) and raises `UnicodeEncodeError`; valid astral characters (`'\U00010e6d'`) and plain text are untouched. The `$UnicodeEncodeError` helper gains an optional `reason`. Source: `$B.encode` (utf-8 case) + `$UnicodeEncodeError` in `py_bytes.js`.
+
+```python
+>>> '\ud800'.encode('utf-8')
+b'\xef\xbf\xbd'  # before
+>>> '\ud800'.encode('utf-8')
+UnicodeEncodeError: 'utf-8' codec can't encode character '\ud800' in position 0: surrogates not allowed  # after
 ```
 
 ## [x] `float.__hash__` uses the legacy 32-bit algorithm, disagreeing with `int`/`Fraction`/`Decimal`
