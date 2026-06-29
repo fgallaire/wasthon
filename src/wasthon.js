@@ -6183,9 +6183,16 @@ mergeInto(LibraryManager.library, {
     PyObject_SetAttr: function(objH, nameH, valueH) {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
-        var name = rt.asJSStr(rt.unwrap(nameH));
-        if (!obj || name === null) {
-            rt.setError(rt.wrap(rt._b_.SystemError), "PyObject_SetAttr: invalid args");
+        var nameObj = rt.unwrap(nameH);
+        var name = rt.asJSStr(nameObj);
+        if (name === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "attribute name must be string, not '" +
+                rt.$B.class_name(nameObj) + "'");
+            return -1;
+        }
+        if (!obj) {
+            rt.setError(rt.wrap(rt._b_.SystemError), "PyObject_SetAttr: null object");
             return -1;
         }
         try {
@@ -7420,7 +7427,10 @@ mergeInto(LibraryManager.library, {
             return 0;
         }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), "setitem failed: " + (e.message || String(e)));
+            // propagate the real exception (e.g. a key's __hash__ raising) instead
+            // of masking it as TypeError "[object Object]"; a non-hashable key
+            // already raises a Brython TypeError, forwarded as-is.
+            rt.forwardError(e, rt._b_.TypeError);
             return -1;
         }
     },
