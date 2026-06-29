@@ -8557,7 +8557,9 @@ mergeInto(LibraryManager.library, {
                     return { ob_type: cls_, obj: (args && args[0]) || null };
                 };
                 var pb_funcs = cls.tp_funcs = {};
-                pb_funcs.raw = function(self){ return self.obj; };
+                pb_funcs.raw = function(self){
+                    return rt.$B.$call(rt._b_.memoryview, self.obj);
+                };
                 pb_funcs.release = function(self){ self.obj = null; return rt._b_.None; };
                 cls.tp_methods = ['raw', 'release'];
                 try { rt.$B.set_func_names(cls, '_pickle'); } catch (_) {}
