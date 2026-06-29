@@ -1008,7 +1008,17 @@ mergeInto(LibraryManager.library, {
             return rt.wrapNewRef(UTF8ToString(uPtr));
         }
         var bytes = HEAPU8.subarray(uPtr, uPtr + size);
-        return rt.wrapNewRef(new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes));
+        // CPython's PyUnicode_FromStringAndSize is strict UTF-8: invalid bytes
+        // raise UnicodeDecodeError (returns NULL). sqlite3's row builder relies
+        // on that NULL to turn an undecodable TEXT column into OperationalError
+        // (cursor.c:405, test_error_msg_decode_error). fatal:true does it.
+        try {
+            return rt.wrapNewRef(new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }).decode(bytes));
+        } catch (e) {
+            rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
+                "'utf-8' codec can't decode byte: invalid start byte");
+            return 0;
+        }
     },
 
     /* PyUnicode_AsUTF8String — encode a str as UTF-8 bytes. Returns a new
