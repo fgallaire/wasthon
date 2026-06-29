@@ -1270,8 +1270,24 @@ mergeInto(LibraryManager.library, {
             // TextDecoder defaults to stripping it, so a string starting with
             // '﻿' decoded to '' (pickle round-trip of array('u',
             // '...﻿') lost the char). CPython's UTF-8 codec never strips it.
-            return WasthonRT.wrapNewRef(
-                new TextDecoder('utf-8', { ignoreBOM: true }).decode(sl));
+            // 'strict' (the default) must reject invalid bytes with
+            // UnicodeDecodeError — pickle's find_class decodes a module/global
+            // name strict, so a \xff name raises instead of yielding U+FFFD.
+            // On this fast path there are no 0xED lead bytes, hence no lone
+            // surrogates — so 'surrogatepass' behaves like 'strict' here (an
+            // invalid byte such as \xff is rejected either way); only the
+            // lenient modes keep replacing. The 0xED slow path below still
+            // round-trips lone surrogates for 'surrogatepass'.
+            var err = errorsPtr ? UTF8ToString(errorsPtr) : 'strict';
+            var strict = (err === 'strict' || err === 'surrogatepass');
+            try {
+                return WasthonRT.wrapNewRef(
+                    new TextDecoder('utf-8', { ignoreBOM: true, fatal: strict }).decode(sl));
+            } catch (e) {
+                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.UnicodeDecodeError),
+                    "'utf-8' codec can't decode byte: invalid start byte");
+                return 0;
+            }
         }
         var chars = [];
         for (var p = 0; p < sl.length;) {
@@ -5836,8 +5852,25 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var name = rt.asJSStr(rt.unwrap(nameH));
         if (name === null) return 0;
+        if (name === '') {
+            // CPython's __import__('') raises ValueError, not ImportError.
+            rt.setError(rt.wrap(rt._b_.ValueError), "Empty module name");
+            return 0;
+        }
         // Pinned: module singleton (see PyImport_ImportModule).
-        try { return rt.wrapPinned(rt._b_.__import__(name)); }
+        try {
+            var mod = rt._b_.__import__(name);
+            // __import__ of a dotted name returns the TOP package; walk down to
+            // the leaf submodule (CPython's PyImport_Import returns the leaf, so
+            // pickle's find_class('os.path', 'join') resolves to os.path.join).
+            if (name.indexOf('.') !== -1) {
+                var parts = name.split('.');
+                for (var i = 1; i < parts.length; i++) {
+                    mod = rt.$B.$getattr(mod, parts[i]);
+                }
+            }
+            return rt.wrapPinned(mod);
+        }
         catch (e) {
             rt.forwardError(e, rt._b_.ImportError);
             return 0;
