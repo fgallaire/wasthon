@@ -1526,7 +1526,7 @@ if(typeof key !=='string'){$B.RAISE(_b_.TypeError,fname+
 "() got multiple values for argument '"+
 key+"'")}else{kwa[key]=entry.value}}}else{
 var cls=$B.get_class(kw_arg)
-try{var keys_method=$B.$getattr(cls,'keys')}catch(err){$B.RAISE(_b_.TypeError,`${fname} argument `+
+try{var keys_method=$B.$getattr(cls,'keys')}catch(err){$B.RAISE(_b_.TypeError,`${fname}() argument `+
 `after ** must be a mapping, not ${$B.class_name(kw_arg)}`)}
 var keys_iter=$B.make_js_iterator($B.$call(keys_method,kw_arg)),getitem
 for(var k of keys_iter){if(typeof k !=="string"){$B.RAISE(_b_.TypeError,fname+
@@ -1652,12 +1652,17 @@ var inum_rank=3
 if(has_starred){var nb_after_starred=arguments[3]
 inum_rank++}
 var inum=arguments[inum_rank]
-var t=_b_.list.$factory(obj),right_length=t.length,left_length=nb_targets+(has_starred ? nb_after_starred-1 :0)
+var t
+try{t=_b_.list.$factory(obj)}catch(err){
+// the unpack opcode has its own message for a non-iterable source
+if($B.$isinstance(err,_b_.TypeError)&& /object is not iterable/.test(err.args && err.args[0])){$B.RAISE(_b_.TypeError,`cannot unpack non-iterable ${$B.class_name(obj)} object`)}
+throw err}
+var right_length=t.length,left_length=nb_targets+(has_starred ? nb_after_starred-1 :0)
 if(test){console.log('list from obj',t)}
 if((! has_starred &&(right_length < nb_targets))||
 (has_starred &&(right_length < nb_targets-1))){$B.set_inum(inum)
 var exc=$B.EXC(_b_.ValueError,`not enough values to unpack `+
-`(expected ${has_starred ? ' at least ' : ''} `+
+`(expected ${has_starred ? 'at least ' : ''}`+
 `${left_length}, got ${right_length})`)
 throw exc}
 if((! has_starred)&& right_length > left_length){var exc=$B.EXC(_b_.ValueError,"too many values to unpack "+
@@ -2162,8 +2167,11 @@ var res=Object.create(null)
 res.ob_type=cls
 if(cls !==object){$B.set_dict(res,$B.obj_dict({}))}
 return res}
-function getNewArguments(self,klass){var newargs_ex=$B.$getattr(self,'__getnewargs_ex__',null)
-if(newargs_ex !==null){let newargs=$B.$call(newargs_ex)
+function getNewArguments(self,klass){
+// type-only lookup, like every implicit dunder: an instance getattr falls
+// into a class __getattr__ hook on a miss (BadGetattr infinite recursion)
+var newargs_ex=$B.$getattr(klass,'__getnewargs_ex__',null)
+if(newargs_ex !==null){let newargs=$B.$call(newargs_ex,self)
 if((! newargs)||$B.get_class(newargs)!==_b_.tuple){$B.RAISE(_b_.TypeError,"__getnewargs_ex__ should "+
 `return a tuple, not '${$B.class_name(newargs)}'`)}
 if(newargs.length !=2){$B.RAISE(_b_.ValueError,"__getnewargs_ex__ should "+
@@ -2392,6 +2400,15 @@ if($B.imported.copyreg===undefined){$B.$import('copyreg')}
 if(protocol < 2){var _reduce_ex=$B.module_getattr($B.imported.copyreg,'_reduce_ex')
 return $B.$call(_reduce_ex,self,protocol)}
 var newargs=getNewArguments(self,klass)
+if(! newargs){
+// a non-heap builtin type that is its own nearest builtin base and offers
+// no __getnewargs__ has no reconstruction path (copyreg._reduce_ex raises
+// the same way for protocol < 2): staticmethod, classmethod, memoryview...
+var nhbase=object
+for(var bkls of $B.get_mro(klass)){if($B.is_builtin_type(bkls)){nhbase=bkls
+break}}
+if(nhbase !==object && nhbase===klass){$B.RAISE(_b_.TypeError,
+`cannot pickle '${$B.class_name(self)}' object`)}}
 var res,arg2
 if(newargs && newargs.kwargs && _b_.dict.mp_length(newargs.kwargs)> 0){
 res=[$B.module_getattr($B.imported.copyreg,'__newobj_ex__')]
@@ -2440,14 +2457,14 @@ var classdef_frame=$B.frame_obj.prev.frame
 var module=classdef_frame[2]
 if(Object.hasOwn(classdef_frame[1],'__name__')){module=classdef_frame[1].__name__}
 $B.str_dict_set(dict,'__module__',module)
-var stack=[]
+if($B.str_dict_get(dict,'__qualname__',$B.NULL)===$B.NULL){var stack=[]
 var frame_obj=$B.frame_obj.prev
 while(frame_obj.prev){var frame=frame_obj.frame
 if(frame[0]==frame[2]){break}
 stack.push(frame_obj.frame[0]+'.')
 frame_obj=frame_obj.prev}
 var qualname=`${stack.reverse().join('')}${class_name}`
-$B.str_dict_set(dict,'__qualname__',qualname)
+$B.str_dict_set(dict,'__qualname__',qualname)}
 if($B.str_dict_get(dict,'__eq__',$B.NULL)!==$B.NULL &&
 $B.str_dict_get(dict,'__hash__',$B.NULL)===$B.NULL){$B.str_dict_set(dict,'__hash__',_b_.None)}
 var slots=$B.str_dict_get(dict,'__slots__',$B.NULL)
@@ -2557,6 +2574,7 @@ $B.RAISE(_b_.TypeError,`${$B.get_name(metaclass)}.__prepare__() must return a ma
 `not ${$B.class_name(class_dict)}`)}
 if(orig_bases !==bases){$B.str_dict_set(class_dict,'__orig_bases__',orig_bases)}
 if(! $B.hasOnlyStringKeys(class_dict)){$B.warn(_b_.RuntimeWarning,`non-string key in the __dict__ of class ${class_name}`)}
+$B.str_dict_set(class_dict,'__qualname__',qualname)
 return class_dict}
 $B.resolve_mro_entries=function(bases){
 var new_bases=[],has_mro_entries=false
@@ -2824,7 +2842,17 @@ if(kls.hasOwnProperty('tp_flags')&&(kls.tp_flags & TPFLAGS.HEAPTYPE)){var module
 qualname=(module===$B.NULL ||module=='builtins')? name :
 module+"."+name}else{qualname=name}
 return "<class '"+qualname+"'>"}
-_b_.type.tp_call=function(cls){var $=$B.args('__call__',1,{cls:null},arguments,null,'args','kw'),cls=$.cls,args=$.args,kw=$.kw,kw_len=_b_.dict.mp_length(kw)
+_b_.type.tp_call=function(cls){try{var $=$B.args('__call__',1,{cls:null},arguments,null,'args','kw')}catch(err){
+// name the callable like CPython (functools.partial() argument after **
+// must be a mapping...), computed only on the error path
+if(err.args && typeof err.args[0]=='string' &&
+        err.args[0].startsWith('__call__()')){var kls=arguments[0]
+var name=$B.get_name(kls)
+var module=$B.$getattr(kls,'__module__',$B.NULL)
+var funcstr=(module===$B.NULL ||module=='builtins')? name : module+'.'+name
+err.args[0]=funcstr+'()'+err.args[0].substr(10)}
+throw err}
+var cls=$.cls,args=$.args,kw=$.kw,kw_len=_b_.dict.mp_length(kw)
 var test=false 
 if(test){console.log('type.tp_call',cls,args)
 console.log(Error('trace').stack)}
@@ -3593,7 +3621,9 @@ $B.set_func_names($B.builtin_function_or_method,"builtins")
 function doc_set(f,value){$B.check_infos(f)
 f.$infos.__doc__=value}
 function module_get(f){$B.check_infos(f)
-return f.$infos.__module__}
+var res=f.$infos.__module__
+if(res===$B.NULL||res===undefined){throw $B.attr_error('__module__',f)}
+return res}
 function module_set(f,value){$B.check_infos(f)
 f.$infos.__module__=value}
 function name_get(f){$B.check_infos(f)
@@ -3691,7 +3721,9 @@ var kwd={}
 for(var item of _b_.dict.$iter_items(value)){kwd[item.key]=item.value}
 self.$function_infos[$B.func_attrs.__kwdefaults__]=kwd
 reset_args_parser(self)}
-function_funcs.__module___get=function(self){return self.$function_infos[$B.func_attrs.__module__]}
+function_funcs.__module___get=function(self){var res=self.$function_infos[$B.func_attrs.__module__]
+if(res===$B.NULL||res===undefined){throw $B.attr_error('__module__',self)}
+return res}
 function_funcs.__module___set=function(self,value){self.$function_infos[$B.func_attrs.__module__]=value}
 function_funcs.__name___get=function(self){return self.$function_infos[$B.func_attrs.__name__]}
 function_funcs.__name___set=function(self,value){self.$function_infos[$B.func_attrs.__name__]=value}
@@ -4720,7 +4752,9 @@ _b_.getattr=function(){var missing={}
 var $=$B.args("getattr",3,{obj:null,attr:null,_default:null},arguments,{_default:missing},null,null)
 if(! $B.is_str($.attr)){$B.RAISE(_b_.TypeError,"attribute name must be string, "+
 `not '${$B.class_name($.attr)}'`)}
-return $B.$getattr($.obj,_b_.str.$to_string($.attr),$._default===missing ? undefined :$._default)}
+if($._default===missing){return $B.$getattr($.obj,_b_.str.$to_string($.attr))}
+try{return $B.$getattr($.obj,_b_.str.$to_string($.attr),$._default)}catch(err){if($B.is_exc(err,[_b_.AttributeError])){return $._default}
+throw err}}
 $B.search_in_mro=function(klass,attr,_default){var mro=$B.get_mro(klass)
 for(var i=0,len=mro.length;i < len;i++){if($B.get_dict(mro[i])){var v=$B.get_from_dict(mro[i],attr,$B.NULL)
 if(v !==$B.NULL){return v}}}
@@ -4782,7 +4816,7 @@ var in_own_dict=own_dict
 ? own_dict[attr]
 :$B.NULL
 :$B.NULL
-if(in_klass_dict){if(attr=='path'){console.log('attr',attr,'of obj',obj,'in klass dict',in_klass_dict)}
+if(in_klass_dict && klass.$getattribute===_b_.object.tp_getattro){
 switch(in_klass_dict.ob_type){case $B.function:
 if(in_own_dict===$B.NULL){return $B.method.$factory(in_klass_dict,obj)}
 break
@@ -4872,9 +4906,19 @@ help.__repr__=help.__str__=function(){return "Type help() for interactive help, 
 _b_.hex=function(obj){check_nb_args_no_kw('hex',1,arguments)
 return bin_hex_oct(16,obj)}
 _b_.id=function(obj){check_nb_args_no_kw('id',1,arguments)
-if(obj[$B.ID]!==undefined){return obj[$B.ID]}else if($B.$isinstance(obj,[_b_.str,_b_.int,_b_.float])){return $B.$call($B.$getattr(_b_.str.$factory(obj),'__hash__'))}else{return obj[$B.ID]=$B.UUID()}}
+if(obj[$B.ID]!==undefined){return obj[$B.ID]}
+var t=typeof obj
+if(t==='string'||t==='number'||t==='bigint'||t==='boolean'||$B.get_class(obj)===_b_.float){
+// JS primitives can't carry $B.ID, and a base float is value-identified:
+// derive a stable id from the value (as Brython always has). A str/int/float
+// SUBCLASS instance is a real object with its own identity, so it falls
+// through to a per-instance UUID (else two MyStr("x") shared one id, which
+// broke pickle's memo: the reduced instance looked already-memoized).
+return $B.$call($B.$getattr(_b_.str.$factory(obj),'__hash__'))}
+return obj[$B.ID]=$B.UUID()}
 _b_.__import__=function(){
 var $=$B.args('__import__',5,{name:null,globals:null,locals:null,fromlist:null,level:null},arguments,{globals:None,locals:None,fromlist:_b_.tuple.$factory(),level:0},null,null)
+if($.name==='' && $.level===0){$B.RAISE(_b_.ValueError,"Empty module name")}
 return $B.$__import__($.name,$.globals,$.locals,$.fromlist)}
 _b_.input=function(msg){var res=prompt(msg ||'')||''
 if($B.imported["sys"]&&
@@ -4984,13 +5028,16 @@ for(var key in locals_obj){
 // locals (and whose $setitem would clobber the dict's own JS identity)
 if(key.startsWith('$')||key=='__class__'||key=='ob_type'){continue}
 _b_.dict.$setitem(d,key,locals_obj[key])}
+// Fixes #2855: closure free variables live in the enclosing scope's
+// locals object, mapped by the compiler in locals_obj.$cells
+for(var key in locals_obj.$cells){_b_.dict.$setitem(d,key,locals_obj.$cells[key][key])}
 return d}
 var map=_b_.map
 map.$factory=function(){var $=$B.args('map',2,{func:null,it1:null},arguments,null,'args',null),func=$.func
 var iter_args=[$B.make_js_iterator($.it1)]
 for(var arg of $.args){iter_args.push($B.make_js_iterator(arg))}
 return{
-ob_type:map,args:iter_args,func:func}}
+ob_type:map,args:iter_args,func:func,iterables:[$.it1,...$.args]}}
 _b_.map.tp_iter=function(self){return self}
 _b_.map.tp_iternext=function*(self){var args=[]
 for(var iter of self.args){var arg=iter.next()
@@ -5003,9 +5050,9 @@ var[func,it1,...extra_args]=args
 var iter_args=[$B.make_js_iterator(it1)]
 for(var arg of extra_args){iter_args.push($B.make_js_iterator(arg))}
 return{
-ob_type:cls,args:iter_args,func:func}}
+ob_type:cls,args:iter_args,func:func,iterables:[it1,...extra_args]}}
 var map_funcs=_b_.map.tp_funcs={}
-map_funcs.__reduce__=function(self){}
+map_funcs.__reduce__=function(self){return $B.fast_tuple([$B.get_class(self),$B.fast_tuple([self.func,...(self.iterables||[])])])}
 map_funcs.__setstate__=function(self){}
 _b_.map.tp_methods=["__reduce__","__setstate__"]
 $B.set_func_names(map,"builtins")
@@ -5409,7 +5456,10 @@ exec_locals=$B.clone(frame[1])
 for(var attr in frame[3]){exec_locals[attr]=frame[3][attr]}
 exec_globals=exec_locals}else{
 exec_locals=frame[1]
-exec_globals=frame[3]}}}else{if($B.get_class(_globals)!==_b_.dict){$B.RAISE(_b_.TypeError,`${mode}() globals must be `+
+exec_globals=frame[3]}
+// Fixes #2855: materialize closure free variables (mapped by
+// the compiler in frame[1].$cells) so the executed code sees them
+for(var cell_name in frame[1].$cells){exec_locals[cell_name]=frame[1].$cells[cell_name][cell_name]}}}else{if($B.get_class(_globals)!==_b_.dict){$B.RAISE(_b_.TypeError,`${mode}() globals must be `+
 "a dict, not "+$B.class_name(_globals))}
 exec_globals=$B.dict_as_jsobj(_globals)
 if(exec_globals.__builtins__===undefined){exec_globals.__builtins__=_b_.__builtins__}
@@ -6059,7 +6109,9 @@ _b_.AttributeError.tp_members=[["name",$B.TYPES.OBJECT,"name",0],["obj",$B.TYPES
 ]
 $B.set_func_names(_b_.AttributeError,'builtins')
 $B.attr_error=function(name,obj){var msg
-if($B.is_type(obj)){msg=`type object '${obj.tp_name}'`}else{msg=`'${$B.class_name(obj)}' object`}
+if($B.is_type(obj)){msg=`type object '${obj.tp_name}'`}else{var cn=$B.class_name(obj)
+var mn=cn=='module'?$B.module_getattr(obj,'__name__'):null
+if(typeof mn=='string'){msg=`module '${mn}'`}else{msg=`'${cn}' object`}}
 msg+=` has no attribute '${name}'`
 return $B.$call(_b_.AttributeError,msg,[],{$kw:[{name,obj}]})}
 _b_.NameError.tp_init=function(){var $=$B.args('__init__',1,{self:null},arguments,null,'args','kw')
@@ -7435,8 +7487,9 @@ replace(/\\'/g,"'").
 replace(/\\"/g,'"')
 case "raw_unicode_escape":
 if([bytes,bytearray].includes($B.get_class(obj))){obj=decode(obj,"latin-1","strict")}
-return obj.replace(/\\u([a-fA-F0-9]{4})/g,function(mo){let cp=parseInt(mo.substr(2),16)
-return String.fromCharCode(cp)})
+return obj.replace(/\\U([a-fA-F0-9]{8})|\\u([a-fA-F0-9]{4})/g,function(mo,u8,u4){let cp=parseInt(u8||u4,16)
+if(cp > 0x10ffff){$B.RAISE(_b_.UnicodeDecodeError,"\\Uxxxxxxxx out of range")}
+return String.fromCodePoint(cp)})
 case "ascii":
 for(let i=0,len=b.length;i < len;i++){let cp=b[i]
 if(cp <=127){s+=String.fromCharCode(cp)}else{if(errors=="ignore"){}else if(errors=="backslashreplace"){s+='\\x'+cp.toString(16)}else{let msg="'ascii' codec can't decode byte 0x"+
@@ -7724,10 +7777,17 @@ var memoryview=_b_.memoryview
 memoryview.$factory=function(obj){$B.check_nb_args_no_kw('memoryview',1,arguments)
 if($B.get_class(obj)===memoryview){return obj}
 var cls_obj=$B.get_class(obj)
-var has_buffer=$B.$getattr(obj,'__buffer__',$B.NULL)!==$B.NULL
-||(cls_obj && cls_obj.bf_getbuffer)
-||(cls_obj && cls_obj.$buffer_protocol)
-if(!has_buffer){$B.RAISE(_b_.TypeError,"memoryview: a bytes-like object "+
+var has_buffer=false
+for(var klass of $B.get_mro(cls_obj)){if(klass.bf_getbuffer ||klass.$buffer_protocol){has_buffer=true;break}}
+if(!has_buffer){
+// PEP 688: delegate to a Python-level __buffer__ when the type has no
+// native buffer path (bytes/bytearray keep the branch below - their
+// bf_getbuffer itself builds the memoryview, calling it would recurse)
+var buffer_meth=$B.$getattr(obj,'__buffer__',$B.NULL)
+if(buffer_meth!==$B.NULL){var mv=$B.$call(buffer_meth,0)
+if($B.get_class(mv)===memoryview){return mv}
+$B.RAISE(_b_.TypeError,"__buffer__ should return memoryview, not "+$B.class_name(mv))}
+$B.RAISE(_b_.TypeError,"memoryview: a bytes-like object "+
 "is required, not '"+$B.class_name(obj)+"'"
 )}
 obj.exports=obj.exports ?? 0
@@ -7804,7 +7864,7 @@ memoryview_funcs.__class_getitem__=function(){return $B.$class_getitem.apply(nul
 memoryview_funcs.__enter__=function(self){return self}
 memoryview_funcs.__exit__=function(self){memoryview.tp_funcs.release(self)}
 memoryview_funcs._from_flags=function(self){}
-memoryview_funcs.c_contiguous_get=function(self){return self.flags &(MEMORYVIEW.SCALAR |MEMORYVIEW.C)}
+memoryview_funcs.c_contiguous_get=function(self){return self.c_contiguous}
 memoryview_funcs.c_contiguous_set=_b_.None
 memoryview_funcs.cast=function(self,format,shape){if(! struct_format.hasOwnProperty(format)){$B.RAISE(_b_.ValueError,`unknown format: '${format}'`)}
 var new_itemsize=struct_format[format].size
@@ -7822,7 +7882,7 @@ res.format="I"
 if(objlen % 4 !=0){$B.RAISE(_b_.TypeError,"memoryview: length is not "+
 "a multiple of itemsize")}
 return res}}
-memoryview_funcs.contiguous_get=function(self){return self.flags &(MEMORYVIEW.SCALAR |MEMORYVIEW.C |MEMORYVIEW.FORTRAN)}
+memoryview_funcs.contiguous_get=function(self){return self.contiguous}
 memoryview_funcs.contiguous_set=_b_.None
 memoryview_funcs.count=function(self){var $=$B.args('count',2,{self:null,value:null},arguments)
 var self=$.self,value=$.value
@@ -7830,7 +7890,7 @@ var iter=_b_.memoryview.tp_iter(self)
 var count=0
 for(var item of $B.make_js_iterator(iter)){if($B.is_or_equals(item,value)){count++}}
 return count}
-memoryview_funcs.f_contiguous_get=function(self){return self.flags &(MEMORYVIEW.SCALAR |MEMORYVIEW.FORTRAN)}
+memoryview_funcs.f_contiguous_get=function(self){return self.f_contiguous}
 memoryview_funcs.f_contiguous_set=_b_.None
 memoryview_funcs.format_get=function(self){return self.format}
 memoryview_funcs.format_set=_b_.None
@@ -7888,7 +7948,7 @@ for(var j=1;j < 4;j++){item+=coef*self.obj.source[i+j]
 coef*=256}
 res.push(item)}
 return _b_.list.$factory(res)}}}
-memoryview_funcs.toreadonly=function(self){self.readonly=1}
+memoryview_funcs.toreadonly=function(self){var res=memoryview.$factory(self.obj);res.readonly=1;return res}
 _b_.memoryview.tp_methods=["release","tobytes","hex","tolist","cast","toreadonly","count","index","__enter__","__exit__"]
 _b_.memoryview.classmethods=["_from_flags","__class_getitem__"]
 _b_.memoryview.tp_getset=["obj","nbytes","readonly","itemsize","format","ndim","shape","strides","suboffsets","c_contiguous","f_contiguous","contiguous"]
@@ -9984,7 +10044,7 @@ $B.class_name(len))}
 if(["little","big"].indexOf(byteorder)==-1){$B.RAISE(_b_.ValueError,"byteorder must be either 'little' or 'big'")}
 var x=toBigInt(self)
 if(x < 0n){if(! signed){$B.RAISE(_b_.OverflowError,"can't convert negative int to unsigned")}
-x=BigInt(Math.pow(256,len))+x}
+x=(256n ** BigInt(len))+x}
 var res=[],value=x
 while(value > 0n){var quotient=value/256n,rest=value-256n*quotient
 res.push(int_or_long(rest))
@@ -10980,8 +11040,8 @@ dict.$iter_items=function*(d){if(! d[KEYS]){for(let key in d){if(key !='$dict_st
 return}
 var version=d[VERSION]
 for(var i=0,len=d[KEYS].length;i < len;i++){if(d[KEYS][i]!==undefined){yield{key:d[KEYS][i],value:d[VALUES][i],hash:d[HASHES][i]}
-if(d[VERSION]!==version){$B.RAISE(_b_.RuntimeError,'changed in iteration')}}}
-if(d[VERSION]!==version){$B.RAISE(_b_.RuntimeError,'changed in iteration')}}
+if(d[VERSION]!==version){$B.RAISE(_b_.RuntimeError,'dictionary changed size during iteration')}}}
+if(d[VERSION]!==version){$B.RAISE(_b_.RuntimeError,'dictionary changed size during iteration')}}
 var $copy_dict=function(left,right){
 right[VERSION]=right[VERSION]||0
 var right_version=right[VERSION]
@@ -11118,10 +11178,10 @@ dict.$setitem(d,items[0],items[1])
 i++}}
 dict.$iter_items_reversed=function*(d){var version=d[VERSION]
 if(! d[TABLE]){for(var item of Object.entries(d).reverse()){yield $B.fast_tuple(item)
-if(d[VERSION]!==version){$B.RAISE(_b_.RuntimeError,'changed in iteration')}}}else{for(var i=d[KEYS].length-1;i >=0;i--){var key=d[KEYS][i]
+if(d[VERSION]!==version){$B.RAISE(_b_.RuntimeError,'dictionary changed size during iteration')}}}else{for(var i=d[KEYS].length-1;i >=0;i--){var key=d[KEYS][i]
 if(key !==undefined){yield $B.fast_tuple([key,d[VALUES][i]])
-if(d[VERSION]!==version){$B.RAISE(_b_.RuntimeError,'changed in iteration')}}}}
-if(d[VERSION]!==version){$B.RAISE(_b_.RuntimeError,'changed in iteration')}}
+if(d[VERSION]!==version){$B.RAISE(_b_.RuntimeError,'dictionary changed size during iteration')}}}}
+if(d[VERSION]!==version){$B.RAISE(_b_.RuntimeError,'dictionary changed size during iteration')}}
 dict.$iter_keys_reversed=function*(d){for(var entry of dict.$iter_items_reversed(d)){yield entry[0]}}
 dict.$iter_values_reversed=function*(d){for(var entry of dict.$iter_items_reversed(d)){yield entry[1]}}
 function make_reverse_iterator(name,iter_func){
@@ -12462,6 +12522,16 @@ cls.tp_mro=[cls,_b_.object]
 return cls}
 var JSFunction_funcs=$B.JSFunction.tp_funcs={}
 JSFunction_funcs.__getattr__=function(self,attr){return self[attr]?? $B.NULL}
+JSFunction_funcs.__reduce__=function(self){
+// A builtin-class staticmethod (bytearray/bytes/str.maketrans) unwraps to a
+// bare JS function; pickle it by reference like the method descriptors do,
+// via the owner class recorded in $function_infos by set_func_names.
+var infos=self.$function_infos
+var qualname=infos && infos[$B.func_attrs.__qualname__]
+if(typeof qualname=='string'){var parts=qualname.split('.')
+var owner=parts.length==2 && _b_[parts[0]]
+if(owner && owner.tp_funcs && owner.tp_funcs[parts[1]]===self){return $B.fast_tuple([_b_.getattr,$B.fast_tuple([owner,parts[1]])])}}
+$B.RAISE(_b_.TypeError,`cannot pickle '${$B.class_name(self)}' object`)}
 JSFunction_funcs.new=function(self,...args){var new_func
 var attr='new'
 args=pyargs2jsargs(args)
@@ -12476,7 +12546,7 @@ Object.defineProperty(new_func,'$function_infos',{value,writable:true}
 new_func.ob_type=$B.builtin_function_or_method
 new_func.__name__='new'
 return new_func}
-$B.JSFunction.tp_methods=["__getattr__","new"]})(__BRYTHON__);
+$B.JSFunction.tp_methods=["__getattr__","new","__reduce__"]})(__BRYTHON__);
 ;
 "use strict";
 (function($B){
@@ -13837,16 +13907,16 @@ _loader=$B.$getattr(spec,"loader",_b_.None)
 break}}}
 if(test){console.log('loader',_loader)}
 if(_loader===undefined){
-var message=mod_name
+var message="No module named '"+mod_name+"'"
 if($B.protocol=="file"){message+=" (warning: cannot import local files with protocol 'file')"}
 var exc=$B.EXC(_b_.ModuleNotFoundError,message)
 exc.name=mod_name
 throw exc}
-if($B.is_none(module)){if(spec===_b_.None){$B.RAISE(_b_.ModuleNotFoundError,mod_name)}
+if($B.is_none(module)){if(spec===_b_.None){$B.RAISE(_b_.ModuleNotFoundError,"No module named '"+mod_name+"'")}
 var _spec_name=$B.$getattr(spec,"name")
 if(!$B.is_none(_loader)){var create_module=$B.$getattr(_loader,"create_module",_b_.None)
 if(!$B.is_none(create_module)){module=$B.$call(create_module,spec)}}
-if(module===undefined){$B.RAISE(_b_.ImportError,mod_name)}
+if(module===undefined){$B.RAISE(_b_.ModuleNotFoundError,"No module named '"+mod_name+"'")}
 if($B.is_none(module)){module=$B.module.$factory(mod_name)}}
 $B.module_setattr(module,'__name__',_spec_name)
 $B.module_setattr(module,'__loader__',_loader)
@@ -13857,7 +13927,7 @@ if(module.$is_package=!$B.is_none(locs)){$B.module_setattr(module,'__path__',loc
 if($B.$getattr(spec,"has_location")){$B.module_setattr(module,'__file__',$B.$getattr(spec,"origin"))}
 var cached=$B.$getattr(spec,"cached")
 if(! $B.is_none(cached)){$B.module_setattr(module,'__cached__',cached)}
-if($B.is_none(_loader)){if(!$B.is_none(locs)){_sys_modules[_spec_name]=module}else{$B.RAISE(_b_.ImportError,mod_name)}}else{var exec_module=$B.$getattr(_loader,"exec_module",_b_.None)
+if($B.is_none(_loader)){if(!$B.is_none(locs)){_sys_modules[_spec_name]=module}else{$B.RAISE(_b_.ModuleNotFoundError,"No module named '"+mod_name+"'")}}else{var exec_module=$B.$getattr(_loader,"exec_module",_b_.None)
 if($B.is_none(exec_module)){
 module=$B.$getattr(_loader,"load_module")(_spec_name)}else{_sys_modules[_spec_name]=module
 $B.namespace[_spec_name]=Object.create(null)
@@ -13866,10 +13936,11 @@ try{exec_module(module)}catch(e){delete _sys_modules[_spec_name]
 throw e}}}
 return _sys_modules[_spec_name]}
 $B.path_importer_cache={}
-function import_error(mod_name){var exc=$B.EXC(_b_.ImportError,mod_name)
+function import_error(mod_name){var exc=$B.EXC(_b_.ModuleNotFoundError,"No module named '"+mod_name+"'")
 exc.name=mod_name
 throw exc}
 $B.$__import__=function(mod_name,globals,locals,fromlist){var $test=false 
+if(typeof mod_name !=='string' && ! $B.is_str(mod_name)){$B.RAISE(_b_.TypeError,'module name must be a string')}
 if($test){console.log("__import__",mod_name,'fromlist',fromlist)}
 var from_stdlib=false
 if(globals !==_b_.None){var file=$B.str_dict_get(globals,'__file__',$B.NULL)
@@ -14755,6 +14826,21 @@ break}}}}}
 $B.make_getattr(cls)}
 for(var ns of[$B.builtin_types,$B.created_types]){for(var name in ns){var cls=ns[name]
 $B.finalize_type(cls)}}
+// bound builtin methods compare like CPython meth_richcompare: equal if
+// they wrap the same method of the same object (each access mints a new
+// bound wrapper, so identity is never enough)
+$B.set_to_dict($B.builtin_method,'__eq__',function(self,other){if(self===other){return true}
+if($B.get_class(other)!==$B.builtin_method){return _b_.NotImplemented}
+if(self.m_self===undefined ||other.m_self===undefined){return false}
+return self.m_self===other.m_self && self.ml && other.ml && self.ml.ml_name===other.ml.ml_name})
+// UnicodeEncodeError/UnicodeDecodeError expose encoding/object/start/end/
+// reason, derived from the 5-arg form (CPython sets them at init; pickle's
+// 2.x compat tests read them off an unpickled instance)
+;[['encoding',0],['object',1],['start',2],['end',3],['reason',4]].forEach(function(p){
+[_b_.UnicodeEncodeError,_b_.UnicodeDecodeError].forEach(function(ucls){
+$B.set_to_dict(ucls,p[0],$B.getset_descriptor.$factory(ucls,p[0],
+[function(self){var a=self.args
+return(a && a.length===5)? a[p[1]] : _b_.None},_b_.None]))})})
 for(var builtin_func of $B.builtin_funcs){if(_b_[builtin_func]){_b_[builtin_func].ob_type=$B.builtin_function_or_method
 _b_[builtin_func].m_module='builtins'
 _b_[builtin_func].$function_infos=['builtins',builtin_func,builtin_func]}else{console.log('missing builtin function',builtin_func)}}})(__BRYTHON__)
@@ -15163,8 +15249,9 @@ return name}
 function reference(scopes,scope,name){return make_scope_name(scopes,scope)+'.'+mangle(scopes,scope,name)}
 function get_binding_scope(name,scopes){var scope=$B.last(scopes),up_scope=last_scope(scopes)
 name=mangle(scopes,up_scope,name)
-if(up_scope.globals && up_scope.globals.has(name)){scope=scopes[0]}else if(up_scope.nonlocals.has(name)){for(var i=scopes.indexOf(up_scope)-1;i >=0;i--){if(scopes[i].locals.has(name)||
-(scopes[i].maybe_locals && scopes[i].maybe_locals.has(name))){return[name,scopes[i],up_scope]}}}
+if(up_scope.globals && up_scope.globals.has(name)){scope=scopes[0]}else if(up_scope.nonlocals.has(name)){for(var i=scopes.indexOf(up_scope)-1;i >=0;i--){if(scopes[i].parent){continue}
+var block=scopes.symtable.table.blocks.get(fast_id(scopes[i].ast))
+if(block && Object.hasOwn(block.symbols,name)){return[name,scopes[i],up_scope]}}}
 return[name,scope,up_scope]}
 function bind(name,scopes){var[name,scope,up_scope]=get_binding_scope(name,scopes)
 if(up_scope.globals && up_scope.globals.has(name)){scope=scopes[0]}else if(up_scope.nonlocals.has(name)){for(var i=scopes.indexOf(up_scope)-1;i >=0;i--){if(scopes[i].locals.has(name)||
@@ -15741,7 +15828,7 @@ named_kwargs.push(
 `${keyword.arg}: ${$B.js_from_ast(keyword.value, scopes)}`)}else{starred_kwargs.push($B.js_from_ast(keyword.value,scopes))}}
 var args_list=[]
 for(let arg of this.args){if(arg instanceof $B.ast.Starred){var starred_arg=$B.js_from_ast(arg.value,scopes)
-args_list.push(`...$B.make_js_iterator(${starred_arg})`)}else{args_list.push($B.js_from_ast(arg,scopes))}}
+args_list.push(`..._b_.list.$unpack(${starred_arg})`)}else{args_list.push($B.js_from_ast(arg,scopes))}}
 if(named_kwargs.length+starred_kwargs.length > 0){var kw=`{${named_kwargs.join(', ')}}`
 for(var starred_kwarg of starred_kwargs){kw+=`, ${starred_kwarg}`}
 kw=`{$kw:[${kw}]}`
@@ -15757,9 +15844,16 @@ js+=prefix+`$B.set_lineno(frame, ${dec.lineno})\n`+
 prefix+`var ${dec_id} = ${$B.js_from_ast(dec, scopes)}\n`}
 js+=prefix+`$B.set_lineno(frame, ${this.lineno}, 'ClassDef')\n`
 var qualname=this.name
+var qent=this.name
 var ix=scopes.length-1
-while(ix >=0){if(scopes[ix].parent){ix--}else if(scopes[ix].ast instanceof $B.ast.ClassDef){qualname=scopes[ix].name+'.'+qualname
-ix--}else{break}}
+while(ix >=0){var qsc=scopes[ix]
+if(qsc.parent){ix--;continue}
+if(qsc.globals.has(qent)){break}
+if(qsc.ast instanceof $B.ast.ClassDef){qualname=qsc.name+'.'+qualname}
+else if(qsc.ast instanceof $B.ast.FunctionDef ||qsc.ast instanceof $B.ast.AsyncFunctionDef){qualname=qsc.name+'.<locals>.'+qualname}
+else{break}
+qent=qsc.name
+ix--}
 var bases=this.bases.map(x=> $B.js_from_ast(x,scopes))
 var has_type_params=this.type_params.length > 0
 if(has_type_params){check_type_params(this)
@@ -16109,6 +16203,16 @@ prefix+tab+`var ${locals_name} = locals = `+
 `$B.args_parser(${name2}, arguments)\n`+
 prefix+`}\n`}else{js+=prefix+`var ${locals_name} = locals = `+
 `$B.args_parser(${name2}, arguments)\n`}
+// Fixes #2855: closure free variables are not keys of the function's
+// locals object; map each of them to the enclosing scope's locals
+// object so locals() and bare eval()/exec() can reach them
+var free_idents=[]
+for(var fv_ident of _b_.dict.$keys_string(symtable_block.symbols)){var fv_flag=_b_.dict.$getitem_string(symtable_block.symbols,fv_ident)
+if(((fv_flag >> SF.SCOPE_OFF)& SF.SCOPE_MASK)==SF.FREE){free_idents.push(fv_ident)}}
+var cells=[]
+for(var free_ident of free_idents){var free_scope=name_scope(free_ident,scopes)
+if(free_scope.found){cells.push(`${free_ident}: ${make_scope_name(scopes, free_scope.found)}`)}}
+if(cells.length > 0){js+=prefix+`locals.$cells = {${cells.join(', ')}}\n`}
 js+=prefix+`var frame = ["${this.$is_lambda ? '<lambda>': this.name}", `+
 `locals, "${gname}", ${globals_name}, ${name2}]\n`+
 prefix+`$B.enter_frame(frame, __file__, ${this.lineno})\n`
@@ -16152,17 +16256,27 @@ prefix+`return _gen_${id}\n`
 dedent()
 js+=prefix+'}\n'}else{js+='\n'}
 scopes.pop()
-var qualname=in_class ? `${func_name_scope.name}.${this.name}` :
-this.name
+// walk every enclosing scope (class -> 'C.', function -> 'f.<locals>.')
+// and stop on a name declared global in its defining scope (PEP 3155)
+var qualname=this.name
+var fqent=this.name
+var qix=scopes.length-1
+while(qix >=0){var fqsc=scopes[qix]
+if(fqsc.parent){qix--;continue}
+if(fqsc.globals.has(fqent)){break}
+if(fqsc.ast instanceof $B.ast.ClassDef){qualname=fqsc.name+'.'+qualname}
+else if(fqsc.ast instanceof $B.ast.FunctionDef ||fqsc.ast instanceof $B.ast.AsyncFunctionDef){qualname=fqsc.name+'.<locals>.'+qualname}
+else{break}
+fqent=fqsc.name
+qix--}
 var flags=$B.COMPILER_FLAGS.OPTIMIZED |$B.COMPILER_FLAGS.NEWLOCALS
 if(this.args.vararg){flags |=$B.COMPILER_FLAGS.VARARGS}
 if(this.args.kwarg){flags |=$B.COMPILER_FLAGS.VARKEYWORDS}
 if(is_generator){flags |=$B.COMPILER_FLAGS.GENERATOR}
 if(is_async){flags |=$B.COMPILER_FLAGS.COROUTINE}
 var parameters=[],locals=[],identifiers=_b_.dict.$keys_string(symtable_block.symbols)
-var free_vars=[]
-for(var ident of identifiers){var flag=_b_.dict.$getitem_string(symtable_block.symbols,ident),_scope=(flag >> SF.SCOPE_OFF)& SF.SCOPE_MASK
-if(_scope==SF.FREE){free_vars.push(`'${ident}'`)}
+var free_vars=free_idents.map(x => `'${x}'`)
+for(var ident of identifiers){var flag=_b_.dict.$getitem_string(symtable_block.symbols,ident)
 if(flag & SF.DEF_PARAM){parameters.push(`'${ident}'`)}else if(flag & SF.DEF_LOCAL){locals.push(`'${ident}'`)}}
 var varnames=parameters.concat(locals)
 if(in_class){js+=prefix+`${name2}.$is_method = true\n`}
@@ -16615,10 +16729,9 @@ value=value.replace(new RegExp('\\\\'+key,'g'),$B.escape2cp[key])}
 return value}
 $B.ast.Set.prototype.to_js=function(scopes){var elts=[]
 for(var elt of this.elts){var js
-if(elt instanceof $B.ast.Constant){var v=elt.value
-if(typeof v=='string'){v=remove_escapes(v)}
+if(elt instanceof $B.ast.Constant && typeof elt.value != 'string'){
 js=`{constant: [${$B.js_from_ast(elt, scopes)}, `+
-`${$B.$hash(v)}]}`}else if(elt instanceof $B.ast.Starred){js=`{starred: ${$B.js_from_ast(elt.value, scopes)}}`}else{js=`{item: ${$B.js_from_ast(elt, scopes)}}`}
+`${$B.$hash(elt.value)}]}`}else if(elt instanceof $B.ast.Starred){js=`{starred: ${$B.js_from_ast(elt.value, scopes)}}`}else{js=`{item: ${$B.js_from_ast(elt, scopes)}}`}
 elts.push(js)}
 return `_b_.set.$literal([${elts.join(', ')}])`}
 $B.ast.SetComp.prototype.to_js=function(scopes){return make_comp.bind(this)(scopes)}

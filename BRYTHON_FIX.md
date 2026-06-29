@@ -18,6 +18,97 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `__import__` of a missing module raises a bare-name `ImportError`, not `ModuleNotFoundError("No module named …")`
+
+**Impact: importing a nonexisting module raises the CPython exception class and message (pickle test_global_lookup_error asserts both via `str(exc)`/`__context__`; general).** `import_error(mod_name)` raised `ImportError(mod_name)` — `args[0]` was just the bare name, and the class was the parent `ImportError`. Everything that formats the exception (pickle's `Can't pickle X: %S`, tracebacks, `str(exc)`) printed `nonexisting` instead of `No module named 'nonexisting'`. Source: `import_error` in `py_import.js`.
+
+```python
+>>> __import__('nonexisting')
+ModuleNotFoundError: nonexisting                           # before
+>>> __import__('nonexisting')
+ModuleNotFoundError: No module named 'nonexisting'         # after
+```
+
+## [x] `AttributeError` on a module says `'module' object`, not `module '<name>'`
+
+**Impact: a failed module attribute lookup names the module (pickle's save_global `__context__` asserts the exact string; general).** `$B.attr_error` had no module branch, so every module getattr failure read `'module' object has no attribute 'x'` where CPython says `module 'os' has no attribute 'x'`. The module branch must read `__name__` through `$B.module_getattr` — a Brython module's `__name__` lives in its dict, not as a direct JS property. Source: `$B.attr_error` in `py_exceptions.js`.
+
+```python
+>>> import picklecommon
+>>> picklecommon.spam
+AttributeError: 'module' object has no attribute 'spam'          # before
+>>> picklecommon.spam
+AttributeError: module 'picklecommon' has no attribute 'spam'    # after
+```
+
+## [x] a deleted `function.__module__` leaks `$B.NULL` as a `JSObject` value
+
+**Impact: after `del f.__module__`, reading the attribute raises `AttributeError` instead of returning an internal sentinel (pickle whichmodule then crashed with `JavascriptError: mod_name.split is not a function`; general).** `function_funcs.__module___get` (and the legacy `module_get`) returned the raw `$function_infos` slot; after a `del` that slot holds `$B.NULL`, which surfaced to Python as a `JSObject` — `getattr(f, '__module__', None)` returned `[object Object]`, pickle's whichmodule took it as a module name and `__import__` crashed. The getters now raise `$B.attr_error('__module__', f)` when the slot is `$B.NULL`/undefined. Source: `py_functions.js`.
+
+```python
+>>> def f(): pass
+...
+>>> del f.__module__
+>>> getattr(f, '__module__', None)
+<Javascript object: [object Object]>  # before
+>>> getattr(f, '__module__', None)
+None                                  # after
+```
+
+## [x] `getattr(obj, name, default)` propagates an `AttributeError` raised inside a descriptor
+
+**Impact: the 3-arg `getattr` swallows an `AttributeError` raised anywhere in the lookup — including inside a getset/property `__get__` — and returns the default.** `_b_.getattr` passed the default down to `$B.$getattr`, which only applies it when the *lookup* misses; an `AttributeError` thrown by the descriptor itself propagated. Combined with the `__module__` fix above, `getattr(f, '__module__', None)` raised instead of returning `None`. `_b_.getattr` now wraps the call and returns the default on `AttributeError`. Source: `_b_.getattr` in `py_builtin_functions.js`.
+
+```python
+>>> def f(): pass
+...
+>>> del f.__module__
+>>> getattr(f, '__module__', None)
+AttributeError: 'function' object has no attribute '__module__'  # before
+>>> getattr(f, '__module__', None)
+None                                                             # after
+```
+
+## [x] `save_picklebuffer` memoized a throwaway `tobytes()` instead of the `PickleBuffer` ⚠ VENDORED-ONLY
+
+**Impact: the Python pickler dumping the same `PickleBuffer` twice writes a back-reference the second time instead of the data again, so the loaded pickle shrinks and both references share one object (+2 pickle, test_picklebuffer_memoization).** Brython's in-band `save_picklebuffer` computed `in_memo = id(buf) in self.memo` where `buf = m.tobytes()` — a fresh throwaway `bytes` each call, never in the memo — and memoized *that* via `save_bytes(buf)`/`save_bytearray(buf)`, never the `PickleBuffer` `obj`. So `_Pickler.dump((b, b))` serialized the data twice and the two loaded buffers came back distinct (`assertIs` failed). It now matches CPython 3.14.6 (gh-148914): write the data with `_save_bytes_no_memo`/`_save_bytearray_no_memo`, then `self.memoize(obj)`. Source: `save_picklebuffer` in `Lib/pickle.py`.
+
+```python
+>>> import io, pickle
+>>> b = pickle.PickleBuffer(bytearray(b'xyz'))
+>>> f = io.BytesIO()
+>>> pickle._Pickler(f, 5).dump((b, b))
+>>> len(f.getvalue())
+40  # before
+>>> len(f.getvalue())
+29  # after
+```
+
+⚠ VENDORED-ONLY — vanilla Brython has no `PickleBuffer` (`from _pickle import PickleBuffer` fails → `_HAVE_PICKLE_BUFFER = False`, so `pickle.PickleBuffer` raises `AttributeError` and `save_picklebuffer` is dead code); only wasthon reaches this path, since its bridge exposes `_pickle.PickleBuffer`.
+
+## [x] `codecs.escape_decode` was a stub returning `None`
+
+**Impact: `codecs.escape_decode(b'a\\nb')` decodes the escapes, and a trailing backslash raises `ValueError` (+3 pickle, test_badly_escaped_string + proto-0 STRING; general).** The function was `def escape_decode(*args, **kw): pass`, so it returned `None` — pickle's proto-0 `STRING` opcode (`codecs.escape_decode(data)[0]`) then did `None[0]` → `TypeError: 'NoneType' object is not subscriptable` (any old-style string pickle), and a badly-escaped string raised that `TypeError` instead of `ValueError`. It now decodes the C-style escapes (`\n \t \r \\ \' \" \a \b \f \v`, `\xHH`, octal `\ooo`, unknown escapes kept literally) and raises `ValueError` on a trailing backslash. Source: `escape_decode` in `_codecs` (`Lib/_codecs.py`-equivalent). The C `_pickle` unpickler has its own C escape decode, so its STRING path is unaffected.
+
+```python
+>>> import codecs
+>>> codecs.escape_decode(b'a\\nb')
+TypeError: 'NoneType' object is not subscriptable  # before
+>>> codecs.escape_decode(b'a\\nb')
+(b'a\nb', 4)                                        # after
+```
+
+## [x] `__import__('')` crashes instead of raising `ValueError`
+
+**Impact: `__import__('')` raises `ValueError: Empty module name` (+3 pickle, test_load_global/test_load_stack_global; general).** An empty module name fell through to the path-entry finder, whose `find_spec` does `fullname.match(/[^.]+$/g)[0]` — for `''` the match is `null`, so `[0]` threw a `JavascriptError` (`fullname.match(...) is null`). CPython's `__import__` sanity-checks the name first (`if not name and level == 0: raise ValueError('Empty module name')`). `__import__` now does the same, so pickle's `find_class` on an empty module name raises a normal `ValueError` instead of a JS crash. Source: `_b_.__import__` in `py_import.js`.
+
+```python
+>>> __import__('')
+JavascriptError: can't access property 0, fullname.match(...) is null  # before
+>>> __import__('')
+ValueError: Empty module name                                         # after
+```
+
 ## [x] `object.__new__` doesn't allocate a wasthon C type's struct ⚠ VENDORED-ONLY
 
 **Impact: `sqlite3.Connection.__new__(Connection)` (and any explicit `__new__` on a C type) gets a real zeroed C struct (+1 sqlite3, test_uninit_operations).** Brython's `object.tp_new` returns a bare `{ob_type: cls}` JS object. For a wasthon C type (`cls.__wasthon_type_handle__` set), `object.__new__` must instead allocate the C struct — like CPython's `object_new` calling `type->tp_alloc` — so C code that casts the instance and reads struct fields sees a zeroed struct, not stale heap (the uninit guard otherwise misfired with index-OOB / a thread-id mismatch). `object.tp_new` now dispatches to the bridge's leaf allocator `$B.$wasthon_new_instance(cls)` (mallocs+zeroes the struct, never calls `cls.tp_new`, so no recursion) for such types; all other classes are unchanged. Source: `object.tp_new` in `py_object.js`.
@@ -47,6 +138,80 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 AttributeError  # before
 >>> s = S([1, 2]); s.foo = 9; import pickle; pickle.loads(pickle.dumps(s)).foo
 9               # after
+```
+
+## [x] `memoryview` contiguity getsets read a never-set field; `toreadonly` returns `None`
+
+**Impact: `memoryview(b'x').contiguous` is `True`, and `m.toreadonly()` is a usable readonly view (+11 pickle protocol-5 buffers, with the bridge `PickleBuffer.raw()` fix; general).** The `c_contiguous`/`contiguous`/`f_contiguous` getsets returned `self.flags & …`, but the constructor never sets `self.flags` — it sets the direct boolean props `self.c_contiguous`/`self.contiguous`/`self.f_contiguous` (and clears them for a strided slice). So every contiguous view reported `0`, which made pickle's `save_picklebuffer` (`if not m.contiguous: raise`) reject a plain bytes buffer as non-contiguous. The getsets now read those direct props. Separately, `memoryview.toreadonly()` mutated `self.readonly` and returned `None`; it now returns a new readonly view (`load_readonly_buffer` does `self.stack[-1] = m.toreadonly()`). Source: `memoryview_funcs.{c_contiguous,contiguous,f_contiguous}_get` + `toreadonly` in `memoryobject.js`.
+
+```python
+>>> memoryview(b'xyz').contiguous
+0     # before
+>>> memoryview(b'xyz').contiguous
+True  # after
+```
+
+## [x] `int.to_bytes` overflows to `Infinity` for a large signed negative int
+
+**Impact: `(-n).to_bytes(length, signed=True)` works for any length (+2 pickle, `test_long`; general).** Encoding a negative int adds the two's-complement bias `256**length`, computed as `BigInt(Math.pow(256, length))` — but `Math.pow(256, length)` overflows the JS double to `Infinity` once `length` exceeds ~128, and `BigInt(Infinity)` raises `Infinity can't be converted to BigInt`. Now uses exact BigInt exponentiation `256n ** BigInt(length)`. Surfaced by pickling a ~1M-bit negative int. Source: `int_funcs.to_bytes` in `py_int.js`.
+
+```python
+>>> (-(1 << 2048)).to_bytes(257, "big", signed=True)
+JavascriptError: Infinity can't be converted to BigInt   # before
+>>> (-(1 << 2048)).to_bytes(257, "big", signed=True)
+b'...'                                                    # after
+```
+
+## [x] a `str`/`int`/`float` subclass instance shares its `id()` with its value
+
+**Impact: `id(MyStr("x")) != id("x")` and two distinct `MyStr("x")` get distinct ids (+4 pickle, `test_newobj_generic` MyStr/MyUnicode/… × picklers; general identity).** `id()` derived a value-based id (`hash(str(obj))`) for *anything* that is an instance of `str`/`int`/`float`, to give the JS primitives (which can't carry an id property) a stable identity — but that also caught subclass *wrappers*, which are real objects with their own identity, so two distinct `MyStr("x")` collided on one id. This broke pickling a `str`/`int`/`float` subclass with instance attributes: the pickler memoizes the value string while saving the reduce args, then after `REDUCE` finds the reconstructed instance "already in the memo" (same id), discards it (`POP`) and fetches the bare value back (`GET`) — so the loaded object is a plain `str`/`int`/`float` and applying the `__dict__` state crashes (`'str' object has no attribute '__dict__'`, protocols 0–3). `id()` now value-identifies only JS primitives and base `float`; a subclass instance falls through to a per-instance UUID like any other object. Source: `_b_.id` in `py_builtin_functions.js`.
+
+```python
+>>> class MyStr(str): pass
+>>> id(MyStr("x")) == id("x")
+True   # before
+>>> id(MyStr("x")) == id("x")
+False  # after
+```
+
+## [x] a method of a nested class gets a truncated `__qualname__`
+
+**Impact: `PyMethodsTest.Nested.ketchup.__qualname__ == 'PyMethodsTest.Nested.ketchup'` (with the next fix, +5 pickle, `test_py_methods` × all picklers; general).** The compiler computes a function's `__qualname__` from its *immediate* enclosing class only (`func_name_scope.name + '.' + name`), so a method of a class nested in another class got `'Nested.ketchup'` instead of `'PyMethodsTest.Nested.ketchup'` — `ClassDef.to_js` already walks every enclosing `ClassDef` scope to build a class's own qualname, but `FunctionDef.to_js` did not. Pickling such a method saves it by reference and looks it up under its `__qualname__`, so the wrong (short) name failed (`Can't pickle <function Nested.ketchup>: it's not found as picklecommon.Nested.ketchup`). `FunctionDef.to_js` now walks the enclosing class scopes the same way. Source: `$B.ast.FunctionDef.prototype.to_js`.
+
+```python
+>>> class A:
+...     class B:
+...         def f(self): pass
+>>> A.B.f.__qualname__
+'B.f'    # before
+>>> A.B.f.__qualname__
+'A.B.f'  # after
+```
+
+## [x] `staticmethod`/`classmethod`/`memoryview` are picklable at protocol >= 2
+
+**Impact: `pickle.dumps(staticmethod(f), 2)` raises `TypeError: cannot pickle 'staticmethod' object` (with the qualname fix above, +5 pickle, `test_py_methods` × all picklers; general).** A non-heap builtin type whose nearest non-heap base is itself and which offers no `__getnewargs__` has no reconstruction path: `copyreg._reduce_ex` already raises `cannot pickle <cls> object` for protocol < 2 (its `base is cls` branch), but `object.__reduce_ex__` for protocol >= 2 built a `__newobj__` reduce regardless, so `staticmethod`, `classmethod`, `memoryview`, generators… pickled instead of raising (the C `_pickle` reaches the same `object.__reduce_ex__`, so both picklers were affected). `object.__reduce_ex__` now applies the same guard at protocol >= 2 (nearest non-heap base — `$B.is_builtin_type` — is the class itself, and no `__getnewargs__`). Source: `object_funcs.__reduce_ex__` in `py_object.js`.
+
+```python
+>>> import pickle
+>>> pickle.dumps(staticmethod(len), 2)
+b'...'                               # before (wrongly pickled)
+>>> pickle.dumps(staticmethod(len), 2)
+TypeError: cannot pickle 'staticmethod' object   # after
+```
+
+## [x] `weakref.proxy` objects aren't picklable
+
+**Impact: `pickle.dumps(weakref.proxy(x))` round-trips to a copy of the referent (+5 pickle, `test_newobj_proxies` × all picklers).** CPython's weakproxy forwards `__reduce_ex__` and `__class__` to the referent, so pickling a proxy reduces the *referent* via NEWOBJ using the referent's `__class__`, not the raw weakproxy type (hence the test comment "NEWOBJ should use the `__class__` rather than the raw type"). Brython's pure-Python `ProxyType` forwards arbitrary attributes through `__getattr__`, but `__getattr__` only fires on lookup failure — `__reduce_ex__`, `__reduce__` and `__class__` are all inherited from `object`, so they were never forwarded: the proxy tried to pickle *itself*, and wasthon's C `_pickle` rejected it (`first argument to __newobj__() must be ProxyType, not MyFloat`). `ProxyType` now explicitly forwards `__reduce_ex__`/`__reduce__` to the referent and exposes the referent's type through a `__class__` property. Source: `class ProxyType` in `_weakref.py`.
+
+```python
+>>> import weakref, pickle
+>>> class MyList(list): pass
+>>> x = MyList([1, 2, 3]); x.foo = 42
+>>> type(pickle.loads(pickle.dumps(weakref.proxy(x))))
+PicklingError       # before
+>>> type(pickle.loads(pickle.dumps(weakref.proxy(x))))
+<class 'MyList'>    # after
 ```
 
 ## [x] setting `cls.__qualname__` doesn't update what the getter reads
@@ -2482,3 +2647,297 @@ False   # after (compared against the exact float value 0.1000…0055)
 ```
 
 > ⚠ **VENDORED-ONLY — the bug stays in upstream Brython.** It only surfaces when the operand carries the C `nb_float` slot on a non-int/float type, i.e. a C-accelerated `_decimal` (wasthon's). Brython's own `decimal` is pure-Python `_pydecimal` with no `nb_float` slot, and a Python class with `__float__` doesn't get one either — so there is no failing case in a vanilla Brython. The fix matches CPython's `float_richcompare`, but with no reproducer it isn't worth an upstream PR. Branch `float-compare-int-float-only` is pushed to the fork for the record but should NOT be opened; the latent bug remains upstream.
+
+## [x] `raw-unicode-escape` decode leaves `\UXXXXXXXX` escapes as literal text
+
+**Impact: pickle protocol 0 loses every astral char (+2 pickle, `test_unicode`/`test_unicode_high_plane` × CDumpPickle_LoadPickle; general).** Protocol 0 stores a `str` as its raw-unicode-escape encoding, where a non-BMP char becomes the 8-hex escape `\U00012345` — CPython's decoder turns it back into the char, Brython's only matched `\u` + 4 hex digits and passed `\U` + 8 through as literal text, so the pure-Python Unpickler returned `'\\U00012345'` (11 chars) instead of `'𒍅'`. Also needed `String.fromCodePoint` (the existing `fromCharCode` cannot build an astral char), plus the same out-of-range guard CPython applies for values beyond U+10FFFF. Source: `decode`, case `raw_unicode_escape`, in `py_bytes.js`.
+
+```python
+>>> b'\\U00012345'.decode('raw-unicode-escape')
+'\\U00012345'   # before (escape left as 11 chars of literal text)
+>>> b'\\U00012345'.decode('raw-unicode-escape')
+'𒍅'            # after (U+12345)
+```
+
+## [x] `__qualname__` is built from the runtime call stack, not the lexical scopes (PEP 3155)
+
+**Impact: +2 pickle alone (`test_local_lookup_error` × C/Py picklers) and unblocks the 7 `test_evil_*` tests (next entry); general.** Three CPython rules restored. (1) A function nested in a function got a bare `__qualname__` (the compile-time walk only climbed *class* scopes), so pickle's "Can't pickle local object" path — which looks for `'<locals>'` in the qualname — never fired; enclosing function scopes now contribute `f.<locals>.` segments. (2) A class defined inside a function got a qualname built at runtime from `$B.frame_obj` — the dynamic *call* stack, unittest wrappers included (`run.__call__._callTestMethod.test_x.Bad`) — instead of the lexical scopes; `make_class_namespace` now seeds the compile-time qualname into the class dict and `$class_constructor` only falls back to the frame walk when the dict has none (the `type(name, bases, dict)` path, where CPython also honors a caller-provided `__qualname__`). (3) A name declared `global` in its defining scope gets a bare qualname (PEP 3155), which is exactly what lets CPython pickle a `global`-declared class defined inside a test method. Source: `ClassDef.to_js`/`FunctionDef.to_js` in `ast_to_js.js`, `$B.make_class_namespace`/`$B.$class_constructor` in `py_type.js`.
+
+```python
+>>> def outer():
+...     def inner(): pass
+...     return inner
+...
+>>> outer().__qualname__
+'inner'                   # before
+>>> outer().__qualname__
+'outer.<locals>.inner'    # after
+```
+
+```python
+>>> def f():
+...     global Bad
+...     class Bad: pass
+...
+>>> f()
+>>> Bad.__qualname__
+'f.Bad'   # before (runtime call stack — grows with the caller chain)
+>>> Bad.__qualname__
+'Bad'     # after (PEP 3155: global name -> bare qualname)
+```
+
+## [x] mutating a dict during iteration raises `RuntimeError('changed in iteration')`
+
+**Impact: +7 pickle with the qualname fix above (`test_evil_class_mutating_dict` × 5 picklers, `test_evil_pickler_mutating_collection` × 2, which assert the CPython substring); general.** The five version guards in the dict iterators raised a home-grown message where CPython says `dictionary changed size during iteration`. Source: the `d[VERSION] !== version` guards in `$iter_items`/`$iter_items_reversed` in `py_dict.js`.
+
+```python
+>>> d = {1: 1}
+>>> for k in d:
+...     d[k + 1] = 1
+...
+RuntimeError: changed in iteration                        # before
+RuntimeError: dictionary changed size during iteration    # after
+```
+
+## [x] `memoryview()` detects `__buffer__` (PEP 688) but never calls it, and its native-buffer check skips the MRO
+
+**Impact: +4 pickle with the bridge PickleBuffer `__buffer__` (test_dump_load_oob_buffers / test_dumps_loads_oob_buffers × C/Py picklers); general — any PEP 688 class.** The factory's `has_buffer` accepted an object whose getattr found `__buffer__`, then built the memoryview around the object *itself* — the method was never called, so the view pointed at something the memoryview internals cannot read (`tobytes()` → `TypeError: cannot run tobytes with …`, subscription reads an undefined `obj.source`). The factory now keeps the native path for types exposing `bf_getbuffer`/`$buffer_protocol` — checked along the **MRO**, since those are plain JS properties a Python subclass of `bytes`/`bytearray` does not inherit — and otherwise *calls* `__buffer__(0)`, returning its memoryview (raising `TypeError` if it returns anything else, like `get_list_from_bytes_like` already does). The MRO walk is what keeps `bytes` subclasses on the native path: their inherited slot-wrapper `__buffer__` itself builds a `memoryview(self)`, so routing them through the call fallback would recurse into the factory forever. Source: `memoryview.$factory` in `memoryobject.js`.
+
+```python
+>>> class Chunk:
+...     def __init__(self, data):
+...         self.data = data
+...     def __buffer__(self, flags):
+...         return memoryview(self.data)
+...
+>>> memoryview(Chunk(b'abc')).tobytes()
+TypeError: cannot run tobytes with Chunk    # before
+>>> memoryview(Chunk(b'abc')).tobytes()
+b'abc'                                      # after
+```
+
+## [x] `BytesIO.readinto(memoryview)` returns n but writes nothing
+
+**Impact: THE root of the pickle "zeros" cluster (with the bridge from-memory write-back: bytes/bytearray values C-unpickled from a file came back the right length but all `\x00`); general.** `BytesIO.readinto` resolves its write target as `buffer.source` for a bytearray but **`buffer.obj` for anything else** — for a memoryview that is the underlying bytearray *object*, and `buf[i] = x` then lands on JS numeric *properties* of that object, never in its `.source` byte array. JS accepts silently, so readinto reported n bytes read and the buffer stayed untouched. The C `_pickle` Unpickler over a file object reads every `SHORT_BINBYTES`/`BINBYTES`/`BYTEARRAY8` payload through exactly this path (`_Unpickler_ReadInto` → `file.readinto(memoryview-over-C-buffer)`), which is why only the file-based pickler tests failed while `_pickle.loads(bytes)` — the memcpy fast path — always round-tripped. The target now descends to the backing `.source` (the bytearray itself, or the memoryview's underlying object). Source: `BytesIO_funcs.readinto` in `libs/_io_classes.js`.
+
+```python
+>>> import io
+>>> mv = memoryview(bytearray(4))
+>>> io.BytesIO(b'abcd').readinto(mv)
+4
+>>> bytes(mv)
+b'\x00\x00\x00\x00'   # before (4 bytes "read" into nowhere)
+>>> bytes(mv)
+b'abcd'               # after
+```
+
+## [x] `locals()` and bare `eval()`/`exec()` don't see closure free variables (upstream #2855)
+
+**Impact: +1 decimal — the LAST decimal fail (`PyWhitebox.test_py_immutability_operations` does `eval("d1." + op + "(d2)")` inside a nested `checkSameDec()` where `d1`/`d2` are free variables) → decimal 357/0 = 100%; general.** A nested function's frame locals object holds only its own assigned locals; free variables captured from an enclosing scope compile to direct references to the enclosing scope's locals object (`locals_outer.x`) and exist nowhere in the inner frame — so `locals()` omitted them and a bare `eval("x")` raised NameError where CPython sees them (cell/free variables are part of `frame.f_locals`). Three pieces: (1) codegen — a function whose symtable block has FREE symbols gets a hidden map in its prologue, `locals.$cells = {x: locals_outer}` (name → enclosing locals object, live, zero-copy; `$`-keys are already skipped as frame infrastructure everywhere); (2) `locals()` merges the cells into its snapshot with their current values; (3) bare `eval()`/`exec()` (the no-namespace branch) materializes the cells into `exec_locals` before compiling. An explicit namespace (`eval("x", {})`) still raises NameError, like CPython. Source: `$B.ast.FunctionDef.prototype.to_js` in `ast_to_js.js`, `_b_.locals` in `py_builtin_functions.js`, `py_eval_exec.js`.
+
+```python
+>>> def outer():
+...     x = 5
+...     def inner():
+...         _ = x
+...         return eval("x")
+...     return inner()
+...
+>>> outer()
+NameError: name 'x' is not defined   # before
+>>> outer()
+5                                    # after
+```
+
+## [x] `os.stat_result` can't be pickled: the class hides behind a wrapper function and lacks pickling metadata
+
+**Impact: +5 pickle (test_structseq × all picklers); general.** Four stacked gaps in Brython's `posix` module made `pickle.dumps(os.stat(p))` impossible. (1) The module exported `stat_result` as a wrapper *function*, so pickle's `save_global` identity check (`getattr(os, 'stat_result') is type(obj)`) could never pass — the module now exports the class itself (calling a class goes through its `$factory`, so `posix.stat_result(filename)` still works). (2) The `make_type` class read `__module__ = 'builtins'` — set to `'os'` in the class dict (the route the `type.__module__` getter checks first), so `save_global` emits `os stat_result` like CPython. (3) Instances had no `__dict__` attribute (only `$class_constructor` classes get the getset), so unpickling's `inst.__dict__` read raised AttributeError — the class dict now carries the same `getset_descriptor` a Python class gets. (4) No `__eq__` (identity compare made `assert_is_copy` fail at proto 0/1) and no heap-type flag (our `object.__reduce_ex__` guard rightly refuses builtin-typed instances at proto ≥ 2) — the class dict now has `__eq__` comparing the stat-field dicts and an explicit `__reduce__` returning the `copyreg._reconstructor` shape, which round-trips at every protocol. Source: the `posix` module in `brython_stdlib.js`.
+
+> ⚠ **Upstream split.** Only the class-identity half (export the class, `__module__ = 'os'`) is upstreamable — branch `posix-stat-result-pickle` (vanilla repro: `isinstance(1, os.stat_result)` crashes on a function). The `__dict__` getset, `__eq__` and `__reduce__` are **VENDORED-ONLY**: vanilla Brython has no filesystem, `os.stat()` fails before an instance can exist, so there is no upstream failing case to demonstrate.
+
+```python
+>>> import os
+>>> import pickle
+>>> pickle.loads(pickle.dumps(os.stat(os.curdir))).st_mode
+TypeError: cannot pickle 'stat_result' object   # before
+>>> pickle.loads(pickle.dumps(os.stat(os.curdir))).st_mode
+16895                                           # after
+```
+
+## [x] unpack error messages: double space and a generic message for a non-iterable source
+
+**Impact: message fidelity in `a, b, c = x` failures (subtests of pickle's test_bad_newobj_ex_args; the parent test needs the call-site messages too, still open).** Two gaps in the unpack helper. The "not enough values" template interpolated `${has_starred ? ' at least ' : ''} ` — a double space in the plain case (`expected  3`) and `expected  at least  3` in the starred case, where CPython writes `expected 3` / `expected at least 3`. And unpacking a non-iterable went through the generic iterator error (`'int' object is not iterable`) where the unpack opcode has its own message — the helper now catches that TypeError and raises CPython's `cannot unpack non-iterable int object`. Source: the unpack helper in `py_utils.js`.
+
+```python
+>>> a, b, c = ()
+ValueError: not enough values to unpack (expected  3, got 0)   # before
+>>> a, b, c = ()
+ValueError: not enough values to unpack (expected 3, got 0)    # after
+```
+
+## [x] `functools.partial` says `__module__ = '_functools'`
+
+**Impact: +6 pickle (test_unpickleable_newobj_ex_args/class/kwargs × C and Python picklers); general.** Brython defines `partial` in the pure-Python `_functools` module, so the class reads `__module__ = '_functools'` — CPython's reads `'functools'`. Every fully-qualified rendering diverged: the protocol-2/3 `__newobj_ex__` translation pickles a `functools.partial` reconstructor and decorates errors with `__notes__` like `when serializing functools.partial state` — ours said `_functools.partial`, failing the exact-list assertions (that was the ONLY difference: the six-entry notes chains matched otherwise). One line after the class definition: `partial.__module__ = 'functools'`. Source: `Lib/_functools.py`.
+
+```python
+>>> from functools import partial
+>>> partial.__module__
+'_functools'   # before
+>>> partial.__module__
+'functools'    # after
+```
+
+## [x] two bound builtin methods of the same object never compare equal
+
+**Impact: +pickle (the instance_attribute tests assert `pickler.persistent_id == old_persistent_id` after a del); general.** Accessing a builtin method (`obj.method` on a C-style type) mints a fresh bound wrapper per access (`method_descriptor.tp_descr_get` returns `self.method.bind(null, obj)`), and with no `__eq__` on the `builtin_method` class the comparison fell back to identity — always False. CPython's `meth_richcompare` compares the underlying method and the bound object. The class dict now carries an `__eq__` returning True iff both wrappers bind the same method name of the same object (`m_self` identity + `ml.ml_name`), NotImplemented for non-builtin-method operands. Source: the `builtin_method` type wiring in `py_type.js`.
+
+```python
+>>> d = {}
+>>> a = d.keys
+>>> b = d.keys
+>>> a == b
+False   # before
+>>> a == b
+True    # after
+```
+
+## [x] `io.BufferedRandom` is a stub returning the string `"fileio"`
+
+**Impact: +2 pickle (test_unpickling_buffering_readline × C/Py picklers); general.** The `_io` module's `BufferedRandom` factory literally returned the string `"fileio"` (and the class based itself on `_TextIOBase`), so `io.BufferedRandom(io.BytesIO(), buffer_size=n)` handed pickle a `str` — `TypeError: file must have a 'write' attribute`. The factory now passes the raw through (a `BytesIO` is already a usable read/write seekable file in the browser; `buffer_size` only affects chunking) and the class bases itself on `_BufferedIOBase`. Source: the `_io` module in `brython_stdlib.js`.
+
+```python
+>>> import io
+>>> io.BufferedRandom(io.BytesIO(), buffer_size=5).write(b'x')
+AttributeError: 'str' object has no attribute 'write'   # before
+>>> io.BufferedRandom(io.BytesIO(), buffer_size=5).write(b'x')
+1                                                        # after
+```
+
+## [x] `__import__` of a non-str module name crashes in JS
+
+**Impact: +pickle (test_find_class asserts TypeError for `find_class(None, 'log')`); general.** `$B.$__import__(None, ...)` reached `mod_name.split(".")` and surfaced `JavascriptError: mod_name.split is not a function` where CPython raises `TypeError: module name must be a string`. The entry point now type-checks its argument. Source: `$B.$__import__` in `py_import.js`.
+
+```python
+>>> __import__(None)
+JavascriptError: mod_name.split is not a function   # before
+>>> __import__(None)
+TypeError: module name must be a string             # after
+```
+
+## [x] `object.__reduce_ex__` looks up `__getnewargs_ex__` on the instance, recursing into a `__getattr__` hook
+
+**Impact: +2 pickle (test_bad_getattr × C/Py picklers — a class whose `__getattr__` infinitely recurses must still pickle at proto ≥ 2, like CPython); general.** Every other lookup in the reduce chain is type-only (`__getnewargs__`, `__getstate__` via `search_in_mro`), but `getNewArguments` read `__getnewargs_ex__` off the *instance* — on a miss, an instance getattr falls into the class `__getattr__` hook, so `pickle.dumps(BadGetattr(), 2)` recursed to death where CPython (which resolves implicit dunders on the type only) succeeds. Now mirrors its `__getnewargs__` neighbor: class lookup, explicit `self` at the call. Source: `getNewArguments` in `py_object.js`.
+
+```python
+>>> class BadGetattr:
+...     def __getattr__(self, key):
+...         self.foo
+...
+>>> len(pickle.dumps(BadGetattr(), 2))
+RecursionError: maximum recursion depth exceeded   # before
+>>> len(pickle.dumps(BadGetattr(), 2))
+57                                                 # after
+```
+
+## [x] a string constant in a set literal is stored under a stale compile-time hash
+
+**Impact: +2 pickle (test_bad_object_list_items × Py picklers, whose `assertIn(str(exc), {"'int' object is not iterable", ...})` never matched); general — any `x in {"literal", ...}`.** `Set.to_js` baked a hash for each constant element into the generated JS (`{constant: [value, HASH]}`) computed from `remove_escapes(elt.value)`, but the stored value is `js_from_ast(elt)` — the two diverge (`remove_escapes` treats its `\b` key as a regex word boundary and inserts backspaces), so a plain string constant landed in a bucket the runtime lookup never probed, and `"s" in {"s"}` returned False. String constants now go through the `{item: value}` path, where `set_add` computes the hash from the value actually stored — always consistent. Non-string constants keep the baked-hash fast path. Source: `$B.ast.Set.prototype.to_js` in `ast_to_js.js`.
+
+```python
+>>> "'int' object is not iterable" in {"'int' object is not iterable"}
+False   # before
+>>> "'int' object is not iterable" in {"'int' object is not iterable"}
+True    # after
+```
+
+## [x] `UnicodeEncodeError`/`UnicodeDecodeError` don't expose encoding/object/start/end/reason
+
+**Impact: +pickle (test_unpickle_from_2x reads `loaded.object`/`.encoding`/`.start`/… off an unpickled UnicodeEncodeError); general.** The Unicode error classes carry their five constructor arguments only in `.args`; CPython also exposes them as the attributes `encoding`, `object`, `start`, `end`, `reason`. Reading any of them raised AttributeError. Getset descriptors now derive each from the 5-argument form. Source: `py_exceptions.js`.
+
+```python
+>>> UnicodeEncodeError('ascii', 'foo', 0, 1, 'bad').object
+AttributeError: 'UnicodeEncodeError' object has no attribute 'object'   # before
+>>> UnicodeEncodeError('ascii', 'foo', 0, 1, 'bad').object
+'foo'                                                                  # after
+```
+
+## [x] `_socket.SocketType` is a distinct empty class, not an alias of `socket`
+
+**Impact: +pickle (test_name_mapping asserts `getattribute('_socket','SocketType') is getattribute('socket','socket')`); general.** CPython's `_socket.SocketType` IS the socket type object; Brython declared it as a separate `class SocketType: pass`, so the 2.x compat name mapping (`('socket','_socketobject') -> ('socket','SocketType')`) resolved to a different class than `_socket.socket`. `SocketType` now aliases `socket`. Source: the `_socket` module in `brython_stdlib.js`.
+
+```python
+>>> import _socket
+>>> _socket.SocketType is _socket.socket
+False   # before
+>>> _socket.SocketType is _socket.socket
+True    # after
+```
+
+## [x] `urllib.request` is missing `getproxies`/`url2pathname`/`pathname2url`/`urlcleanup`/`urlretrieve`
+
+**Impact: +2 pickle (test_name_mapping/test_reverse_name_mapping × the five urllib globals, whose 2.x-3.x mapping resolves `urllib.<name>` to `urllib.request.<name>`); general.** Brython's `urllib.request` shipped only `urlopen` and the URL-parsing helpers; the five path/proxy functions were absent, so any lookup of them raised AttributeError. Added browser-appropriate implementations (`getproxies` -> `{}`, `url2pathname`/`pathname2url` via `urllib.parse` quoting, `urlretrieve` writing through `urlopen` to a temp file, `urlcleanup`). Source: `Lib/urllib/request` in `brython_stdlib.js`.
+
+```python
+>>> import urllib.request
+>>> urllib.request.getproxies()
+AttributeError: module 'urllib.request' has no attribute 'getproxies'   # before
+>>> urllib.request.getproxies()
+{}                                                                      # after
+```
+
+## [x] builtin-class staticmethods (`bytearray.maketrans`) are unpicklable bare JS functions
+
+**Impact: +5 pickle (test_c_methods × all five picklers, unskipped with this fix); general.** A staticmethod of a builtin class unwraps to the bare JS function stored in `tp_funcs`, typed `JavascriptFunction` with no pickling path — while every other C-method shape in the test (method_descriptor, wrapper_descriptor, method-wrapper, bound builtin method) already carries the CPython getattr-style `__reduce__`. Added `JSFunction_funcs.__reduce__`: when the function's `$function_infos` qualname resolves to `owner.name` in builtins with `owner.tp_funcs[name]` being this very function, pickle it by reference as `(getattr, (owner, name))`; any other JS function keeps raising the same TypeError as before. Known limit: class creation requalifies shared functions in its namespace (`import pickle` pulls `collections.UserString`, whose creation rewrites the str method's `$function_infos` to `UserString.maketrans`), so `str.maketrans` still refuses to pickle — same root as the parked `__qualname__`-clobbering bug. Source: the `JSFunction` section (`js_objects.js`) in `brython.js`.
+
+```python
+>>> import pickle
+>>> pickle.dumps(bytearray.maketrans)
+TypeError: cannot pickle 'JavascriptFunction' object   # before
+>>> pickle.loads(pickle.dumps(bytearray.maketrans)) is bytearray.maketrans
+True                                                   # after
+```
+
+## [x] `pickle.py` NEWOBJ/NEWOBJ_EX crash on a non-type class argument
+
+**Impact: +2 pickle (test_bad_newobj/test_bad_newobj_ex × PyUnpickler); general.** CPython 3.14's `load_newobj`/`load_newobj_ex` validate the class argument before calling `__new__`; Brython's bundled `pickle.py` predates the check, so a poisoned pickle reached `len.__new__(len)` and died in a JS crash inside `object.__new__` (`can't access property "hasOwnProperty", d is undefined` — `$B.get_from_dict` on a non-type; that underlying crash is still there, separate fix). Added the two `isinstance(cls, type)` checks with CPython's UnpicklingError messages. Source: `Lib/pickle` in `brython_stdlib.js`.
+
+```python
+>>> import pickle
+>>> pickle.loads(b'cbuiltins\nlen\n)\x81.')
+JavascriptError: can't access property "hasOwnProperty", d is undefined                 # before
+>>> pickle.loads(b'cbuiltins\nlen\n)\x81.')
+UnpicklingError: NEWOBJ class argument must be a type, not builtin_function_or_method   # after
+```
+
+## [x] call-site unpack messages: `*` iterable and `**` mapping errors
+
+**Impact: +1 pickle (test_bad_newobj_ex_args × Py pickler, which asserts the exact messages); general.** Three pieces. (1) A starred argument in a call compiled to a bare iterator spread, so `f(a, *42)` raised the generic `'int' object is not iterable` — it now goes through `list.$unpack`, whose message is CPython's call-site wording. (2) The `$B.args` non-mapping error printed the callable without CPython's parentheses. (3) Calling a class routes argument parsing through `type.tp_call`'s literal `'__call__'` name; the error path now renames that prefix to the class's qualified name — computed only when the error is raised, the nominal path is untouched. Source: `ast_to_js` (make_args), args-parsing and `type.tp_call` sections in `brython.js`.
+
+```python
+>>> import functools
+>>> functools.partial(int, *42)
+TypeError: 'int' object is not iterable                                        # before
+>>> functools.partial(int, *42)
+TypeError: Value after * must be an iterable, not int                          # after
+>>> functools.partial(int, **[])
+TypeError: __call__ argument after ** must be a mapping, not list              # before
+>>> functools.partial(int, **[])
+TypeError: functools.partial() argument after ** must be a mapping, not list   # after
+```
+
+## [x] `$B.$getattr`'s class-dict fast path bypasses an inherited `__getattribute__`/tp_getattro
+
+**Impact: +2 pickle (test_pickler/test_unpickler_super_instance_attribute × C picklers — the last two failures; pickle now has ZERO fails); general.** `$B.$getattr` has a fast path for instances of Python classes: attribute found as a plain function in the class's own dict, no same-named entry in the instance's Brython dict → bind and return. That shortcut never consults the MRO's tp_getattro, so any class under a custom getattro resolved the class method instead of the intercept — a subclass of wasthon's C `Pickler` (whose slot trampoline serves the `persistent_id` stored on the C struct: the setattr half worked since the pinning fix, the read never reached C), and equally plain Python `class B(A)` with `A.__getattribute__` defined. Gated the fast path on `klass.$getattribute === object.tp_getattro`, exactly like the tp_funcs fast path above it (a stray `attr=='path'` debug console.log went with it). Source: `$B.$getattr` (py_builtin_functions.js) in `brython.js`.
+
+```python
+>>> class A:
+...     def __getattribute__(self, name):
+...         return 'intercepted'
+>>> class B(A):
+...     def m(self):
+...         return 1
+>>> B().m
+<bound method B.m of <B object>>   # before
+>>> B().m
+'intercepted'                      # after
+```
