@@ -10043,6 +10043,11 @@ mergeInto(LibraryManager.library, {
         HEAP32[(typeStructPtr + 24) >> 2] = rt._builtinTpIter;   // tp_iter
         HEAP32[(typeStructPtr + 32) >> 2] = methodsPtr;     // tp_methods
         HEAP32[(typeStructPtr + 40) >> 2] = slotMap[52 /* Py_tp_dealloc */] || 0;  // tp_dealloc
+        // tp_clear (offset 44): C code that re-initialises an instance reads
+        // Py_TYPE(self)->tp_clear and calls it directly (sqlite3 Connection
+        // __init__ on an already-initialised connection, connection.c:253).
+        // Leaving it NULL is an indirect call to null. Wire the spec slot.
+        HEAP32[(typeStructPtr + 44) >> 2] = slotMap[54 /* Py_tp_clear */] || 0;   // tp_clear
         var typeHandle = typeStructPtr;
         rt.bindInstance(typeHandle, cls);
         cls.__wasthon_type_handle__ = typeHandle;
