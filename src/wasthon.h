@@ -1543,6 +1543,7 @@ extern PyObject *PyExc_AttributeError;
 extern PyObject *PyExc_ArithmeticError;
 extern PyObject *PyExc_DeprecationWarning;
 extern PyObject *PyExc_Warning;
+extern PyObject *PyExc_ResourceWarning;
 extern PyObject *PyExc_ZeroDivisionError;
 
 /* PyType_FromSpec — variant of FromModuleAndSpec with no module association. */
@@ -1699,18 +1700,24 @@ void *PyGILState_GetThisThreadState(void);
  * always "held"; the interpreter never finalizes (Brython owns the
  * lifecycle). _PyWeakref_IsDead reports "alive" since the bridge doesn't
  * implement weakref death — callers that walk weakref'd object lists must
- * not rely on this for correctness (flagged: real weakref support needed).
- * PyErr_ResourceWarning is a no-op (no __del__-time warnings in browser). */
+ * not rely on this for correctness (flagged: real weakref support needed). */
 #define PyGILState_Check()              (1)
 static inline unsigned long PyThread_get_thread_ident(void) { return 1; }
 static inline int _Py_IsInterpreterFinalizing(PyInterpreterState *i) {
     (void)i; return 0;
 }
 static inline int _PyWeakref_IsDead(PyObject *ref) { (void)ref; return 0; }
+/* Emit a ResourceWarning through Brython's warnings machinery so an explicit
+ * gc.collect() that finalizes an unclosed resource-holder (e.g. a sqlite3
+ * Connection via $wasthon_gc_collect) surfaces it, like CPython's del-time
+ * finalizer. The %R-style format is collapsed to a fixed message (no
+ * PyUnicode_FromFormatV in the bridge); assertWarns only checks the category. */
+extern int PyErr_WarnEx(PyObject *category, const char *msg, Py_ssize_t stacklevel);
 static inline int PyErr_ResourceWarning(PyObject *source,
                                         Py_ssize_t stack_level,
                                         const char *format, ...) {
-    (void)source; (void)stack_level; (void)format; return 0;
+    (void)source; (void)format;
+    return PyErr_WarnEx(PyExc_ResourceWarning, "unclosed resource", stack_level);
 }
 
 /* Object protocol — common functions used by stdlib modules. */

@@ -94,6 +94,13 @@ mergeInto(LibraryManager.library, {
         // pointer values in the low address range.
         refcounts: null,
 
+        // gcRegistry: ptr -> instance, for C types that opt into gc.collect()
+        // finalization ($wasthon_gc_finalizable, set in PyType_FromModuleAndSpec
+        // for sqlite3's resource-holding types). Populated by bindInstance,
+        // pruned by PyObject_GC_Del and the sweep. Lets $wasthon_gc_collect
+        // enumerate the few finalizable instances without scanning all handles.
+        gcRegistry: null,
+
         // Internal incref/decref helpers — used by both the C-callable
         // wasthon_incref / wasthon_decref library functions and by JS-side
         // library bridges that must take ownership of a value (e.g. the
@@ -295,6 +302,7 @@ mergeInto(LibraryManager.library, {
             this.modules = new Map();
             this.types = new Map();
             this.refcounts = new Map();
+            this.gcRegistry = new Map();
             this.scopes = [];
             this.scopeOf = new Map();
             this.internPool = new Map();
@@ -348,6 +356,113 @@ mergeInto(LibraryManager.library, {
                         B.init_dict(inst);
                     }
                     return inst;
+                };
+            }
+
+            // gc.collect() partial finalization. Brython is a tracing GC with no
+            // prompt finalization, so a C resource-holder deleted in Python is
+            // never DECREF'd and its tp_dealloc never runs — a sqlite3 Cursor
+            // keeps its pending SELECT's table lock, an unclosed Connection
+            // never ResourceWarns. CPython reaps it at refcount 0. Here an
+            // explicit gc.collect() marks the live Brython roots (frame
+            // locals/globals, imported modules, builtins), following only DATA
+            // properties (never invoking getters), then fires tp_dealloc on
+            // every gc-finalizable C instance no longer reachable — exactly the
+            // objects a refcount would have reaped. Gated to finalizable types
+            // (sqlite3 resource holders) so a still-reachable object is never
+            // freed and other suites' gc.collect() is a near-no-op.
+            if (!B.$wasthon_gc_collect) {
+                var _rtGC = this;
+                B.$wasthon_gc_collect = function() {
+                    var rt = _rtGC;
+                    if (!rt.gcRegistry.size) return;
+                    // Mark the finalizable instances still reachable from a live
+                    // Python frame's locals/globals (CPython keeps exactly these —
+                    // refcount > 0). A bounded mark from the frame namespaces,
+                    // recursing into containers AND instance attributes (a live
+                    // cursor is often held on `self`, e.g. the test mixin's
+                    // self.cur), deduped by `seen`. Two guards keep it cheap and
+                    // safe: (1) a skip-set of module objects and the bridge's own
+                    // strong-ref bookkeeping (handles/gcRegistry/refcounts hold
+                    // EVERY C instance — walking them would mark everything; module
+                    // graphs are huge and hold no live test cursor); (2) functions
+                    // are never recursed (bound-method/proxy reads explode the walk)
+                    // and a hard visit cap is a backstop.
+                    var live = new Set(), seen = new Map(), skip = new Set();
+                    skip.add(rt); skip.add(rt.handles); skip.add(rt.gcRegistry);
+                    skip.add(rt.refcounts); skip.add(rt.scopeOf); skip.add(rt.sentinelByObj);
+                    skip.add(rt.internPool); skip.add(rt.types); skip.add(rt.modules);
+                    skip.add(rt.moduleDefs); if (rt.scopes) skip.add(rt.scopes);
+                    skip.add(B); skip.add(B.builtins); skip.add(B.imported);
+                    try {
+                        var imp = B.imported, ik = imp ? Object.getOwnPropertyNames(imp) : [];
+                        for (var ii = 0; ii < ik.length; ii++) {
+                            var mv;
+                            try { mv = Object.getOwnPropertyDescriptor(imp, ik[ii]); }
+                            catch (e) { continue; }
+                            if (mv && mv.value && typeof mv.value === 'object') skip.add(mv.value);
+                        }
+                    } catch (e) {}
+                    var scan = function(v, depth) {
+                        if (v === null || v === undefined) return;
+                        var t = typeof v;
+                        if (t !== 'object' && t !== 'function') return;
+                        if (skip.has(v)) return;
+                        // Track the max depth each object was visited at, not just
+                        // "seen": an object first reached shallow (via the huge
+                        // globals graph, its dict left un-recursed) must be
+                        // re-walked when later reached deeper from a frame local,
+                        // or a live cursor held on self.__dict__ is missed.
+                        var sd = seen.get(v);
+                        if (sd !== undefined && sd >= depth) return;
+                        seen.set(v, depth);
+                        if (seen.size > 40000) return;          // backstop
+                        var d;
+                        // Own descriptor only (data prop): a bare v.__wasthon_ptr__
+                        // on a Brython object whose JS get-trap delegates to Python
+                        // __getitem__ raises KeyError. C instances are plain objects.
+                        try { d = Object.getOwnPropertyDescriptor(v, '__wasthon_ptr__'); }
+                        catch (e) { d = null; }
+                        if (d && typeof d.value === 'number') live.add(d.value);
+                        if (depth <= 0 || t === 'function') return;
+                        // Brython keeps an instance's attributes in a dict stored
+                        // under the Symbol key $B.DICT (so `self.cur` lives at
+                        // self[$B.DICT].cur, invisible to getOwnPropertyNames which
+                        // only lists string keys). Walk it so a live cursor held on
+                        // self (the test mixin's self.cur) is marked.
+                        if (B.DICT) {
+                            var idict;
+                            try { idict = v[B.DICT]; } catch (e) { idict = undefined; }
+                            if (idict && typeof idict === 'object') scan(idict, depth - 1);
+                        }
+                        if (Array.isArray(v)) {
+                            for (var i = 0; i < v.length; i++) scan(v[i], depth - 1);
+                            return;
+                        }
+                        if (v instanceof Map) { v.forEach(function(x) { scan(x, depth - 1); }); return; }
+                        if (v instanceof Set) { v.forEach(function(x) { scan(x, depth - 1); }); return; }
+                        var nm;
+                        try { nm = Object.getOwnPropertyNames(v); }
+                        catch (e) { return; }
+                        for (var n = 0; n < nm.length; n++) {
+                            var pd;
+                            try { pd = Object.getOwnPropertyDescriptor(v, nm[n]); }
+                            catch (e) { continue; }
+                            if (pd && 'value' in pd) scan(pd.value, depth - 1);
+                        }
+                    };
+                    var fo = B.frame_obj;
+                    while (fo) {
+                        var f = fo.frame;
+                        if (f) { scan(f[1], 4); scan(f[3], 4); }
+                        fo = fo.prev;
+                    }
+                    var victims = [];
+                    rt.gcRegistry.forEach(function(inst, ptr) {
+                        if (rt.handles.get(ptr) !== inst) { rt.gcRegistry.delete(ptr); return; }
+                        if (!live.has(ptr)) victims.push(inst);
+                    });
+                    for (var v = 0; v < victims.length; v++) rt.gcFinalize(victims[v]);
                 };
             }
 
@@ -464,6 +579,35 @@ mergeInto(LibraryManager.library, {
         // Bind a Brython instance to a real WASM pointer. The handle == ptr.
         bindInstance: function(ptr, brythonInstance) {
             this.handles.set(ptr, brythonInstance);
+            var ot = brythonInstance && brythonInstance.ob_type;
+            if (ot && ot.$wasthon_gc_finalizable) {
+                this.gcRegistry.set(ptr, brythonInstance);
+            }
+        },
+
+        // Finalize one gc-collected C instance: run its tp_dealloc (resets a
+        // cursor's pending statement / closes & ResourceWarns an unclosed
+        // connection), exactly as a refcount-0 DECREF would. tp_dealloc's
+        // PyObject_GC_Del frees the struct and drops the handle. A
+        // finalizer-emitted warning must not leak as a pending exception
+        // (CPython's del-time is an unraisable context).
+        gcFinalize: function(inst) {
+            var ptr = inst && inst.__wasthon_ptr__;
+            if (!ptr || !inst.__wasthon_type__) return;
+            this.gcRegistry.delete(ptr);
+            // Fire tp_dealloc exactly as a refcount-0 DECREF would: cursor_dealloc
+            // resets the pending statement (releases the table lock) and frees the
+            // struct; connection_dealloc emits the unclosed-database ResourceWarning
+            // and closes the db. Only unreachable instances reach here (the mark
+            // phase preserves anything held in a live frame, including self.cur),
+            // so freeing is safe. tp_dealloc's PyObject_GC_Del drops the handle.
+            var tp_dealloc = HEAP32[(inst.__wasthon_type__ + 40) >> 2];
+            if (!tp_dealloc) return;
+            this.refcounts.delete(ptr);
+            this.pushScope();
+            try { getWasmTableEntry(tp_dealloc)(ptr); }
+            catch (e) { /* defensive */ }
+            finally { this.popScope(); this.pendingException = null; }
         },
 
         release: function(handle) {
@@ -6523,9 +6667,23 @@ mergeInto(LibraryManager.library, {
     },
 
     /* PyObject_CallFinalizerFromDealloc — tp_dealloc-path finalizer hook.
-     * No-op: the bridge has no tp_dealloc dispatch (Brython owns object
-     * lifecycle). Resource types must expose explicit close()/__exit__. */
-    PyObject_CallFinalizerFromDealloc: function(_self) { return 0; },
+     * Invokes the type's tp_finalize once (guarded), so a C dealloc that runs
+     * it (connection_dealloc -> connection_finalize emits the unclosed-database
+     * ResourceWarning) works when $wasthon_gc_collect fires tp_dealloc on an
+     * unreachable instance. Returns 0 (proceed with dealloc; never resurrects).
+     * Finalizer errors are unraisable (the C finalizer saves/restores any
+     * pending exception itself). */
+    PyObject_CallFinalizerFromDealloc__deps: ['$WasthonRT'],
+    PyObject_CallFinalizerFromDealloc: function(selfHandle) {
+        var rt = WasthonRT;
+        var inst = rt.handles.get(selfHandle);
+        if (!inst || inst.__wasthon_finalized__) return 0;
+        var fin = inst.ob_type && inst.ob_type.$wasthon_tp_finalize;
+        if (!fin) return 0;
+        inst.__wasthon_finalized__ = true;
+        try { getWasmTableEntry(fin)(selfHandle); } catch (e) { /* unraisable */ }
+        return 0;
+    },
 
     PyErr_Occurred__deps: ['$WasthonRT'],
     PyErr_Occurred: function() {
@@ -7044,6 +7202,8 @@ mergeInto(LibraryManager.library, {
     wasthon_get_PyExc_DeprecationWarning:   function() { return WasthonRT.wrap(WasthonRT._b_.DeprecationWarning); },
     wasthon_get_PyExc_Warning__deps:        ['$WasthonRT'],
     wasthon_get_PyExc_Warning:              function() { return WasthonRT.wrap(WasthonRT._b_.Warning); },
+    wasthon_get_PyExc_ResourceWarning__deps: ['$WasthonRT'],
+    wasthon_get_PyExc_ResourceWarning:      function() { return WasthonRT.wrap(WasthonRT._b_.ResourceWarning); },
     wasthon_get_PyExc_ZeroDivisionError__deps: ['$WasthonRT'],
     wasthon_get_PyExc_ZeroDivisionError:    function() { return WasthonRT.wrap(WasthonRT._b_.ZeroDivisionError); },
 
@@ -10010,6 +10170,18 @@ mergeInto(LibraryManager.library, {
         var cls = rt.$B.make_builtin_class(shortName);
         rt.$B.init_dict(cls);
 
+        // gc.collect() finalization opt-in. Unlike the compression File types
+        // (freed deterministically at close()/with-exit, see wasthon-dealloc.js),
+        // sqlite3's resource-holding C types have no such hook: a deleted Cursor
+        // keeps its pending statement's table lock, an unclosed Connection owes
+        // a ResourceWarning. $wasthon_gc_collect finalizes their unreachable
+        // instances. Scoped to these names so another suite's gc.collect()
+        // never sweeps a live C object.
+        if (fullName === 'sqlite3.Connection' || fullName === 'sqlite3.Cursor' ||
+            fullName === 'sqlite3.Blob' || fullName === 'sqlite3.Backup') {
+            cls.$wasthon_gc_finalizable = true;
+        }
+
         // Py_tp_doc (slot 56) carries the class docstring, whose first line may
         // be a clinic text signature — expose it for inspect.signature(cls).
         var typeSig = __wasthon_text_signature(shortName, slotMap[56] || 0);
@@ -10114,6 +10286,10 @@ mergeInto(LibraryManager.library, {
         // __init__ on an already-initialised connection, connection.c:253).
         // Leaving it NULL is an indirect call to null. Wire the spec slot.
         HEAP32[(typeStructPtr + 44) >> 2] = slotMap[54 /* Py_tp_clear */] || 0;   // tp_clear
+        // tp_finalize is past the 64-byte bridge struct, so stash it on the
+        // class; PyObject_CallFinalizerFromDealloc invokes it (connection_dealloc
+        // runs it to emit the unclosed-database ResourceWarning).
+        if (slotMap[80 /* Py_tp_finalize */]) cls.$wasthon_tp_finalize = slotMap[80];
         var typeHandle = typeStructPtr;
         rt.bindInstance(typeHandle, cls);
         cls.__wasthon_type_handle__ = typeHandle;
@@ -11331,6 +11507,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         rt.handles.delete(ptr);
         rt.refcounts.delete(ptr);
+        rt.gcRegistry.delete(ptr);
         _free(ptr);
     },
 

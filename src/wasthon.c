@@ -167,6 +167,7 @@ PyObject *PyExc_AttributeError        = (PyObject *)0;
 PyObject *PyExc_ArithmeticError       = (PyObject *)0;
 PyObject *PyExc_DeprecationWarning    = (PyObject *)0;
 PyObject *PyExc_Warning               = (PyObject *)0;
+PyObject *PyExc_ResourceWarning       = (PyObject *)0;
 PyObject *PyExc_ZeroDivisionError     = (PyObject *)0;
 
 /* ---- Singleton object handles ---- */
@@ -222,6 +223,7 @@ extern PyObject *wasthon_get_PyExc_AttributeError(void);
 extern PyObject *wasthon_get_PyExc_ArithmeticError(void);
 extern PyObject *wasthon_get_PyExc_DeprecationWarning(void);
 extern PyObject *wasthon_get_PyExc_Warning(void);
+extern PyObject *wasthon_get_PyExc_ResourceWarning(void);
 extern PyObject *wasthon_get_PyExc_ZeroDivisionError(void);
 
 extern PyObject *wasthon_get_Py_None(void);
@@ -293,6 +295,7 @@ void wasthon_init(void) {
     PyExc_ArithmeticError       = wasthon_get_PyExc_ArithmeticError();
     PyExc_DeprecationWarning    = wasthon_get_PyExc_DeprecationWarning();
     PyExc_Warning               = wasthon_get_PyExc_Warning();
+    PyExc_ResourceWarning       = wasthon_get_PyExc_ResourceWarning();
     PyExc_ZeroDivisionError     = wasthon_get_PyExc_ZeroDivisionError();
 
     /* Bind each built-in type singleton's address to its Brython class,

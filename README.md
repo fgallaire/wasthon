@@ -740,17 +740,48 @@ Infrastructure work that pays back on existing modules:
       `close()`/`with` contract above — Brython's bookkeeping + CPython's C
       check, no tracing GC. +28 (`test_array` `test_buffer` + `test_clear`).
       Details in `CHANGELOG.md`.
+- [x] Partial `gc.collect()` finalization, an *explicit* trigger (not an
+      auto-GC) — a sqlite3 cursor `del`'d while holding a pending statement
+      keeps its table lock, and an unclosed `Connection` owes a
+      `ResourceWarning`; in CPython both fire at the object's refcount-0, which
+      Brython (tracing-GC, no prompt finalization) never reaches. The bridge
+      implements `$B.$wasthon_gc_collect()` (wired to `support.gc_collect` /
+      `gc.collect()`): a synchronous mark-sweep that MARKs the C instances
+      reachable from the live Brython frames — locals + globals, recursing into
+      containers and the **Symbol-keyed instance `__dict__`** (`self.cur` lives
+      at `self[$B.DICT].cur`, invisible to `getOwnPropertyNames`), tracking the
+      **max visit-depth per object** so one first reached shallow via the huge
+      globals graph is re-walked deep from a frame local — then fires
+      `tp_dealloc` on every gc-finalizable instance no longer reachable
+      (`cursor_dealloc` → `stmt_reset` releases the lock; `connection_dealloc` →
+      `tp_finalize` → `ResourceWarning`). This is the explicit `gc.collect()`
+      contract, *not* the rejected automatic finalizer (a synchronous run never
+      yields for a FinalizationRegistry callback). Gated to an opt-in set of
+      resource-holding sqlite3 types (`$wasthon_gc_finalizable`:
+      Connection/Cursor/Blob/Backup) registered at `bindInstance` into a
+      `gcRegistry`, so an empty registry returns instantly (zero cost to every
+      other suite) and the mark skips the bridge's own strong-ref bookkeeping
+      (`handles`/`gcRegistry`/`refcounts`, which pin every instance) and module
+      graphs. `PyObject_CallFinalizerFromDealloc` now invokes `tp_finalize`
+      (stashed on the class, past the 64-byte type struct) and a real
+      `PyErr_ResourceWarning`/`PyExc_ResourceWarning` emit the warning. +3
+      (`test_sqlite3` `test_table_lock_cursor_dealloc` /
+      `test_table_lock_cursor_non_readonly_select` /
+      `test_connection_resource_warning`). Details in `CHANGELOG.md`.
 - [ ] Explicit-contract residual — a C instance held by a Python local that is
-      dropped or reassigned without a `close()`/`with` is never DECREF'd:
+      dropped or reassigned without a `close()`/`with` (and with no
+      `gc.collect()` call) is never DECREF'd:
       Brython offers no scope-exit or GC callback into `wasthon_decref`, so its
-      native context leaks. Two deterministic triggers now cover the common
+      native context leaks. Three deterministic triggers now cover the common
       cases: the `close()`/`with` contract for every heavy native that exposes
       one (LZMA/Zstd/bz2 file wrappers; sqlite `Connection.close()` frees
-      natively), and the one-shot `compress()`/`decompress()` helper wrap for
-      the create-use-drop transient with no `close()`. The residual is the
-      genuinely unhooked case — a bare compressor/`Connection` kept in a
-      long-lived local and dropped on its own — acceptable for light natives
-      and a known cap on loop-bench depth for heavy ones. (Instance /
+      natively), the one-shot `compress()`/`decompress()` helper wrap for
+      the create-use-drop transient with no `close()`, and an explicit
+      `gc.collect()` mark-sweep for unreachable resource-holding sqlite3 types.
+      The residual is the genuinely unhooked case — a bare compressor/`Connection`
+      kept in a long-lived local and dropped on its own with no `gc.collect()` —
+      acceptable for light natives and a known cap on loop-bench depth for heavy
+      ones. (Instance /
       `refcounts` axis; distinct from the sentinel / `handles` leak below.)
 - [x] JS-side handle-map (sentinel) leak — FIXED by **handle scopes** (the
       JNI local-reference / HPy model). Every JS→C entry point (method
