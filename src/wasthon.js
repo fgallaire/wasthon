@@ -4901,6 +4901,14 @@ mergeInto(LibraryManager.library, {
     PyUnicode_FSConverter: function(argHandle, addrPtr) {
         var rt = WasthonRT;
         var obj = rt.unwrap(argHandle);
+        // os.PathLike (e.g. sqlite3.connect(FakePath(...))): resolve __fspath__
+        // first (CPython's PyOS_FSPath), before the str/bytes dispatch.
+        if (obj !== null && obj !== undefined &&
+                !rt.$B.$isinstance(obj, rt._b_.bytes) &&
+                !rt.$B.$isinstance(obj, rt._b_.str)) {
+            var _fspath = rt.$B.$getattr(obj, '__fspath__', null);
+            if (_fspath) { try { obj = rt.$B.$call(_fspath); } catch (e) {} }
+        }
         var bytesObj;
         try {
             if (rt.$B.$isinstance(obj, rt._b_.bytes)) {
