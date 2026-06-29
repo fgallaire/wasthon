@@ -250,6 +250,9 @@ extern PyObject *wasthon_builtin_tp_iter(PyObject *self);
 #define BT_FROZENSET 11
 #define BT_FUNCTION 12
 #define BT_PICKLEBUFFER 13
+#define BT_NONETYPE 14
+#define BT_ELLIPSIS 15
+#define BT_NOTIMPLEMENTED 16
 
 /*
  * Called once after the WASM module is instantiated and before any
@@ -331,6 +334,12 @@ void wasthon_init(void) {
     wasthon_bind_builtin_type(BT_FUNCTION,    &PyFunction_Type);
     wasthon_bind_builtin_type(BT_PICKLEBUFFER, &PyPickleBuffer_Type);
     wasthon_bind_builtin_type(BT_BOOL,        &PyBool_Type);
+    /* Singleton types — _pickle's save_type compares the type object against
+     * these externs (`obj == &_PyNone_Type`) to emit (type, (None,)) etc.;
+     * without the binding it falls to save_global → unpicklable builtins.NoneType. */
+    wasthon_bind_builtin_type(BT_NONETYPE,        &_PyNone_Type);
+    wasthon_bind_builtin_type(BT_ELLIPSIS,        &PyEllipsis_Type);
+    wasthon_bind_builtin_type(BT_NOTIMPLEMENTED,  &_PyNotImplemented_Type);
 
     /* Populate tp_as_number for PyLong_Type / PyFloat_Type so _decimal
      * (and other modules that cache nb_* pointers) can read them. */

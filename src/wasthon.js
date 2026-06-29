@@ -519,7 +519,13 @@ mergeInto(LibraryManager.library, {
             // & meta types regressed pickle). Enrich the struct exactly like a
             // fresh ensureTypeStruct (below) so it's complete — an incomplete
             // &PyLong_Type here broke pickle's load_newobj (no tp_new).
-            var canon = (cls === this._b_.int) &&
+            // Also the singleton types (NoneType/ellipsis/NotImplementedType):
+            // _pickle's save_type compares against the &_PyNone_Type & co externs,
+            // so wrap(type(None)) must be that extern (test_singleton_types, C path).
+            // Safe to unify (unlike str/bytes/containers): their sole instances are
+            // None/.../NotImplemented, never reconstructed via NEWOBJ.
+            var canon = (cls === this._b_.int || cls === this.$B.NoneType ||
+                         cls === this.$B.ellipsis || cls === this.$B.NotImplementedType) &&
                         this.builtinTypeForClass && this.builtinTypeForClass.get(cls);
             if (canon) {
                 cls.__wasthon_type_handle__ = canon;
@@ -8343,6 +8349,9 @@ mergeInto(LibraryManager.library, {
                 try { rt.$B.finalize_type(cls); } catch (_) {}
                 break;
             }
+            case 14: cls = rt.$B.NoneType;            break;
+            case 15: cls = rt.$B.ellipsis;            break;
+            case 16: cls = rt.$B.NotImplementedType;  break;
             default: return;
         }
         rt.handles.set(structPtr, cls);
