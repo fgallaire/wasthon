@@ -304,6 +304,53 @@ mergeInto(LibraryManager.library, {
             this.handles.set(this.SLOT_FALSE, this._b_.False);
             this.handles.set(this.SLOT_NOTIMPLEMENTED, this._b_.NotImplemented);
 
+            // object.__new__(C) for a wasthon C type must allocate the zeroed C
+            // struct (like CPython's object_new -> tp_alloc); Brython's
+            // object.tp_new returns a bare JS object, so an explicit C-type
+            // __new__ with no Py_tp_new slot (e.g. sqlite3.Connection.__new__)
+            // gave a struct-less object and C code then read an uninitialised
+            // struct off stale memory (test_uninit_operations, suite-order
+            // dependent). This LEAF allocator never calls cls.tp_new, so
+            // dispatching object.tp_new to it can't recurse. Returns null for a
+            // non-wasthon class (no basicsize in the MRO).
+            if (!B.$wasthon_new_instance) {
+                var _rtNI = this;
+                B.$wasthon_new_instance = function(brythonCls) {
+                    var size = 0, foundIdx = -1, typeStructForInst = 0;
+                    var chain = [brythonCls];
+                    if (brythonCls.tp_mro) chain = chain.concat(brythonCls.tp_mro);
+                    else if (brythonCls.__mro__) chain = chain.concat(brythonCls.__mro__);
+                    for (var i = 0; i < chain.length; i++) {
+                        var c = chain[i];
+                        if (c && c.__wasthon_basicsize__ > 0) {
+                            size = c.__wasthon_basicsize__;
+                            typeStructForInst = c.__wasthon_type_handle__ || 0;
+                            foundIdx = i;
+                            break;
+                        }
+                    }
+                    if (size === 0) return null;
+                    var instancePtr = _malloc(size);
+                    HEAPU8.fill(0, instancePtr, instancePtr + size);
+                    var inst = {
+                        __class__: brythonCls,
+                        ob_type: brythonCls,
+                        __wasthon_ptr__: instancePtr,
+                        __wasthon_type__: brythonCls.__wasthon_type_handle__ ||
+                                          _rtNI.ensureTypeStruct(brythonCls) ||
+                                          typeStructForInst,
+                    };
+                    _rtNI.bindInstance(instancePtr, inst);
+                    // Subclass (basicsize inherited from an ancestor) with no
+                    // __slots__ gets an instance __dict__, like the tp_new paths.
+                    if (foundIdx > 0 &&
+                        B.get_from_dict(brythonCls, '__slots__', B.NULL) === B.NULL) {
+                        B.init_dict(inst);
+                    }
+                    return inst;
+                };
+            }
+
             // Expose CPython's real Unicode case/predicate tables to Brython
             // (linked from unicodectype.o in bundles that ship `unicodedata`),
             // so Brython's str methods can be CPython-exact — its own tables
