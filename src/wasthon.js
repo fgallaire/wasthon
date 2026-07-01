@@ -1039,6 +1039,34 @@ mergeInto(LibraryManager.library, {
             this.pendingException = { exc: rt.wrap(cls), msg: msg, value: inst };
         },
 
+        // CPython-shaped AttributeError message: a module names itself
+        // (`module 'os' has no attribute 'x'`), everything else its type
+        // (`'Foo' object has no attribute 'x'`). pickle's lookup errors
+        // assert these exact strings via __context__.
+        attrErrMsg: function(obj, name) {
+            try {
+                var cn = this.$B.class_name ? this.$B.class_name(obj) : null;
+                if (cn === 'module') {
+                    // A Brython module's __name__ lives in its dict, not as
+                    // a direct JS property — read it via module_getattr.
+                    var mn = this.$B.module_getattr ?
+                        this.$B.module_getattr(obj, '__name__') : obj.__name__;
+                    if (typeof mn === 'string') {
+                        return "module '" + mn + "' has no attribute '" + name + "'";
+                    }
+                }
+                if (obj && obj.tp_name !== undefined) {
+                    // A class: CPython says `type object 'A' has no attribute`.
+                    var tn;
+                    try { tn = this.$B.$getattr(obj, '__name__'); } catch (_) {}
+                    if (typeof tn !== 'string') tn = obj.tp_name || cn;
+                    return "type object '" + tn + "' has no attribute '" + name + "'";
+                }
+                if (cn) return "'" + cn + "' object has no attribute '" + name + "'";
+            } catch (_) {}
+            return "no attribute '" + name + "'";
+        },
+
         // Normalise any Brython str-like to a primitive JS string.
         // Brython represents BMP strings as primitives, but astral-plane
         // strings (codepoints > U+FFFF) and certain str-subclass instances
@@ -6133,7 +6161,7 @@ mergeInto(LibraryManager.library, {
         try {
             var v = rt.$B.$getattr(obj, name);
             if (v === undefined || v === null) {
-                rt.setError(rt.wrap(rt._b_.AttributeError), "no attribute '" + name + "'");
+                rt.setError(rt.wrap(rt._b_.AttributeError), rt.attrErrMsg(obj, name));
                 return 0;
             }
             // CPython binds a method holding a NEW ref to __self__, so the self
@@ -7460,7 +7488,7 @@ mergeInto(LibraryManager.library, {
                     }
                 }
             } catch (_) {}
-            rt.setError(rt.wrap(rt._b_.AttributeError), "no attribute '" + name + "'");
+            rt.setError(rt.wrap(rt._b_.AttributeError), rt.attrErrMsg(obj, name));
             return 0;
         }
     },
@@ -9255,10 +9283,15 @@ mergeInto(LibraryManager.library, {
         var current = rt.unwrap(rt.pendingException.exc);
         var target = rt.unwrap(excHandle);
         if (!current || !target) return 0;
+        if (current === target) return 1;
         try {
-            return rt.$B.$issubclass(current, target) ? 1 : 0;
+            // $B.$issubclass does not exist in this Brython — the builtin
+            // does. A silent fallback to identity here made every subclass
+            // match fail (ModuleNotFoundError never matched ImportError, so
+            // pickle's save_global leaked it instead of PicklingError).
+            return rt._b_.issubclass(current, target) ? 1 : 0;
         } catch (e) {
-            return current === target ? 1 : 0;
+            return 0;
         }
     },
 
@@ -9451,23 +9484,32 @@ mergeInto(LibraryManager.library, {
 
     /* _PyErr_ChainExceptions1(exc) — CPython: with a currently-set
      * exception, `exc` becomes its __context__; with none, `exc` is
-     * re-raised. The bridge keeps a single pending slot and no chaining, so
-     * a currently-pending exception still wins (as before) — but when
-     * NOTHING is pending we must re-raise `exc`, else it is silently lost.
-     * sqlite3's bind_parameters relies on this: a failed bind grabs the
-     * Python error via PyErr_GetRaisedException, calls set_error_from_db
-     * (which sets nothing when the DB error is SQLITE_OK — a pure Python
-     * failure such as a surrogate UnicodeEncodeError), then
-     * _PyErr_ChainExceptions1 to re-raise it. As a no-op the error was
-     * dropped and the parameter bound NULL (test_string_with_surrogates,
-     * test_param_surrogates, test_surrogates, test_bind_mutating_list). */
+     * re-raised (else it is silently lost — sqlite3's bind_parameters
+     * relies on the re-raise: a failed bind grabs the Python error via
+     * PyErr_GetRaisedException, set_error_from_db sets nothing for a pure
+     * Python failure, then _PyErr_ChainExceptions1 re-raises it;
+     * test_string_with_surrogates, test_bind_mutating_list).
+     * The chaining half serves pickle's lookup errors: save_global fetches
+     * the AttributeError/ImportError, formats a PicklingError, then chains
+     * the original so `cm.exception.__context__` carries it (Brython
+     * exceptions keep __context__ as a plain JS property, cf. the
+     * __context___get getset in py_exceptions.js). */
     _PyErr_ChainExceptions1__deps: ['$WasthonRT'],
     _PyErr_ChainExceptions1: function(excH) {
         var rt = WasthonRT;
         if (excH === 0 || excH === rt.SLOT_NONE) return;
-        if (rt.pendingException) return;
         var exc = rt.unwrap(excH);
         if (!exc) return;
+        var pe = rt.pendingException;
+        if (pe) {
+            // Materialize the pending value (kept on pe so the same instance
+            // crosses to Brython) and hang exc off its __context__.
+            try {
+                var value = pe.value || (pe.value = rt.pendingExc(pe));
+                if (value && value !== exc) value.__context__ = exc;
+            } catch (e) {}
+            return;
+        }
         rt.setError(rt.wrap(exc.__class__ ? exc.__class__ : rt._b_.Exception),
                     String(exc), exc);
     },
