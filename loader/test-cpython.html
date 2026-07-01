@@ -915,6 +915,10 @@ for _sib in _SIBLINGS.get(test_name, []):
     try:
         _m = __import__(_sib)
         sys.modules['test.' + _sib] = _m
+        # The canonical CPython name is test.<sib>: error messages built from
+        # module.__name__ must say e.g. "module 'test.picklecommon' has no
+        # attribute 'spam'" (test_global_lookup_error asserts the exact str).
+        _m.__name__ = 'test.' + _sib
         setattr(test_pkg, _sib, _m)
     except Exception as _e:
         log('  (sibling preload ' + _sib + ' failed: ' + str(_e) + ')')
