@@ -956,7 +956,20 @@ _KNOWN_HANGS = {
                     # test_zero_padded_integers: WASM trap (SIGILL) on
                     # Chrome only, Firefox tolerates silently. Wasthon
                     # bug in unpickler integer parsing path. To fix.
-                    'test_zero_padded_integers'],
+                    'test_zero_padded_integers',
+                    # test_c_methods pickles built-in methods ("abcd".index,
+                    # list.__len__...) by reference. Brython represents them
+                    # as bare JS functions (JavascriptFunction) without the
+                    # __self__/__objclass__/__qualname__ metadata CPython's
+                    # method objects carry, so there is nothing to pickle
+                    # them by (representation limit, not a bug).
+                    'test_c_methods',
+                    # test_unpickle_module_race needs REAL concurrent threads
+                    # (threading.Barrier across 3 threads) plus modules
+                    # written to disk and imported via sys.path. Brython runs
+                    # threads synchronously and the browser has no importable
+                    # filesystem path — the premise cannot hold.
+                    'test_unpickle_module_race'],
     # test_setslice / test_extended_set_del_slice both hang inside the
     # SAME wasthon function (_PyArg_Parse @ wasm-function 1783/1817),
     # triggered by simple and extended slice assignment. Likely one
@@ -1020,6 +1033,13 @@ _SKIP_REASONS = {
         'Brython str is a JS UTF-16 string: adjacent lone surrogates are '
         'indistinguishable from the astral char they encode, so encode("utf-8") '
         'cannot raise (architectural representation limit, not a bug)',
+    'test_c_methods':
+        'Brython built-in methods are bare JS functions without the '
+        '__self__/__objclass__/__qualname__ metadata needed to pickle them '
+        'by reference (representation limit, not a bug)',
+    'test_unpickle_module_race':
+        'needs real concurrent threads (threading.Barrier) plus on-disk '
+        'importable modules via sys.path; neither exists in the browser',
     'test_autoseed':
         'no blocking time.sleep in the browser (NotImplementedError)',
     'test_after_fork':
