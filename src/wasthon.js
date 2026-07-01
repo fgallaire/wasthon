@@ -8612,7 +8612,14 @@ mergeInto(LibraryManager.library, {
                     return rt.$B.$call(rt._b_.memoryview, self.obj);
                 };
                 pb_funcs.release = function(self){ self.obj = null; return rt._b_.None; };
-                cls.tp_methods = ['raw', 'release'];
+                // Buffer-protocol conversion: bytes()/bytearray() of a
+                // PickleBuffer read its underlying buffer (CPython goes through
+                // the buffer protocol; the stub has no real one, so expose the
+                // data via __bytes__ which both factories fall back to).
+                pb_funcs.__bytes__ = function(self){
+                    return rt.$B.$call(rt._b_.bytes, self.obj);
+                };
+                cls.tp_methods = ['raw', 'release', '__bytes__'];
                 try { rt.$B.set_func_names(cls, '_pickle'); } catch (_) {}
                 try { rt.$B.finalize_type(cls); } catch (_) {}
                 break;
@@ -9602,34 +9609,49 @@ mergeInto(LibraryManager.library, {
         return p;
     },
 
-    /* PyMemoryView_FromObject — stub. Pickle protocol 5's
-     * load_readonly_buffer is the sole bridge consumer; basic
-     * pickle/unpickle of int/str/list/dict/tuple/bytes never reaches
-     * it, so failing this path is safe for the common case. */
+    /* PyMemoryView_FromObject(obj) — a real memoryview of a bytes-like object.
+     * pickle protocol-5 load_readonly_buffer wraps an out-of-band buffer in a
+     * memoryview to (re)mark it read-only. */
     PyMemoryView_FromObject__deps: ['$WasthonRT'],
     PyMemoryView_FromObject: function(_objH) {
         var rt = WasthonRT;
-        rt.setError(rt.wrap(rt._b_.NotImplementedError),
-            "PyMemoryView_FromObject: memoryview not supported in bridge");
-        return 0;
+        var obj = rt.unwrap(_objH);
+        if (obj === null || obj === undefined) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "PyMemoryView_FromObject: a bytes-like object is required, not 'NoneType'");
+            return 0;
+        }
+        try {
+            return rt.wrapNewRef(rt.$B.$call(rt._b_.memoryview, obj));
+        } catch (e) {
+            rt.forwardError(e, rt._b_.TypeError);
+            return 0;
+        }
     },
 
-    /* PyMemoryView_GET_BUFFER — returns a pointer to a Py_buffer struct.
-     * In CPython it's a macro into the memoryview's internal storage; here
-     * we keep a tiny static buffer reused per call. The only caller
-     * (pickle's load_readonly_buffer) never reaches us because
-     * PyMemoryView_FromObject above returns NULL first, so the contents
-     * never matter — we just need a valid non-NULL pointer for the link
-     * not to dangle. */
+    /* PyMemoryView_GET_BUFFER(view) — pointer to the view's Py_buffer. In
+     * CPython it's a macro into the memoryview's internal storage; here we back
+     * each memoryview with a per-object Py_buffer struct (cached on the object),
+     * with `readonly` (offset 16) initialised from the view's own flag so
+     * load_readonly_buffer keeps a read-only original (zero-copy) instead of
+     * re-wrapping it, and a writable one gets marked read-only in place. */
     PyMemoryView_GET_BUFFER__deps: ['$WasthonRT'],
     PyMemoryView_GET_BUFFER: function(_mvH) {
         var rt = WasthonRT;
-        if (!rt._dummyPyBuffer) {
-            /* sizeof(Py_buffer) = 12 fields * 4 bytes on wasm32. */
-            rt._dummyPyBuffer = _malloc(48);
-            HEAPU8.fill(0, rt._dummyPyBuffer, rt._dummyPyBuffer + 48);
+        var mv = rt.unwrap(_mvH);
+        if (mv && mv.__wasthon_mvbuf__) return mv.__wasthon_mvbuf__;
+        var buf = _malloc(48);
+        HEAPU8.fill(0, buf, buf + 48);
+        var ro = 1;
+        if (mv) {
+            if (mv.readonly === false) ro = 0;
+            else if (mv.readonly === undefined && mv.obj &&
+                     (mv.obj.__class__ === rt._b_.bytearray ||
+                      mv.obj.ob_type === rt._b_.bytearray)) ro = 0;
         }
-        return rt._dummyPyBuffer;
+        HEAP32[(buf + 16) >> 2] = ro;
+        try { if (mv) mv.__wasthon_mvbuf__ = buf; } catch (_) {}
+        return buf;
     },
 
     /* PyOS_snprintf — minimal printf-style. unicodedata uses it to format
