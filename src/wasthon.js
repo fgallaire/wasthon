@@ -554,6 +554,14 @@ mergeInto(LibraryManager.library, {
             // Other Brython objects (functions, ptr-less instances): intern by
             // identity so re-wrapping the same object yields the same handle.
             if (typeof obj === 'object' || typeof obj === 'function') {
+                // A class whose metaclass is not `type` itself (e.g. ABCMeta,
+                // the metaclass of UserDict/UserList via collections.abc) is
+                // still a class — Brython marks every class with tp_name — and
+                // must get the same canonical struct handle that wrapMaybeType /
+                // the dumps argument path give it, or _pickle save_global's
+                // `actual != global` identity fails (the lookup and the arg
+                // would carry two different handles).
+                if (obj.tp_name !== undefined) return this.ensureTypeStruct(obj);
                 var ex = this.sentinelByObj.get(obj);
                 if (ex !== undefined && this.handles.get(ex) === obj) return ex;
                 var nid = this._allocSentinelId();
