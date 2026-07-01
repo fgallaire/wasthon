@@ -8,6 +8,7 @@
 <script src="./wasthon-io-write.js"></script>
 <script src="./wasthon-fs.js"></script>
 <script src="./wasthon-dealloc.js"></script>
+<script src="./wasthon-dbm.js"></script>
 </head>
 <body>
 <p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
@@ -101,6 +102,8 @@ try {
     } else {
         installWasthonFS(bundle.module);
         log('file I/O: Emscripten MEMFS (shared with C / sqlite3)');
+        installWasthonDbm(window.__BRYTHON__);
+        log('dbm: pure-Python dbm/dbm.dumb registered in the VFS');
     }
     log('Installing: ' + (installList.join(', ') || '(none)'));
     for (const m of installList) {
@@ -823,12 +826,11 @@ test_pkg.test_iter = test_iter
 sys.modules['test.test_iter'] = test_iter
 
 # Stubs for stdlib modules pickletester (and others) import at top but
-# don't really need: brython_stdlib lacks dbm; stubbing it as a flexible
-# _mod lets \`import dbm\` succeed and any attribute access return _flex.
-# tkinter/xmlrpc/http.server/urllib.robotparser/xml.etree are pulled in
-# indirectly by some test helpers; the cascading 404 storm dominates the
-# boot time. Stub them up-front.
-for _missing in ('dbm', 'tkinter', 'xmlrpc', '_testbuffer', 'numpy',
+# don't really need. tkinter/xmlrpc/http.server/urllib.robotparser/
+# xml.etree are pulled in indirectly by some test helpers; the cascading
+# 404 storm dominates the boot time. Stub them up-front.
+# (dbm is now a real VFS package, no longer stubbed.)
+for _missing in ('tkinter', 'xmlrpc', '_testbuffer', 'numpy',
                  'socketserver', 'winreg', '_gdbm', '_bz2', '_dbm',
                  '_multiprocessing',
                  'http.server', 'urllib.robotparser', 'xml.etree'):
