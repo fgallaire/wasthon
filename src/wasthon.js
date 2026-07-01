@@ -285,6 +285,23 @@ mergeInto(LibraryManager.library, {
             for (var i = 0; i < n; i++) src[i] = HEAPU8[ptr + i];
         },
 
+        /* Write-back for PyMemoryView_FromMemory(..., PyBUF_WRITE) views:
+         * Brython cannot alias linear memory, so the view is backed by a
+         * tagged bytearray; after the callee (e.g. BytesIO.readinto) has
+         * written into it, fold .source back into the C region the caller
+         * handed out. `v` is the memoryview (backing at .obj) or the
+         * bytearray itself. */
+        syncFromMemView: function(v) {
+            if (!v || typeof v !== 'object') return;
+            var b = v.__wasthon_frommem__ ? v :
+                    (v.obj && v.obj.__wasthon_frommem__ ? v.obj : null);
+            if (!b) return;
+            var t = b.__wasthon_frommem__, src = b.source;
+            if (!src || src.length === undefined) return;
+            var n = Math.min(src.length, t.len);
+            for (var i = 0; i < n; i++) HEAPU8[t.ptr + i] = Number(src[i]) & 0xff;
+        },
+
         init: function() {
             var B = globalThis.__BRYTHON__;
             if (!B) {
@@ -5013,7 +5030,13 @@ mergeInto(LibraryManager.library, {
         var fn = rt.unwrap(fnHandle);
         var arg = rt.toBrythonArg(rt.unwrap(argHandle));
         if (!fn) return 0;
-        try { return rt.wrapNewRef(rt.$B.$call(fn, arg)); }
+        try {
+            var res = rt.$B.$call(fn, arg);
+            // A PyBUF_WRITE from-memory view (pickle readinto) carries its
+            // target region; fold what the callee wrote back into the heap.
+            rt.syncFromMemView(arg);
+            return rt.wrapNewRef(res);
+        }
         catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
@@ -9570,11 +9593,22 @@ mergeInto(LibraryManager.library, {
     PyMemoryView_FromMemory: function(memPtr, size, flags) {
         var rt = WasthonRT;
         try {
+            /* PyBUF_WRITE (0x200): the caller expects writes through the
+             * view to land at memPtr — pickle's _Unpickler_ReadInto hands
+             * such a view to file.readinto() and then reads the C buffer.
+             * Brython cannot alias linear memory, so back the view with a
+             * writable bytearray TAGGED with the target region; the call
+             * wrappers (PyObject_CallOneArg) fold .source back into the
+             * heap after the callee returns (write-back, not write-through). */
+            if (flags & 0x200) {
+                var wArr = new Array(size);
+                for (var wi = 0; wi < size; wi++) wArr[wi] = HEAPU8[memPtr + wi];
+                var ba = rt._b_.bytearray.$factory(wArr);
+                ba.__wasthon_frommem__ = {ptr: memPtr, len: size};
+                return rt.wrapNewRef(rt.$B.$call(rt._b_.memoryview, ba));
+            }
             /* Read-only view: copy the C buffer into a Brython bytes and
-             * wrap it in a real memoryview. Write-through (PyBUF_WRITE)
-             * would need borrowed linear-memory backing — no caller in the
-             * bundled modules needs it (pickle's BINBYTES readers are
-             * read-only consumers). */
+             * wrap it in a real memoryview. */
             var bytes = rt.$B.fast_bytes(
                 Array.from(HEAPU8.subarray(memPtr, memPtr + size)));
             var mv = rt.$B.$call(rt._b_.memoryview, bytes);
