@@ -8659,7 +8659,17 @@ mergeInto(LibraryManager.library, {
                 pb_funcs.__bytes__ = function(self){
                     return rt.$B.$call(rt._b_.bytes, self.obj);
                 };
-                cls.tp_methods = ['raw', 'release', '__bytes__'];
+                // PEP 688: memoryview(pb) must view the UNDERLYING buffer.
+                // Brython's memoryview factory falls back to __buffer__ when
+                // the type has no native buffer path.
+                pb_funcs.__buffer__ = function(self){
+                    if (self.obj === null) {
+                        rt.$B.RAISE(rt._b_.ValueError,
+                            'operation forbidden on released PickleBuffer object');
+                    }
+                    return rt.$B.$call(rt._b_.memoryview, self.obj);
+                };
+                cls.tp_methods = ['raw', 'release', '__bytes__', '__buffer__'];
                 try { rt.$B.set_func_names(cls, '_pickle'); } catch (_) {}
                 try { rt.$B.finalize_type(cls); } catch (_) {}
                 break;
