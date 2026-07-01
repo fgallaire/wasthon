@@ -830,7 +830,13 @@ sys.modules['test.test_iter'] = test_iter
 # xml.etree are pulled in indirectly by some test helpers; the cascading
 # 404 storm dominates the boot time. Stub them up-front.
 # (dbm is now a real VFS package, no longer stubbed.)
-for _missing in ('tkinter', 'xmlrpc', '_testbuffer', 'numpy',
+# numpy and _testbuffer are import-guarded in pickletester (try/except
+# ImportError -> None); a present stub made test_buffers_numpy run+fail
+# instead of skip and buffer_like_objects yield unusable fake ndarrays.
+# Force them absent so those degrade like CPython without the modules.
+for _absent in ('numpy', '_testbuffer'):
+    sys.modules[_absent] = None
+for _missing in ('tkinter', 'xmlrpc',
                  'socketserver', 'winreg', '_gdbm', '_bz2', '_dbm',
                  '_multiprocessing',
                  'http.server', 'urllib.robotparser', 'xml.etree'):
