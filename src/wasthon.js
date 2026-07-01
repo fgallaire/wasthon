@@ -7369,8 +7369,20 @@ mergeInto(LibraryManager.library, {
             while (i < fmt.length && 'zl'.indexOf(fmt[i]) >= 0) i++;  // length mod
             var code = fmt[i++];
             if (code === 'T' || code === 'N') {
-                try { msg += rt.$B.class_name(rt.unwrap(readPtr())); }
-                catch (e) { msg += '<type>'; }
+                // %T: fully-qualified name of type(arg); %N: arg is itself the
+                // type. CPython emits `module.qualname`, dropping the `builtins.`
+                // prefix (so `tuple`, but `pickletester.REX`).
+                try {
+                    var _o = rt.unwrap(readPtr());
+                    var _t = (code === 'N') ? _o
+                        : (rt.$B.get_class ? rt.$B.get_class(_o) : (_o && _o.__class__));
+                    var _qn, _mod;
+                    try { _qn = rt.$B.$getattr(_t, '__qualname__'); } catch (e) {}
+                    if (typeof _qn !== 'string') _qn = rt.$B.class_name(_o);
+                    try { _mod = rt.$B.$getattr(_t, '__module__'); } catch (e) {}
+                    msg += (typeof _mod === 'string' && _mod && _mod !== 'builtins')
+                        ? (_mod + '.' + _qn) : _qn;
+                } catch (e) { msg += '<type>'; }
             } else if (code === 'R') {
                 try { msg += String(rt._b_.repr(rt.unwrap(readPtr()))); }
                 catch (e) { msg += '<repr>'; }
