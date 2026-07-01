@@ -9844,14 +9844,17 @@ mergeInto(LibraryManager.library, {
      * --------------------------------------------------------------- */
 
     wasthon_get_buffer_data__deps: ['$WasthonRT'],
-    wasthon_get_buffer_data: function(handle, outBufPtrPtr, outLenPtr) {
+    wasthon_get_buffer_data: function(handle, outBufPtrPtr, outLenPtr, outReadonlyPtr) {
         /* PickleBuffer stub (binding case 13): the instance carries its
          * underlying buffer on `.obj` — recurse on that, so proto-5
-         * save_picklebuffer's PyObject_GetBuffer works in-band. */
+         * save_picklebuffer's PyObject_GetBuffer works in-band. The recursion
+         * also resolves outReadonlyPtr from the wrapped object, so a
+         * PickleBuffer over a bytearray reports writable (BYTEARRAY8) not
+         * read-only bytes. */
         var _o = WasthonRT.unwrap(handle);
         if (_o && _o.ob_type && _o.ob_type.__wasthon_picklebuffer__ && _o.obj) {
             return _wasthon_get_buffer_data(
-                WasthonRT.wrap(_o.obj), outBufPtrPtr, outLenPtr);
+                WasthonRT.wrap(_o.obj), outBufPtrPtr, outLenPtr, outReadonlyPtr);
         }
 
         var obj = WasthonRT.unwrap(handle);
@@ -9901,6 +9904,9 @@ mergeInto(LibraryManager.library, {
             if (clen) HEAPU8.copyWithin(cbuf, obj.__wasthon_cstr__, obj.__wasthon_cstr__ + clen);
             HEAP32[outBufPtrPtr >> 2] = cbuf;
             HEAP32[outLenPtr >> 2] = clen;
+            // This producer path is a bytes object (bytearray is excluded
+            // above) — immutable, so read-only.
+            if (outReadonlyPtr) HEAP32[outReadonlyPtr >> 2] = 1;
             return 0;
         }
 
@@ -9963,6 +9969,15 @@ mergeInto(LibraryManager.library, {
         // wasm32: pointer = 4 bytes, Py_ssize_t (intptr_t) = 4 bytes.
         HEAP32[outBufPtrPtr >> 2] = buf;
         HEAP32[outLenPtr >> 2] = len;
+        // readonly reflects the object's real mutability: a bytearray is
+        // writable (0), every other bytes-like read here is immutable (1).
+        // save_picklebuffer branches on view.readonly to emit BYTEARRAY8 vs
+        // read-only bytes, so a wrong flag lost the bytearray type on unpickle.
+        if (outReadonlyPtr) {
+            var isBA = (obj.__class__ === WasthonRT._b_.bytearray ||
+                        obj.ob_type === WasthonRT._b_.bytearray);
+            HEAP32[outReadonlyPtr >> 2] = isBA ? 0 : 1;
+        }
         return 0;
     },
 

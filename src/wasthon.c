@@ -407,14 +407,16 @@ int PyFloat_Check(PyObject *o)        { return wasthon_isinstance_of_builtin(o, 
 
 extern int wasthon_get_buffer_data(PyObject *obj,
                                    void **out_buf,
-                                   Py_ssize_t *out_len);
+                                   Py_ssize_t *out_len,
+                                   int *out_readonly);
 
 int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
     (void)flags;  /* PyBUF_SIMPLE only; no flag interpretation yet. */
     void *buf = NULL;
     Py_ssize_t len = 0;
+    int readonly = 1;  /* JS reports the object's real mutability. */
 
-    if (wasthon_get_buffer_data(obj, &buf, &len) != 0) {
+    if (wasthon_get_buffer_data(obj, &buf, &len, &readonly) != 0) {
         /* JS side already set the appropriate exception. */
         view->buf = NULL;
         view->obj = NULL;
@@ -425,7 +427,7 @@ int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
     view->obj       = obj;       /* No refcount: handle stays alive in JS. */
     view->len       = len;
     view->itemsize  = 1;
-    view->readonly  = 1;
+    view->readonly  = readonly;
     view->ndim      = 1;
     view->format    = (char *)"B";
     view->shape     = &view->len;
