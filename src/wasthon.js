@@ -10060,8 +10060,12 @@ mergeInto(LibraryManager.library, {
         // save_picklebuffer branches on view.readonly to emit BYTEARRAY8 vs
         // read-only bytes, so a wrong flag lost the bytearray type on unpickle.
         if (outReadonlyPtr) {
-            var isBA = (obj.__class__ === WasthonRT._b_.bytearray ||
-                        obj.ob_type === WasthonRT._b_.bytearray);
+            // isinstance, not exact type: a bytearray SUBCLASS (pickletester's
+            // ZeroCopyBytearray) is just as writable, and a wrong flag makes
+            // save_picklebuffer emit read-only bytes instead of BYTEARRAY8.
+            var isBA = false;
+            try { isBA = WasthonRT.$B.$isinstance(obj, WasthonRT._b_.bytearray); }
+            catch (e) {}
             HEAP32[outReadonlyPtr >> 2] = isBA ? 0 : 1;
         }
         return 0;
