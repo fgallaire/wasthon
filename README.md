@@ -366,6 +366,20 @@ self-consistent and its tests measure through its own ruler (test_array's
 tests go through Brython, 64-bit) — but code comparing sizes *across* the
 two layers must expect the seam.
 
+**⚠ Out-of-bounds heap reads yield `undefined`, not garbage — bound every
+`HEAPU8` loop by the allocation, never by a caller-supplied size.** A JS
+typed array read past its end returns `undefined`, which then flows into
+Brython as an `UndefinedType` object and detonates far from the cause
+(`'UndefinedType' object cannot be interpreted as an integer`). Worse, it
+only detonates *under heap pressure*: while memory happens to exist past
+the block the same overrun reads junk-but-defined bytes and works, so the
+bug looks like inter-test poisoning — green in every standalone probe,
+failing deterministically in suite context (this was pickle's long-hunted
+`optional_frames` "poison": `_PyBytes_Resize` read the *new* size from
+the *old* block). Any `HEAPU8[ptr + i]` loop must clamp to
+the tracked allocation size (e.g. `__wasthon_cstr_size__`) — a size the C
+side asks for is a request, not a promise about the block under `ptr`.
+
 ## Running it
 
 Prerequisites:
