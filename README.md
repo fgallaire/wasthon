@@ -353,6 +353,19 @@ fixes broken `repr()` on every stateful instance type),
 full `PyUnicodeWriter` API (3.14), proper
 `tp_setattro`/`tp_getattro` wiring, weak GIL stubs.
 
+**⚠ Platform-width divergence — Brython says 64-bit, the C layer says
+32-bit, by design.** Brython emulates a 64-bit CPython: `sys.hash_info.width`
+is 64, `float.__hash__` is the 61-bit `_Py_HashDouble`, and
+`str.__sizeof__`/`sys.getsizeof('abc')` report 64-bit sizes (44, what a
+desktop CPython says). The wasthon C layer is genuinely wasm32 and reports
+its own truth: `struct.calcsize('P')` is 4, and a C instance's `__sizeof__`
+is in CPython-32-bit canonical units (`sys.getsizeof(array.array('i'))` is
+32 — the number a CPython-in-wasm like Pyodide gives). Each layer is
+self-consistent and its tests measure through its own ruler (test_array's
+`check_sizeof` computes expectations with *our* `struct`, 32-bit; the hash
+tests go through Brython, 64-bit) — but code comparing sizes *across* the
+two layers must expect the seam.
+
 ## Running it
 
 Prerequisites:
