@@ -9,12 +9,17 @@ extern "C" {
 
 PyObject *_PyEval_GetBuiltin(PyObject *name);
 
-/* Recursion guard — single-threaded WASM, never overflows in practice;
- * return 0 (success/no overflow). */
-#define _Py_EnterRecursiveCall(where) (0)
-#define _Py_LeaveRecursiveCall()      ((void)0)
-#define Py_EnterRecursiveCall(where)  (0)
-#define Py_LeaveRecursiveCall()       ((void)0)
+/* Recursion guard — a real depth counter in the bridge. The wasm stack is
+ * a fixed 4 MB reservation and a blown stack is an uncatchable trap, so
+ * the C recursion of _json/_pickle must convert depth into RecursionError
+ * like CPython (500k-deep JSON nesting killed the page instead of
+ * raising). Cap in the bridge ≈ Py_C_RECURSION_LIMIT. */
+int wasthon_enter_recursive_call(const char *where);
+void wasthon_leave_recursive_call(void);
+#define _Py_EnterRecursiveCall(where) (wasthon_enter_recursive_call(where))
+#define _Py_LeaveRecursiveCall()      (wasthon_leave_recursive_call())
+#define Py_EnterRecursiveCall(where)  (wasthon_enter_recursive_call(where))
+#define Py_LeaveRecursiveCall()       (wasthon_leave_recursive_call())
 
 #ifdef __cplusplus
 }

@@ -179,6 +179,12 @@ mergeInto(LibraryManager.library, {
         },
         popScope: function() {
             var s = this.scopes.pop();
+            // Defensive reset of the C recursion-guard depth at the
+            // outermost scope close: CPython C code pairs every
+            // Py_EnterRecursiveCall with a Leave, but a drifted counter
+            // (an unwind that skipped a Leave) must not poison later
+            // calls with spurious RecursionErrors.
+            if (this.scopes.length === 0) this._cRecursionDepth = 0;
             if (!s) return;
             // The wasthon_list_items buffer caches handles wrapped in this
             // scope; they die below, so a later call must not reuse them.
@@ -11805,6 +11811,32 @@ mergeInto(LibraryManager.library, {
 
     wasthon_decref__deps: ['$WasthonRT'],
     wasthon_decref: function(handle) { WasthonRT.decref(handle); },
+
+    /* ---- C recursion guard: Py_EnterRecursiveCall / LeaveRecursiveCall.  *
+     * The wasm stack is a fixed 4 MB reservation and a blown stack is an   *
+     * uncatchable trap, so the C recursion of _json/_pickle must convert   *
+     * depth into RecursionError the way CPython does — the old header      *
+     * no-op ("never overflows in practice") let a 500k-deep JSON nesting   *
+     * kill the page instead of raising. Cap 4000 ≈ CPython's              *
+     * Py_C_RECURSION_LIMIT, a ×5 margin under the 4 MB stack.              */
+    wasthon_enter_recursive_call__deps: ['$WasthonRT'],
+    wasthon_enter_recursive_call: function(wherePtr) {
+        var rt = WasthonRT;
+        if ((rt._cRecursionDepth = (rt._cRecursionDepth || 0) + 1) > 4000) {
+            rt._cRecursionDepth--;
+            rt.setError(rt.wrap(rt._b_.RecursionError),
+                "maximum recursion depth exceeded" +
+                (wherePtr ? UTF8ToString(wherePtr) : ""));
+            return -1;
+        }
+        return 0;
+    },
+
+    wasthon_leave_recursive_call__deps: ['$WasthonRT'],
+    wasthon_leave_recursive_call: function() {
+        var rt = WasthonRT;
+        if (rt._cRecursionDepth > 0) rt._cRecursionDepth--;
+    },
 
     /* ---- wasthon_object_gc_new: allocate a new C-side instance.         *
      * Called from C through the PyObject_GC_New(type, typeobj) macro      *
