@@ -631,7 +631,12 @@ _zlib)
     # -sUSE_ZLIB=1 makes emscripten ship its bundled zlib port — supplies
     # both the header (zlib.h) at compile and the linked .a at link. On a
     # fresh emsdk the port is materialized on first use, then cached.
-    emcc -O3 -c -sUSE_ZLIB=1 -I . -I "${SRC}" zlibmodule.c -o zlibmodule.o
+    # HAVE_ZLIB_COPY: CPython's configure detects deflateCopy/inflateCopy
+    # (any zlib >= 1.2); without the define the Compress.copy()/
+    # Decompress.copy()/__copy__/__deepcopy__ methods are compiled out —
+    # same family as sqlite3's PY_SQLITE_HAVE_SERIALIZE gap. The
+    # emscripten port is a standard zlib, so the functions are there.
+    emcc -O3 -c -sUSE_ZLIB=1 -DHAVE_ZLIB_COPY -I . -I "${SRC}" zlibmodule.c -o zlibmodule.o
     # Unified build skips the per-module link — the .o is enough.
     [[ "${SKIP_LINK:-0}" -eq 1 ]] && exit 0
     emcc -O2 zlibmodule.o wasthon.o \
