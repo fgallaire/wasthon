@@ -233,7 +233,26 @@ def _skip(*a, **k):
     # decorator that always skips. NOTE: cannot rely on unittest.skip —
     # Brython does not reliably honor it (see _KNOWN_HANGS handling).
     # Replace the method outright with a SkipTest raiser instead.
-    def deco(f): return _make_forced_skip('env-limited (cpython/resource/subprocess)')
+    # A CLASS must stay a class: replacing it with a function makes the
+    # loader drop it entirely, so its tests vanish from ran instead of
+    # counting as skips (test_pickle's @cpython_only HeapTypesTests and
+    # SizeofTests — CPython counts them, 4 tests). Mirror the OpenSSL
+    # class-skip pattern: mark skipped + skip in setUpClass, and wrap the
+    # class's own test methods as a belt (Brython does not reliably honor
+    # __unittest_skip__).
+    _reason = 'env-limited (cpython/resource/subprocess)'
+    def deco(f):
+        if isinstance(f, type):
+            f.__unittest_skip__ = True
+            f.__unittest_skip_why__ = _reason
+            def _su_skip(cls, _r=_reason):
+                raise unittest.SkipTest(_r)
+            f.setUpClass = classmethod(_su_skip)
+            for _n in list(vars(f)):
+                if _n.startswith('test') and callable(vars(f)[_n]):
+                    setattr(f, _n, _make_forced_skip(_reason))
+            return f
+        return _make_forced_skip(_reason)
     if len(a) == 1 and callable(a[0]) and not k:
         return deco(a[0])
     return deco
@@ -1286,6 +1305,11 @@ try:
         if test_name in _KNOWN_HANGS:
             _skip_known_hangs(mod, _KNOWN_HANGS[test_name],
                               _KNOWN_HANG_PREFIXES.get(test_name, []))
+        # NOTE ran-count parity: CPython collects 2 more tests here for
+        # test_pickle — its load_tests hook adds doctest.DocTestSuite(pickle)
+        # (pickle.encode_long/decode_long). Under Brython DocTestSuite finds
+        # 0 doctests (docstring extraction differs), so those 2 cannot be
+        # collected: harness ran = 997 vs CPython 999, structural.
         suite = unittest.TestLoader().loadTestsFromModule(mod)
     if test_name in _KNOWN_HANGS:
         _patch_suite_for_hangs(suite, _KNOWN_HANGS[test_name],
@@ -1294,6 +1318,17 @@ try:
     # substrings (debug tool for suite-order pollution bisects).
     from browser import window as _w
     _only = str(_w.__wasthon_only or '')
+    if _only == '__DUMP_IDS__':
+        def _walk_ids(s):
+            for t in s:
+                if isinstance(t, unittest.TestSuite):
+                    yield from _walk_ids(t)
+                else:
+                    yield t
+        for _t in sorted(set(t.id() for t in _walk_ids(suite))):
+            log('[id] ' + _t)
+        _only = ''
+        suite = unittest.TestSuite()
     if _only:
         _subs = _only.split(',')
         def _filter_suite(s):
