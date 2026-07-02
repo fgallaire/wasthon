@@ -603,9 +603,15 @@ int       PyObject_GenericSetAttr(PyObject *o, PyObject *name, PyObject *value);
 #define PyObject_TypeCheck(op, t) \
     (Py_TYPE(op) == (t) || PyType_IsSubtype(Py_TYPE(op), (t)))
 
-/* _PyObject_SIZE — sizeof for variable-size objects. _struct stack-allocs
- * format arrays; for our bridge the size doesn't really matter. */
-#define _PyObject_SIZE(type)  ((type)->tp_name ? sizeof(void *) : 0)
+/* _PyObject_SIZE — tp_basicsize, reported in CPython-canonical units.
+ * The basicsize lives JS-side (the 64-byte C type struct has no
+ * tp_basicsize field), and wasthon's PyObject header has no ob_type
+ * pointer (the type lives JS-side too), so the compiled struct is one
+ * pointer smaller than CPython's layout for the same object; the JS
+ * helper adds that pointer back so array.__sizeof__ / _struct.__sizeof__
+ * report CPython's numbers. */
+extern Py_ssize_t wasthon_basicsize(PyObject *type);
+#define _PyObject_SIZE(type)  (wasthon_basicsize((PyObject *)(type)))
 
 /* Py_SAFE_DOWNCAST — checked narrowing cast. We don't actually verify. */
 #define Py_SAFE_DOWNCAST(value, from_t, to_t)  ((to_t)(value))

@@ -11809,6 +11809,22 @@ mergeInto(LibraryManager.library, {
     },
 
     PyObject_GC_Del__deps: ['$WasthonRT'],
+    /* tp_basicsize for _PyObject_SIZE, in CPython-canonical units: the
+     * JS-side basicsize (the spec value, compiled against wasthon.h whose
+     * PyObject header lacks the ob_type pointer kept JS-side) plus that
+     * one pointer, so __sizeof__ reports CPython's numbers. */
+    wasthon_basicsize__deps: ['$WasthonRT'],
+    wasthon_basicsize: function(typeH) {
+        var rt = WasthonRT;
+        var cls = rt.handles.get(typeH);
+        var bs = (cls && cls.__wasthon_basicsize__) || 0;
+        if (!bs) {
+            var ti = rt.types.get(typeH);
+            bs = (ti && ti.basicsize) || 0;
+        }
+        return bs ? bs + 4 : 0;
+    },
+
     PyObject_GC_Del: function(ptr) {
         if (ptr === 0) return;
         var rt = WasthonRT;
