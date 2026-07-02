@@ -7140,7 +7140,15 @@ self.source.splice(start,stop-start)
 try{var $temp=_b_.list.$factory(value)}catch(err){$B.RAISE(_b_.TypeError,"can only assign an iterable")}
 if($temp.length !=stop-start){check_exports(self)}
 for(var i=$temp.length-1;i >=0;i--){if(! $B.is_int($temp[i])){$B.RAISE(_b_.TypeError,'an integer is required')}else if($temp[i]> 255){$B.RAISE(_b_.ValueError,"byte must be in range(0, 256)")}}
-self.source.splice.apply(self.source,[start,0].concat($temp))}else{$B.RAISE(_b_.TypeError,'list indices must be integer, not '+
+if($temp.length > 16384){
+// splice.apply passes every byte as a JS ARGUMENT: a pickle protocol-4
+// frame (1 MB) blows the engine's argument limit ("too many arguments
+// provided for a function call"). Rebuild by 16K chunks instead.
+var tail=self.source.slice(start)
+self.source.length=start
+for(var k=0;k < $temp.length;k+=16384){self.source.push.apply(self.source,$temp.slice(k,k+16384))}
+for(var k=0;k < tail.length;k+=16384){self.source.push.apply(self.source,tail.slice(k,k+16384))}}
+else{self.source.splice.apply(self.source,[start,0].concat($temp))}}else{$B.RAISE(_b_.TypeError,'list indices must be integer, not '+
 $B.class_name(arg))}}
 _b_.bytearray.tp_repr=function(self){var b=_b_.bytes.tp_repr(self)
 return `bytearray(${b})`}
@@ -11761,7 +11769,13 @@ list_reverseiterator_funcs.__reduce__=function(self){return $B.fast_tuple([_b_.i
 list_reverseiterator_funcs.__setstate__=function(self){}
 $B.list_reverseiterator.tp_methods=["__length_hint__","__reduce__","__setstate__"]
 function set_list_slice(obj,start,stop,value){var res=_b_.list.$factory(value)
-obj.splice.apply(obj,[start,stop-start].concat(res))}
+if(res.length > 16384){
+// same argument-limit hazard as the bytearray slice-assign above
+var tail=obj.slice(stop)
+obj.length=start
+for(var k=0;k < res.length;k+=16384){obj.push.apply(obj,res.slice(k,k+16384))}
+for(var k=0;k < tail.length;k+=16384){obj.push.apply(obj,tail.slice(k,k+16384))}}
+else{obj.splice.apply(obj,[start,stop-start].concat(res))}}
 function set_list_slice_step(obj,start,stop,step,value){if(step==1){return set_list_slice(obj,start,stop,value)}
 if(step==0){$B.RAISE(_b_.ValueError,"slice step cannot be zero")}
 var repl=_b_.list.$factory(value),j=0,test,nb=0

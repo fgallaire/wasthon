@@ -3007,3 +3007,16 @@ AttributeError: module 'sys' has no attribute 'getsizeof'   # before
 >>> sys.getsizeof(array.array('i', [1, 2, 3]))
 44                                                          # after
 ```
+
+## [x] slice assignment passes every element as a JS argument — big writes blow the engine's call limit
+
+**Impact: +7 pickle (test_framing_large_objects × C picklers, test_framed_write_sizes_with_delayed_writer × C-dump variants — the write path of every file-based pickling of ≥~128 KB payloads, protocol-4 frames land in `BytesIO.write`'s `self._buffer[pos:pos+n] = b`); general.** Both `bytearray[a:b] = data` and `list[a:b] = data` ran `splice.apply(target, [start, ndel].concat(items))` — every element becomes one JS *argument*, and engines cap a call at ~125k arguments, so a 1 MB frame raised `RuntimeError: too many arguments provided for a function call` (the historic "framing hang" family). Past 16384 items both sites now rebuild the tail through 16 KB `push.apply` chunks (the pattern the bridge's fromCharCode paths already use). Source: `bytearray.sq_ass_item` (py_bytes.js) and `set_list_slice` (py_list.js) in `brython.js`.
+
+```python
+>>> ba = bytearray()
+>>> ba[0:0] = bytes(1000000)
+RuntimeError: too many arguments provided for a function call   # before
+>>> ba[0:0] = bytes(1000000)
+>>> len(ba)
+1000000                                                         # after
+```
