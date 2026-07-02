@@ -2965,3 +2965,16 @@ TypeError: functools.partial() argument after ** must be a mapping, not list   #
 >>> B().m
 'intercepted'                      # after
 ```
+
+## [x] `del list[a:b:step]` with a negative step deletes the wrong elements
+
+**Impact: +14 array (test_extended_set_del_slice × 14 typecodes, unskipped with this fix — the wasthon C array was correct on all 864 probe combos, the *expected* side built from a Brython list was wrong); general.** `$B.list_delitem`'s slice branch hand-rolled its normalization and got every negative-step default wrong: `start=None` became `len` (CPython: `len-1`) and `stop=None` became `0` — which *excludes index 0* (CPython: the exclusive `-1` sentinel). `del L[::-1]` left `[first]` instead of emptying the list, and `del L[::-2]` deleted the complement of the right set. The fix routes the slice through `_b_.slice.$conv_for_seq` — the CPython-exact normalizer `$getitem_slice` already uses, so get and del can't drift apart again. Source: `$B.list_delitem` (py_list.js) in `brython.js`.
+
+```python
+>>> L = [1, 2, 3, 4, 5]
+>>> del L[::-2]
+>>> L
+[1, 3, 5]   # before
+>>> L
+[2, 4]      # after
+```

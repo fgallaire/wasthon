@@ -11669,14 +11669,11 @@ if(pos >=0 && pos < self.length){self.splice(pos,1)
 return _b_.None}
 $B.RAISE(_b_.IndexError,$B.class_name(self)+
 " index out of range")}
-if(isinstance(arg,_b_.slice)){var step=arg.step
-if(step===_b_.None){step=1}
-var start=arg.start
-if(start===_b_.None){start=step > 0 ? 0 :self.length}
-var stop=arg.stop
-if(stop===_b_.None){stop=step > 0 ? self.length :0}
-if(start < 0){start=self.length+start}
-if(stop < 0){stop=self.length+stop}
+if(isinstance(arg,_b_.slice)){
+// normalize like $getitem_slice does: the hand-rolled version got every
+// negative-step default wrong (start=len not len-1, stop=0 excludes index 0)
+var s=_b_.slice.$conv_for_seq(arg,self.length)
+var start=s.start,stop=s.stop,step=s.step
 let res=[],pos=0
 if(step > 0){if(stop > start){for(let i=start;i < stop;i+=step){if(self[i]!==undefined){res[pos++]=i}}}}else{if(stop < start){for(let i=start;i > stop;i+=step){if(self[i]!==undefined){res[pos++]=i}}
 res.reverse()}}
