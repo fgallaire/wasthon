@@ -9170,14 +9170,28 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.asJSStr(rt.unwrap(handle));
         if (obj === null) return 0;
-        // Count codepoints (not UTF-16 units). For BMP-only strings the
-        // two coincide; astral chars (>U+FFFF) take 2 units but 1 codepoint.
-        var n = 0;
-        for (var i = 0; i < obj.length;) {
-            var c = obj.codePointAt(i);
-            i += c > 0xFFFF ? 2 : 1;
-            n++;
+        // Count codepoints (not UTF-16 units). This runs per nesting level
+        // in _json's scanner — cache per string (the DATA/KIND store) and
+        // take the native fast path: without surrogates, codepoints and
+        // UTF-16 units coincide (a per-call JS walk of a 3.5 MB input ×
+        // one call per level was the second half of the 500k-nesting
+        // "hang").
+        if (!rt._ucsCache) rt._ucsCache = new Map();
+        var e = rt._ucsCache.get(obj);
+        if (e && e.cplen !== undefined) return e.cplen;
+        var n;
+        if (!/[\uD800-\uDFFF]/.test(obj)) {
+            n = obj.length;
+        } else {
+            n = 0;
+            for (var i = 0; i < obj.length;) {
+                var c = obj.codePointAt(i);
+                i += c > 0xFFFF ? 2 : 1;
+                n++;
+            }
         }
+        if (e) e.cplen = n;
+        else rt._ucsCache.set(obj, { cplen: n });
         return n;
     },
 
@@ -9194,6 +9208,11 @@ mergeInto(LibraryManager.library, {
          * across input/output buffers. */
         var s = rt.asJSStr(obj);
         if (s === null) return 1;
+        // The kind of a given string is content-determined — reuse
+        // PyUnicode_DATA's cache instead of re-walking the string
+        // (KIND+DATA are called per scan level in tight C loops).
+        var e = rt._ucsCache && rt._ucsCache.get(s);
+        if (e && e.kind) return e.kind;
         var max = 0;
         for (var i = 0; i < s.length;) {
             var c = s.codePointAt(i);
@@ -9214,6 +9233,16 @@ mergeInto(LibraryManager.library, {
         var obj = rt.asJSStr(raw);
         if (obj === null) return 0;
 
+        /* Cache FIRST — the kind of a given string is content-determined,
+         * so the cache key is just the string. The old code walked ALL
+         * codepoints (and built a disposable array of them) BEFORE the
+         * cache lookup: _json's scanner calls DATA per nesting level, so
+         * a 500k-deep 3.5 MB input re-walked 3.5M chars 4000 times — the
+         * page sat in that loop for minutes ("hang"). */
+        if (!rt._ucsCache) rt._ucsCache = new Map();
+        var cached = rt._ucsCache.get(obj);
+        if (cached && cached.ptr) return cached.ptr;
+
         /* Compute the kind PEP 393 would assign (must match PyUnicode_KIND). */
         var codepoints = [];
         var max = 0;
@@ -9226,20 +9255,14 @@ mergeInto(LibraryManager.library, {
         var kind = (max < 0x100) ? 1 : (max < 0x10000 ? 2 : 4);
         var len = codepoints.length;
 
-        /* Cache buffer keyed by (string, kind). */
-        if (!rt._ucsCache) rt._ucsCache = new Map();
-        var perStr = rt._ucsCache.get(obj);
-        if (!perStr) { perStr = new Map(); rt._ucsCache.set(obj, perStr); }
-        var cached = perStr.get(kind);
-        if (cached) return cached;
-
         var ptr = _malloc(Math.max(kind, len * kind));
         for (var j = 0; j < len; j++) {
             if (kind === 4)      HEAPU32[(ptr + j * 4) >> 2] = codepoints[j];
             else if (kind === 2) HEAPU16[(ptr + j * 2) >> 1] = codepoints[j];
             else                 HEAPU8[ptr + j] = codepoints[j];
         }
-        perStr.set(kind, ptr);
+        if (cached) { cached.kind = kind; cached.ptr = ptr; }
+        else rt._ucsCache.set(obj, { kind: kind, ptr: ptr });
         return ptr;
     },
 
