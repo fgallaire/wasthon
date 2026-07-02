@@ -68,7 +68,7 @@ at ~75 KB/s. Largest speedup we've measured on any ported module.
 | `_decimal`     | arbitrary-precision decimal arithmetic (libmpdec)        | 360 KB      |
 | `_csv`         | C-level CSV reader/writer state machine                  | 25 KB       |
 | `array`        | typed arrays (b/B/h/H/i/I/l/L/q/Q/f/d)                   | 41 KB       |
-| `pyexpat`      | XML parser (libexpat 2.6.4)                              | 169 KB      |
+| `pyexpat`      | XML parser (libexpat 2.8.2)                              | 169 KB      |
 | `_json`        | JSON encoder/decoder C accelerator                       | 28 KB       |
 | `math`         | int-heavy fns (factorial, gcd, isqrt, prod, …)           | 77 KB       |
 | `cmath`        | complex math (sqrt/exp/log/sin/polar/rect/…)             | 51 KB       |

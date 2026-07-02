@@ -22,7 +22,7 @@
 # External source trees default to ./external/<libname> — override via env
 # vars to point at an existing checkout:
 #   CPYTHON_SRC=/path/to/Python-3.14.6
-#   EXPAT_DIR=/path/to/expat-2.6.4
+#   EXPAT_DIR=/path/to/expat-2.8.2
 #   ZSTD_DIR=/path/to/zstd-1.5.6
 #   XZ_DIR=/path/to/xz-5.4.6
 #   BZIP2_DIR=/path/to/bzip2-1.0.8
@@ -99,7 +99,7 @@ SRC="${REPO}/src"
 EXTERNAL="${REPO}/external"
 
 CPYTHON_SRC="${CPYTHON_SRC:-${EXTERNAL}/Python-3.14.6}"
-EXPAT_DIR="${EXPAT_DIR:-${EXTERNAL}/expat-2.6.4}"
+EXPAT_DIR="${EXPAT_DIR:-${EXTERNAL}/expat-2.8.2}"
 ZSTD_DIR="${ZSTD_DIR:-${EXTERNAL}/zstd-1.5.6}"
 XZ_DIR="${XZ_DIR:-${EXTERNAL}/xz-5.4.6}"
 BZIP2_DIR="${BZIP2_DIR:-${EXTERNAL}/bzip2-1.0.8}"
@@ -182,7 +182,7 @@ ensure_bzip2()    { ensure_src "${BZIP2_DIR}" \
     "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"; }
 ensure_expat() {
     ensure_src "${EXPAT_DIR}" \
-        "https://github.com/libexpat/libexpat/releases/download/R_2_6_4/expat-2.6.4.tar.xz"
+        "https://github.com/libexpat/libexpat/releases/download/R_2_8_2/expat-2.8.2.tar.xz"
     # Compile the three xml*.c files into .o for direct linking with pyexpat.
     if [[ ! -f "${EXPAT_DIR}/lib/xmlparse.o" ]]; then
         echo "=== building libexpat objects with emcc ==="
@@ -202,6 +202,7 @@ ensure_expat() {
             -e 's|^#define HAVE_ARC4RANDOM .*|/* #undef HAVE_ARC4RANDOM */|' \
             -e 's|^#define HAVE_GETRANDOM .*|/* #undef HAVE_GETRANDOM */|' \
             -e 's|^#define HAVE_SYSCALL_GETRANDOM .*|/* #undef HAVE_SYSCALL_GETRANDOM */|' \
+            -e 's|^#define HAVE_GETENTROPY .*|/* #undef HAVE_GETENTROPY */|' \
             -e 's|^#define XML_DEV_URANDOM .*|/* #undef XML_DEV_URANDOM */|' \
             "${EXPAT_DIR}/expat_config.h"
         for f in xmlparse xmlrole xmltok; do

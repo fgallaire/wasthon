@@ -706,9 +706,14 @@ PyObject **_PyArg_UnpackKeywords(
 
 /* ---- pyexpat shims ---- */
 /* _Py_HashSecret — hash randomization seed. Fixed value is fine: we don't
- * need cryptographic randomization in a single-page browser context. */
+ * need cryptographic randomization in a single-page browser context. The
+ * 16-byte salt (XML_SetHashSalt16Bytes, expat >= 2.8) is a fixed non-zero
+ * pattern so expat never takes an "invalid salt" path. */
 #include "pycore_pyhash.h"
-_Py_HashSecret_t _Py_HashSecret = {{0}};
+_Py_HashSecret_t _Py_HashSecret = { .expat = {
+    .hashsalt16 = { 0x77, 0x61, 0x73, 0x74, 0x68, 0x6f, 0x6e, 0x2d,
+                    0x65, 0x78, 0x70, 0x61, 0x74, 0x2d, 0x31, 0x36 },
+    .hashsalt = 0x77617374UL } };
 
 /* _PyImport_SetModule — register a module under sys.modules[name].
  * pyexpat uses this for its `errors` and `model` submodules. No-op

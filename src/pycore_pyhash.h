@@ -14,7 +14,10 @@ typedef struct {
 } _Py_HashSecret_SipHash_t;
 
 typedef struct {
-    unsigned char padding[16];
+    /* 16 bytes for XML_SetHashSalt16Bytes (expat >= 2.8), as CPython's
+     * pycore_pyhash.h lays it out. */
+    unsigned char hashsalt16[16];
+    /* 4/8 bytes for legacy XML_SetHashSalt */
     unsigned long hashsalt;
 } _Py_HashSecret_Expat_t;
 
