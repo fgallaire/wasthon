@@ -412,6 +412,11 @@ extern int wasthon_get_buffer_data(PyObject *obj,
 
 int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
     (void)flags;  /* PyBUF_SIMPLE only; no flag interpretation yet. */
+    if (view == NULL) {
+        PyErr_SetString(PyExc_BufferError,
+                        "PyObject_GetBuffer: view==NULL argument is obsolete");
+        return -1;
+    }
     void *buf = NULL;
     Py_ssize_t len = 0;
     int readonly = 1;  /* JS reports the object's real mutability. */
