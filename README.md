@@ -784,8 +784,11 @@ Infrastructure work that pays back on existing modules:
       `tp_finalize` → `ResourceWarning`). This is the explicit `gc.collect()`
       contract, *not* the rejected automatic finalizer (a synchronous run never
       yields for a FinalizationRegistry callback). Gated to an opt-in set of
-      resource-holding sqlite3 types (`$wasthon_gc_finalizable`:
-      Connection/Cursor/Blob/Backup) registered at `bindInstance` into a
+      resource-holding types (`$wasthon_gc_finalizable`: sqlite3's
+      Connection/Cursor/Blob/Backup, and `_pickle`'s Pickler/Unpickler — their
+      memo takes a ref per object pickled, released only at `tp_dealloc`, so a
+      Brython-held pickler that never died pinned ~5 handles per object
+      dumped) registered at `bindInstance` into a
       `gcRegistry`, so an empty registry returns instantly (zero cost to every
       other suite) and the mark skips the bridge's own strong-ref bookkeeping
       (`handles`/`gcRegistry`/`refcounts`, which pin every instance) and module
@@ -800,6 +803,23 @@ Infrastructure work that pays back on existing modules:
       (`test_sqlite3` `test_table_lock_cursor_dealloc` /
       `test_table_lock_cursor_non_readonly_select` /
       `test_connection_resource_warning`). Details in `CHANGELOG.md`.
+- [x] Container-boundary reference discipline + scope-owned `GET_ITEM` buffers
+      — the three memory roots behind pickle's "delayed-writer page poison"
+      (a 10k-object framed dump left ~300k pinned handles and a 1.6 GB heap,
+      failing everything behind it), each a general bridge rule, all measured
+      flat after the fix (a 10k-object dump+loads cycle now runs at the 16 MB
+      boot baseline). (1) `PyDict_SetItem`/`PyObject_SetItem` no longer take
+      CPython's "container ref" for plain Brython/JS values — the Brython
+      container stores the JS value and never deallocs, so that ref was
+      unreleasable; only struct-backed instances (`__wasthon_ptr__`) keep it,
+      the instance-exempt rule `consumeResultRef` already used for steal APIs.
+      (2) `_pickle.Pickler`/`Unpickler` joined the gc-finalizable set above.
+      (3) `PyList_GET_ITEM` materialisations are cached per array and their
+      buffers are owned by the handle scope of the C call that made them,
+      freed at scope close like sentinels — the single-slot cache thrashed
+      between `batch_list`'s outer list and each item's containers, O(n²)
+      bytes. Also halved the pickle suite's wall time (449 s → 255 s).
+      Details in `CHANGELOG.md`.
 - [ ] Explicit-contract residual — a C instance held by a Python local that is
       dropped or reassigned without a `close()`/`with` (and with no
       `gc.collect()` call) is never DECREF'd:
