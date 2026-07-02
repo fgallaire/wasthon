@@ -14384,7 +14384,16 @@ while(frame_obj !==null){frame=frame_obj.frame
 exc=frame.$current_exception
 if(exc !==undefined){return exc}
 frame_obj=frame_obj.prev}
-return _b_.None},executable:$B.strip_host($B.brython_path+'brython.js'),float_repr_style:'short',getdefaultencoding:function(){return 'utf-8'},getrecursionlimit:function(){return $B.recursion_limit},getrefcount:function(){return 0},gettrace:function(){return $B.tracefunc ||_b_.None},getunicodeinternedsize:function(){
+return _b_.None},executable:$B.strip_host($B.brython_path+'brython.js'),float_repr_style:'short',getdefaultencoding:function(){return 'utf-8'},getrecursionlimit:function(){return $B.recursion_limit},getrefcount:function(){return 0},getsizeof:function(obj,dflt){
+// delegate to __sizeof__ (real for wasthon C instances via the method
+// trampoline); Brython objects mostly lack a real one -> default/TypeError
+var res=null
+try{var f=$B.$getattr(obj,'__sizeof__',null)
+if(f !==null){res=$B.$call(f)}}catch(err){res=null}
+if(typeof res=='number' ||typeof res=='bigint'){return res}
+if(res && typeof res.value=='number'){return res.value}
+if(dflt !==undefined){return dflt}
+$B.RAISE(_b_.TypeError,"Type "+$B.class_name(obj)+" doesn't define __sizeof__")},gettrace:function(){return $B.tracefunc ||_b_.None},getunicodeinternedsize:function(){
 return 0},last_exc:{__get__:function(){return $B.module_getattr($B.imported._sys,'exception')()},__set__:function(value){$B.frame_obj.frame.$current_exception=value}},modules:$B.obj_dict($B.imported),path:{__get__:function(){var filename=$B.get_filename_for_import()
 return $B.$list($B.import_info[filename].path)},__set__:function(value){var filename=$B.get_filename_for_import()
 $B.import_info[filename].path=value}},meta_path:{__get__:function(){var filename=$B.get_filename()

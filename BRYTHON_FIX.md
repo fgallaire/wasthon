@@ -2992,3 +2992,16 @@ TypeError: functools.partial() argument after ** must be a mapping, not list   #
 >>> del a; gc.collect(); len(p)
 ReferenceError: weakly-referenced object no longer exists   # after
 ```
+
+
+## [x] `sys.getsizeof` is missing
+
+**Impact: +28 array (the sizeof tests, with the bridge `wasthon_basicsize` half); general. ⚠ VENDORED-ONLY in practice: on vanilla Brython almost no object carries a real `__sizeof__`, so the delegate raises TypeError — it becomes useful with wasthon's C instances, whose `__sizeof__` is the real CPython method.** Brython's `sys` has no `getsizeof`; added the CPython-shaped delegate: call `obj.__sizeof__()` (real for wasthon C instances via the method trampoline), return the `default` when given, else `TypeError: Type X doesn't define __sizeof__`. Source: the `sys` module in `brython.js`.
+
+```python
+>>> import array, sys
+>>> sys.getsizeof(array.array('i', [1, 2, 3]))
+AttributeError: module 'sys' has no attribute 'getsizeof'   # before
+>>> sys.getsizeof(array.array('i', [1, 2, 3]))
+44                                                          # after
+```
