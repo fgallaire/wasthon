@@ -375,15 +375,26 @@ support.sortdict            = lambda d: repr(d)
 support.verbose             = False
 support.is_emscripten       = False
 support.is_wasi             = False
-# Stack-overflow recursion tests (500k-deep JSON nesting, endless encoders)
-# genuinely blow the constrained wasm stack — CPython itself skips them on
-# emscripten/wasi builds. wasthon runs on emscripten, so honor those gates as
-# real skips; without this the flexible stub mocks them to no-ops and the
-# tests run, hanging the whole suite. skip_if_unlimited_stack_size passes
-# through (our stack IS limited; the emscripten gate is what does the skip).
-support.skip_emscripten_stack_overflow = lambda *a, **k: _skip
-support.skip_wasi_stack_overflow       = lambda *a, **k: _skip
+# Stack-overflow recursion tests (500k-deep JSON nesting, endless encoders):
+# the bridge now implements Py_EnterRecursiveCall as a real depth counter
+# (cap ~ Py_C_RECURSION_LIMIT, far under the 4 MB wasm stack), so the C
+# recursion of _json converts depth into RecursionError exactly like a
+# stock CPython — the emscripten gate (CPython skips these on its own
+# emscripten builds, which lack the guard headroom) no longer applies.
+# We are not WASI, so that gate passes through too (support.is_wasi=False).
+def _passthrough_gate(*a, **k):
+    return lambda f: f
+support.skip_emscripten_stack_overflow = _passthrough_gate
+support.skip_wasi_stack_overflow       = _passthrough_gate
 support.skip_if_unlimited_stack_size   = lambda f: f
+# The recursion tests run their nesting under "with support.infinite_recursion():"
+# (CPython raises sys.setrecursionlimit for the PYTHON-level guard). The C
+# counter is fixed-cap, and Brython has no C recursion limit to raise — a
+# no-op context manager is the honest equivalent.
+class _InfiniteRecursionCM:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+support.infinite_recursion = lambda *a, **k: _InfiniteRecursionCM()
 support._1G = 1<<30; support._2G = 1<<31; support._4G = 1<<32
 # IEEE-754 IS available in JS doubles → passthrough (do NOT skip):
 support.requires_IEEE_754   = lambda f: f
