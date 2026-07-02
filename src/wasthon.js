@@ -2355,11 +2355,16 @@ mergeInto(LibraryManager.library, {
         try {
             rt._b_.dict.$setitem(d, k, v);
             // CPython contract: SetItem does NOT steal — the dict takes its
-            // own ref on key and value. INCREF so a caller's later DECREF
-            // doesn't free a value the dict still holds. (No-op for the
-            // common sentinel keys/values not tracked in refcounts.)
-            rt.incref(keyH);
-            rt.incref(valueH);
+            // own ref on key and value. But the Brython dict stores the JS
+            // VALUE (owned by the JS GC through the container) and no dict
+            // dealloc will ever give a bridge ref back, so taking one pins
+            // the handle forever — every C-loaded dict entry leaked its key
+            // and value. Take the dict's ref only for struct-backed
+            // instances (instance-exempt rule, mirror of consumeResultRef):
+            // their refcount drives tp_dealloc, and dropping it to 0 under
+            // a live JS ref would free the struct under the stored wrapper.
+            if (k && k.__wasthon_ptr__) rt.incref(keyH);
+            if (v && v.__wasthon_ptr__) rt.incref(valueH);
             return 0;
         } catch (e) {
             // CPython's PyDict_SetItem returns -1 AND sets the exception
@@ -7625,9 +7630,15 @@ mergeInto(LibraryManager.library, {
         var val = rt.unwrap(valH);
         try {
             rt.$B.$setitem(obj, key, val);
-            // no-steal: the container takes its own refs on key and value.
-            rt.incref(keyH);
-            rt.incref(valH);
+            // no-steal: the container takes its own refs on key and value —
+            // but the Brython container stores the JS VALUE and never
+            // deallocs, so a bridge ref taken here is unreleasable (pickle's
+            // do_setitems built every loaded dict through this path: one
+            // pinned handle per key and per value). Instance-exempt like
+            // consumeResultRef: only struct-backed instances keep the ref,
+            // their refcount drives tp_dealloc.
+            if (key && key.__wasthon_ptr__) rt.incref(keyH);
+            if (val && val.__wasthon_ptr__) rt.incref(valH);
             return 0;
         }
         catch (e) {
