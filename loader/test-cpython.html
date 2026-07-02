@@ -464,7 +464,13 @@ if test_name == 'test_hmac':
             return m
         return __import__(name)
     import_helper.import_fresh_module = _hmac_ifm
-import_helper.import_module = lambda name, *a, **k: __import__(name)
+def _ih_import_module(name, *a, **k):
+    # CPython's helper turns an unimportable module into a SkipTest
+    try:
+        return __import__(name)
+    except ImportError as exc:
+        raise unittest.SkipTest(str(exc))
+import_helper.import_module = _ih_import_module
 # _testcapi is partially available (struct/sqlite3/pyexpat use e.g. ULLONG_MAX),
 # but set_nomemory (inject a malloc failure) can't be emulated. Make just that
 # entry-point a SkipTest so test_error_path_no_crash skips as on a build without
@@ -923,6 +929,22 @@ for _sib in _SIBLINGS.get(test_name, []):
     except Exception as _e:
         log('  (sibling preload ' + _sib + ' failed: ' + str(_e) + ')')
 
+# Brython adds JavascriptError to builtins (to wrap JS exceptions with a
+# bare \`except JavascriptError\`), an exception CPython has no compat entry
+# for. test_exceptions iterates every builtin exception and checks its 2.x
+# name mapping; without an entry, reverse_mapping falls through the generic
+# builtins->__builtin__ import rule. Declare the Brython-only exception as
+# mapping to itself so the compat table treats it like any other builtin.
+if test_name == 'test_pickle':
+    try:
+        import _compat_pickle as _cp
+        for _bx in ('JavascriptError',):
+            if hasattr(__import__('builtins'), _bx):
+                _cp.REVERSE_NAME_MAPPING[('builtins', _bx)] = ('exceptions', _bx)
+                _cp.NAME_MAPPING[('exceptions', _bx)] = ('builtins', _bx)
+    except Exception as _e:
+        log('  (compat_pickle Brython-exception fixup failed: ' + str(_e) + ')')
+
 # Brython's bundled hashlib doesn't expose blake2b. We've copied CPython
 # 3.14.5's hashlib.py under a unique name (cpython_hashlib.py) so it's not
 # shadowed by brython_stdlib precedence, then alias it as 'hashlib' in
@@ -957,13 +979,6 @@ _KNOWN_HANGS = {
                     # Chrome only, Firefox tolerates silently. Wasthon
                     # bug in unpickler integer parsing path. To fix.
                     'test_zero_padded_integers',
-                    # test_c_methods pickles built-in methods ("abcd".index,
-                    # list.__len__...) by reference. Brython represents them
-                    # as bare JS functions (JavascriptFunction) without the
-                    # __self__/__objclass__/__qualname__ metadata CPython's
-                    # method objects carry, so there is nothing to pickle
-                    # them by (representation limit, not a bug).
-                    'test_c_methods',
                     # test_unpickle_module_race needs REAL concurrent threads
                     # (threading.Barrier across 3 threads) plus modules
                     # written to disk and imported via sys.path. Brython runs
@@ -1033,10 +1048,6 @@ _SKIP_REASONS = {
         'Brython str is a JS UTF-16 string: adjacent lone surrogates are '
         'indistinguishable from the astral char they encode, so encode("utf-8") '
         'cannot raise (architectural representation limit, not a bug)',
-    'test_c_methods':
-        'Brython built-in methods are bare JS functions without the '
-        '__self__/__objclass__/__qualname__ metadata needed to pickle them '
-        'by reference (representation limit, not a bug)',
     'test_unpickle_module_race':
         'needs real concurrent threads (threading.Barrier) plus on-disk '
         'importable modules via sys.path; neither exists in the browser',
