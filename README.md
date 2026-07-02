@@ -380,6 +380,26 @@ the *old* block). Any `HEAPU8[ptr + i]` loop must clamp to
 the tracked allocation size (e.g. `__wasthon_cstr_size__`) — a size the C
 side asks for is a request, not a promise about the block under `ptr`.
 
+**⚠ Recursion is three nested stacks, and the wasm one must never win.**
+A Python-level recursion is a JS recursion (Brython compiles Python to
+JS): Brython's own counter — driven by `sys.setrecursionlimit`, with the
+engine's `InternalError: too much recursion` converted as a backstop —
+raises `RecursionError` there. A C-level recursion (`_json`'s
+scanner/encoder, `_pickle`'s save/load, expat's content model) runs on
+the **wasm stack**, a fixed 4 MB reservation (`-sSTACK_SIZE=4MB`) whose
+overflow is an *uncatchable trap* that kills the page — so
+`Py_EnterRecursiveCall` routes to a bridge depth counter (cap 4000 ≈
+CPython's `Py_C_RECURSION_LIMIT`, a ×5 margin under the stack) that
+raises CPython's exact `RecursionError` first, call-site suffix included.
+The C cap is fixed and deliberately *not* tied to `sys.setrecursionlimit`
+— that is CPython 3.12+'s own design (the C recursion limit is decoupled
+from the Python one). Cross-boundary recursion (a C encoder calling a
+Python `default` hook per level) burns both counters and whichever fires
+first raises. One fidelity inversion worth knowing: CPython's *own*
+emscripten builds skip the deep-recursion tests (their stack-probing
+guard has no headroom in wasm); wasthon runs them and passes — a 500k-deep
+JSON nesting raises `RecursionError` instead of trapping.
+
 ## Running it
 
 Prerequisites:
