@@ -1007,17 +1007,14 @@ _KNOWN_HANGS = {
     # unicodedata missing — no subprocess exists in the browser, the helper
     # is a _Flex stub, so the test can only fail. Env-limited skip.
     'test_unicodedata': ['test_failed_import_during_compiling'],
-    'test_pickle': ['test_bad_object_dict_items', 'test_complex_newobj',
-                    'test_float', 'test_framing_large_objects',
+    # The framer-fidelity residue (2 roots, 3 parents): the wasthon C pickler
+    # emits ONE frame per dump where CPython's Framer starts a new ~64 KB
+    # frame per target (optional_frames counts FRAME opcodes), and the
+    # in-browser pickle.py write-chunk sequence diverges from CPython's on
+    # the delayed-writer assertion. Per-class skips: the sibling variants of
+    # both tests pass and keep running.
+    'test_pickle': ['InMemoryPickleTests.test_optional_frames',
                     'test_framed_write_sizes_with_delayed_writer',
-                    'test_multiple_unpicklings_minimal',
-                    'test_multiple_unpicklings_seekable',
-                    'test_multiple_unpicklings_unseekable',
-                    'test_optional_frames',
-                    # test_zero_padded_integers: WASM trap (SIGILL) on
-                    # Chrome only, Firefox tolerates silently. Wasthon
-                    # bug in unpickler integer parsing path. To fix.
-                    'test_zero_padded_integers',
                     # test_unpickle_module_race needs REAL concurrent threads
                     # (threading.Barrier across 3 threads) plus modules
                     # written to disk and imported via sys.path. Brython runs
@@ -1081,6 +1078,15 @@ _SKIP_REASONS = {
     'test_dump_virtual_tables':
         'wasthon ships FTS5, not the legacy FTS3/FTS4 module (by-design '
         'size trade-off; ~89 KB of wasm for the pre-FTS5 generation)',
+    'InMemoryPickleTests.test_optional_frames':
+        'asserts CPython framer granularity (a FRAME opcode per ~64 KB '
+        'target); the wasthon C pickler currently emits a single frame per '
+        'dump — framer-fidelity work, documented',
+    'test_framed_write_sizes_with_delayed_writer':
+        'Py variants assert the exact framed write-chunk sequence of CPython '
+        'Framer (in-browser pickle.py diverges — framer-fidelity work); the '
+        'C variants pass in isolation but their 10k-object framed dump '
+        'degrades the page and poisons the rest of the suite',
     'test_unpickle_module_race':
         'needs real concurrent threads (threading.Barrier) plus on-disk '
         'importable modules via sys.path; neither exists in the browser',
@@ -1114,18 +1120,30 @@ _SKIP_REASONS = {
 # Pattern observed: tests calling _check_multiple_unpicklings, framing-
 # related dumps/loads, and large-buffer roundtrips all collapse on
 # Brython's pure-Python Unpickler / BytesIO / assertEqual diff path.
-_KNOWN_HANG_PREFIXES = {
-    'test_pickle': ['test_framing_', 'test_framed_', 'test_multiple_unpicklings_'],
-}
+_KNOWN_HANG_PREFIXES = {}
 # _make_forced_skip was moved up next to _skip — sibling preloads run
 # the test module's class bodies, which apply @cpython_only / @bigmemtest
 # decorators that call _skip, which now needs _make_forced_skip resolved.
 
-def _matches_hang(_mn, names, prefixes):
+def _matches_hang(_mn, names, prefixes, _cn=''):
+    # entries may be bare method names or 'ConcreteClass.method' (skip a
+    # single C/Py variant while its siblings keep running)
     if _mn in names: return True
+    if _cn and (_cn + '.' + _mn) in names: return True
     for _p in prefixes:
         if _mn.startswith(_p): return True
     return False
+
+def _make_class_scoped_skip(orig, cls_name, reason):
+    # a per-class entry may target a BASE (CPicklerTests inherits
+    # PyPicklerTests.test_*): the wrapper lands on the base and is inherited,
+    # so it must decide at runtime — skip only for the named class, run the
+    # original for every other subclass
+    def _scoped(self, *a, **k):
+        if type(self).__name__ == cls_name:
+            raise unittest.SkipTest(reason)
+        return orig(self, *a, **k)
+    return _scoped
 
 def _skip_known_hangs(mod, names, prefixes=()):
     # Collect every class reachable from mod / siblings / their MRO. Then
@@ -1156,10 +1174,12 @@ def _skip_known_hangs(mod, names, prefixes=()):
     for _cls in _classes:
         _v = vars(_cls)
         for _mn in list(_v):
-            if _matches_hang(_mn, names, prefixes):
+            if _matches_hang(_mn, names, prefixes, _cls.__name__):
                 log('[hangs] wrap ' + _cls.__name__ + '.' + _mn)
+                _qn = _cls.__name__ + '.' + _mn
                 setattr(_cls, _mn,
-                        _make_forced_skip(_SKIP_REASONS.get(_mn, 'known hang (' + _mn + ')')))
+                        _make_forced_skip(_SKIP_REASONS.get(_qn,
+                            _SKIP_REASONS.get(_mn, 'known hang (' + _mn + ')'))))
                 _wrapped += 1
     log('[hangs] wrapped ' + str(_wrapped) + ' method(s)')
 
@@ -1191,13 +1211,20 @@ def _patch_suite_for_hangs(suite, names, prefixes=()):
                 _walk(t)
             else:
                 _mn = getattr(t, '_testMethodName', None)
-                if _mn and _matches_hang(_mn, names, prefixes):
+                if _mn and _matches_hang(_mn, names, prefixes, type(t).__name__):
                     _cls = type(t)
                     _key = (_cls.__name__, _mn)
                     if _key not in _patched_pairs:
                         _patched_pairs.add(_key)
-                        setattr(_cls, _mn,
-                                _make_forced_skip(_SKIP_REASONS.get(_mn, 'known hang (' + _mn + ')')))
+                        _qn = _cls.__name__ + '.' + _mn
+                        if _qn in names:
+                            setattr(_cls, _mn, _make_class_scoped_skip(
+                                getattr(_cls, _mn), _cls.__name__,
+                                _SKIP_REASONS.get(_qn, 'known hang (' + _qn + ')')))
+                        else:
+                            setattr(_cls, _mn,
+                                    _make_forced_skip(_SKIP_REASONS.get(_mn,
+                                        'known hang (' + _mn + ')')))
     _walk(suite)
     if _patched_pairs:
         log('[hangs] suite-patch ' + str(len(_patched_pairs))
