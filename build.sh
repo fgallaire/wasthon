@@ -834,6 +834,7 @@ _sqlite3)
         # -Oz matches the amalgamation: same trade-off applies to the wrappers.
         emcc -Oz -c -I . -I "${SRC}" -I "${SQLITE_DIR}" \
              -DPY_SSIZE_T_CLEAN \
+             -DPY_SQLITE_HAVE_SERIALIZE \
              "${unit}.c" -o "${unit}.o"
         SQLITE_OBJS+=( "${unit}.o" )
     done

@@ -437,6 +437,27 @@ int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
     return 0;
 }
 
+int PyBuffer_FillInfo(Py_buffer *view, PyObject *obj, void *buf,
+                      Py_ssize_t len, int readonly, int flags) {
+    (void)flags;  /* PyBUF_SIMPLE only, like PyObject_GetBuffer above. */
+    if (view == NULL) {
+        PyErr_SetString(PyExc_BufferError, "PyBuffer_FillInfo: view is NULL");
+        return -1;
+    }
+    view->buf       = buf;
+    view->obj       = obj;       /* No refcount: handle stays alive in JS. */
+    view->len       = len;
+    view->itemsize  = 1;
+    view->readonly  = readonly;
+    view->ndim      = 1;
+    view->format    = (char *)"B";
+    view->shape     = &view->len;
+    view->strides   = &view->itemsize;
+    view->suboffsets = NULL;
+    view->internal  = NULL;
+    return 0;
+}
+
 extern void wasthon_buffer_release(Py_buffer *view);
 
 void PyBuffer_Release(Py_buffer *view) {

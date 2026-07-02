@@ -1628,6 +1628,8 @@ typedef struct {
 #define PyBUF_SIMPLE  0
 
 int  PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags);
+int  PyBuffer_FillInfo(Py_buffer *view, PyObject *obj, void *buf,
+                       Py_ssize_t len, int readonly, int flags);
 int  PyObject_CheckBuffer(PyObject *obj);
 void PyBuffer_Release(Py_buffer *view);
 int  PyBuffer_IsContiguous(const Py_buffer *view, char fortran);
