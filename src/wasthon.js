@@ -182,9 +182,20 @@ mergeInto(LibraryManager.library, {
             if (!s) return;
             // The wasthon_list_items buffer caches handles wrapped in this
             // scope; they die below, so a later call must not reuse them.
-            // (Within a single C call the cache stays valid — that's what makes
-            // a PyList_GET_ITEM loop O(n) instead of O(n^2).)
-            this._lastListItems = null;
+            // Free the PyList_GET_ITEM materialisations created under this
+            // scope: those C pointers die with the C call, like sentinels.
+            // (Within a single C call an entry stays valid — that's what
+            // makes a PyList_GET_ITEM loop O(n) instead of O(n²).)
+            if (s.$itemBufs) {
+                var bufs = s.$itemBufs;
+                s.$itemBufs = null;
+                for (var b = 0; b < bufs.length; b++) {
+                    var be = bufs[b];
+                    var ce = this._listItemsCache.get(be.arr);
+                    if (ce && ce.ptr === be.ptr) this._listItemsCache.delete(be.arr);
+                    _free(be.ptr);
+                }
+            }
             var so = this.scopeOf;
             for (var i = 0; i < s.length; i++) {
                 var h = s[i];
@@ -2359,10 +2370,12 @@ mergeInto(LibraryManager.library, {
             // VALUE (owned by the JS GC through the container) and no dict
             // dealloc will ever give a bridge ref back, so taking one pins
             // the handle forever — every C-loaded dict entry leaked its key
-            // and value. Take the dict's ref only for struct-backed
-            // instances (instance-exempt rule, mirror of consumeResultRef):
-            // their refcount drives tp_dealloc, and dropping it to 0 under
-            // a live JS ref would free the struct under the stored wrapper.
+            // and value (the loads half of the pickle leak: one jsstr pin
+            // per key and per value). Take the dict's ref only for
+            // struct-backed instances (instance-exempt rule, mirror of
+            // consumeResultRef): their refcount drives tp_dealloc, and
+            // dropping it to 0 under a live JS ref would free the struct
+            // under the stored wrapper.
             if (k && k.__wasthon_ptr__) rt.incref(keyH);
             if (v && v.__wasthon_ptr__) rt.incref(valueH);
             return 0;
@@ -3063,13 +3076,16 @@ mergeInto(LibraryManager.library, {
             // buffer disjoint from the Brython array) back into the array before
             // a reader sees it — _sre expand_template's bytes branch fills `out`
             // then `Py_SET_SIZE(list,count); PyBytes_Join(sep,list)`.
-            var lb = rt._lastListItems;
-            if (lb && lb.arr === obj) {
-                var m = Math.min(size | 0, lb.n);
+            var cache = rt._listItemsCache;
+            var e = cache && cache.get(obj);
+            if (e) {
+                var m = Math.min(size | 0, e.n);
                 for (var i = 0; i < m; i++) {
-                    obj[i] = rt.unwrap(HEAP32[(lb.ptr + i * 4) >> 2]);
+                    obj[i] = rt.unwrap(HEAP32[(e.ptr + i * 4) >> 2]);
                 }
-                rt._lastListItems = null;
+                // Drop the entry (a later GET_ITEM re-materialises); the
+                // buffer itself is freed at its owning scope's close.
+                cache.delete(obj);
             }
             if (size < obj.length) obj.length = size;
         }
@@ -3463,19 +3479,23 @@ mergeInto(LibraryManager.library, {
         // Reuse the last materialisation when it's the same array at the same
         // length (the tight-loop case). Writes made through the buffer still
         // flush back via _wasthon_Py_SET_SIZE, which then clears the cache.
-        var lb = rt._lastListItems;
-        if (lb && lb.arr === arr && lb.n === n) {
-            return lb.ptr;
-        }
+        // The cache is PER ARRAY: a single-slot version thrashed between the
+        // outer list and each item's inner containers during _pickle's
+        // batch_list — every element save re-materialised the whole outer
+        // buffer (O(n²) bytes, a +400 MB heap peak per 10k-object dump).
+        // Buffers die with the handle scope of the C call that materialised
+        // them, like sentinels; Py_SET_SIZE still flushes writes back into
+        // the Brython list and drops the entry.
+        if (!rt._listItemsCache) rt._listItemsCache = new Map();
+        var e = rt._listItemsCache.get(arr);
+        if (e && e.n === n) return e.ptr;
         var ptr = _malloc(Math.max(4, n * 4));
         for (var i = 0; i < n; i++) {
             HEAP32[(ptr + i * 4) >> 2] = rt.wrap(arr[i]);
         }
-        // Remember this materialisation so Py_SET_SIZE can flush writes made
-        // through `&PyList_GET_ITEM(list,0)` back into the Brython list before
-        // it is read (_sre expand_template's bytes path fills `out` then joins
-        // the list, not the C buffer).
-        rt._lastListItems = { arr: arr, ptr: ptr, n: n };
+        rt._listItemsCache.set(arr, { ptr: ptr, n: n });
+        var s = rt.scopes && rt.scopes.length ? rt.scopes[rt.scopes.length - 1] : null;
+        if (s) (s.$itemBufs || (s.$itemBufs = [])).push({ arr: arr, ptr: ptr });
         return ptr;
     },
 
@@ -10491,8 +10511,8 @@ mergeInto(LibraryManager.library, {
         // _pickle's Pickler/Unpickler are resource holders of the same
         // nature: the memo takes a ref per (sub)object pickled, released
         // only at tp_dealloc — a Brython-held Pickler that never dies
-        // pinned ~5 handles per object dumped (a 10k-object dump left
-        // ~50k pins).
+        // pinned ~5 handles per object dumped (the dump half of the
+        // pickle leak: 10k-object dumps left ~50k pins each).
         if (fullName === 'sqlite3.Connection' || fullName === 'sqlite3.Cursor' ||
             fullName === 'sqlite3.Blob' || fullName === 'sqlite3.Backup' ||
             fullName === '_pickle.Pickler' || fullName === '_pickle.Unpickler') {
