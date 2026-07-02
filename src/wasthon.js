@@ -275,6 +275,21 @@ mergeInto(LibraryManager.library, {
         // The tp_methods trampoline did this (syncBytes) but slot returns
         // (mp_subscript/sq_item — Blob[slice]) did not, so blob reads were all
         // zeros. Idempotent for read-only AsString buffers (a copy of .source).
+        /* Fully-qualified type name for %T/%N error formatting: CPython
+         * emits module.qualname, dropping the 'builtins.' prefix (so
+         * 'tuple', but 'pickletester.REX'). isType: the argument is the
+         * type itself (%N), not an instance (%T). */
+        qualTypeName: function(o, isType) {
+            var t = isType ? o
+                : (this.$B.get_class ? this.$B.get_class(o) : (o && o.__class__));
+            var qn, mod;
+            try { qn = this.$B.$getattr(t, '__qualname__'); } catch (e) {}
+            if (typeof qn !== 'string') qn = this.$B.class_name(o);
+            try { mod = this.$B.$getattr(t, '__module__'); } catch (e) {}
+            return (typeof mod === 'string' && mod && mod !== 'builtins')
+                ? (mod + '.' + qn) : qn;
+        },
+
         syncCstrBytes: function(v) {
             if (!v || typeof v !== 'object') return;
             var ptr = v.__wasthon_cstr__;
@@ -6713,16 +6728,12 @@ mergeInto(LibraryManager.library, {
                     else                piece = String(rt._b_.str.$factory(obj));
                 } catch (_) { piece = "<obj>"; }
             } else if (c === 'T' || c === 'N') {
-                // %T = type name of instance; %N = type name of PyTypeObject*.
-                // Used by _pickle's error formatting (CPython 3.13+).
+                // %T = fully-qualified type name of instance; %N = the
+                // argument is the PyTypeObject* itself (CPython 3.13+).
                 var th = HEAP32[p >> 2]; p += 4;
                 var tobj = rt.unwrap(th);
-                if (c === 'N') {
-                    piece = (tobj && tobj.__name__) ? tobj.__name__ : '<type>';
-                } else {
-                    try { piece = rt.$B.class_name(tobj); }
-                    catch (e) { piece = '<type-err>'; }
-                }
+                try { piece = rt.qualTypeName(tobj, c === 'N'); }
+                catch (e) { piece = '<type-err>'; }
             } else if (c === '%') {
                 piece = '%';
             } else {
@@ -7424,15 +7435,7 @@ mergeInto(LibraryManager.library, {
                 // type. CPython emits `module.qualname`, dropping the `builtins.`
                 // prefix (so `tuple`, but `pickletester.REX`).
                 try {
-                    var _o = rt.unwrap(readPtr());
-                    var _t = (code === 'N') ? _o
-                        : (rt.$B.get_class ? rt.$B.get_class(_o) : (_o && _o.__class__));
-                    var _qn, _mod;
-                    try { _qn = rt.$B.$getattr(_t, '__qualname__'); } catch (e) {}
-                    if (typeof _qn !== 'string') _qn = rt.$B.class_name(_o);
-                    try { _mod = rt.$B.$getattr(_t, '__module__'); } catch (e) {}
-                    msg += (typeof _mod === 'string' && _mod && _mod !== 'builtins')
-                        ? (_mod + '.' + _qn) : _qn;
+                    msg += rt.qualTypeName(rt.unwrap(readPtr()), code === 'N');
                 } catch (e) { msg += '<type>'; }
             } else if (code === 'R') {
                 try { msg += String(rt._b_.repr(rt.unwrap(readPtr()))); }
