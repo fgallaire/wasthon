@@ -1173,6 +1173,12 @@ def _skip_known_hangs(mod, names, prefixes=()):
         _v = vars(_cls)
         for _mn in list(_v):
             if _matches_hang(_mn, names, prefixes, _cls.__name__):
+                # Never wrap a non-callable: upstream DISABLES an inherited
+                # test with "name = None" (InMemoryPickleTests's delayed
+                # writer); replacing that None with a skip method resurrects
+                # a test CPython does not collect, inflating ran by phantom
+                # skips.
+                if not callable(_v[_mn]): continue
                 log('[hangs] wrap ' + _cls.__name__ + '.' + _mn)
                 _qn = _cls.__name__ + '.' + _mn
                 setattr(_cls, _mn,
