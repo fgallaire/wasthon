@@ -10478,6 +10478,16 @@ mergeInto(LibraryManager.library, {
          * attribute of immutable type ..."), as CPython does. Bridge-side
          * installs (tp_dict descriptors, class constants via
          * PyDict_SetItemString) go through set_to_dict and are unaffected. */
+        if (flags & 0x8) {
+            // Py_TPFLAGS_DISALLOW_INSTANTIATION (wasthon.h: 1<<3; array
+            // iterators, sqlite3 statements...): calling the class raises
+            // CPython's TypeError instead of minting a hollow instance via
+            // object.tp_new.
+            cls.tp_new = function() {
+                rt.$B.RAISE(rt._b_.TypeError,
+                    "cannot create '" + (cls.tp_name || 'object') + "' instances");
+            };
+        }
         if (flags & 0x10) {
             cls.tp_flags = (cls.tp_flags || 0) | rt.$B.TPFLAGS.IMMUTABLETYPE;
         }
