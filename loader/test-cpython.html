@@ -1038,8 +1038,11 @@ _KNOWN_HANGS = {
     # (chr(0xd803)+chr(0xde6d) == "\U00010e6d" in Brython) — encode('utf-8')
     # can't raise "surrogates not allowed" without breaking every astral char.
     # Unfixable without changing str's representation away from JS strings.
+    # test_dump_virtual_tables needs the legacy FTS3/FTS4 module: ~89 KB of
+    # wasm for one test of the pre-FTS5 generation. wasthon ships FTS5 —
+    # by-design omission, same family as OpenSSL-vs-HACL.
     'test_sqlite3': ['test_check_connection_thread', 'test_check_cursor_thread',
-                     'test_param_surrogates'],
+                     'test_param_surrogates', 'test_dump_virtual_tables'],
 }
 # Honest SkipTest reasons for forced skips that are not actually hangs
 # (keyed by method name; default below is the hang wording).
@@ -1048,6 +1051,9 @@ _SKIP_REASONS = {
         'Brython str is a JS UTF-16 string: adjacent lone surrogates are '
         'indistinguishable from the astral char they encode, so encode("utf-8") '
         'cannot raise (architectural representation limit, not a bug)',
+    'test_dump_virtual_tables':
+        'wasthon ships FTS5, not the legacy FTS3/FTS4 module (by-design '
+        'size trade-off; ~89 KB of wasm for the pre-FTS5 generation)',
     'test_unpickle_module_race':
         'needs real concurrent threads (threading.Barrier) plus on-disk '
         'importable modules via sys.path; neither exists in the browser',
