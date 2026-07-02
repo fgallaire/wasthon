@@ -2813,6 +2813,18 @@ AttributeError: 'str' object has no attribute 'write'   # before
 1                                                        # after
 ```
 
+## [x] writing bytes to a text file crashes instead of raising TypeError
+
+**Impact: +2 pickle (test_dump_text_file × C/Py picklers); general.** `pickle.dump(obj, open(p, "w"))` must raise `TypeError` (the pickler writes bytes, the text file refuses them); the harness io layer's text `write` called `txt.encode(...)` unconditionally, surfacing `AttributeError: 'bytes' object has no attribute 'encode'`. The write now type-checks its argument first, raising CPython's `write() argument must be str, not bytes`. Source: `loader/wasthon-io-write.js`.
+
+```python
+>>> f = open('x.txt', 'w')
+>>> f.write(b'abc')
+AttributeError: 'bytes' object has no attribute 'encode'   # before
+>>> f.write(b'abc')
+TypeError: write() argument must be str, not bytes         # after
+```
+
 ## [x] `__import__` of a non-str module name crashes in JS
 
 **Impact: +pickle (test_find_class asserts TypeError for `find_class(None, 'log')`); general.** `$B.$__import__(None, ...)` reached `mod_name.split(".")` and surfaced `JavascriptError: mod_name.split is not a function` where CPython raises `TypeError: module name must be a string`. The entry point now type-checks its argument. Source: `$B.$__import__` in `py_import.js`.

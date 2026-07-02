@@ -424,6 +424,10 @@
         G.__iter__ = function (s) { return s; };
         G.write = function (s, txt) {
             checkOpen(s);
+            if (!B.$isinstance(txt, _b_.str)) {
+                B.RAISE(_b_.TypeError, 'write() argument must be str, not ' +
+                    B.class_name(txt));
+            }
             if (!s.$wfs) {
                 // not an fd-backed text file (e.g. text over a compression
                 // file): delegate to the base wrapper's write
