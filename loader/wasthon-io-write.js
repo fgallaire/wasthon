@@ -243,6 +243,22 @@
             buffer.source.length = src.length;
             return src.length;
         };
+        F.readline = function (self, size) {
+            // binary readline: bytes up to and including the next \n (the
+            // C Unpickler requires the attribute on its file argument)
+            checkOpen(self);
+            const out = [];
+            const lim = (size === undefined || size === _b_.None || size < 0)
+                ? Infinity : size;
+            while (out.length < lim) {
+                const chunk = F.read(self, 1);
+                const src = chunk.source || [];
+                if (src.length === 0) break;
+                out.push(src[0]);
+                if (src[0] === 10) break;
+            }
+            return _b_.bytes.$factory(out);
+        };
         F.read = function (self, size) {
             if (!self.$wfs) {
                 const ba = _b_.bytearray.$factory();
@@ -309,7 +325,7 @@
             return self.$wfs ? B.$bool(self.seekable) : origSeekable.call(this, self);
         };
 
-        installTypeMethods(B, FileIO, ['readinto', 'readall', 'read', 'write',
+        installTypeMethods(B, FileIO, ['readinto', 'readall', 'read', 'readline', 'write',
             'seek', 'tell', 'truncate', 'flush', 'close', 'fileno',
             'readable', 'writable', 'seekable'], '_io');
 

@@ -2897,6 +2897,18 @@ AttributeError: module 'urllib.request' has no attribute 'getproxies'   # before
 {}                                                                      # after
 ```
 
+## [x] fd-backed `FileIO` has no `readline`
+
+**Impact: +1 pickle (test_invocation runs `pickle._main` which unpickles from an opened binary file — the C Unpickler requires `read` and `readline` on its file argument); general.** The writable-io FileIO exposed `read`/`readinto` but not `readline`, so `_pickle.Unpickler(open(path,'rb'))` raised `TypeError: file must have 'read' and 'readline' attributes`. Added a binary `readline` (bytes up to and including the next newline). Source: `loader/wasthon-io-write.js`.
+
+```python
+>>> import io, _pickle
+>>> _pickle.Unpickler(open('x.pkl', 'rb')).load()
+TypeError: file must have 'read' and 'readline' attributes   # before
+>>> _pickle.Unpickler(open('x.pkl', 'rb')).load()
+{'a': 1}                                                     # after
+```
+
 ## [x] builtin-class staticmethods (`bytearray.maketrans`) are unpicklable bare JS functions
 
 **Impact: +5 pickle (test_c_methods × all five picklers, unskipped with this fix); general.** A staticmethod of a builtin class unwraps to the bare JS function stored in `tp_funcs`, typed `JavascriptFunction` with no pickling path — while every other C-method shape in the test (method_descriptor, wrapper_descriptor, method-wrapper, bound builtin method) already carries the CPython getattr-style `__reduce__`. Added `JSFunction_funcs.__reduce__`: when the function's `$function_infos` qualname resolves to `owner.name` in builtins with `owner.tp_funcs[name]` being this very function, pickle it by reference as `(getattr, (owner, name))`; any other JS function keeps raising the same TypeError as before. Known limit: class creation requalifies shared functions in its namespace (`import pickle` pulls `collections.UserString`, whose creation rewrites the str method's `$function_infos` to `UserString.maketrans`), so `str.maketrans` still refuses to pickle — same root as the parked `__qualname__`-clobbering bug. Source: the `JSFunction` section (`js_objects.js`) in `brython.js`.
