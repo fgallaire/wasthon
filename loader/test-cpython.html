@@ -469,7 +469,9 @@ def _ih_import_module(name, *a, **k):
     try:
         return __import__(name)
     except ImportError as exc:
-        raise unittest.SkipTest(str(exc))
+        # some vendored import paths lose the name mid-crash ('undefined');
+        # always lead with the module actually requested
+        raise unittest.SkipTest('cannot import %r: %s' % (name, exc))
 import_helper.import_module = _ih_import_module
 # _testcapi is partially available (struct/sqlite3/pyexpat use e.g. ULLONG_MAX),
 # but set_nomemory (inject a malloc failure) can't be emulated. Make just that
@@ -1366,6 +1368,14 @@ if result.errors:
     for t, tb in result.errors:
         log(f'  ✗ {t}')
         log(f'      {_tail(tb)}')
+if result.skipped:
+    log('\\n--- SKIPS ---')
+    _seen_sk = set()
+    for t, reason in result.skipped:
+        _pid = _parent_id(t)
+        if _pid in _seen_sk: continue
+        _seen_sk.add(_pid)
+        log(f'  ~ {_pid} :: {str(reason)[:180]}')
 
 # Marker for an aggregator: PASS only if no failures/errors.
 log('')
