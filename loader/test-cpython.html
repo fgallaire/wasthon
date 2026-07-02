@@ -988,16 +988,12 @@ _KNOWN_HANGS = {
                     # threads synchronously and the browser has no importable
                     # filesystem path — the premise cannot hold.
                     'test_unpickle_module_race'],
-    # test_setslice / test_extended_set_del_slice both hang inside the
-    # SAME wasthon function (_PyArg_Parse @ wasm-function 1783/1817),
-    # triggered by simple and extended slice assignment. Likely one
-    # root cause. First real wasthon bridge bug from the harness.
     # test_weakref: s = array(...); p = weakref.proxy(s); s = None; gc_collect();
     # assertRaises(ReferenceError, len, p). Dropping the Brython ref doesn't fire
     # tp_dealloc (the JS-Map refcount only tracks C refs) and there's no
     # synchronous GC (gc_collect is a no-op), so the proxy never clears —
     # design-excluded, same as struct's reference_cycle. Not a bug.
-    'test_array': ['test_setslice', 'test_extended_set_del_slice', 'test_weakref'],
+    'test_array': ['test_weakref'],
     # test_getrandbits_2G_bits is decorated bigmemtest(_2G) upstream
     # to skip on low-mem systems. Brython does not honor unittest.skip
     # so the test actually runs and allocates 2 billion bits. Firefox
