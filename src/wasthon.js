@@ -6969,9 +6969,22 @@ mergeInto(LibraryManager.library, {
         if (b === null) return -1;
         var newArr = new Array(newsize);
         if (b.__wasthon_cstr__) {
-            // Live data lives in linear memory.
+            // Live data lives in linear memory — but only the old
+            // allocation's worth. On a GROW resize (_pickle's output-buffer
+            // doubling) reading `newsize` bytes runs past the block, and
+            // past the END of linear memory when the block sits near the
+            // heap top: typed-array reads beyond the buffer yield
+            // `undefined`, which poisons bytes.$factory ("'UndefinedType'
+            // object cannot be interpreted as an integer"). CPython's
+            // _PyBytes_Resize only preserves the old content; zero-fill
+            // the tail like the .source branch below.
             var ptr = b.__wasthon_cstr__;
-            for (var i = 0; i < newsize; i++) newArr[i] = HEAPU8[ptr + i];
+            var lim = newsize;
+            if (typeof b.__wasthon_cstr_size__ === 'number' &&
+                b.__wasthon_cstr_size__ < lim) lim = b.__wasthon_cstr_size__;
+            if (ptr + lim > HEAPU8.length) lim = Math.max(0, HEAPU8.length - ptr);
+            for (var i = 0; i < lim; i++) newArr[i] = HEAPU8[ptr + i];
+            for (; i < newsize; i++) newArr[i] = 0;
         } else {
             var src = b.source || [];
             var oldLen = src.length;
