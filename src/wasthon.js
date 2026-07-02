@@ -10477,8 +10477,14 @@ mergeInto(LibraryManager.library, {
         // a ResourceWarning. $wasthon_gc_collect finalizes their unreachable
         // instances. Scoped to these names so another suite's gc.collect()
         // never sweeps a live C object.
+        // _pickle's Pickler/Unpickler are resource holders of the same
+        // nature: the memo takes a ref per (sub)object pickled, released
+        // only at tp_dealloc — a Brython-held Pickler that never dies
+        // pinned ~5 handles per object dumped (a 10k-object dump left
+        // ~50k pins).
         if (fullName === 'sqlite3.Connection' || fullName === 'sqlite3.Cursor' ||
-            fullName === 'sqlite3.Blob' || fullName === 'sqlite3.Backup') {
+            fullName === 'sqlite3.Blob' || fullName === 'sqlite3.Backup' ||
+            fullName === '_pickle.Pickler' || fullName === '_pickle.Unpickler') {
             cls.$wasthon_gc_finalizable = true;
         }
 
