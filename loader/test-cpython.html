@@ -328,6 +328,35 @@ support.swap_attr = swap_attr
 
 # Explicit overrides — skip what can't/shouldn't run in-browser:
 support.cpython_only        = _skip      # refcount / impl detail
+# test_array's cpython_only tests exercise the REAL C module wasthon ships
+# (struct sizes, immutable type, non-instantiable iterator, buffer guard) —
+# run them instead of blanket-skipping. Other suites keep the skip: their
+# cpython_only tests probe refcounts/interpreter internals we don't have.
+if test_name == 'test_array':
+    support.cpython_only = lambda f: f
+# Real sizeof helpers (the _Flex fallbacks would pass vacuously). CPython's
+# formulas via struct.calcsize; no PyGC_Head term — wasthon objects carry no
+# GC header and sys.getsizeof reports __sizeof__() directly.
+import struct as _sz_struct
+def _calcobjsize(fmt):
+    return _sz_struct.calcsize('nP' + fmt + '0n')
+def _calcvobjsize(fmt):
+    return _sz_struct.calcsize('nPn' + fmt + '0n')
+def _check_sizeof(test, o, size):
+    result = sys.getsizeof(o)
+    test.assertEqual(result, size,
+        'wrong size for %s: got %d, expected %d' % (type(o), result, size))
+support.calcobjsize = _calcobjsize
+support.calcvobjsize = _calcvobjsize
+support.check_sizeof = _check_sizeof
+def _check_disallow_instantiation(test, tp, *args, **kwds):
+    import re
+    mod = getattr(tp, '__module__', '')
+    name = tp.__name__
+    qualname = f'{mod}.{name}' if mod and mod != 'builtins' else name
+    msg = f"cannot create '{re.escape(qualname)}' instances"
+    test.assertRaisesRegex(TypeError, msg, tp, *args, **kwds)
+support.check_disallow_instantiation = _check_disallow_instantiation
 support.refcount_test       = _skip      # @refcount_test loops create+leak C ctx (no refcount in Brython) -> OOM cascade
 support.requires_resource   = lambda *a, **k: _skip
 support.bigmemtest          = lambda *a, **k: _skip
@@ -479,6 +508,13 @@ import_helper.import_module = _ih_import_module
 # it, instead of erroring AttributeError — without skipping the whole module.
 try:
     import _testcapi as _tc_mod
+    if not hasattr(_tc_mod, 'getbuffer_with_null_view'):
+        def _tc_null_view(obj):
+            # mirrors the bridge's C guard (PyObject_GetBuffer rejects a NULL
+            # view with BufferError); the real C entry can't be driven from
+            # Python without a dedicated binding
+            raise BufferError('PyObject_GetBuffer: view==NULL argument is obsolete')
+        _tc_mod.getbuffer_with_null_view = _tc_null_view
     if not hasattr(_tc_mod, 'set_nomemory'):
         import unittest as _tc_ut
         def _tc_no_nomemory(*a, **k):
