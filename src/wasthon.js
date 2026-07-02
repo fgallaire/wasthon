@@ -5946,7 +5946,10 @@ mergeInto(LibraryManager.library, {
     PyImport_Import: function(nameH) {
         var rt = WasthonRT;
         var name = rt.asJSStr(rt.unwrap(nameH));
-        if (name === null) return 0;
+        if (name === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "module name must be a string");
+            return 0;
+        }
         if (name === '') {
             // CPython's __import__('') raises ValueError, not ImportError.
             rt.setError(rt.wrap(rt._b_.ValueError), "Empty module name");
@@ -7505,7 +7508,13 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
         var name = rt.asJSStr(rt.unwrap(nameH));
-        if (!obj || name === null) return 0;
+        if (!obj) return 0;
+        if (name === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "attribute name must be string, not '" +
+                rt.$B.class_name(rt.unwrap(nameH)) + "'");
+            return 0;
+        }
         try {
             var v = rt.$B.$getattr(obj, name);
             if (v && v.ob_type === rt.$B.getset_descriptor) {
