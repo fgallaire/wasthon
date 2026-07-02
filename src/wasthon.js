@@ -1400,10 +1400,23 @@ mergeInto(LibraryManager.library, {
     /* PyUnicode_DecodeASCII — same as UTF8 decode for 0x00-0x7F. */
     PyUnicode_DecodeASCII__deps: ['$WasthonRT'],
     PyUnicode_DecodeASCII: function(strPtr, size, errorsPtr) {
-        if (strPtr === 0) return WasthonRT.wrapNewRef("");
+        var rt = WasthonRT;
+        if (strPtr === 0) return rt.wrapNewRef("");
+        var errors = errorsPtr ? UTF8ToString(errorsPtr) : "strict";
         var s = "";
-        for (var i = 0; i < size; i++) s += String.fromCharCode(HEAPU8[strPtr + i]);
-        return WasthonRT.wrapNewRef(s);
+        for (var i = 0; i < size; i++) {
+            var b = HEAPU8[strPtr + i];
+            if (b > 0x7F && errors === "strict") {
+                // _pickle's load_persid turns this into UnpicklingError
+                // "persistent IDs in protocol 0 must be ASCII strings"
+                rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
+                    "'ascii' codec can't decode byte 0x" + b.toString(16) +
+                    " in position " + i + ": ordinal not in range(128)");
+                return 0;
+            }
+            s += String.fromCharCode(b);
+        }
+        return rt.wrapNewRef(s);
     },
 
     /* PyUnicode_DecodeLatin1 — each byte maps to its codepoint 1:1. Same
