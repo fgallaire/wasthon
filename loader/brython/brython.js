@@ -883,7 +883,14 @@ continue}else{
 t.push(Token('OP',char,line_num,pos-line_start,line_num,pos-line_start+1,line))
 continue}}else if(char=='\\'){if(token_mode.raw){ft_buffer+=char+char}else{if(ft_escape){ft_buffer+='\\'+char}
 ft_escape=! ft_escape}
-continue}else{if(ft_escape){ft_buffer+='\\'}
+continue}else{if(ft_escape){
+// BRYTHON_FIX: backslash-newline in a non-raw f-string literal part is a
+// line continuation and must vanish (f"""\<newline>x""" is 'x'); it was
+// pushed into the buffer and survived into the emitted string.
+if(char=='\n'){line_num++
+ft_escape=false
+continue}
+ft_buffer+='\\'}
 ft_buffer+=char
 ft_escape=false
 if(char=='\n'){line_num++}

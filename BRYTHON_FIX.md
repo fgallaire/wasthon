@@ -18,6 +18,19 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] backslash-newline in an f-string literal part is kept instead of vanishing (line continuation)
+
+**Impact: any f-string using `\`-at-end-of-line — pyexpat's MemoryProtectionTest builds its billion-laughs payload with `textwrap.dedent(f"""\ …` and the stray `\<newline>` prefix made expat reject the document at line 1 column 0 (+12 pyexpat with the expat 2.8.2 bump; general correctness).** In the tokenizer's f-string mode, a `\` arms `ft_escape` and the *next* char is pushed with the backslash re-emitted — a real newline included, so the emitted literal kept `\<newline>` where CPython's tokenizer eats the continuation. Plain strings were fine (their whole token goes through `prepare_string`); every f-string form (`f"…"`, `f"""…"""`, mid-string) was wrong. Fix: in the ft-mode escape path, a newline following the escape backslash is consumed (buffer untouched, `line_num++`). Raw f-strings are unaffected (`ft_escape` is never armed in raw mode). Source: the tokenizer's `token_mode=='ft'` block in `py_tokenizer.js`-generated code.
+
+```python
+>>> f"""\
+... x"""
+'\\\nx'                                                    # before
+>>> f"""\
+... x"""
+'x'                                                        # after (CPython-exact)
+```
+
 ## [x] `__import__` of a missing module raises a bare-name `ImportError`, not `ModuleNotFoundError("No module named …")`
 
 **Impact: importing a nonexisting module raises the CPython exception class and message (pickle test_global_lookup_error asserts both via `str(exc)`/`__context__`; general).** `import_error(mod_name)` raised `ImportError(mod_name)` — `args[0]` was just the bare name, and the class was the parent `ImportError`. Everything that formats the exception (pickle's `Can't pickle X: %S`, tracebacks, `str(exc)`) printed `nonexisting` instead of `No module named 'nonexisting'`. Source: `import_error` in `py_import.js`.
