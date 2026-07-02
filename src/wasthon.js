@@ -1296,6 +1296,24 @@ mergeInto(LibraryManager.library, {
             rt.setError(rt.wrap(rt._b_.TypeError), "PyUnicode_AsUTF8String: not a str");
             return 0;
         }
+        // strict: a LONE surrogate cannot encode (TextEncoder silently
+        // replaces it with U+FFFD, so _pickle's proto-3 identifier check
+        // never saw the UnicodeEncodeError CPython raises); well-formed
+        // pairs are astral chars and pass through
+        for (var i = 0; i < s.length; i++) {
+            var c = s.charCodeAt(i);
+            if (c >= 0xD800 && c <= 0xDFFF) {
+                if (c < 0xDC00 && i + 1 < s.length) {
+                    var d = s.charCodeAt(i + 1);
+                    if (d >= 0xDC00 && d <= 0xDFFF) { i++; continue; }
+                }
+                rt.setError(rt.wrap(rt._b_.UnicodeEncodeError),
+                    "'utf-8' codec can't encode character '\\u" +
+                    c.toString(16) + "' in position " + i +
+                    ": surrogates not allowed");
+                return 0;
+            }
+        }
         var bytes = new TextEncoder().encode(s);
         return rt.wrapNewRef(rt._b_.bytes.$factory(Array.from(bytes)));
     },
