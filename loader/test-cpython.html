@@ -346,7 +346,16 @@ def swap_attr(obj, attr, new_val):
 support.swap_attr = swap_attr
 
 # Explicit overrides — skip what can't/shouldn't run in-browser:
-support.cpython_only        = _skip      # refcount / impl detail
+# cpython_only stays a blanket skip (refcount / interpreter internals we
+# don't have) EXCEPT by test name for behaviors wasthon really implements:
+# test_disallow_instantiation exercises Py_TPFLAGS_DISALLOW_INSTANTIATION,
+# which the bridge honors (real check_disallow_instantiation helper below).
+_CPYTHON_ONLY_RUNNABLE = {'test_disallow_instantiation'}
+def _cpython_only_stub(f):
+    if not isinstance(f, type) and getattr(f, '__name__', '') in _CPYTHON_ONLY_RUNNABLE:
+        return f
+    return _skip(f)
+support.cpython_only = _cpython_only_stub
 # test_array's cpython_only tests exercise the REAL C module wasthon ships
 # (struct sizes, immutable type, non-instantiable iterator, buffer guard) —
 # run them instead of blanket-skipping. Other suites keep the skip: their
