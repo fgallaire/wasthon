@@ -1530,7 +1530,10 @@ mergeInto(LibraryManager.library, {
         for (var i = 0; i < n; i++) {
             var c = HEAPU8[strPtr + i];
             if (c !== 0x5C /* '\' */) { out.push(c); continue; }
-            if (++i >= n) { out.push(0x5C); break; }   // trailing backslash
+            if (++i >= n) {
+                rt.setError(rt.wrap(rt._b_.ValueError), "Trailing \\ in string");
+                return 0;
+            }
             var d = HEAPU8[strPtr + i];
             switch (d) {
                 case 0x6E: out.push(0x0A); break;       // \n
