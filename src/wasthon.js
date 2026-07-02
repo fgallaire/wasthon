@@ -11418,8 +11418,13 @@ mergeInto(LibraryManager.library, {
                 // ends up in the default _objGetattr above.
                 if (self) self.__wasthon_in_getattro__ = name;
                 try {
+                    // same pinning as the setattro trampoline below: the C
+                    // side keys its per-object state by handle
                     var selfH = self && self.__wasthon_ptr__
-                        ? self.__wasthon_ptr__ : rt.wrap(self);
+                        ? self.__wasthon_ptr__ : rt.wrapPinned(self);
+                    if (self && !self.__wasthon_ptr__) {
+                        try { self.__wasthon_ptr__ = selfH; } catch (_) {}
+                    }
                     var nameH = rt.wrap(name);
                     rt.pendingException = null;
                     var resH = getWasmTableEntry(tpGetattroPtr)(selfH, nameH);
@@ -11458,8 +11463,18 @@ mergeInto(LibraryManager.library, {
                 }
                 if (self) self.__wasthon_in_setattro__ = name;
                 try {
+                    // Pin the handle on the instance: the C setattr stores
+                    // into memory keyed by the handle, and the matching
+                    // getattr must read the SAME memory — a scope-tracked
+                    // sentinel is released between the two calls and
+                    // re-minted, so a Brython-side (subclass) instance got
+                    // a different po each time (pickle persistent_id on a
+                    // Pickler subclass wrote one struct and read another).
                     var selfH = self && self.__wasthon_ptr__
-                        ? self.__wasthon_ptr__ : rt.wrap(self);
+                        ? self.__wasthon_ptr__ : rt.wrapPinned(self);
+                    if (self && !self.__wasthon_ptr__) {
+                        try { self.__wasthon_ptr__ = selfH; } catch (_) {}
+                    }
                     var nameH = rt.wrap(name);
                     // `del obj.attr` reaches tp_setattro with a NULL value in
                     // CPython; Brython passes its delete sentinel. Forward C
@@ -11467,8 +11482,13 @@ mergeInto(LibraryManager.library, {
                     // (_decimal context_setattr then raises "cannot delete
                     // attribute" instead of running the int converter on the
                     // sentinel — "an integer is required") (test_invalid_context).
+                    // pinned: the C setattr may STORE the handle long-term
+                    // (Pickler_setattr keeps persistent_id_attr); a scoped
+                    // handle is released at frame close and the stored id
+                    // dangles - the later read unwrapped whatever object had
+                    // been re-minted under it
                     var valH = (value === undefined || value === null ||
-                                value === rt.$B.NULL) ? 0 : rt.wrap(value);
+                                value === rt.$B.NULL) ? 0 : rt.wrapPinned(value);
                     rt.pendingException = null;
                     getWasmTableEntry(tpSetattroPtr)(selfH, nameH, valH);
                     if (rt.pendingException) {
