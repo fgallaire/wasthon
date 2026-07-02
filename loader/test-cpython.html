@@ -916,6 +916,7 @@ if test_name == 'test_bz2' and not _has_emfs:
 # slow synchronous filesystem probes for every unstubbed test.* import,
 # which makes zlib/bz2/lzma time out.)
 _SIBLINGS = {'test_cmath': ['test_math'],
+             'test_re': ['re_tests'],
              'test_pickle': ['picklecommon', 'pickletester']}
 for _sib in _SIBLINGS.get(test_name, []):
     try:
@@ -1019,14 +1020,11 @@ _KNOWN_HANGS = {
     # threading() — does not hold here. Environment-excluded, not a wasthon
     # bug: the single-threaded compress path itself is covered elsewhere.
     'test_zstd': ['test_compress_locking', 'test_decompress_locking'],
-    # test_re_tests/test_re_benchmarks import the external data module
-    # test.re_tests (the legacy regex test corpus), which is not bundled in
-    # the in-browser VFS -> ModuleNotFoundError. test_locale_caching/compiled
-    # need C LC_CTYPE locales (en_US.iso88591/utf8) that do not exist in the
-    # browser; upstream self-skips on locale.Error, but only the locale data
-    # absence is the real limit. All four are environment-limited.
-    'test_re': ['test_re_tests', 'test_re_benchmarks',
-                'test_locale_caching', 'test_locale_compiled'],
+    # test_locale_caching/compiled need C LC_CTYPE locales
+    # (en_US.iso88591/utf8) that do not exist in the browser; upstream
+    # self-skips on locale.Error, but only the locale data absence is the
+    # real limit. Both are environment-limited.
+    'test_re': ['test_locale_caching', 'test_locale_compiled'],
     # ThreadTests check that using a connection/cursor created in one thread
     # from ANOTHER thread raises ProgrammingError (sqlite check_same_thread).
     # Brython has no real thread concurrency: threading.Thread runs the target
@@ -1066,8 +1064,6 @@ _SKIP_REASONS = {
         'requires working free-threading (no real thread concurrency in WASM/Brython)',
     'test_decompress_locking':
         'requires working free-threading (no real thread concurrency in WASM/Brython)',
-    'test_re_tests':
-        'external test data module test.re_tests is not bundled in the VFS',
     'test_re_benchmarks':
         'external test data module test.re_tests is not bundled in the VFS',
     'test_locale_caching':
