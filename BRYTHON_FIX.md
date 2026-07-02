@@ -2978,3 +2978,17 @@ TypeError: functools.partial() argument after ** must be a mapping, not list   #
 >>> L
 [2, 4]      # after
 ```
+
+
+## [x] `_weakref` cells never die — proxy/ref on a wasthon C instance now clear
+
+**Impact: +14 array (test_weakref × 14 typecodes, with the bridge weakRegistry half). ⚠ VENDORED-ONLY: vanilla Brython has no reachability engine to decide death — this half supplies the semantics, the bridge decides when.** Brython's pure-Python `_weakref` stores a strong `obj` on the cell with no dead state, so `weakref.proxy(a)` outlived its referent forever. Added a `_dead` sentinel and a `_deref()` helper raising CPython's `ReferenceError: weakly-referenced object no longer exists` (all 24 ProxyType forwards route through it), `ref.__call__` returns `None` once dead, and `proxy()`/`ref()` register a `clear` closure through the bridge hook `$wasthon_weakref_track` when the target is a wasthon C instance (guarded no-op anywhere else). Source: `Lib/_weakref` in `brython_stdlib.js`.
+
+```python
+>>> import array, weakref, gc
+>>> a = array.array('i', [1, 2, 3]); p = weakref.proxy(a)
+>>> del a; gc.collect(); len(p)
+3                                                           # before
+>>> del a; gc.collect(); len(p)
+ReferenceError: weakly-referenced object no longer exists   # after
+```
