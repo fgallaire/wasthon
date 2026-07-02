@@ -764,7 +764,12 @@ Infrastructure work that pays back on existing modules:
       (`handles`/`gcRegistry`/`refcounts`, which pin every instance) and module
       graphs. `PyObject_CallFinalizerFromDealloc` now invokes `tp_finalize`
       (stashed on the class, past the 64-byte type struct) and a real
-      `PyErr_ResourceWarning`/`PyExc_ResourceWarning` emit the warning. +3
+      `PyErr_ResourceWarning`/`PyExc_ResourceWarning` emit the warning. The
+      same sweep also clears weak cells: `weakref.proxy`/`ref` on a C instance
+      raise `ReferenceError` / return `None` once the referent is unreachable
+      (or refcount-dead) — clear-only, never freeing on that path, and the
+      mark skips the cells themselves so a live proxy cannot pin its referent.
+      +3
       (`test_sqlite3` `test_table_lock_cursor_dealloc` /
       `test_table_lock_cursor_non_readonly_select` /
       `test_connection_resource_warning`). Details in `CHANGELOG.md`.

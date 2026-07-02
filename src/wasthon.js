@@ -335,6 +335,8 @@ mergeInto(LibraryManager.library, {
             this.types = new Map();
             this.refcounts = new Map();
             this.gcRegistry = new Map();
+            this.weakRegistry = new Map();
+            this.weakCells = new Set();
             this.scopes = [];
             this.scopeOf = new Map();
             this.internPool = new Map();
@@ -403,11 +405,35 @@ mergeInto(LibraryManager.library, {
             // objects a refcount would have reaped. Gated to finalizable types
             // (sqlite3 resource holders) so a still-reachable object is never
             // freed and other suites' gc.collect() is a near-no-op.
+            // Weak-cell tracking for wasthon C instances. Brython's _weakref
+            // keeps a strong ref (no JS weakness is observable synchronously);
+            // the vendored proxy()/ref() hand us a Python `clear` closure that
+            // kills the cell (proxy raises ReferenceError, ref() returns None,
+            // callback fires). The bridge only decides WHEN: unreachable at an
+            // explicit gc.collect() (mark phase below) or refcount death
+            // (PyObject_GC_Del). Clear-only — never frees on this path, so an
+            // imprecise mark can at worst clear a cell early, never corrupt.
+            if (!B.$wasthon_weakref_track) {
+                var _rtWR = this;
+                B.$wasthon_weakref_track = function(obj, cell, clear) {
+                    var ptr = obj && obj.__wasthon_ptr__;
+                    if (!ptr) return;
+                    var e = _rtWR.weakRegistry.get(ptr);
+                    if (!e) { e = { inst: obj, cells: [], clears: [] }; _rtWR.weakRegistry.set(ptr, e); }
+                    // the weak cell must not make its referent reachable:
+                    // the mark skips these objects (CPython's mark doesn't
+                    // traverse weak references either)
+                    e.cells.push(cell);
+                    _rtWR.weakCells.add(cell);
+                    e.clears.push(clear);
+                };
+            }
+
             if (!B.$wasthon_gc_collect) {
                 var _rtGC = this;
                 B.$wasthon_gc_collect = function() {
                     var rt = _rtGC;
-                    if (!rt.gcRegistry.size) return;
+                    if (!rt.gcRegistry.size && !rt.weakRegistry.size) return;
                     // Mark the finalizable instances still reachable from a live
                     // Python frame's locals/globals (CPython keeps exactly these —
                     // refcount > 0). A bounded mark from the frame namespaces,
@@ -440,6 +466,7 @@ mergeInto(LibraryManager.library, {
                         var t = typeof v;
                         if (t !== 'object' && t !== 'function') return;
                         if (skip.has(v)) return;
+                        if (rt.weakCells.size && rt.weakCells.has(v)) return;
                         // Track the max depth each object was visited at, not just
                         // "seen": an object first reached shallow (via the huge
                         // globals graph, its dict left un-recursed) must be
@@ -489,6 +516,10 @@ mergeInto(LibraryManager.library, {
                         if (f) { scan(f[1], 4); scan(f[3], 4); }
                         fo = fo.prev;
                     }
+                    rt.weakRegistry.forEach(function(e, ptr) {
+                        if (rt.handles.get(ptr) === e.inst && live.has(ptr)) return;
+                        rt.clearWeakRefs(ptr);
+                    });
                     var victims = [];
                     rt.gcRegistry.forEach(function(inst, ptr) {
                         if (rt.handles.get(ptr) !== inst) { rt.gcRegistry.delete(ptr); return; }
@@ -631,6 +662,16 @@ mergeInto(LibraryManager.library, {
         // PyObject_GC_Del frees the struct and drops the handle. A
         // finalizer-emitted warning must not leak as a pending exception
         // (CPython's del-time is an unraisable context).
+        clearWeakRefs: function(ptr) {
+            var e = this.weakRegistry.get(ptr);
+            if (!e) return;
+            this.weakRegistry.delete(ptr);
+            for (var c = 0; c < e.cells.length; c++) this.weakCells.delete(e.cells[c]);
+            for (var i = 0; i < e.clears.length; i++) {
+                try { this.$B.$call(e.clears[i]); } catch (err) {}
+            }
+        },
+
         gcFinalize: function(inst) {
             var ptr = inst && inst.__wasthon_ptr__;
             if (!ptr || !inst.__wasthon_type__) return;
@@ -11771,6 +11812,7 @@ mergeInto(LibraryManager.library, {
     PyObject_GC_Del: function(ptr) {
         if (ptr === 0) return;
         var rt = WasthonRT;
+        rt.clearWeakRefs(ptr);   // refcount death clears weak cells, like CPython
         rt.handles.delete(ptr);
         rt.refcounts.delete(ptr);
         rt.gcRegistry.delete(ptr);
