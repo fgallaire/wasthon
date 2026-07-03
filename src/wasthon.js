@@ -9612,10 +9612,28 @@ mergeInto(LibraryManager.library, {
         return v;
     },
 
-    /* _PySys_GetSizeOf(obj) — stub. The bridge has no per-object size
-     * tracking. pickle uses this only as an output-buffer preallocation
-     * hint; returning 0 just skips the optimization. */
-    _PySys_GetSizeOf: function(_obj) { return 0; },
+    /* _PySys_GetSizeOf(obj) — sys.getsizeof semantics: delegate to the
+     * object's __sizeof__ (real for wasthon C instances via the method
+     * trampoline, and for the vendored str/bytes). Pickler.__sizeof__
+     * adds _PySys_GetSizeOf(output_buffer): SizeofTests compares that
+     * against sys.getsizeof(bytes) — both sides must take the same path
+     * (the old 0 stub made the C side undercount). 0 on failure keeps
+     * the old skip-the-optimization behaviour for sizeless objects. */
+    _PySys_GetSizeOf__deps: ['$WasthonRT'],
+    _PySys_GetSizeOf: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (obj === null) return 0;
+        try {
+            var f = rt.$B.$getattr(obj, '__sizeof__', null);
+            if (f === null || f === undefined) return 0;
+            var res = rt.$B.$call(f);
+            if (typeof res === 'number') return res;
+            if (typeof res === 'bigint') return Number(res);
+            if (res && typeof res.value === 'number') return res.value;
+        } catch (e) {}
+        return 0;
+    },
 
     /* PyBuffer_IsContiguous — minimal buffer impl is always contiguous. */
     PyBuffer_IsContiguous: function(_view, _order) { return 1; },
