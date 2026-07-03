@@ -4928,7 +4928,10 @@ if(t==='string'||t==='number'||t==='bigint'||t==='boolean'||$B.get_class(obj)===
 // SUBCLASS instance is a real object with its own identity, so it falls
 // through to a per-instance UUID (else two MyStr("x") shared one id, which
 // broke pickle's memo: the reduced instance looked already-memoized).
-return $B.$call($B.$getattr(_b_.str.$factory(obj),'__hash__'))}
+// BRYTHON_FIX: mix the TYPE into the value hash — id(42) must differ from
+// id('42') (the shared id corrupted the pure-Python pickle memo: an int
+// whose text matched an earlier-memoized str was read back as that str).
+return $B.$call($B.$getattr(_b_.str.$factory($B.class_name(obj)+':'+_b_.str.$factory(obj)),'__hash__'))}
 return obj[$B.ID]=$B.UUID()}
 _b_.__import__=function(){
 var $=$B.args('__import__',5,{name:null,globals:null,locals:null,fromlist:null,level:null},arguments,{globals:None,locals:None,fromlist:_b_.tuple.$factory(),level:0},null,null)

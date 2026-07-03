@@ -18,6 +18,17 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] `id()` collides across types — `id(42) == id('42')` (killed the pure-Python pickle memo)
+
+**Impact: `_Pickler`'s memo is keyed by `id(obj)`; an int whose text matches an earlier-memoized str made a false memo hit, so the framed-writer roundtrip read the int `0` back as the string `'0'` (+2 pickle, the delayed-writer Py variants — the last of the framer family; general correctness for anything id-keyed).** Brython derives a primitive's id from `hash(str(value))` — the value's *text*, with no type in the mix, so `42` and `'42'` (and `True`/`'True'`) shared one id: two live, distinct objects with equal ids. The type's class name is now mixed into the hashed string. Source: `_b_.id` in `py_builtin_functions.js`.
+
+```python
+>>> id(42) == id('42')
+True   # before
+>>> id(42) == id('42')
+False  # after
+```
+
 ## [x] `object.__sizeof__` is an empty function — returns Javascript undefined (wasthon-only delegation)
 
 **Impact: `object.__sizeof__(instance)` on a wasthon C instance must report the wasm struct basicsize (+ the ob_type pointer kept JS-side), CPython's `_PyObject_SIZE(Py_TYPE(self))` (+2 pickle SizeofTests with the bytes half and the bridge `_PySys_GetSizeOf` delegation; pickle's tests assert `object.__sizeof__(Pickler(...)) == support.calcobjsize(...)`).** `object_funcs.__sizeof__ = function(self){}` returned undefined for everything. The wasthon delegation reads `cls.__wasthon_basicsize__` (the spec value the bridge stores on the class) + 4; non-wasthon objects keep the old behaviour. ⚠ VENDORED-ONLY as written (the `__wasthon_basicsize__` half lives in the bridge); the upstreamable piece would be a generic `object.__sizeof__`, separate work.
