@@ -115,7 +115,9 @@ void _PyUnicode_InternMortal(PyInterpreterState *i, PyObject **p){ (void)i;(void
 PyObject *PyLong_FromString(const char *s, char **pe, int b)  { if(pe)*pe=(char*)s; (void)b; return mkobj(); }
 PyObject *PyLong_FromLong(long v)                             { (void)v; return mkobj(); }
 PyObject *PyFloat_FromDouble(double v)                        { (void)v; return mkobj(); }
-PyObject *PyComplex_FromCComplex(Py_complex c)               { (void)c; return mkobj(); }
+/* tagged with the (stub) complex type: pegen's ensure_imaginary/ensure_real
+ * inline PyComplex_CheckExact on the literal (`case 1 + 2j` patterns) */
+PyObject *PyComplex_FromCComplex(Py_complex c)               { (void)c; PyObject *o=mkobj(); o->ob_type=(PyTypeObject*)&PyComplex_Type; return o; }
 /* numeric literal scanning — back onto libc */
 long PyOS_strtol(const char *s, char **e, int b)            { return strtol(s, e, b); }
 unsigned long PyOS_strtoul(const char *s, char **e, int b)  { return strtoul(s, e, b); }
