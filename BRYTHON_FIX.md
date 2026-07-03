@@ -30,6 +30,18 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 88                      # after (wasm32-canonical, matches support.calcobjsize('7P2n3i2n4i2P'))
 ```
 
+## [x] `bytes` has no `__sizeof__` — `sys.getsizeof(b'…')` raises TypeError
+
+**Impact: any code sizing a bytes object; pickle SizeofTests measures the Pickler's output buffer via `sys.getsizeof(b'x'*4096)` (+ part of the +2 above).** bytes.tp_methods had no `__sizeof__` at all (str got one during the array sizeof work, bytearray has a stub). Added the CPython-canonical 64-bit value (33 + len), the same ruler as the vendored `str.__sizeof__` — Brython-side objects report 64-bit sizes per the platform-width seam (README hard rules).
+
+```python
+>>> import sys
+>>> sys.getsizeof(b'x' * 4096)
+TypeError: Type bytes doesn't define __sizeof__  # before
+>>> sys.getsizeof(b'x' * 4096)
+4129                                             # after
+```
+
 ## [x] backslash-newline in an f-string literal part is kept instead of vanishing (line continuation)
 
 **Impact: any f-string using `\`-at-end-of-line — pyexpat's MemoryProtectionTest builds its billion-laughs payload with `textwrap.dedent(f"""\ …` and the stray `\<newline>` prefix made expat reject the document at line 1 column 0 (+12 pyexpat with the expat 2.8.2 bump; general correctness).** In the tokenizer's f-string mode, a `\` arms `ft_escape` and the *next* char is pushed with the backslash re-emitted — a real newline included, so the emitted literal kept `\<newline>` where CPython's tokenizer eats the continuation. Plain strings were fine (their whole token goes through `prepare_string`); every f-string form (`f"…"`, `f"""…"""`, mid-string) was wrong. Fix: in the ft-mode escape path, a newline following the escape backslash is consumed (buffer untouched, `line_num++`). Raw f-strings are unaffected (`ft_escape` is never armed in raw mode). Source: the tokenizer's `token_mode=='ft'` block in `py_tokenizer.js`-generated code.

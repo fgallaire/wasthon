@@ -7723,6 +7723,11 @@ return parts.join('')}
 return _toStr(self.source).indexOf(_toStr(other.source))>-1}
 _b_.bytes.bf_getbuffer=function(self,flags){return $B.$call(_b_.memoryview,self)}
 var bytes_funcs=_b_.bytes.tp_funcs={}
+bytes_funcs.__sizeof__=function(self){
+// BRYTHON_FIX (wasthon): CPython-canonical 64-bit bytes size (33 + len),
+// the same ruler as the vendored str.__sizeof__ — pickle's SizeofTests
+// measures its output buffer through sys.getsizeof on both sides.
+return 33+(self.source?self.source.length:0)}
 bytes_funcs.__bytes__=function(self){if($B.exact_type(self,_b_.bytes)){return self}
 return{
 ob_type:_b_.bytes,source:self.source.slice()}}
@@ -7784,7 +7789,7 @@ bytes_funcs.title=function(){return title.apply(_b_.bytes,arguments)}
 bytes_funcs.translate=function(){return translate.apply(_b_.bytes,arguments)}
 bytes_funcs.upper=function(){return upper.apply(null,arguments)}
 bytes_funcs.zfill=function(){return zfill.apply(_b_.bytes,arguments)}
-_b_.bytes.tp_methods=["__getnewargs__","__bytes__","capitalize","center","count","decode","endswith","expandtabs","find","hex","index","isalnum","isalpha","isascii","isdigit","islower","isspace","istitle","isupper","join","ljust","lower","lstrip","partition","replace","removeprefix","removesuffix","rfind","rindex","rjust","rpartition","rsplit","rstrip","split","splitlines","startswith","strip","swapcase","title","translate","upper","zfill"
+_b_.bytes.tp_methods=["__getnewargs__","__bytes__","__sizeof__","capitalize","center","count","decode","endswith","expandtabs","find","hex","index","isalnum","isalpha","isascii","isdigit","islower","isspace","istitle","isupper","join","ljust","lower","lstrip","partition","replace","removeprefix","removesuffix","rfind","rindex","rjust","rpartition","rsplit","rstrip","split","splitlines","startswith","strip","swapcase","title","translate","upper","zfill"
 ]
 _b_.bytes.classmethods=["fromhex"]
 _b_.bytes.staticmethods=["maketrans"]
