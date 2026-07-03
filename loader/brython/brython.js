@@ -2440,7 +2440,14 @@ var key_value_iterator=_b_.None
 if($B.is_dict(self)){key_value_iterator=_b_.iter(_b_.dict.tp_funcs.items(self))}
 res.push(key_value_iterator)
 return $B.fast_tuple(res)}
-object_funcs.__sizeof__=function(self){}
+object_funcs.__sizeof__=function(self){
+// BRYTHON_FIX (wasthon): CPython's object.__sizeof__ is
+// _PyObject_SIZE(Py_TYPE(self)). For a wasthon C instance the wasm struct
+// basicsize lives on the class (spec value; add the ob_type pointer the
+// bridge keeps JS-side). Non-wasthon objects keep the old behaviour.
+var cls=$B.get_class(self)
+if(cls&&cls.__wasthon_basicsize__>0){return cls.__wasthon_basicsize__+4}
+}
 object_funcs.__subclasshook__=function(self){return _b_.NotImplemented}
 _b_.object.functions_or_methods=["__new__"]
 _b_.object.tp_methods=["__reduce_ex__","__reduce__","__getstate__","__subclasshook__","__init_subclass__","__format__","__sizeof__","__dir__"
