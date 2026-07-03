@@ -351,8 +351,17 @@ support.swap_attr = swap_attr
 # test_disallow_instantiation exercises Py_TPFLAGS_DISALLOW_INSTANTIATION,
 # which the bridge honors (real check_disallow_instantiation helper below).
 _CPYTHON_ONLY_RUNNABLE = {'test_disallow_instantiation'}
+# Whole classes whose cpython_only premise wasthon actually satisfies:
+# re DebugTests exercises the pure-Python re._compiler DEBUG dump (our re IS
+# CPython's package over wasthon _sre); pickle HeapTypesTests needs the
+# immutable-type guard (honored) and gc.is_tracked on heap types;
+# SizeofTests goes through wasthon_basicsize + the real calcobjsize helpers.
+_CPYTHON_ONLY_RUNNABLE_CLASSES = {'DebugTests', 'HeapTypesTests', 'SizeofTests'}
 def _cpython_only_stub(f):
-    if not isinstance(f, type) and getattr(f, '__name__', '') in _CPYTHON_ONLY_RUNNABLE:
+    if isinstance(f, type):
+        if f.__name__ in _CPYTHON_ONLY_RUNNABLE_CLASSES:
+            return f
+    elif getattr(f, '__name__', '') in _CPYTHON_ONLY_RUNNABLE:
         return f
     return _skip(f)
 support.cpython_only = _cpython_only_stub
@@ -423,6 +432,23 @@ class _InfiniteRecursionCM:
     def __enter__(self): return self
     def __exit__(self, *a): return False
 support.infinite_recursion = lambda *a, **k: _InfiniteRecursionCM()
+# Real captured_stdout/stderr — the _Flex fallback made re DebugTests
+# compare a mock object against the expected re._compiler DEBUG dump.
+import io as _io_cap
+import sys as _sys_cap
+class _CapturedStream:
+    def __init__(self, name):
+        self._name = name
+    def __enter__(self):
+        self._orig = getattr(_sys_cap, self._name)
+        self._buf = _io_cap.StringIO()
+        setattr(_sys_cap, self._name, self._buf)
+        return self._buf
+    def __exit__(self, *a):
+        setattr(_sys_cap, self._name, self._orig)
+        return False
+support.captured_stdout = lambda: _CapturedStream('stdout')
+support.captured_stderr = lambda: _CapturedStream('stderr')
 support._1G = 1<<30; support._2G = 1<<31; support._4G = 1<<32
 # IEEE-754 IS available in JS doubles → passthrough (do NOT skip):
 support.requires_IEEE_754   = lambda f: f
@@ -1053,6 +1079,10 @@ _KNOWN_HANGS = {
     # the two pure-Python-pickler parents stay skipped, per-class.
     'test_pickle': ['PyPicklerTests.test_framed_write_sizes_with_delayed_writer',
                     'DumpPickle_CLoadPickle.test_framed_write_sizes_with_delayed_writer',
+                    # HeapTypesTests runs (immutable-type guard is honored)
+                    # except gc tracking: no cyclic GC, gc.is_tracked has no
+                    # meaning in the refcount-bridge runtime.
+                    'HeapTypesTests.test_have_gc',
                     # test_unpickle_module_race needs REAL concurrent threads
                     # (threading.Barrier across 3 threads) plus modules
                     # written to disk and imported via sys.path. Brython runs
@@ -1124,6 +1154,9 @@ _SKIP_REASONS = {
         'asserts the exact framed write-chunk sequence of CPython Framer; '
         'the in-browser pure-Python pickle.py diverges (framer-fidelity '
         'work; the C-pickler variants pass)',
+    'HeapTypesTests.test_have_gc':
+        'no cyclic GC: gc.is_tracked is meaningless in the refcount-bridge '
+        'runtime (the immutable-type sibling test runs)',
     'test_unpickle_module_race':
         'needs real concurrent threads (threading.Barrier) plus on-disk '
         'importable modules via sys.path; neither exists in the browser',
