@@ -58,3 +58,9 @@ emcc -O2 ${OBJS} \
      -o "${OUT}/wasthonp_mod.js" 2>"${OUT}/link.log" \
   && echo "Built: build/wasthonp_mod.{js,wasm}  ($(stat -c%s "${OUT}/wasthonp_mod.wasm") B wasm)" \
   || { echo "LINK FAIL"; tail -20 "${OUT}/link.log"; exit 1; }
+
+# Stage the artifacts + the JS glue into the repo-root build/ — the directory
+# the Pages site serves (loader/wasthonp.html loads ../build/wasthonp_mod.js);
+# the local build/ above keeps serving the node harnesses.
+mkdir -p "${W4}/build"
+cp "${OUT}/wasthonp_mod.js" "${OUT}/wasthonp_mod.wasm" "${REPO}/wasthonp.js" "${W4}/build/"

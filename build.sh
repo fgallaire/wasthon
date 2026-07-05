@@ -438,6 +438,13 @@ fi
 #
 # Per-module .mjs files coexist for dev/bench and on-demand use.
 if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
+    # Every bundle ships wasthonp (CPython's parser frontend, the drop-in for
+    # Brython's JS parser): its self-contained build stages wasthonp_mod.{js,
+    # wasm} + wasthonp.js into build/, which the Pages site serves for
+    # loader/wasthonp.html.
+    ensure_cpython
+    "${REPO}/wasthonp/build.sh"
+
     if [[ "${MODULE}" == "wasthon" ]]; then
         BUNDLE_NAME="wasthon"
         BUNDLE_EXPORT_NAME="wasthon_init"
