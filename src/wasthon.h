@@ -157,6 +157,39 @@ struct _typeobject {
      * Python-subclassing C types), so it stays NULL. */
     PyObject *(*tp_new)(struct _typeobject *type, PyObject *args,
                         PyObject *kw);                            /* offset 60 */
+    /* --- fields appended for type-defining C modules (pygame). pygame uses
+     * DESIGNATED initializers, so field order is irrelevant to correctness;
+     * appended here so the historical offsets above (tp_dict@8 read by
+     * blake2, etc.) don't shift. The bridge reads these at PyType_Ready.
+     * Inline function-pointer types are used where the named typedef is
+     * declared further down (e.g. Py_ssize_t stands in for Py_hash_t). */
+    Py_ssize_t  tp_basicsize;
+    Py_ssize_t  tp_itemsize;
+    Py_ssize_t  tp_vectorcall_offset;
+    PyObject   *(*tp_getattr)(PyObject *, char *);
+    int         (*tp_setattr)(PyObject *, char *, PyObject *);
+    void       *tp_as_async;
+    struct PySequenceMethods *tp_as_sequence;
+    struct PyMappingMethods  *tp_as_mapping;
+    Py_ssize_t  (*tp_hash)(PyObject *);
+    PyObject   *(*tp_call)(PyObject *, PyObject *, PyObject *);
+    PyObject   *(*tp_str)(PyObject *);
+    PyObject   *(*tp_getattro)(PyObject *, PyObject *);
+    int         (*tp_setattro)(PyObject *, PyObject *, PyObject *);
+    struct _wasthon_bufferprocs *tp_as_buffer;
+    unsigned long tp_flags;
+    const char *tp_doc;
+    PyObject   *(*tp_richcompare)(PyObject *, PyObject *, int);
+    Py_ssize_t  tp_weaklistoffset;
+    struct PyGetSetDef *tp_getset;
+    struct _typeobject *tp_base;
+    PyObject   *tp_bases;
+    PyObject   *tp_mro;
+    PyObject   *(*tp_descr_get)(PyObject *, PyObject *, PyObject *);
+    int         (*tp_descr_set)(PyObject *, PyObject *, PyObject *);
+    Py_ssize_t  tp_dictoffset;
+    struct PyMemberDef *tp_members;
+    void        (*tp_finalize)(PyObject *);
 };
 typedef struct _typeobject PyTypeObject;
 
@@ -432,6 +465,8 @@ typedef int (*traverseproc)(PyObject *, visitproc, void *);
 #define Py_T_USHORT    10
 #define Py_T_BYTE      11
 #define Py_T_UBYTE     12
+#define Py_T_DOUBLE    13
+#define Py_T_FLOAT     14
 #define _Py_T_OBJECT    Py_T_OBJECT_EX  /* internal alias */
 #define Py_READONLY     0x0001
 
@@ -498,6 +533,71 @@ typedef struct PyMemberDef {
     int flags;
     const char *doc;
 } PyMemberDef;
+
+/* ---------------------------------------------------------------- *
+ * Type-object protocol surface — for C modules that DEFINE types    *
+ * (pygame's Rect/Surface/Color…). cimgui only exposed functions so  *
+ * a thin bridge sufficed; a type needs the slot typedefs + protocol *
+ * tables below. These let such modules COMPILE; the bridge wires the *
+ * populated slots to the engine at PyType_Ready / FromSpec time.     *
+ * ---------------------------------------------------------------- */
+typedef PyObject *(*reprfunc)(PyObject *);
+typedef PyObject *(*getiterfunc)(PyObject *);
+typedef PyObject *(*richcmpfunc)(PyObject *, PyObject *, int);
+typedef Py_hash_t (*hashfunc)(PyObject *);
+typedef PyObject *(*newfunc)(PyTypeObject *, PyObject *, PyObject *);
+typedef void       (*freefunc)(void *);
+typedef PyObject *(*getattrfunc)(PyObject *, char *);
+typedef int        (*setattrfunc)(PyObject *, char *, PyObject *);
+typedef PyObject *(*getattrofunc)(PyObject *, PyObject *);
+typedef int        (*setattrofunc)(PyObject *, PyObject *, PyObject *);
+typedef PyObject *(*descrgetfunc)(PyObject *, PyObject *, PyObject *);
+typedef int        (*descrsetfunc)(PyObject *, PyObject *, PyObject *);
+typedef int        (*inquiry)(PyObject *);
+typedef Py_ssize_t (*lenfunc)(PyObject *);
+typedef PyObject *(*ssizeargfunc)(PyObject *, Py_ssize_t);
+typedef int        (*ssizeobjargproc)(PyObject *, Py_ssize_t, PyObject *);
+typedef int        (*objobjproc)(PyObject *, PyObject *);
+typedef int        (*objobjargproc)(PyObject *, PyObject *, PyObject *);
+typedef PyObject *(*vectorcallfunc)(PyObject *, PyObject *const *, size_t,
+                                    PyObject *);
+
+#ifndef Py_intptr_t
+typedef intptr_t  Py_intptr_t;
+typedef uintptr_t Py_uintptr_t;
+#endif
+
+/* sequence / mapping / async protocol tables — tagged so the tp_as_* pointer
+ * fields in _typeobject (above) can forward-reference them. */
+typedef struct PySequenceMethods {
+    lenfunc sq_length;
+    binaryfunc sq_concat;
+    ssizeargfunc sq_repeat;
+    ssizeargfunc sq_item;
+    void *was_reserved_slice;          /* py2 sq_slice — kept for shape */
+    ssizeobjargproc sq_ass_item;
+    void *was_reserved_ass_slice;
+    objobjproc sq_contains;
+    binaryfunc sq_inplace_concat;
+    ssizeargfunc sq_inplace_repeat;
+} PySequenceMethods;
+
+typedef struct PyMappingMethods {
+    lenfunc mp_length;
+    binaryfunc mp_subscript;
+    objobjargproc mp_ass_subscript;
+} PyMappingMethods;
+
+typedef struct PyAsyncMethods {
+    unaryfunc am_await;
+    unaryfunc am_aiter;
+    unaryfunc am_anext;
+    void *am_send;
+} PyAsyncMethods;
+
+/* buffer-protocol table — body defined after Py_buffer (needs its type);
+ * forward the typedef so tp_as_buffer can be a pointer. */
+typedef struct _wasthon_bufferprocs PyBufferProcs;
 
 /* ---------------------------------------------------------------- *
  * Type-spec API (PyType_FromModuleAndSpec)                         *
@@ -1255,6 +1355,19 @@ typedef struct {
 #define T_BOOL        Py_T_BOOL
 #define T_OBJECT_EX   Py_T_OBJECT_EX
 #define T_OBJECT      Py_T_OBJECT_EX  /* legacy "any object pointer", aliased */
+#define T_DOUBLE      Py_T_DOUBLE
+#define T_FLOAT       Py_T_FLOAT
+#define T_UINT        Py_T_UINT
+#define T_SHORT       Py_T_SHORT
+#define T_BYTE        Py_T_BYTE
+
+/* Legacy PyMemberDef flag names (pygame's member tables use READONLY). */
+#ifndef READONLY
+#define READONLY          Py_READONLY
+#define READ_RESTRICTED   2
+#define WRITE_RESTRICTED  4
+#define RESTRICTED        6
+#endif
 
 /* Critical sections — single-threaded WASM. */
 #ifndef Py_BEGIN_CRITICAL_SECTION
@@ -1630,6 +1743,102 @@ typedef struct {
     Py_ssize_t *suboffsets;
     void *internal;
 } Py_buffer;
+
+/* buffer-protocol slot typedefs + table body (forward-declared as
+ * PyBufferProcs earlier; defined here because it needs Py_buffer). */
+typedef int  (*getbufferproc)(PyObject *, Py_buffer *, int);
+typedef void (*releasebufferproc)(PyObject *, Py_buffer *);
+struct _wasthon_bufferprocs {
+    getbufferproc bf_getbuffer;
+    releasebufferproc bf_releasebuffer;
+};
+
+/* ---------------------------------------------------------------- *
+ * Classic C-API surface used by type-defining modules (pygame).     *
+ * Prototypes so the module COMPILES; any not yet implemented in the  *
+ * bridge surface as LINK errors (implemented then). Thread/frame     *
+ * types are opaque no-op stubs — wasthon is single-threaded (no GIL).*
+ * ---------------------------------------------------------------- */
+
+/* slot typedefs the type-object block didn't cover */
+typedef void (*destructor)(PyObject *);
+typedef int  (*initproc)(PyObject *, PyObject *, PyObject *);
+
+/* thread-state / frame: opaque; single-threaded no-op */
+typedef struct _ts            PyThreadState;   /* same tag as pycore_pystate.h's full definition */
+typedef struct _wasthon_frame PyFrameObject;
+typedef struct _wasthon_code  PyCodeObject;
+PyThreadState *PyEval_SaveThread(void);
+void           PyEval_RestoreThread(PyThreadState *tstate);
+PyFrameObject *PyThreadState_GetFrame(PyThreadState *tstate);
+
+/* module lifecycle (single-phase + multi-phase) */
+PyObject *PyModule_Create2(PyModuleDef *def, int apiver);
+#define   PyModule_Create(def)  PyModule_Create2((def), 1013)
+PyObject *PyModule_FromDefAndSpec2(PyModuleDef *def, PyObject *spec, int apiver);
+#define   PyModule_FromDefAndSpec(def, spec) \
+          PyModule_FromDefAndSpec2((def), (spec), 1013)
+int       PyModule_ExecDef(PyObject *module, PyModuleDef *def);
+PyObject *PyModule_GetDict(PyObject *module);
+int       PyModule_AddObject(PyObject *module, const char *name, PyObject *value);
+PyObject *PyState_FindModule(PyModuleDef *def);
+
+/* types / objects */
+int       PyType_Ready(PyTypeObject *type);
+PyObject *_PyObject_New(PyTypeObject *type);
+#define   PyObject_New(type, tp)  ((type *)_PyObject_New(tp))
+void      PyObject_ClearWeakRefs(PyObject *object);
+
+/* dict / import / errors */
+PyObject *PyDict_GetItemString(PyObject *dp, const char *key);
+PyObject *PyImport_GetModuleDict(void);
+void      PyErr_Fetch(PyObject **, PyObject **, PyObject **);
+void      PyErr_Restore(PyObject *, PyObject *, PyObject *);
+
+/* sequence / object protocol helpers */
+#define   PySequence_ITEM(o, i)  PySequence_GetItem((o), (i))
+PyObject **PySequence_Fast_ITEMS(PyObject *o);
+int        PySequence_DelItem(PyObject *o, Py_ssize_t i);
+Py_ssize_t PyObject_Size(PyObject *o);
+int        PyObject_IsSubclass(PyObject *derived, PyObject *cls);
+PyObject  *PyOS_FSPath(PyObject *path);
+int        PyBytes_AsStringAndSize(PyObject *obj, char **buffer, Py_ssize_t *length);
+int        PyWeakref_CheckRef(PyObject *ob);
+int        PySlice_GetIndicesEx(PyObject *r, Py_ssize_t length,
+                                Py_ssize_t *start, Py_ssize_t *stop,
+                                Py_ssize_t *step, Py_ssize_t *slicelength);
+void       Py_Exit(int status);
+
+/* misc object / number / dict / capsule / unicode helpers */
+PyObject  *PySeqIter_New(PyObject *seq);
+void       PyObject_Del(void *op);
+#define    PyObject_DEL(op)      PyObject_Del(op)
+#define    PyObject_Length(o)    PyObject_Size(o)
+PyObject  *PyNumber_Power(PyObject *o1, PyObject *o2, PyObject *o3);
+PyObject  *PyDict_GetItem(PyObject *mp, PyObject *key);
+int        PyCapsule_IsValid(PyObject *capsule, const char *name);
+int        PyCapsule_CheckExact(PyObject *p);
+PyObject  *PyBytes_FromFormat(const char *format, ...);
+Py_ssize_t PyUnicode_Find(PyObject *str, PyObject *substr, Py_ssize_t start,
+                          Py_ssize_t end, int direction);
+PyCodeObject  *PyFrame_GetCode(PyFrameObject *frame);
+PyFrameObject *PyFrame_GetBack(PyFrameObject *frame);
+
+/* float classification (CPython's math.h-free fallbacks) */
+#ifndef Py_IS_NAN
+#define Py_IS_NAN(X)       ((X) != (X))
+#endif
+#ifndef Py_IS_INFINITY
+#define Py_IS_INFINITY(X)  ((X) && (X) * 0.5 == (X))
+#endif
+
+/* common exception singletons (wired to the engine's builtins at init) */
+extern PyObject *PyExc_SyntaxError;
+extern PyObject *PyExc_RuntimeWarning;
+extern PyObject *PyExc_FutureWarning;
+extern PyObject *PyExc_FileNotFoundError;
+extern PyObject *PyExc_IOError;
+extern PyObject *PyExc_BaseException;
 
 #define PyBUF_SIMPLE  0
 

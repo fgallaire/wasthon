@@ -154,6 +154,13 @@ PyObject *PyExc_RecursionError  = (PyObject *)0;
 PyObject *PyExc_EOFError        = (PyObject *)0;
 PyObject *PyExc_StopIteration   = (PyObject *)0;
 PyObject *PyExc_BufferError     = (PyObject *)0;
+/* added for pygame (a type-defining C module) */
+PyObject *PyExc_BaseException     = (PyObject *)0;
+PyObject *PyExc_SyntaxError       = (PyObject *)0;
+PyObject *PyExc_RuntimeWarning    = (PyObject *)0;
+PyObject *PyExc_FutureWarning     = (PyObject *)0;
+PyObject *PyExc_FileNotFoundError = (PyObject *)0;
+PyObject *PyExc_IOError           = (PyObject *)0;
 PyObject *PyExc_KeyError              = (PyObject *)0;
 PyObject *PyExc_LookupError           = (PyObject *)0;
 PyObject *PyExc_NotImplementedError   = (PyObject *)0;
@@ -210,6 +217,12 @@ extern PyObject *wasthon_get_PyExc_RecursionError(void);
 extern PyObject *wasthon_get_PyExc_EOFError(void);
 extern PyObject *wasthon_get_PyExc_StopIteration(void);
 extern PyObject *wasthon_get_PyExc_BufferError(void);
+extern PyObject *wasthon_get_PyExc_BaseException(void);
+extern PyObject *wasthon_get_PyExc_SyntaxError(void);
+extern PyObject *wasthon_get_PyExc_RuntimeWarning(void);
+extern PyObject *wasthon_get_PyExc_FutureWarning(void);
+extern PyObject *wasthon_get_PyExc_FileNotFoundError(void);
+extern PyObject *wasthon_get_PyExc_IOError(void);
 extern PyObject *wasthon_get_PyExc_KeyError(void);
 extern PyObject *wasthon_get_PyExc_LookupError(void);
 extern PyObject *wasthon_get_PyExc_NotImplementedError(void);
@@ -237,6 +250,17 @@ extern PyObject *wasthon_get_Py_Ellipsis(void);
  * and provides a generic tp_iter that wraps PyObject_GetIter(). */
 extern void wasthon_bind_builtin_type(int tag, PyTypeObject *type);
 extern PyObject *wasthon_builtin_tp_iter(PyObject *self);
+extern PyObject *wasthon_builtin_mp_subscript(PyObject *self, PyObject *key);
+extern Py_ssize_t wasthon_builtin_mp_length(PyObject *self);
+extern PyObject *wasthon_builtin_tuple_tp_new(PyTypeObject *type,
+                                              PyObject *args, PyObject *kw);
+/* Shared mapping table for the built-in singletons — C extensions delegate
+ * to it (pygame ScancodeWrapper: PyTuple_Type.tp_as_mapping->mp_subscript). */
+static PyMappingMethods wasthon_builtin_as_mapping = {
+    wasthon_builtin_mp_length,
+    wasthon_builtin_mp_subscript,
+    0,
+};
 
 #define BT_TYPE     0
 #define BT_TUPLE    1
@@ -282,6 +306,12 @@ void wasthon_init(void) {
     PyExc_EOFError       = wasthon_get_PyExc_EOFError();
     PyExc_StopIteration  = wasthon_get_PyExc_StopIteration();
     PyExc_BufferError    = wasthon_get_PyExc_BufferError();
+    PyExc_BaseException     = wasthon_get_PyExc_BaseException();
+    PyExc_SyntaxError       = wasthon_get_PyExc_SyntaxError();
+    PyExc_RuntimeWarning    = wasthon_get_PyExc_RuntimeWarning();
+    PyExc_FutureWarning     = wasthon_get_PyExc_FutureWarning();
+    PyExc_FileNotFoundError = wasthon_get_PyExc_FileNotFoundError();
+    PyExc_IOError           = wasthon_get_PyExc_IOError();
     PyExc_KeyError              = wasthon_get_PyExc_KeyError();
     PyExc_LookupError           = wasthon_get_PyExc_LookupError();
     PyExc_NotImplementedError   = wasthon_get_PyExc_NotImplementedError();
@@ -314,6 +344,16 @@ void wasthon_init(void) {
     PySet_Type.tp_iter       = wasthon_builtin_tp_iter;
     PyFrozenSet_Type.tp_iter = wasthon_builtin_tp_iter;
     PyBool_Type.tp_iter    = wasthon_builtin_tp_iter;
+
+    /* Protocol tables + tp_new on the sequence/mapping singletons: C code
+     * delegates to them directly (pygame's ScancodeWrapper subscript and
+     * tp_new go through PyTuple_Type) — NULL fields were indirect calls
+     * to null. Generic shims dispatch to Brython. */
+    PyTuple_Type.tp_as_mapping   = &wasthon_builtin_as_mapping;
+    PyList_Type.tp_as_mapping    = &wasthon_builtin_as_mapping;
+    PyDict_Type.tp_as_mapping    = &wasthon_builtin_as_mapping;
+    PyUnicode_Type.tp_as_mapping = &wasthon_builtin_as_mapping;
+    PyTuple_Type.tp_new = wasthon_builtin_tuple_tp_new;
 
     wasthon_bind_builtin_type(BT_TYPE,    &PyType_Type);
     wasthon_bind_builtin_type(BT_TUPLE,   &PyTuple_Type);
