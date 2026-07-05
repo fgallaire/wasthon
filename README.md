@@ -259,6 +259,43 @@ PyTypeObject"** — modules that define their type with a 50-field static
 struct initializer (like `_datetime`) are incompatible with our
 multi-phase-init-based bridge.
 
+## wasthonp — CPython's parser as the frontend
+
+The modules above are Wasthon's "backend" (CPython's C extensions behind the
+C-API bridge). **`wasthonp/` is the frontend sibling**: CPython's real
+tokenizer + PEG parser → AST, compiled to WebAssembly (~400 KB) and used as a
+**drop-in replacement for Brython's hand-written JS parser**. It plugs in by
+monkeypatching `$B._PyPegen.run_parser`; the whole glue is one file
+(`wasthonp/wasthonp.js`). No interpreter, no eval loop, no stdlib — just the
+parser (that is what keeps it 25× smaller than Pyodide's ~10 MB).
+
+All measured, against the vendored Brython:
+
+- **Correctness — it *is* the CPython 3.14 grammar.** Full-stdlib round-trip
+  (1851 files): 1830 parse + build + codegen with **0 wasthonp crashes**,
+  1147 byte-identical to Brython's own codegen (the rest cosmetic diffs).
+  Five stdlib files crash Brython's hand-written parser and parse cleanly
+  under wasthonp (e.g. PEP 750 t-strings with the debug specifier
+  `t"{x=}"`); the reverse never happens.
+- **Faithful `SyntaxError`s** — CPython's exact message and position,
+  tokenizer errors and the helpful 3.x hints included (`'(' was never
+  closed`, `Maybe you meant '==' instead of '='?`). On CPython's own error
+  corpus (`test_syntax.py`, 71 cases): **52/71** message matches vs
+  Brython's 45/71, and 0 parse-stage errors missed.
+- **~3.5–6× faster parse** (up to 5.9× on `_pydecimal.py`), which dilutes to
+  an honest **~1.5× end-to-end** source→JS — the full pipeline is gated by
+  Brython's code generator and `$B.ast` construction, both shared with the
+  native path.
+- **An adoption argument, not a fork**: the codegen stays Brython's, and
+  adopting wasthonp would let Brython retire its hand-written parser
+  (~40% of the engine's JS source, ~550 KB off `brython.js`). The
+  integration is Brython's call; this repo never modifies Brython.
+
+Build it with `./build.sh wasthonp`, try it at `loader/wasthonp.html`
+(run Python through it + parse-time bench vs Brython). Full docs:
+[`wasthonp/README.md`](wasthonp/README.md) and the measured comparison in
+[`wasthonp/WASTHONP_VS_BRYTHON.md`](wasthonp/WASTHONP_VS_BRYTHON.md).
+
 ## How it's built
 
 The bridge is the leverage. It implements just enough of the public CPython
@@ -313,6 +350,12 @@ module exposing `PyInit_<x>()`. A small Brython-side loader
 - **`external/`** — downloaded upstream source trees (CPython, libexpat,
   liblzma, libzstd, bzip2, emsdk itself). Gitignored. Populated on first
   `./build.sh` run, ~3 GB after a full build.
+- **`wasthonp/`** — the parser frontend: CPython tokenizer + PEG → AST in
+  WASM (see the wasthonp section above). Strategy-C shims under
+  `wasthonp/shims/` (minimal POD object layer, AST→JSON, faithful errors),
+  its own `build.sh` (driven by `./build.sh wasthonp`), node harnesses
+  (`validate2.js`, `superiority.js`, `bench.js`), output in
+  `wasthonp/build/` (gitignored, staged into `build/` for the site).
 - **`loader/`** — `wasthon-loader.js` (Brython integration), `index.html`
   navigation page, 14 per-module smoke pages (`test-*.html`), 14 per-module
   bench pages (`bench-*.html`). Brython is loaded via `brython-src.js`, which
