@@ -845,9 +845,13 @@ _sqlite3)
         # MODULE_NAME ("sqlite3") is provided by module.h; passing -DPY_SSIZE_T_CLEAN
         # alone keeps CPython's standard argument-parsing assumption explicit.
         # -Oz matches the amalgamation: same trade-off applies to the wrappers.
+        # deserialize()'s upstream int64-overflow guard (data->len > INT64_MAX)
+        # is tautologically false on wasm32 (Py_ssize_t is 32-bit) — silence
+        # that one warning class rather than patch CPython's source.
         emcc -Oz -c -I . -I "${SRC}" -I "${SQLITE_DIR}" \
              -DPY_SSIZE_T_CLEAN \
              -DPY_SQLITE_HAVE_SERIALIZE \
+             -Wno-tautological-constant-out-of-range-compare \
              "${unit}.c" -o "${unit}.o"
         SQLITE_OBJS+=( "${unit}.o" )
     done
