@@ -7104,6 +7104,52 @@ mergeInto(LibraryManager.library, {
     PyVectorcall_Call: function(callableH, tupleH, dictH) { var rt = WasthonRT;
         try {
             var fn = rt.unwrap(callableH);
+            /* Real vectorcall dispatch: if the callable carries a C vectorcall
+             * function pointer (tp_vectorcall_offset != 0 in its type, the slot
+             * non-NULL in the instance), invoke it directly with the fastcall
+             * ABI. Routing through $B.$call re-enters tp_call for objects whose
+             * tp_call IS &PyVectorcall_Call (numpy ufuncs: `.tp_call =
+             * &PyVectorcall_Call`, `.tp_vectorcall_offset = offsetof(...,
+             * vectorcall)`) → the __call__ wrapper would call this again =
+             * infinite recursion (a+b blew the JS stack). Handles created here
+             * live in the caller's scope (the scoped tp_call wrapper). */
+            var cptr = fn && fn.__wasthon_ptr__;
+            var typePtr = fn && fn.__wasthon_type__;
+            if (cptr && typePtr) {
+                var vcOffset = HEAP32[(typePtr + 72) >> 2];   /* tp_vectorcall_offset */
+                if (vcOffset) {
+                    var vcFn = HEAP32[(cptr + vcOffset) >> 2];
+                    if (vcFn) {
+                        var av = tupleH ? rt.unwrap(tupleH) : [];
+                        var na = av.length;
+                        var kwd = dictH ? rt.unwrap(dictH) : null;
+                        var kwKeys = [];
+                        if (kwd && rt._b_.dict.mp_length(kwd) > 0) {
+                            var kit = rt.$B.make_js_iterator(rt.$B.$call(rt.$B.$getattr(kwd, 'keys')));
+                            for (var kk of kit) kwKeys.push(kk);
+                        }
+                        var nkw = kwKeys.length, total = na + nkw;
+                        var argsPtr = _malloc((total || 1) * 4);
+                        for (var i = 0; i < na; i++) HEAP32[(argsPtr + i * 4) >> 2] = rt.wrap(av[i]);
+                        var kwnamesH = 0;
+                        if (nkw) {
+                            for (var j = 0; j < nkw; j++) {
+                                HEAP32[(argsPtr + (na + j) * 4) >> 2] = rt.wrap(rt.$B.$getitem(kwd, kwKeys[j]));
+                            }
+                            kwnamesH = rt.wrap(rt.$B.fast_tuple(kwKeys));
+                        }
+                        rt.pendingException = null;
+                        var resH = getWasmTableEntry(vcFn)(callableH, argsPtr, na >>> 0, kwnamesH);
+                        _free(argsPtr);
+                        if (resH === 0 || rt.pendingException) {
+                            var pe = rt.pendingException; rt.pendingException = null;
+                            if (pe) throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);
+                            throw rt.$B.$call(rt._b_.RuntimeError, "vectorcall returned NULL");
+                        }
+                        return resH;   /* already a new reference owned by the caller */
+                    }
+                }
+            }
             var args = tupleH ? rt.unwrap(tupleH) : [];
             var kw = dictH ? rt.unwrap(dictH) : null;
             var call = [fn].concat(Array.prototype.slice.call(args));
