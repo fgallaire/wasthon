@@ -7047,10 +7047,23 @@ mergeInto(LibraryManager.library, {
     /* --- Context vars (single-thread: store the value) --- */
     PyContextVar_New__deps: ['$WasthonRT'],
     PyContextVar_New: function(namePtr, defH) { var rt = WasthonRT;
-        return rt.wrapNewRef({ __class__: 'ContextVar',
-            name: namePtr ? UTF8ToString(namePtr) : "",
-            value: defH ? rt.unwrap(defH) : undefined,
-            hasDefault: defH !== 0 }); },
+        var name = namePtr ? UTF8ToString(namePtr) : "";
+        /* Create a REAL Brython contextvars.ContextVar, not a bare {value}
+         * shim: numpy's C makes `_extobj_contextvar`/`current_handler` this
+         * way, then its PYTHON code calls `.set()`/`.get()`/`.reset()` on them
+         * (errstate.__enter__ does `_extobj_contextvar.set(extobj)`) — a shim
+         * object has no such methods ("'…' object has no attribute 'set'",
+         * which broke float-array repr → np.ones/np.sqrt/np.linspace). */
+        try {
+            var cvmod = rt.$B.$call(rt._b_.__import__, 'contextvars');
+            var CV = rt.$B.$getattr(cvmod, 'ContextVar');
+            var cv = defH ? rt.$B.$call(CV, name, {$kw: [{default: rt.unwrap(defH)}]})
+                          : rt.$B.$call(CV, name);
+            return rt.wrapNewRef(cv);
+        } catch (e) {
+            return rt.wrapNewRef({ __class__: 'ContextVar', name: name,
+                value: defH ? rt.unwrap(defH) : undefined, hasDefault: defH !== 0 });
+        } },
     PyContextVar_Get__deps: ['$WasthonRT'],
     PyContextVar_Get: function(varH, defH, outPtr) { var rt = WasthonRT; var cv = rt.unwrap(varH);
         var v;
@@ -7077,6 +7090,14 @@ mergeInto(LibraryManager.library, {
         HEAP32[outPtr >> 2] = rt.wrapNewRef(v); return 0; },
     PyContextVar_Set__deps: ['$WasthonRT'],
     PyContextVar_Set: function(varH, valH) { var rt = WasthonRT; var cv = rt.unwrap(varH);
+        /* Real Brython ContextVar: go through its own .set() so C-side and
+         * Python-side writes land in the same place. */
+        if (cv && cv.value === undefined) {
+            try {
+                var setter = rt.$B.$getattr(cv, 'set', null);
+                if (setter) return rt.wrapNewRef(rt.$B.$call(setter, rt.unwrap(valH)));
+            } catch (e) {}
+        }
         var old = (cv && cv.value !== undefined) ? cv.value : rt._b_.None;
         if (cv) cv.value = rt.unwrap(valH);
         return rt.wrapNewRef({ __class__: 'ContextToken', old: old }); },
