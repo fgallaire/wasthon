@@ -5026,6 +5026,31 @@ mergeInto(LibraryManager.library, {
              * class) that reads the C-side instance dict. */
             var dictOffset = HEAP32[(typePtr + 160) >> 2];
             if (dictOffset) {
+                /* A non-zero tp_dictoffset means CPython gives instances a real
+                 * __dict__ (PyObject_GenericSetAttr stores there). Mark the
+                 * Brython class $slots_has_dict so object.tp_setattro lazily
+                 * creates a per-instance dict on the first out-of-slots setattr,
+                 * instead of raising "'X' object has no attribute 'y' and no
+                 * __dict__ for setting new attributes". numpy relies on this:
+                 * multiarray.py sets `ufunc.__module__`/`__qualname__` on every
+                 * ufunc (PyUFunc_Type has tp_dictoffset). */
+                cls.$slots_has_dict = true;
+                /* Also expose a real `__dict__` getset that AUTO-CREATES the
+                 * instance dict on read. CPython's tp_dictoffset instances
+                 * return a fresh empty dict the first time `.__dict__` is read;
+                 * Brython's object_get_dict just returns get_dict(self), which
+                 * is undefined until the first setattr -> `.__dict__` raised
+                 * AttributeError. numpy's functools.update_wrapper reads
+                 * `dispatcher.__dict__` before setting anything (overrides.py's
+                 * array_function_dispatch). */
+                try {
+                    var dictGetter = function(self) {
+                        if (self[rt.$B.DICT] === undefined) rt.$B.init_dict(self);
+                        return rt.$B.get_dict(self);
+                    };
+                    var gsd = rt.$B.getset_descriptor.$factory(cls, '__dict__', [dictGetter, rt.$B.set_dict]);
+                    rt.$B.set_to_dict(cls, '__dict__', gsd);
+                } catch (e) {}
                 installDunder('__getattr__', rt.scoped(function(self, name) {
                     var ptr = self && self.__wasthon_ptr__;
                     if (ptr) {
