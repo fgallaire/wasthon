@@ -7053,8 +7053,26 @@ mergeInto(LibraryManager.library, {
             hasDefault: defH !== 0 }); },
     PyContextVar_Get__deps: ['$WasthonRT'],
     PyContextVar_Get: function(varH, defH, outPtr) { var rt = WasthonRT; var cv = rt.unwrap(varH);
-        var v = (cv && cv.value !== undefined) ? cv.value
-              : (defH ? rt.unwrap(defH) : (cv && cv.hasDefault ? cv.value : undefined));
+        var v;
+        if (cv && cv.value !== undefined) {
+            v = cv.value;                        /* bridge-created ContextVar ({value}) */
+        } else if (cv) {
+            /* A real Brython contextvars.ContextVar (numpy's format_options is
+             * created in printoptions.py) — read it through .get(). numpy's C
+             * scalar repr (gentype_repr → get_format_options) reads it via
+             * PyContextVar_Get; without this it returned NULL → "NumPy internal
+             * error: unable to get format_options context variable". */
+            var getter = null;
+            try { getter = rt.$B.$getattr(cv, 'get', null); } catch (e) {}
+            if (getter) {
+                try { v = defH ? rt.$B.$call(getter, rt.unwrap(defH)) : rt.$B.$call(getter); }
+                catch (e) { v = defH ? rt.unwrap(defH) : undefined; }
+            } else {
+                v = defH ? rt.unwrap(defH) : (cv.hasDefault ? cv.value : undefined);
+            }
+        } else {
+            v = defH ? rt.unwrap(defH) : undefined;
+        }
         if (v === undefined) { HEAP32[outPtr >> 2] = 0; return 0; }
         HEAP32[outPtr >> 2] = rt.wrapNewRef(v); return 0; },
     PyContextVar_Set__deps: ['$WasthonRT'],
