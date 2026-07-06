@@ -1309,8 +1309,10 @@ int PySys_Audit(const char *event, const char *format, ...);
 wchar_t *PyUnicode_AsWideCharString(PyObject *unicode, Py_ssize_t *size);
 Py_UCS4 *PyUnicode_AsUCS4Copy(PyObject *unicode);
 
-/* Py_SET_TYPE — set ob_type. Single-threaded WASM, no-op for our handles. */
-#define Py_SET_TYPE(op, type)  ((void)(op), (void)(type))
+/* Py_SET_TYPE — rebind an object's class (numpy's DTypeMeta machinery does
+ * Py_SET_TYPE(descr, dtype_class) to promote a descr to its DType class). */
+void _wasthon_Py_SET_TYPE(PyObject *op, PyTypeObject *type);
+#define Py_SET_TYPE(op, type)  _wasthon_Py_SET_TYPE((PyObject *)(op), (PyTypeObject *)(type))
 PyObject *_PyLong_FromByteArray(const unsigned char *bytes, size_t n,
                                  int little_endian, int is_signed);
 /* _PyLong_AsByteArray — also declared in pycore_long.h (with void *v). */

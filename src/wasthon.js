@@ -7042,6 +7042,22 @@ mergeInto(LibraryManager.library, {
     /* --- Runtime / thread-state stubs (single interpreter, no GIL) --- */
     Py_IsInitialized: function() { return 1; },
     Py_SET_REFCNT: function(oH, n) { /* handle-managed; no-op */ },
+    _wasthon_Py_SET_TYPE__deps: ['$WasthonRT'],
+    _wasthon_Py_SET_TYPE: function(oH, typeH) { var rt = WasthonRT;
+        /* numpy's builtin dtype descrs are STATIC C structs in linear memory
+         * (_builtin_descrs[]), never Brython handles — unwrap returns null.
+         * The bridge PyObject has no ob_type slot, so carry the type in a
+         * side-table keyed by the raw pointer; Py_TYPE consults it. */
+        if (!rt._cType) rt._cType = new Map();
+        rt._cType.set(oH, typeH);
+        var obj = rt.unwrap(oH);
+        if (obj === null || typeof obj !== 'object') return;   // C-struct: side-table only
+        var cls = (rt.handles && rt.handles.has(typeH)) ? rt.handles.get(typeH) : rt.unwrap(typeH);
+        if (!cls || typeof cls !== 'object') return;
+        obj.__class__ = cls;
+        obj.ob_type = cls;
+        obj.__wasthon_type__ = typeH;
+    },
     Py_EnterRecursiveCall: function(wherePtr) { return 0; },
     Py_LeaveRecursiveCall: function() { },
     PyThreadState_Get__deps: ['$WasthonRT'],
@@ -8325,6 +8341,10 @@ mergeInto(LibraryManager.library, {
         for (var i = 0; i < format.length; i++) {
             var c = format[i];
             if (c === '|') { seenPipe = true; continue; }
+            /* '$' (Python 3.3+): the following parameters are keyword-only.
+             * The kwlist-based matching below already binds them by name, so
+             * the marker is just skipped. */
+            if (c === '$') { continue; }
             /* 'X&' converter form (e.g. 'O&'): the varargs supply a converter
              * function pointer followed by its output address; the converter
              * does the conversion+validation itself. _lzma's filter-spec parse
@@ -10446,6 +10466,11 @@ mergeInto(LibraryManager.library, {
     wasthon_get_type_of__deps: ['$WasthonRT'],
     wasthon_get_type_of: function(handle) {
         var rt = WasthonRT;
+        /* An explicit Py_SET_TYPE (numpy's DTypeMeta metatype wiring) wins,
+         * whether or not the object also became a Brython handle afterwards
+         * (PyType_Ready registers dtype classes as handles → the class path
+         * would otherwise return `type` and drop the metatype). */
+        if (rt._cType && rt._cType.has(handle)) return rt._cType.get(handle);
         var obj = rt.unwrap(handle);
         if (obj === null) return 0;
         if (obj.__wasthon_type__) return obj.__wasthon_type__;
