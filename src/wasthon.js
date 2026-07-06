@@ -7167,12 +7167,15 @@ mergeInto(LibraryManager.library, {
             for (var i = 1; i < nargs; i++) call.push(rt.unwrap(HEAP32[(argsPtr >> 2) + i]));
             return rt.wrapNewRef(rt.$B.$call.apply(null, call));
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
-    PyArg_VaParseTupleAndKeywords__deps: ['$WasthonRT'],
+    PyArg_VaParseTupleAndKeywords__deps: ['$WasthonRT', 'PyArg_ParseTupleAndKeywords'],
     PyArg_VaParseTupleAndKeywords: function(argsH, kwH, fmtPtr, kwlistPtr, va) {
-        /* variadic; the va-list ABI is unreachable from JS. numpy uses the
-         * non-va PyArg_ParseTupleAndKeywords everywhere that matters — this
-         * is only pulled by a couple of thin wrappers. TODO(phase-4). */
-        return 0; },
+        /* A `va_list` in emscripten is a pointer to the sequential 4-byte
+         * varargs slots — the exact shape the non-va parser already reads from
+         * its `varargs` pointer. Delegate. numpy's `NpyArg_ParseKeywords`
+         * (ndarray.reshape's `order`/`copy` kwargs, and many other methods)
+         * goes through this; the old 0-stub made every such method return NULL
+         * with no exception ("reshape: call returned NULL"). */
+        return _PyArg_ParseTupleAndKeywords(argsH, kwH, fmtPtr, kwlistPtr, va); },
     PyOS_strtol__deps: ['$WasthonRT'],
     PyOS_strtol: function(strPtr, endptrPtr, base) {
         var s = strPtr ? UTF8ToString(strPtr) : "";
