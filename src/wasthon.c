@@ -176,6 +176,23 @@ PyObject *PyExc_DeprecationWarning    = (PyObject *)0;
 PyObject *PyExc_Warning               = (PyObject *)0;
 PyObject *PyExc_ResourceWarning       = (PyObject *)0;
 PyObject *PyExc_ZeroDivisionError     = (PyObject *)0;
+/* added for numpy 2.5.1 */
+PyObject *PyExc_NameError             = (PyObject *)0;
+PyObject *PyExc_UserWarning           = (PyObject *)0;
+PyObject *PyExc_FloatingPointError    = (PyObject *)0;
+PyObject *PyExc_ImportWarning         = (PyObject *)0;
+
+/* ---- Type objects numpy identity-checks / subtypes (bound to Brython
+ * classes in wasthon_init, same mechanism as PyLong_Type etc.) ---- */
+PyTypeObject PyComplex_Type      = {0};
+PyTypeObject PySlice_Type        = {0};
+PyTypeObject PyBaseObject_Type   = {0};
+PyTypeObject PyMemoryView_Type   = {0};
+PyTypeObject PyDictProxy_Type    = {0};
+PyTypeObject PyCFunction_Type    = {0};
+PyTypeObject PyGetSetDescr_Type  = {0};
+PyTypeObject PyMemberDescr_Type  = {0};
+PyTypeObject PyMethodDescr_Type  = {0};
 
 /* ---- Singleton object handles ---- */
 PyObject *Py_None  = (PyObject *)0;
@@ -238,6 +255,10 @@ extern PyObject *wasthon_get_PyExc_DeprecationWarning(void);
 extern PyObject *wasthon_get_PyExc_Warning(void);
 extern PyObject *wasthon_get_PyExc_ResourceWarning(void);
 extern PyObject *wasthon_get_PyExc_ZeroDivisionError(void);
+extern PyObject *wasthon_get_PyExc_NameError(void);
+extern PyObject *wasthon_get_PyExc_UserWarning(void);
+extern PyObject *wasthon_get_PyExc_FloatingPointError(void);
+extern PyObject *wasthon_get_PyExc_ImportWarning(void);
 
 extern PyObject *wasthon_get_Py_None(void);
 extern PyObject *wasthon_get_Py_True(void);
@@ -279,6 +300,16 @@ static PyMappingMethods wasthon_builtin_as_mapping = {
 #define BT_NONETYPE 14
 #define BT_ELLIPSIS 15
 #define BT_NOTIMPLEMENTED 16
+/* numpy 2.5.1 */
+#define BT_COMPLEX      17
+#define BT_SLICE        18
+#define BT_OBJECT       19
+#define BT_MEMORYVIEW   20
+#define BT_MAPPINGPROXY 21
+#define BT_CFUNCTION    22
+#define BT_GETSETDESCR  23
+#define BT_MEMBERDESCR  24
+#define BT_METHODDESCR  25
 
 /*
  * Called once after the WASM module is instantiated and before any
@@ -327,6 +358,10 @@ void wasthon_init(void) {
     PyExc_Warning               = wasthon_get_PyExc_Warning();
     PyExc_ResourceWarning       = wasthon_get_PyExc_ResourceWarning();
     PyExc_ZeroDivisionError     = wasthon_get_PyExc_ZeroDivisionError();
+    PyExc_NameError             = wasthon_get_PyExc_NameError();
+    PyExc_UserWarning           = wasthon_get_PyExc_UserWarning();
+    PyExc_FloatingPointError    = wasthon_get_PyExc_FloatingPointError();
+    PyExc_ImportWarning         = wasthon_get_PyExc_ImportWarning();
 
     /* Bind each built-in type singleton's address to its Brython class,
      * and wire tp_iter so member access works (e.g. _decimal calls
@@ -383,6 +418,15 @@ void wasthon_init(void) {
     wasthon_bind_builtin_type(BT_NONETYPE,        &_PyNone_Type);
     wasthon_bind_builtin_type(BT_ELLIPSIS,        &PyEllipsis_Type);
     wasthon_bind_builtin_type(BT_NOTIMPLEMENTED,  &_PyNotImplemented_Type);
+    wasthon_bind_builtin_type(BT_COMPLEX,      &PyComplex_Type);
+    wasthon_bind_builtin_type(BT_SLICE,        &PySlice_Type);
+    wasthon_bind_builtin_type(BT_OBJECT,       &PyBaseObject_Type);
+    wasthon_bind_builtin_type(BT_MEMORYVIEW,   &PyMemoryView_Type);
+    wasthon_bind_builtin_type(BT_MAPPINGPROXY, &PyDictProxy_Type);
+    wasthon_bind_builtin_type(BT_CFUNCTION,    &PyCFunction_Type);
+    wasthon_bind_builtin_type(BT_GETSETDESCR,  &PyGetSetDescr_Type);
+    wasthon_bind_builtin_type(BT_MEMBERDESCR,  &PyMemberDescr_Type);
+    wasthon_bind_builtin_type(BT_METHODDESCR,  &PyMethodDescr_Type);
 
     /* Populate tp_as_number for PyLong_Type / PyFloat_Type so _decimal
      * (and other modules that cache nb_* pointers) can read them. */

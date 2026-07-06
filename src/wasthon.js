@@ -6653,6 +6653,409 @@ mergeInto(LibraryManager.library, {
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
+    /* ================================================================== */
+    /* numpy 2.5.1 C-API — phase 3 (link contract: numpy-probe/).         */
+    /* Idioms: rt.unwrap(h)->obj, rt.wrapNewRef(obj)->new-ref handle,     */
+    /* rt.forwardError(e, fallbackCls) sets pending + return 0/-1.        */
+    /* ================================================================== */
+
+    /* --- Number: binary bitwise (rich_op1) + unary (dunder call) --- */
+    PyNumber_Lshift__deps: ['$WasthonRT'],
+    PyNumber_Lshift: function(aH, bH) { var rt = WasthonRT;
+        try { return rt.wrapNewRef(rt.$B.rich_op1('__lshift__', rt.unwrap(aH), rt.unwrap(bH))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyNumber_Rshift__deps: ['$WasthonRT'],
+    PyNumber_Rshift: function(aH, bH) { var rt = WasthonRT;
+        try { return rt.wrapNewRef(rt.$B.rich_op1('__rshift__', rt.unwrap(aH), rt.unwrap(bH))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyNumber_Or__deps: ['$WasthonRT'],
+    PyNumber_Or: function(aH, bH) { var rt = WasthonRT;
+        try { return rt.wrapNewRef(rt.$B.rich_op1('__or__', rt.unwrap(aH), rt.unwrap(bH))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyNumber_Xor__deps: ['$WasthonRT'],
+    PyNumber_Xor: function(aH, bH) { var rt = WasthonRT;
+        try { return rt.wrapNewRef(rt.$B.rich_op1('__xor__', rt.unwrap(aH), rt.unwrap(bH))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyNumber_Negative__deps: ['$WasthonRT'],
+    PyNumber_Negative: function(aH) { var rt = WasthonRT; var a = rt.unwrap(aH);
+        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__neg__'))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyNumber_Positive__deps: ['$WasthonRT'],
+    PyNumber_Positive: function(aH) { var rt = WasthonRT; var a = rt.unwrap(aH);
+        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__pos__'))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyNumber_Invert__deps: ['$WasthonRT'],
+    PyNumber_Invert: function(aH) { var rt = WasthonRT; var a = rt.unwrap(aH);
+        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__invert__'))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+
+    /* --- Long / hash / complex accessors --- */
+    PyLong_IsZero__deps: ['$WasthonRT'],
+    PyLong_IsZero: function(aH) { var v = WasthonRT.unwrap(aH);
+        var n = (v && v.valueOf) ? v.valueOf() : v; return (n === 0 || n === 0n) ? 1 : 0; },
+    PyLong_FromUnicodeObject__deps: ['$WasthonRT'],
+    PyLong_FromUnicodeObject: function(sH, base) { var rt = WasthonRT;
+        try { return rt.wrapNewRef(rt.$B.$call(rt._b_.int, rt.unwrap(sH), base || 10)); }
+        catch (e) { rt.forwardError(e, rt._b_.ValueError); return 0; } },
+    PyComplex_RealAsDouble__deps: ['$WasthonRT'],
+    PyComplex_RealAsDouble: function(aH) { var rt = WasthonRT; var a = rt.unwrap(aH);
+        try { var r = rt.$B.$getattr(a, 'real'); return (r && r.valueOf) ? r.valueOf() : r; }
+        catch (e) { return -1.0; } },
+    PyComplex_ImagAsDouble__deps: ['$WasthonRT'],
+    PyComplex_ImagAsDouble: function(aH) { var rt = WasthonRT; var a = rt.unwrap(aH);
+        try { var v = rt.$B.$getattr(a, 'imag'); return (v && v.valueOf) ? v.valueOf() : v; }
+        catch (e) { return 0.0; } },
+    _Py_HashDouble__deps: ['$WasthonRT'],
+    _Py_HashDouble: function(objH, v) { var rt = WasthonRT;
+        try { var h = rt.$B.$call(rt.$B.$getattr(rt._b_.float.$factory(v), '__hash__'));
+              return (h && h.valueOf) ? Number(h.valueOf()) : Number(h); }
+        catch (e) { return 0; } },
+
+    /* --- Dict --- */
+    PyDict_Copy__deps: ['$WasthonRT'],
+    PyDict_Copy: function(dH) { var rt = WasthonRT; var d = rt.unwrap(dH);
+        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(d, 'copy'))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyDict_Values__deps: ['$WasthonRT'],
+    PyDict_Values: function(dH) { var rt = WasthonRT; var d = rt.unwrap(dH);
+        try { return rt.wrapNewRef(rt.$B.$call(rt._b_.list, rt.$B.$call(rt.$B.$getattr(d, 'values')))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyDict_Merge__deps: ['$WasthonRT'],
+    PyDict_Merge: function(aH, bH, override) { var rt = WasthonRT;
+        var a = rt.unwrap(aH), b = rt.unwrap(bH);
+        try {
+            var items = rt.$B.$call(rt.$B.$getattr(b, 'items'));
+            var it = rt.$B.$iter(items), nx = rt.$B.$getattr(rt.$B.get_class(it), '__next__');
+            while (true) {
+                var kv; try { kv = rt.$B.$call(nx, it); } catch (e) { break; }
+                var k = kv[0], val = kv[1];
+                if (override || !rt.$B.$call(rt.$B.$getattr(a, '__contains__'), k))
+                    rt.$B.$setitem(a, k, val);
+            }
+            return 0;
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; } },
+    PyDict_ContainsString__deps: ['$WasthonRT'],
+    PyDict_ContainsString: function(dH, keyPtr) { var rt = WasthonRT; var d = rt.unwrap(dH);
+        var key = keyPtr ? UTF8ToString(keyPtr) : "";
+        try { return rt.$B.$call(rt.$B.$getattr(d, '__contains__'), key) ? 1 : 0; }
+        catch (e) { rt.forwardError(e, rt._b_.KeyError); return -1; } },
+    PyDict_DelItemString__deps: ['$WasthonRT'],
+    PyDict_DelItemString: function(dH, keyPtr) { var rt = WasthonRT; var d = rt.unwrap(dH);
+        var key = keyPtr ? UTF8ToString(keyPtr) : "";
+        try { rt.$B.$delitem(d, key); return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.KeyError); return -1; } },
+    PyDict_GetItemStringRef__deps: ['$WasthonRT'],
+    PyDict_GetItemStringRef: function(dH, keyPtr, outPtr) { var rt = WasthonRT; var d = rt.unwrap(dH);
+        var key = keyPtr ? UTF8ToString(keyPtr) : "";
+        try {
+            var v = rt.$B.$getitem(d, key);
+            var h = rt.wrapNewRef(v); HEAP32[outPtr >> 2] = h; return 1;
+        } catch (e) {
+            HEAP32[outPtr >> 2] = 0;
+            if (rt.$B.is_exc && rt.$B.is_exc(e, rt._b_.KeyError)) return 0;
+            rt.forwardError(e, rt._b_.KeyError); return -1;
+        } },
+    PyMapping_GetItemString__deps: ['$WasthonRT'],
+    PyMapping_GetItemString: function(oH, keyPtr) { var rt = WasthonRT; var o = rt.unwrap(oH);
+        var key = keyPtr ? UTF8ToString(keyPtr) : "";
+        try { return rt.wrapNewRef(rt.$B.$getitem(o, key)); }
+        catch (e) { rt.forwardError(e, rt._b_.KeyError); return 0; } },
+
+    /* --- Sequence --- */
+    PySequence_Concat__deps: ['$WasthonRT'],
+    PySequence_Concat: function(aH, bH) { var rt = WasthonRT;
+        try { return rt.wrapNewRef(rt.$B.rich_op1('__add__', rt.unwrap(aH), rt.unwrap(bH))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PySequence_InPlaceConcat__deps: ['$WasthonRT'],
+    PySequence_InPlaceConcat: function(aH, bH) { var rt = WasthonRT; var a = rt.unwrap(aH), b = rt.unwrap(bH);
+        try {
+            var m = rt.$B.$getattr(a, '__iadd__', null);
+            if (m) return rt.wrapNewRef(rt.$B.$call(m, b));
+            return rt.wrapNewRef(rt.$B.rich_op1('__add__', a, b));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PySequence_InPlaceRepeat__deps: ['$WasthonRT'],
+    PySequence_InPlaceRepeat: function(aH, count) { var rt = WasthonRT; var a = rt.unwrap(aH);
+        try {
+            var m = rt.$B.$getattr(a, '__imul__', null);
+            if (m) return rt.wrapNewRef(rt.$B.$call(m, count));
+            return rt.wrapNewRef(rt.$B.rich_op1('__mul__', a, count));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PySequence_Contains__deps: ['$WasthonRT'],
+    PySequence_Contains: function(seqH, obH) { var rt = WasthonRT;
+        try { return rt.$B.$is_member(rt.unwrap(obH), rt.unwrap(seqH)) ? 1 : 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; } },
+    PySlice_New__deps: ['$WasthonRT'],
+    PySlice_New: function(startH, stopH, stepH) { var rt = WasthonRT;
+        var g = function(h) { return h === 0 ? rt._b_.None : rt.unwrap(h); };
+        try { return rt.wrapNewRef(rt.$B.$call(rt._b_.slice, g(startH), g(stopH), g(stepH))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+
+    /* --- Unicode / bytes --- */
+    PyUnicode_Contains__deps: ['$WasthonRT'],
+    PyUnicode_Contains: function(sH, subH) { var rt = WasthonRT;
+        try { return rt.$B.$is_member(rt.unwrap(subH), rt.unwrap(sH)) ? 1 : 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; } },
+    PyUnicode_Format__deps: ['$WasthonRT'],
+    PyUnicode_Format: function(fmtH, argsH) { var rt = WasthonRT;
+        try { return rt.wrapNewRef(rt.$B.rich_op1('__mod__', rt.unwrap(fmtH), rt.unwrap(argsH))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyUnicode_Replace__deps: ['$WasthonRT'],
+    PyUnicode_Replace: function(sH, subH, replH, maxcount) { var rt = WasthonRT; var s = rt.unwrap(sH);
+        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(s, 'replace'),
+                    rt.unwrap(subH), rt.unwrap(replH), maxcount)); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyUnicode_Tailmatch__deps: ['$WasthonRT'],
+    PyUnicode_Tailmatch: function(sH, subH, start, end, direction) { var rt = WasthonRT;
+        var s = rt.asJSStr(rt.unwrap(sH)), sub = rt.asJSStr(rt.unwrap(subH));
+        if (s === null || sub === null) return -1;
+        if (start < 0) start = 0; if (end > s.length) end = s.length;
+        var seg = s.slice(start, end);
+        return (direction > 0 ? seg.endsWith(sub) : seg.startsWith(sub)) ? 1 : 0; },
+    PyUnicode_FromFormatV__deps: ['$WasthonRT'],
+    PyUnicode_FromFormatV: function(fmtPtr, va) { var rt = WasthonRT;
+        /* printf-style vararg formatting is not reachable through the JS
+         * ABI; return the literal format (numpy uses this only on error
+         * paths). TODO(phase-4): a real C-varargs formatter if a live path
+         * needs it. */
+        return rt.wrapNewRef(fmtPtr ? UTF8ToString(fmtPtr) : ""); },
+    PyBytes_FromString__deps: ['$WasthonRT'],
+    PyBytes_FromString: function(ptr) { var rt = WasthonRT;
+        var s = ptr ? UTF8ToString(ptr) : "";
+        var arr = new Array(s.length);
+        for (var i = 0; i < s.length; i++) arr[i] = s.charCodeAt(i) & 0xFF;
+        return rt.wrapNewRef(rt._b_.bytes.$factory(arr)); },
+
+    /* --- Errors / exceptions --- */
+    PyErr_GivenExceptionMatches__deps: ['$WasthonRT'],
+    PyErr_GivenExceptionMatches: function(givenH, excH) { var rt = WasthonRT;
+        var given = rt.unwrap(givenH), exc = rt.unwrap(excH);
+        if (given === null || exc === null) return 0;
+        try {
+            var cls = rt.$B.$isinstance(given, rt._b_.BaseException) ? rt.$B.get_class(given) : given;
+            return rt.$B.$issubclass(cls, exc) ? 1 : 0;
+        } catch (e) { return 0; } },
+    PyErr_NormalizeException__deps: ['$WasthonRT'],
+    PyErr_NormalizeException: function(typePP, valPP, tbPP) { var rt = WasthonRT;
+        try {
+            var valH = HEAP32[valPP >> 2]; var val = valH ? rt.unwrap(valH) : null;
+            if (val !== null && !rt.$B.$isinstance(val, rt._b_.BaseException)) {
+                var typeH = HEAP32[typePP >> 2]; var typ = typeH ? rt.unwrap(typeH) : rt._b_.Exception;
+                var inst = rt.$B.$call(typ, val);
+                HEAP32[valPP >> 2] = rt.wrapNewRef(inst);
+            }
+        } catch (e) {}
+    },
+    PyErr_WarnFormat__deps: ['$WasthonRT'],
+    PyErr_WarnFormat: function(catH, stacklevel, fmtPtr, va) { var rt = WasthonRT;
+        try { var warn = rt.$B.$getattr(rt.$B.$call(rt._b_.__import__, 'warnings'), 'warn');
+              rt.$B.$call(warn, fmtPtr ? UTF8ToString(fmtPtr) : "",
+                          catH ? rt.unwrap(catH) : rt._b_.UserWarning); }
+        catch (e) {}
+        return 0; },
+    PyErr_WriteUnraisable__deps: ['$WasthonRT'],
+    PyErr_WriteUnraisable: function(objH) { var rt = WasthonRT;
+        var pe = rt.pendingException;
+        try { console.error('Exception ignored', pe ? (pe.msg || '') : ''); } catch (e) {}
+        rt.pendingException = null; },
+    PyException_SetCause__deps: ['$WasthonRT'],
+    PyException_SetCause: function(excH, causeH) { var rt = WasthonRT;
+        try { rt.$B.$setattr(rt.unwrap(excH), '__cause__', causeH ? rt.unwrap(causeH) : rt._b_.None); } catch (e) {} },
+    PyException_SetContext__deps: ['$WasthonRT'],
+    PyException_SetContext: function(excH, ctxH) { var rt = WasthonRT;
+        try { rt.$B.$setattr(rt.unwrap(excH), '__context__', ctxH ? rt.unwrap(ctxH) : rt._b_.None); } catch (e) {} },
+    PyException_SetTraceback__deps: ['$WasthonRT'],
+    PyException_SetTraceback: function(excH, tbH) { var rt = WasthonRT;
+        try { rt.$B.$setattr(rt.unwrap(excH), '__traceback__', tbH ? rt.unwrap(tbH) : rt._b_.None); } catch (e) {}
+        return 0; },
+
+    /* --- Object --- */
+    PyObject_Bytes__deps: ['$WasthonRT'],
+    PyObject_Bytes: function(oH) { var rt = WasthonRT;
+        try { return rt.wrapNewRef(rt.$B.$call(rt._b_.bytes, oH === 0 ? rt._b_.None : rt.unwrap(oH))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyObject_Format__deps: ['$WasthonRT'],
+    PyObject_Format: function(oH, specH) { var rt = WasthonRT;
+        try { return rt.wrapNewRef(rt.$B.$call(rt._b_.format, rt.unwrap(oH),
+                    specH === 0 ? "" : rt.unwrap(specH))); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyObject_Not__deps: ['$WasthonRT'],
+    PyObject_Not: function(oH) { var rt = WasthonRT;
+        try { return rt.$B.$bool(rt.unwrap(oH)) ? 0 : 1; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; } },
+    PyObject_LengthHint__deps: ['$WasthonRT'],
+    PyObject_LengthHint: function(oH, defval) { var rt = WasthonRT; var o = rt.unwrap(oH);
+        try {
+            var m = rt.$B.$getattr(o, '__len__', null);
+            if (m) { var n = rt.$B.$call(m); return Number((n && n.valueOf) ? n.valueOf() : n); }
+            var h = rt.$B.$getattr(o, '__length_hint__', null);
+            if (h) { var v = rt.$B.$call(h); return Number((v && v.valueOf) ? v.valueOf() : v); }
+        } catch (e) {}
+        return defval; },
+    PyObject_AsFileDescriptor__deps: ['$WasthonRT'],
+    PyObject_AsFileDescriptor: function(oH) { var rt = WasthonRT; var o = rt.unwrap(oH);
+        try {
+            if (typeof o === 'number') return o | 0;
+            var m = rt.$B.$getattr(o, 'fileno', null);
+            if (m) { var n = rt.$B.$call(m); return Number((n && n.valueOf) ? n.valueOf() : n) | 0; }
+        } catch (e) {}
+        rt.setError(rt.wrap(rt._b_.TypeError), "argument must be an int or have a fileno() method");
+        return -1; },
+    PyObject_Print__deps: ['$WasthonRT'],
+    PyObject_Print: function(oH, filePtr, flags) { var rt = WasthonRT;
+        try { console.log(rt.$B.$call(rt._b_.repr, rt.unwrap(oH))); } catch (e) {}
+        return 0; },
+    PyObject_GenericGetDict__deps: ['$WasthonRT'],
+    PyObject_GenericGetDict: function(oH, ctx) { var rt = WasthonRT; var o = rt.unwrap(oH);
+        try { return rt.wrapNewRef(rt.$B.$getattr(o, '__dict__')); }
+        catch (e) { rt.forwardError(e, rt._b_.AttributeError); return 0; } },
+    PyObject_Init__deps: ['$WasthonRT'],
+    PyObject_Init: function(oH, typeH) { return oH; },
+    PyObject_InitVar__deps: ['$WasthonRT'],
+    PyObject_InitVar: function(oH, typeH, n) { return oH; },
+    _PyObject_NewVar__deps: ['$WasthonRT'],
+    _PyObject_NewVar: function(typeH, n) { return 0; },
+    PyMethod_New__deps: ['$WasthonRT'],
+    PyMethod_New: function(funcH, selfH) { var rt = WasthonRT;
+        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.method || rt._b_.object,
+                    rt.unwrap(funcH), rt.unwrap(selfH))); }
+        catch (e) { return funcH; } },
+
+    /* --- Type / eval / sys --- */
+    PyType_GetFlags__deps: ['$WasthonRT'],
+    PyType_GetFlags: function(typeH) { var rt = WasthonRT;
+        /* return a permissive flag set; numpy tests specific bits but the
+         * bridge types are all "ready" heap-like. TODO(phase-4): real bits. */
+        return 0xFFFFFFFF >>> 0; },
+    PyType_Modified__deps: ['$WasthonRT'],
+    PyType_Modified: function(typeH) { /* no attribute cache to invalidate */ },
+    PyEval_GetBuiltins__deps: ['$WasthonRT'],
+    PyEval_GetBuiltins: function() { var rt = WasthonRT;
+        try { return rt.wrap(rt._b_.__builtins__ || rt.$B.builtins_dict || rt._b_); }
+        catch (e) { return 0; } },
+    PySys_GetObject__deps: ['$WasthonRT'],
+    PySys_GetObject: function(namePtr) { var rt = WasthonRT;
+        var name = namePtr ? UTF8ToString(namePtr) : "";
+        try { var sys = rt.$B.$call(rt._b_.__import__, 'sys');
+              return rt.wrap(rt.$B.$getattr(sys, name)); }
+        catch (e) { return 0; } },
+
+    /* --- Context vars (single-thread: store the value) --- */
+    PyContextVar_New__deps: ['$WasthonRT'],
+    PyContextVar_New: function(namePtr, defH) { var rt = WasthonRT;
+        return rt.wrapNewRef({ __class__: 'ContextVar',
+            name: namePtr ? UTF8ToString(namePtr) : "",
+            value: defH ? rt.unwrap(defH) : undefined,
+            hasDefault: defH !== 0 }); },
+    PyContextVar_Get__deps: ['$WasthonRT'],
+    PyContextVar_Get: function(varH, defH, outPtr) { var rt = WasthonRT; var cv = rt.unwrap(varH);
+        var v = (cv && cv.value !== undefined) ? cv.value
+              : (defH ? rt.unwrap(defH) : (cv && cv.hasDefault ? cv.value : undefined));
+        if (v === undefined) { HEAP32[outPtr >> 2] = 0; return 0; }
+        HEAP32[outPtr >> 2] = rt.wrapNewRef(v); return 0; },
+    PyContextVar_Set__deps: ['$WasthonRT'],
+    PyContextVar_Set: function(varH, valH) { var rt = WasthonRT; var cv = rt.unwrap(varH);
+        var old = (cv && cv.value !== undefined) ? cv.value : rt._b_.None;
+        if (cv) cv.value = rt.unwrap(valH);
+        return rt.wrapNewRef({ __class__: 'ContextToken', old: old }); },
+
+    /* --- Capsule (New/GetPointer already exist) --- */
+    PyCapsule_GetContext__deps: ['$WasthonRT'],
+    PyCapsule_GetContext: function(capH) { var o = WasthonRT.unwrap(capH);
+        return (o && o.context) ? o.context : 0; },
+    PyCapsule_SetContext__deps: ['$WasthonRT'],
+    PyCapsule_SetContext: function(capH, ctx) { var o = WasthonRT.unwrap(capH);
+        if (o) o.context = ctx; return 0; },
+    PyCapsule_SetName__deps: ['$WasthonRT'],
+    PyCapsule_SetName: function(capH, namePtr) { var o = WasthonRT.unwrap(capH);
+        if (o) o.name = namePtr ? UTF8ToString(namePtr) : null; return 0; },
+    PyCapsule_Import__deps: ['$WasthonRT'],
+    PyCapsule_Import: function(namePtr, noBlock) { var rt = WasthonRT;
+        var name = namePtr ? UTF8ToString(namePtr) : "";
+        /* datetime C-API: Brython's datetime is pure-Python and exports no
+         * capsule. numpy dereferences PyDateTimeAPI ONLY in the datetime64<->
+         * datetime conversion path (not at init), so hand back a persistent
+         * zeroed PyDateTime_CAPI so PyDateTime_IMPORT is non-NULL and module
+         * init proceeds. TODO(phase-4): fill the struct with bridge fns to
+         * make datetime64 object conversion real. */
+        if (name === 'datetime.datetime_CAPI') {
+            if (!rt._datetimeCAPI) { rt._datetimeCAPI = _malloc(256);
+                for (var j = 0; j < 64; j++) HEAP32[(rt._datetimeCAPI >> 2) + j] = 0; }
+            return rt._datetimeCAPI;
+        }
+        try {
+            var parts = name.split('.'); var attr = parts.pop();
+            var mod = rt.$B.$call(rt._b_.__import__, parts.join('.'));
+            for (var i = 1; i < parts.length; i++) mod = rt.$B.$getattr(mod, parts[i]);
+            var cap = rt.$B.$getattr(mod, attr);
+            var o = rt.unwrap(rt.wrap(cap));
+            return (o && o.ptr) ? o.ptr : 0;
+        } catch (e) { rt.setError(rt.wrap(rt._b_.ImportError), "PyCapsule_Import: " + name); return 0; } },
+    PyMemoryView_GET_BASE__deps: ['$WasthonRT'],
+    PyMemoryView_GET_BASE: function(mvH) { var rt = WasthonRT; var mv = rt.unwrap(mvH);
+        try { return rt.wrap(rt.$B.$getattr(mv, 'obj')); } catch (e) { return 0; } },
+
+    /* --- Vectorcall / arg parsing / OS strtol --- */
+    PyVectorcall_Call__deps: ['$WasthonRT'],
+    PyVectorcall_Call: function(callableH, tupleH, dictH) { var rt = WasthonRT;
+        try {
+            var fn = rt.unwrap(callableH);
+            var args = tupleH ? rt.unwrap(tupleH) : [];
+            var kw = dictH ? rt.unwrap(dictH) : null;
+            var call = [fn].concat(Array.prototype.slice.call(args));
+            if (kw) { var d = rt.$B.$call(rt._b_.dict, kw); call.push({$nat: 'kw', kw: d}); }
+            return rt.wrapNewRef(rt.$B.$call.apply(null, call));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyObject_VectorcallMethod__deps: ['$WasthonRT'],
+    PyObject_VectorcallMethod: function(nameH, argsPtr, nargsf, kwnamesH) { var rt = WasthonRT;
+        try {
+            var name = rt.asJSStr(rt.unwrap(nameH));
+            var nargs = nargsf & 0x7fffffff;   /* PY_VECTORCALL_ARGUMENTS_OFFSET stripped */
+            var self = rt.unwrap(HEAP32[argsPtr >> 2]);
+            var m = rt.$B.$getattr(self, name);
+            var call = [m];
+            for (var i = 1; i < nargs; i++) call.push(rt.unwrap(HEAP32[(argsPtr >> 2) + i]));
+            return rt.wrapNewRef(rt.$B.$call.apply(null, call));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    PyArg_VaParseTupleAndKeywords__deps: ['$WasthonRT'],
+    PyArg_VaParseTupleAndKeywords: function(argsH, kwH, fmtPtr, kwlistPtr, va) {
+        /* variadic; the va-list ABI is unreachable from JS. numpy uses the
+         * non-va PyArg_ParseTupleAndKeywords everywhere that matters — this
+         * is only pulled by a couple of thin wrappers. TODO(phase-4). */
+        return 0; },
+    PyOS_strtol__deps: ['$WasthonRT'],
+    PyOS_strtol: function(strPtr, endptrPtr, base) {
+        var s = strPtr ? UTF8ToString(strPtr) : "";
+        var v = parseInt(s, base || 10);
+        if (endptrPtr !== 0) {
+            var m = s.match(/^\s*[-+]?[0-9a-zA-Z]+/); HEAP32[endptrPtr >> 2] = strPtr + (m ? m[0].length : 0);
+        }
+        return isNaN(v) ? 0 : v; },
+    PyOS_strtoul__deps: ['$WasthonRT'],
+    PyOS_strtoul: function(strPtr, endptrPtr, base) {
+        var s = strPtr ? UTF8ToString(strPtr) : "";
+        var v = parseInt(s, base || 10);
+        if (endptrPtr !== 0) {
+            var m = s.match(/^\s*[-+]?[0-9a-zA-Z]+/); HEAP32[endptrPtr >> 2] = strPtr + (m ? m[0].length : 0);
+        }
+        return (isNaN(v) ? 0 : v) >>> 0; },
+
+    /* --- Runtime / thread-state stubs (single interpreter, no GIL) --- */
+    Py_IsInitialized: function() { return 1; },
+    Py_SET_REFCNT: function(oH, n) { /* handle-managed; no-op */ },
+    Py_EnterRecursiveCall: function(wherePtr) { return 0; },
+    Py_LeaveRecursiveCall: function() { },
+    PyThreadState_Get__deps: ['$WasthonRT'],
+    PyThreadState_Get: function() { var rt = WasthonRT;
+        if (!rt._tstate) rt._tstate = _malloc(8), HEAP32[rt._tstate >> 2] = (rt._interp || (rt._interp = _malloc(8)));
+        return rt._tstate; },
+    PyInterpreterState_Main__deps: ['$WasthonRT'],
+    PyInterpreterState_Main: function() { var rt = WasthonRT;
+        return rt._interp || (rt._interp = _malloc(8)); },
+    PyTraceMalloc_Track: function(domain, ptr, size) { return 0; },
+    PyTraceMalloc_Untrack: function(domain, ptr) { return 0; },
+    PyUnstable_Object_IsUniquelyReferenced__deps: ['$WasthonRT'],
+    PyUnstable_Object_IsUniquelyReferenced: function(oH) { return 0; },
+
     /* PyUnicode helpers */
     PyUnicode_GetLength__deps: ['$WasthonRT'],
     PyUnicode_GetLength: function(handle) {
@@ -8281,6 +8684,14 @@ mergeInto(LibraryManager.library, {
     wasthon_get_PyExc_ResourceWarning:      function() { return WasthonRT.wrap(WasthonRT._b_.ResourceWarning); },
     wasthon_get_PyExc_ZeroDivisionError__deps: ['$WasthonRT'],
     wasthon_get_PyExc_ZeroDivisionError:    function() { return WasthonRT.wrap(WasthonRT._b_.ZeroDivisionError); },
+    wasthon_get_PyExc_NameError__deps:          ['$WasthonRT'],
+    wasthon_get_PyExc_NameError:            function() { return WasthonRT.wrap(WasthonRT._b_.NameError); },
+    wasthon_get_PyExc_UserWarning__deps:        ['$WasthonRT'],
+    wasthon_get_PyExc_UserWarning:          function() { return WasthonRT.wrap(WasthonRT._b_.UserWarning); },
+    wasthon_get_PyExc_FloatingPointError__deps: ['$WasthonRT'],
+    wasthon_get_PyExc_FloatingPointError:   function() { return WasthonRT.wrap(WasthonRT._b_.FloatingPointError); },
+    wasthon_get_PyExc_ImportWarning__deps:      ['$WasthonRT'],
+    wasthon_get_PyExc_ImportWarning:        function() { return WasthonRT.wrap(WasthonRT._b_.ImportWarning); },
 
     /* PyType_FromSpec — like PyType_FromModuleAndSpec but no module. The
      * __deps clause keeps PyType_FromModuleAndSpec preserved so Emscripten
@@ -9674,6 +10085,16 @@ mergeInto(LibraryManager.library, {
             case 9: cls = rt._b_.bytearray; break;
             case 10: cls = rt._b_.set;       break;
             case 11: cls = rt._b_.frozenset; break;
+            /* numpy 2.5.1 identity-check / subtype targets */
+            case 17: cls = rt._b_.complex;    break;
+            case 18: cls = rt._b_.slice;      break;
+            case 19: cls = rt._b_.object;     break;
+            case 20: cls = rt._b_.memoryview; break;
+            case 21: cls = rt.$B.mappingproxy; break;
+            case 22: cls = rt.$B.builtin_function_or_method; break;
+            case 23: cls = rt.$B.getset_descriptor; break;
+            case 24: cls = rt.$B.member_descriptor; break;
+            case 25: cls = rt.$B.method_descriptor; break;
             case 12:
                 // Brython's Python-function class lives at $B.function
                 // (NOT _b_.function, which doesn't exist — the binding was
