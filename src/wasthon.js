@@ -11633,7 +11633,12 @@ mergeInto(LibraryManager.library, {
         if (obj.__class__ === target) return 1;
         if (target === rt._b_.str   && typeof obj === 'string')  return 1;
         if (target === rt._b_.int   && (typeof obj === 'number' && Number.isInteger(obj))) return 1;
-        if (target === rt._b_.float && typeof obj === 'number')  return 1;
+        // A raw JS *integer* number is a Brython int, NOT a float — Brython
+        // floats are boxed ({__class__: float, value}), already matched above.
+        // Without the !isInteger guard, PyFloat_Check(0) was true, so numpy's
+        // PyArray_PythonPyIntFromInt rejected every int axis/ndim as "integer
+        // argument expected, got float" (broke a.mean(), reductions with axis).
+        if (target === rt._b_.float && typeof obj === 'number' && !Number.isInteger(obj)) return 1;
         // A Brython list is ALSO a JS Array, so Array.isArray over-matches
         // tuple. Distinguish by the tuple's identity (fast_tuple carries
         // ob_type, not an own __class__) — same test as PyTuple_CheckExact.
