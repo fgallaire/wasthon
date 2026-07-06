@@ -661,7 +661,29 @@ mergeInto(LibraryManager.library, {
             // up the table by exact presence. Falsy *values* (0, "", false)
             // are valid Python objects — we must NOT coalesce them to null.
             if (handle === 0) return null;
-            return this.handles.has(handle) ? this.handles.get(handle) : null;
+            if (this.handles.has(handle)) return this.handles.get(handle);
+            // A typed C-struct PyObject* recorded in the _cType side-table by
+            // Py_SET_TYPE (numpy's static dtype descrs live in _builtin_descrs[]
+            // and are never bound as handles) — materialize a Brython wrapper on
+            // demand so the pointer crosses the bridge as a real object instead
+            // of null. Without this, `typeinfo`'s descr values, `arr.dtype`, and
+            // every scalar-type descr came across as JS null.
+            if (this._cType && this._cType.has(handle)) return this.materializeCType(handle);
+            return null;
+        },
+
+        // Build (and cache) a Brython wrapper for a typed C-struct pointer that
+        // lives only in the _cType side-table. The instance carries its raw
+        // pointer (so the class's getset/method trampolines can reach the C
+        // struct) and the dtype class as __class__/ob_type.
+        materializeCType: function(ptr) {
+            var typeH = this._cType.get(ptr);
+            var cls = (this.handles && this.handles.has(typeH)) ? this.handles.get(typeH) : null;
+            if (cls === null && typeH !== 0 && this._cType.has(typeH)) cls = this.materializeCType(typeH);
+            var inst = { __wasthon_ptr__: ptr, __wasthon_type__: typeH, ob_refcnt: 1 };
+            if (cls && typeof cls === 'object') { inst.ob_type = cls; inst.__class__ = cls; }
+            this.handles.set(ptr, inst);   // bind for identity + future unwraps
+            return inst;
         },
 
         // Bind a Brython instance to a real WASM pointer. The handle == ptr.
