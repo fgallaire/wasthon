@@ -7204,7 +7204,14 @@ mergeInto(LibraryManager.library, {
          * side-table keyed by the raw pointer; Py_TYPE consults it. */
         if (!rt._cType) rt._cType = new Map();
         rt._cType.set(oH, typeH);
-        var obj = rt.unwrap(oH);
+        /* Raw handle lookup — NOT unwrap(): unwrap now materializes _cType
+         * pointers on demand, which here (called from a static object's setup,
+         * e.g. numpy's np.bool_ singletons in initialize_numeric_types) would
+         * bind a wrapper BEFORE `typeH`'s class exists, caching it without a
+         * __class__. Only touch objects that are already live handles; the
+         * static C-structs stay side-table-only and materialize lazily later,
+         * once their type is bound. */
+        var obj = rt.handles.has(oH) ? rt.handles.get(oH) : null;
         if (obj === null || typeof obj !== 'object') return;   // C-struct: side-table only
         var cls = (rt.handles && rt.handles.has(typeH)) ? rt.handles.get(typeH) : rt.unwrap(typeH);
         if (!cls || typeof cls !== 'object') return;
