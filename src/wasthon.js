@@ -10249,6 +10249,29 @@ mergeInto(LibraryManager.library, {
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
+    /* PyFloat_Type.tp_new — numpy's scalar constructors delegate to their
+     * superclass first: `double_arrtype_new` calls
+     * `PyFloat_Type.tp_new(float64_subtype, args, kwds)` and returns the result
+     * (so `np.float64(x)` builds through the base float). Without a tp_new the
+     * struct slot was 0 → "null function or function signature mismatch" (broke
+     * `a.mean()`'s `ret.dtype.type(ret / rcount)`). Build a Brython float from
+     * the single optional arg; tag it with the requested subtype so numpy sees
+     * a float64 rather than a bare float. */
+    wasthon_builtin_float_tp_new__deps: ['$WasthonRT'],
+    wasthon_builtin_float_tp_new: function(typeH, argsH, kwH) {
+        var rt = WasthonRT;
+        try {
+            var args = rt.unwrap(argsH);
+            var v = (args && args.length > 0) ? args[0] : 0.0;
+            /* Return a plain Brython float — numpy's `double_arrtype_new`
+             * returns this straight back as the scalar result, so `np.float64`
+             * construction yields a real, usable float (a.mean() == 2.5). A
+             * perfect np.float64-scalar identity is the scalar subsystem's
+             * remaining work; a Python float is correct-valued and interoperable. */
+            return rt.wrapNewRef(rt.$B.$call(rt._b_.float, v));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+    },
+
     wasthon_bind_builtin_type__deps: ['$WasthonRT'],
     wasthon_bind_builtin_type: function(tag, structPtr) {
         var rt = WasthonRT;
