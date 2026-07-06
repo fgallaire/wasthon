@@ -10640,6 +10640,27 @@ mergeInto(LibraryManager.library, {
         } catch (e) { return 0; }
     },
 
+    /* Py_GenericAlias(origin, args) — types.GenericAlias(origin, args), the
+     * shared __class_getitem__ of C types (sre.Pattern[str], numpy generics).
+     * Replaces the old `#define Py_GenericAlias ((void*)0)` shim stub. */
+    Py_GenericAlias__deps: ['$WasthonRT'],
+    Py_GenericAlias: function(originH, argsH) {
+        var rt = WasthonRT;
+        try {
+            var origin = rt.unwrap(originH);
+            var args = rt.unwrap(argsH);
+            var types = (rt.$B.imported && rt.$B.imported['types']) ||
+                        rt._b_.__import__('types', rt._b_.None, rt._b_.None,
+                                          rt._b_.None, 0);
+            var GA = rt.$B.$getattr(types, 'GenericAlias');
+            return rt.wrapNewRef(rt.$B.$call(GA, origin, args));
+        } catch (exc) {
+            rt.setError(rt.wrap(exc && exc.__class__ ? exc.__class__ : rt._b_.Exception),
+                        String(exc), exc);
+            return 0;
+        }
+    },
+
     /* _PyUnicode_Equal(a, b) — string equality between two PyObject*. */
     _PyUnicode_Equal__deps: ['$WasthonRT'],
     _PyUnicode_Equal: function(aH, bH) {

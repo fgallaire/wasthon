@@ -190,6 +190,9 @@ struct _typeobject {
     Py_ssize_t  tp_dictoffset;
     struct PyMemberDef *tp_members;
     void        (*tp_finalize)(PyObject *);
+    /* appended (numpy) — keep at the END: JS-side readers use the offsets
+     * of the fields above */
+    int         (*tp_is_gc)(PyObject *);
 };
 typedef struct _typeobject PyTypeObject;
 
@@ -268,7 +271,7 @@ int PyModule_Check(PyObject *o);
 
 /* Capsule API for C interop. unicodedata uses PyCapsule to expose its
  * name<->codepoint table via the `ucnhash_CAPI` attribute. */
-PyObject *PyCapsule_New(void *pointer, const char *name, void *destructor);
+PyObject *PyCapsule_New(void *pointer, const char *name, void (*destructor)(PyObject *));
 void     *PyCapsule_GetPointer(PyObject *capsule, const char *name);
 
 #define Py_RETURN_TRUE   do { return Py_True; } while (0)
@@ -467,6 +470,9 @@ typedef int (*traverseproc)(PyObject *, visitproc, void *);
 #define Py_T_UBYTE     12
 #define Py_T_DOUBLE    13
 #define Py_T_FLOAT     14
+#define Py_T_CHAR      15
+#define Py_T_LONGLONG  16
+#define Py_T_ULONGLONG 17
 #define _Py_T_OBJECT    Py_T_OBJECT_EX  /* internal alias */
 #define Py_READONLY     0x0001
 
@@ -1360,6 +1366,12 @@ typedef struct {
 #define T_UINT        Py_T_UINT
 #define T_SHORT       Py_T_SHORT
 #define T_BYTE        Py_T_BYTE
+#define T_CHAR        Py_T_CHAR
+#define T_PYSSIZET    Py_T_PYSSIZET
+#define T_LONGLONG    Py_T_LONGLONG
+#define T_ULONGLONG   Py_T_ULONGLONG
+#define T_USHORT      Py_T_USHORT
+#define T_UBYTE       Py_T_UBYTE
 
 /* Legacy PyMemberDef flag names (pygame's member tables use READONLY). */
 #ifndef READONLY
@@ -1764,8 +1776,10 @@ struct _wasthon_bufferprocs {
 typedef void (*destructor)(PyObject *);
 typedef int  (*initproc)(PyObject *, PyObject *, PyObject *);
 
-/* thread-state / frame: opaque; single-threaded no-op */
-typedef struct _ts            PyThreadState;   /* same tag as pycore_pystate.h's full definition */
+/* thread-state / frame: single-threaded; numpy's sub-interpreter guard
+ * reads tstate->interp, so the body lives here (pycore_pystate.h shares
+ * the typedef). Both sides return the same singleton at runtime. */
+typedef struct _ts { struct _is *interp; } PyThreadState;
 typedef struct _wasthon_frame PyFrameObject;
 typedef struct _wasthon_code  PyCodeObject;
 PyThreadState *PyEval_SaveThread(void);
@@ -2031,6 +2045,298 @@ static inline uint32_t _Py_bswap32(uint32_t v) {
 
 #ifndef NULL
 #define NULL ((void*)0)
+#endif
+
+/* ------------------------------------------------------------------ */
+/* numpy-compat section (2026-07-06, numpy 2.5.1 compile probe).      */
+/* Declarations first: everything here compiles numpy's C against the */
+/* bridge; the wasthon.js implementations land by batches at link.    */
+/* ------------------------------------------------------------------ */
+
+#include "patchlevel.h"
+
+/* CPython 3 still defines this Python-2-era macro; numpy gates on it. */
+#ifndef Py_USING_UNICODE
+#define Py_USING_UNICODE 1
+#endif
+
+/* Legacy upper-case allocator aliases still used by numpy. */
+#ifndef PyMem_FREE
+#define PyMem_FREE    PyMem_Free
+#define PyMem_MALLOC  PyMem_Malloc
+#define PyMem_REALLOC PyMem_Realloc
+#define PyMem_NEW(type, n) ((type *)PyMem_Malloc((n) * sizeof(type)))
+#define PyMem_DEL     PyMem_Free
+#endif
+#ifndef PyObject_INIT
+#define PyObject_INIT(op, typeobj) PyObject_Init((PyObject *)(op), (typeobj))
+#endif
+
+/* Allocator domains (pymem.h) — accepted and ignored by the bridge
+ * allocator, which is a single dlmalloc heap. */
+typedef enum { PYMEM_DOMAIN_RAW = 0, PYMEM_DOMAIN_MEM = 1, PYMEM_DOMAIN_OBJ = 2 } PyMemAllocatorDomain;
+
+/* Alternate spelling used by numpy alongside PyBUF_WRITABLE. */
+#ifndef PyBUF_WRITEABLE
+#define PyBUF_WRITEABLE PyBUF_WRITABLE
+#endif
+
+/* Legacy sequence slot typedefs (pre-ssizeargfunc era, still referenced). */
+typedef PyObject *(*ssizessizeargfunc)(PyObject *, Py_ssize_t, Py_ssize_t);
+typedef int (*ssizessizeobjargproc)(PyObject *, Py_ssize_t, Py_ssize_t, PyObject *);
+
+/* PyHeapTypeObject — numpy 2.x dtype_api.h EMBEDS it (PyArray_DTypeMeta's
+ * `super` field), so the LAYOUT matters to numpy's own struct sizes. Field
+ * order mirrors CPython 3.14's. The bridge only ever touches ht_type. */
+typedef struct _heaptypeobject {
+    PyTypeObject ht_type;
+    PyNumberMethods as_number;
+    PyMappingMethods as_mapping;
+    PySequenceMethods as_sequence;
+    PyBufferProcs as_buffer;
+    PyObject *ht_name, *ht_slots, *ht_qualname;
+    void *ht_cached_keys;
+    PyObject *ht_module;
+    char *_ht_tpname;
+} PyHeapTypeObject;
+
+/* Capsule destructor type (capsule creation exists; context/import below). */
+typedef void (*PyCapsule_Destructor)(PyObject *);
+
+/* C-level recursion guard — the bridge runs single-threaded on the JS
+ * stack; these are declared for numpy and implemented as counters. */
+int  Py_EnterRecursiveCall(const char *where);
+void Py_LeaveRecursiveCall(void);
+
+/* Missing-at-link list from the numpy 2.5.1 phase-0/1 inventory
+ * (NUMPY.md on the numpy branch): declared here, implemented by batches. */
+int PyObject_AsFileDescriptor(PyObject *);
+PyObject *PyObject_Bytes(PyObject *);
+PyObject *PyObject_Format(PyObject *, PyObject *);
+int PyObject_Not(PyObject *);
+Py_ssize_t PyObject_LengthHint(PyObject *, Py_ssize_t);
+int PyObject_Print(PyObject *, FILE *, int);
+PyObject *PyObject_GenericGetDict(PyObject *, void *);
+PyObject *PySeqIter_New(PyObject *);
+PyObject *PySequence_Concat(PyObject *, PyObject *);
+int PySequence_Contains(PyObject *, PyObject *);
+PyObject *PySequence_InPlaceConcat(PyObject *, PyObject *);
+PyObject *PySequence_InPlaceRepeat(PyObject *, Py_ssize_t);
+PyObject *PySlice_New(PyObject *, PyObject *, PyObject *);
+PyObject *PyNumber_Invert(PyObject *);
+PyObject *PyNumber_Negative(PyObject *);
+PyObject *PyNumber_Positive(PyObject *);
+PyObject *PyNumber_Lshift(PyObject *, PyObject *);
+PyObject *PyNumber_Rshift(PyObject *, PyObject *);
+PyObject *PyNumber_Or(PyObject *, PyObject *);
+PyObject *PyNumber_Xor(PyObject *, PyObject *);
+double PyComplex_RealAsDouble(PyObject *);
+double PyComplex_ImagAsDouble(PyObject *);
+int PyLong_IsZero(PyObject *);
+PyObject *PyLong_FromUnicodeObject(PyObject *, int);
+int PyDict_ContainsString(PyObject *, const char *);
+PyObject *PyDict_Copy(PyObject *);
+int PyDict_DelItemString(PyObject *, const char *);
+int PyDict_GetItemStringRef(PyObject *, const char *, PyObject **);
+int PyDict_Merge(PyObject *, PyObject *, int);
+PyObject *PyDict_Values(PyObject *);
+PyObject *PyMapping_GetItemString(PyObject *, const char *);
+int PyUnicode_Contains(PyObject *, PyObject *);
+PyObject *PyUnicode_Format(PyObject *, PyObject *);
+PyObject *PyUnicode_Replace(PyObject *, PyObject *, PyObject *, Py_ssize_t);
+Py_ssize_t PyUnicode_Tailmatch(PyObject *, PyObject *, Py_ssize_t, Py_ssize_t, int);
+PyObject *PyBytes_FromString(const char *);
+int PyErr_GivenExceptionMatches(PyObject *, PyObject *);
+void PyErr_NormalizeException(PyObject **, PyObject **, PyObject **);
+int PyErr_WarnFormat(PyObject *, Py_ssize_t, const char *, ...);
+void PyErr_WriteUnraisable(PyObject *);
+void PyException_SetCause(PyObject *, PyObject *);
+void PyException_SetContext(PyObject *, PyObject *);
+void PyException_SetTraceback(PyObject *, PyObject *);
+PyObject *PyCapsule_Import(const char *, int);
+int PyCapsule_IsValid(PyObject *, const char *);
+void *PyCapsule_GetContext(PyObject *);
+int PyCapsule_SetContext(PyObject *, void *);
+int PyCapsule_SetName(PyObject *, const char *);
+PyObject *PyEval_GetBuiltins(void);
+PyObject *PySys_GetObject(const char *);
+PyObject *PyMethod_New(PyObject *, PyObject *);
+unsigned long PyType_GetFlags(PyTypeObject *);
+void PyType_Modified(PyTypeObject *);
+PyObject *PyVectorcall_Call(PyObject *, PyObject *, PyObject *);
+PyObject *PyObject_VectorcallMethod(PyObject *, PyObject *const *, size_t, PyObject *);
+int PyContextVar_Get(PyObject *, PyObject *, PyObject **);
+PyObject *PyContextVar_New(const char *, PyObject *);
+PyObject *PyContextVar_Set(PyObject *, PyObject *);
+int PyTraceMalloc_Track(unsigned int, uintptr_t, size_t);
+int PyTraceMalloc_Untrack(unsigned int, uintptr_t);
+int PyUnstable_Object_IsUniquelyReferenced(PyObject *);
+int PyUnstable_Object_IsUniqueReferencedTemporary(PyObject *);
+void _Py_SetImmortal(PyObject *);
+PyObject *PyBytes_FromFormatV(const char *, va_list);
+PyObject *PyUnicode_FromFormatV(const char *, va_list);
+int Py_IsInitialized(void);
+long PyOS_strtol(const char *, char **, int);
+unsigned long PyOS_strtoul(const char *, char **, int);
+double _Py_HashDouble(PyObject *, double);
+extern const unsigned char _Py_ascii_whitespace[];
+extern PyTypeObject PyComplex_Type, PyCFunction_Type, PyMemberDescr_Type,
+    PyGetSetDescr_Type, PyMethodDescr_Type, PyDictProxy_Type, PySlice_Type,
+    PyBaseObject_Type, PyMemoryView_Type, PyCapsule_Type;
+extern PyObject *PyExc_NameError, *PyExc_UserWarning, *PyExc_FloatingPointError,
+    *PyExc_ImportWarning, *PyExc_ModuleNotFoundError;
+/* Exception-instance class accessor (pyerrors.h) */
+#ifndef PyExceptionInstance_Class
+#define PyExceptionInstance_Class(x) ((PyObject *)Py_TYPE(x))
+#endif
+
+#ifndef PyComplex_CheckExact
+#define PyComplex_CheckExact(op) Py_IS_TYPE(op, &PyComplex_Type)
+#endif
+
+/* pymacro.h helpers numpy's loops use */
+#ifndef Py_MAX
+#define Py_MAX(x, y) (((x) > (y)) ? (x) : (y))
+#define Py_MIN(x, y) (((x) < (y)) ? (x) : (y))
+#endif
+#ifndef Py_ABS
+#define Py_ABS(x) ((x) < 0 ? -(x) : (x))
+#endif
+
+/* Remaining standard exceptions (numpy's string/assert paths) */
+extern PyObject *PyExc_AssertionError, *PyExc_GeneratorExit, *PyExc_KeyboardInterrupt,
+    *PyExc_StopAsyncIteration, *PyExc_UnicodeWarning, *PyExc_BytesWarning,
+    *PyExc_ConnectionError, *PyExc_BlockingIOError, *PyExc_SystemExit,
+    *PyExc_PendingDeprecationWarning, *PyExc_EnvironmentError, *PyExc_TabError,
+    *PyExc_UnboundLocalError, *PyExc_UnicodeTranslateError, *PyExc_EncodingWarning;
+
+/* UCS4 character classification (CPython unicodectype) — numpy's string
+ * ufuncs call these per code point; JS-side implementations at link. */
+int _PyUnicode_IsUppercase(Py_UCS4);
+int _PyUnicode_IsLowercase(Py_UCS4);
+int _PyUnicode_IsTitlecase(Py_UCS4);
+int _PyUnicode_IsDecimalDigit(Py_UCS4);
+int _PyUnicode_IsDigit(Py_UCS4);
+int _PyUnicode_IsNumeric(Py_UCS4);
+int _PyUnicode_IsAlpha(Py_UCS4);
+int _PyUnicode_IsWhitespace(Py_UCS4);
+#define Py_UNICODE_ISUPPER(ch)   _PyUnicode_IsUppercase(ch)
+#define Py_UNICODE_ISLOWER(ch)   _PyUnicode_IsLowercase(ch)
+#define Py_UNICODE_ISTITLE(ch)   _PyUnicode_IsTitlecase(ch)
+#define Py_UNICODE_ISDECIMAL(ch) _PyUnicode_IsDecimalDigit(ch)
+#define Py_UNICODE_ISDIGIT(ch)   _PyUnicode_IsDigit(ch)
+#define Py_UNICODE_ISNUMERIC(ch) _PyUnicode_IsNumeric(ch)
+#define Py_UNICODE_ISALPHA(ch)   _PyUnicode_IsAlpha(ch)
+#define Py_UNICODE_ISSPACE(ch)   _PyUnicode_IsWhitespace(ch)
+#define Py_UNICODE_ISALNUM(ch) \
+    (Py_UNICODE_ISALPHA(ch) || Py_UNICODE_ISDECIMAL(ch) || \
+     Py_UNICODE_ISDIGIT(ch) || Py_UNICODE_ISNUMERIC(ch))
+
+/* Linkage macros — everything is statically linked in the wasm module. */
+#ifndef PyAPI_FUNC
+#define PyAPI_FUNC(RTYPE) RTYPE
+#define PyAPI_DATA(RTYPE) extern RTYPE
+#endif
+#ifndef Py_REFCNT
+#define Py_REFCNT(op) (((PyObject *)(op))->ob_refcnt)
+#endif
+
+/* Type flags numpy tests (informational on the bridge side). */
+#ifndef Py_TPFLAGS_METHOD_DESCRIPTOR
+#define Py_TPFLAGS_METHOD_DESCRIPTOR (1UL << 17)
+#endif
+#ifndef Py_TPFLAGS_HAVE_VECTORCALL
+#define Py_TPFLAGS_HAVE_VECTORCALL (1UL << 11)
+#endif
+#ifndef _Py_TPFLAGS_HAVE_VECTORCALL
+#define _Py_TPFLAGS_HAVE_VECTORCALL Py_TPFLAGS_HAVE_VECTORCALL
+#endif
+
+/* C-side views of builtin-method and descriptor objects (CPython-3.14 field
+ * shapes): numpy READS m_ml/d_getset/d_member for its doc/introspection
+ * paths. RUNTIME NOTE: bridge handles are not these structs — the paths
+ * that cast a handle to them must go through materialized shells. */
+typedef struct {
+    PyObject_HEAD
+    PyMethodDef *m_ml;
+    PyObject *m_self, *m_module, *m_weakreflist;
+    void *vectorcall;
+} PyCFunctionObject;
+typedef struct {
+    PyObject_HEAD
+    PyTypeObject *d_type;
+    PyObject *d_name, *d_qualname;
+} PyDescrObject;
+typedef struct { PyDescrObject d_common; PyGetSetDef *d_getset; } PyGetSetDescrObject;
+typedef struct { PyDescrObject d_common; PyMemberDef *d_member; } PyMemberDescrObject;
+typedef struct { PyDescrObject d_common; PyMethodDef *d_method; void *vectorcall; } PyMethodDescrObject;
+
+/* Unicode object C shapes, CPython-3.14 field-for-field (numpy's unicode
+ * SCALAR embeds PyUnicodeObject BY VALUE in arrayscalars.h, and its vendored
+ * pythoncapi-compat reads PyASCIIObject->hash). Sizes differ from CPython's
+ * because the shim PyObject_HEAD is one word — internally consistent, which
+ * is what matters. RUNTIME NOTE: bridge strings are handles, not these
+ * structs — paths that cast a handle to them must go through materialized
+ * shells (the bytes/cstr pattern). */
+typedef struct {
+    PyObject_HEAD
+    Py_ssize_t length;
+    Py_hash_t hash;
+    struct {
+        unsigned int interned:2;
+        unsigned int kind:3;
+        unsigned int compact:1;
+        unsigned int ascii:1;
+        unsigned int statically_allocated:1;
+        unsigned int :24;
+    } state;
+} PyASCIIObject;
+typedef struct {
+    PyASCIIObject _base;
+    Py_ssize_t utf8_length;
+    char *utf8;
+} PyCompactUnicodeObject;
+typedef struct {
+    PyCompactUnicodeObject _base;
+    void *data;
+} PyUnicodeObject;
+
+/* pyport.h attribute helper (pythoncapi-compat declares with it). */
+#ifndef Py_GCC_ATTRIBUTE
+#define Py_GCC_ATTRIBUTE(x) __attribute__(x)
+#endif
+
+#include <ctype.h>   /* CPython's Python.h pulls it in; numpy relies on that */
+#ifndef PY_LONG_LONG
+#define PY_LONG_LONG long long   /* pyport.h; numpy's FMT/SUFFIX blocks gate on it */
+#endif
+void Py_SET_REFCNT(PyObject *, Py_ssize_t);
+typedef struct _is PyInterpreterState;
+PyThreadState *PyThreadState_Get(void);
+PyInterpreterState *PyInterpreterState_Main(void);
+/* numpy's sub-interpreter guard reads tstate->interp; the bridge is a
+ * single runtime: both sides return the same singleton. */
+#undef Py_GenericAlias
+PyObject *Py_GenericAlias(PyObject *, PyObject *);
+#ifndef PyMemoryView_Check
+#define PyMemoryView_Check(op) Py_IS_TYPE(op, &PyMemoryView_Type)
+#endif
+PyObject *PyMemoryView_GET_BASE(PyObject *);
+#ifndef _PyObject_VAR_SIZE
+#define _PyObject_VAR_SIZE(typeobj, nitems) \
+    ((size_t)(typeobj)->tp_basicsize + (size_t)(nitems) * (size_t)(typeobj)->tp_itemsize)
+#endif
+
+PyObject *PyObject_Init(PyObject *, PyTypeObject *);
+PyVarObject *PyObject_InitVar(PyVarObject *, PyTypeObject *, Py_ssize_t);
+PyObject *_PyObject_New(PyTypeObject *);
+PyVarObject *_PyObject_NewVar(PyTypeObject *, Py_ssize_t);
+int PyArg_VaParseTupleAndKeywords(PyObject *, PyObject *, const char *, char **, va_list);
+#ifndef PyObject_NewVar
+#define PyObject_NewVar(type, typeobj, n) ((type *)_PyObject_NewVar((typeobj), (n)))
+#endif
+#ifndef PyObject_FREE
+#define PyObject_FREE PyObject_Free
 #endif
 
 #ifdef __cplusplus

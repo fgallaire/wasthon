@@ -14,9 +14,7 @@
 extern "C" {
 #endif
 
-typedef struct _ts {
-    int _opaque;
-} PyThreadState;
+/* struct _ts body lives in wasthon.h (numpy reads tstate->interp). */
 
 /* Implemented JS-side in wasthon.js — returns the singleton tstate handle. */
 extern PyThreadState *_PyThreadState_GET(void);
