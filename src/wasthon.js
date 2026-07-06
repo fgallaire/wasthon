@@ -4802,6 +4802,39 @@ mergeInto(LibraryManager.library, {
                 if (rc < 0 && rt.pendingException) { var pe = rt.pendingException; rt.pendingException = null; throw rt.pendingExc(pe); }
                 return rc | 0;
             }));
+            /* tp_call@100 → __call__: numpy ufuncs (add, multiply, …) are
+             * callable via tp_call; without __call__ on the Brython class,
+             * callable(ufunc) is false and numpy's _PyArray_SetNumericOps
+             * rejects every op (SET macro's PyCallable_Check). Same marshaling
+             * as the FromModuleAndSpec path (args → fast_tuple, kw → dict). */
+            var tpCallPtr2 = HEAP32[(typePtr + 100) >> 2];
+            if (tpCallPtr2) installSlot('tp_call', '__call__', rt.scoped(function(self) {
+                var jsArgs = Array.from(arguments).slice(1);
+                var kw = null;
+                if (jsArgs.length > 0 && jsArgs[jsArgs.length - 1] &&
+                        jsArgs[jsArgs.length - 1].$kw !== undefined) { kw = jsArgs.pop(); }
+                var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                var argsH = rt.wrap(rt.$B.fast_tuple(jsArgs));
+                var kwH = 0;
+                if (kw) {
+                    var kwPairs = rt.flattenKwArray(kw.$kw);
+                    if (kwPairs.length > 0) {
+                        var kwDict = rt.$B.empty_dict();
+                        for (var ki = 0; ki < kwPairs.length; ki++) {
+                            rt._b_.dict.$setitem(kwDict, kwPairs[ki][0], kwPairs[ki][1]);
+                        }
+                        kwH = rt.wrap(kwDict);
+                    }
+                }
+                rt.pendingException = null;
+                var resH = getWasmTableEntry(tpCallPtr2)(selfH, argsH, kwH);
+                if (resH === 0 || rt.pendingException) {
+                    var pe = rt.pendingException; rt.pendingException = null;
+                    if (pe) throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);
+                    throw rt.$B.$call(rt._b_.RuntimeError, "tp_call returned NULL");
+                }
+                return rt.unwrapResult(resH);
+            }));
             var tpCmpPtr = HEAP32[(typePtr + 128) >> 2];
             if (tpCmpPtr) {
                 var compares = [['__lt__',0],['__le__',1],['__eq__',2],['__ne__',3],['__gt__',4],['__ge__',5]];
