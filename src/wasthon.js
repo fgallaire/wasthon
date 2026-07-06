@@ -1845,7 +1845,9 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
         if (typeof obj === 'number') return obj;
+        if (typeof obj === 'boolean') return obj ? 1 : 0;
         if (obj && typeof obj.value === 'number') return obj.value;
+        if (obj && typeof obj.value === 'boolean') return obj.value ? 1 : 0;
         /* PyFloat_AsDouble, unlike float(), does NOT parse strings/bytes — they
          * have no __float__/__index__, so they are a TypeError, not a parse
          * (test_input_exceptions, math.hypot(1.1, 'string', 2.2)). */
