@@ -4906,7 +4906,9 @@ mergeInto(LibraryManager.library, {
                  * mutate in place, else it falls back to __add__ = a NEW object
                  * and the caller's variable silently stops updating. */
                 [[0,'__add__','__radd__'],[4,'__sub__','__rsub__'],[8,'__mul__','__rmul__'],
-                 [12,'__mod__',null],[116,'__floordiv__','__rfloordiv__'],[120,'__truediv__','__rtruediv__'],
+                 [12,'__mod__','__rmod__'],[116,'__floordiv__','__rfloordiv__'],[120,'__truediv__','__rtruediv__'],
+                 [44,'__lshift__','__rlshift__'],[48,'__rshift__','__rrshift__'],
+                 [52,'__and__','__rand__'],[56,'__xor__','__rxor__'],[60,'__or__','__ror__'],
                  [76,'__iadd__',null],[80,'__isub__',null],[84,'__imul__',null],
                  [116+8,'__ifloordiv__',null],[120+8,'__itruediv__',null]
                 ].forEach(function(s) {
@@ -4915,7 +4917,13 @@ mergeInto(LibraryManager.library, {
                     installDunder(s[1], wrapBin(p, false));
                     if (s[2]) installDunder(s[2], wrapBin(p, true));
                 });
-                [[24,'__neg__'],[28,'__pos__'],[32,'__abs__'],[40,'__invert__']].forEach(function(s) {
+                [[24,'__neg__'],[28,'__pos__'],[32,'__abs__'],[40,'__invert__'],
+                 /* conversion slots — numpy scalars: int(np.int32(x)) needs
+                  * __int__/__index__, float(np.float64(x)) needs __float__.
+                  * nb_int@64, nb_float@72, nb_index@132 (PyNumberMethods,
+                  * 4-byte ptrs). */
+                 [64,'__int__'],[72,'__float__'],[132,'__index__']
+                ].forEach(function(s) {
                     var p = HEAP32[(pNum + s[0]) >> 2];
                     if (p) installDunder(s[1], wrapUn(p));
                 });
