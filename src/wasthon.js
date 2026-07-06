@@ -4667,6 +4667,21 @@ mergeInto(LibraryManager.library, {
 
             if (basePtr) {
                 var baseCls = rt.unwrap(basePtr);
+                /* numpy readies a concrete DType (Int32DType) inside
+                 * set_typeinfo, BEFORE its abstract superclass
+                 * (PyArray_IntAbstractDType) is readied in
+                 * initialize_and_map_pytypes_to_dtypes — so tp_base wasn't a
+                 * Brython class yet and the subclass fell back to `object`
+                 * (`Int32DType.__mro__` lacked `numpy.dtype`, so descr `.type`
+                 * / `.kind` members were unreachable). CPython's PyType_Ready
+                 * readies the base recursively; mirror that when the base
+                 * struct names a real (not-yet-materialized) type. */
+                if (!baseCls && !rt.types.has(basePtr)
+                        && HEAP32[(basePtr + 12) >> 2] !== 0   /* tp_base->tp_name set */
+                        && typeof _PyType_Ready === 'function') {
+                    _PyType_Ready(basePtr);
+                    baseCls = rt.unwrap(basePtr);
+                }
                 if (baseCls) { cls.tp_bases = [baseCls]; cls.tp_base = baseCls; cls.tp_mro = rt.$B.make_mro(cls); }
             }
             if (!cls.tp_setattro)  cls.tp_setattro  = rt._b_.object.tp_setattro;
@@ -13652,6 +13667,17 @@ mergeInto(LibraryManager.library, {
                         case 10: return HEAPU16[addr >> 1];                    /* Py_T_USHORT */
                         case 11: return (HEAP8[addr] << 24) >> 24;             /* Py_T_BYTE */
                         case 12: return HEAPU8[addr];                          /* Py_T_UBYTE */
+                        case 13: return rt.$B.fast_float(HEAPF64[addr >> 3]);  /* Py_T_DOUBLE */
+                        case 14: return rt.$B.fast_float(HEAPF32[addr >> 2]);  /* Py_T_FLOAT */
+                        case 15: return String.fromCharCode(HEAPU8[addr]);     /* Py_T_CHAR: numpy dtype .kind/.char/.byteorder */
+                        case 16: {                                             /* Py_T_LONGLONG */
+                            var llo = HEAPU32[addr >> 2], lhi = HEAP32[(addr + 4) >> 2];
+                            return rt._b_.int.$int_or_long((BigInt(lhi) << 32n) | BigInt(llo));
+                        }
+                        case 17: {                                             /* Py_T_ULONGLONG: numpy dtype .flags */
+                            var ulo = HEAPU32[addr >> 2], uhi = HEAPU32[(addr + 4) >> 2];
+                            return rt._b_.int.$int_or_long((BigInt(uhi) << 32n) | BigInt(ulo));
+                        }
                         default:
                             throw rt.$B.$call(rt._b_.SystemError,
                                 "unsupported PyMemberDef type: " + t);
