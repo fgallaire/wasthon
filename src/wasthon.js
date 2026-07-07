@@ -10714,6 +10714,22 @@ mergeInto(LibraryManager.library, {
         }
     },
 
+    /* nb_lshift(a, b) = a << b. numpy's scalar as_integer_ratio folds in
+       2**exponent via PyLong_Type.tp_as_number->nb_lshift; without it that
+       slot was NULL → "null function" on float16/float32/longdouble
+       .as_integer_ratio() (float64 is Brython float, so it skips this path). */
+    wasthon_long_nb_lshift__deps: ['$WasthonRT'],
+    wasthon_long_nb_lshift: function(aH, bH) {
+        var rt = WasthonRT;
+        try {
+            var a = rt.unwrap(aH), b = rt.unwrap(bH);
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(rt._b_.int, '__lshift__'), a, b));
+        } catch (e) {
+            rt.forwardError(e, rt._b_.TypeError);
+            return 0;
+        }
+    },
+
     /* ternaryfunc: nb_power(a, b, c). c is None for binary pow. */
     wasthon_long_nb_power__deps: ['$WasthonRT'],
     wasthon_long_nb_power: function(aH, bH, cH) {

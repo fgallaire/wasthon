@@ -711,6 +711,7 @@ void *wasthon_get_default_tp_free(void) {
 extern PyObject *wasthon_long_nb_multiply(PyObject *, PyObject *);
 extern PyObject *wasthon_long_nb_floor_divide(PyObject *, PyObject *);
 extern PyObject *wasthon_long_nb_power(PyObject *, PyObject *, PyObject *);
+extern PyObject *wasthon_long_nb_lshift(PyObject *, PyObject *);
 extern PyObject *wasthon_float_nb_absolute(PyObject *);
 
 /* tp_methods entries the built-in types expose. _decimal walks these via
@@ -738,6 +739,7 @@ void wasthon_init_number_protocols(void) {
     wasthon_long_nb.nb_multiply     = wasthon_long_nb_multiply;
     wasthon_long_nb.nb_floor_divide = wasthon_long_nb_floor_divide;
     wasthon_long_nb.nb_power        = wasthon_long_nb_power;
+    wasthon_long_nb.nb_lshift       = wasthon_long_nb_lshift;
     PyLong_Type.tp_as_number = &wasthon_long_nb;
     PyLong_Type.tp_methods   = wasthon_long_methods;
 
