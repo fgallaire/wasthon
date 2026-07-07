@@ -6173,6 +6173,14 @@ mergeInto(LibraryManager.library, {
                 "PyObject_CallObject: NULL callable (handle " + fnHandle + ")");
             return 0;
         }
+        /* Calling a bound builtin-type struct (&PyComplex_Type, &PyUnicode_Type,
+           …): handles[structPtr] may be a bare PyType_Ready wrapper (tp_new =
+           object's) rather than the real Brython class, so the call would raise
+           "<name> takes no arguments". numpy's cdouble_arrtype_new does
+           PyObject_CallObject(&PyComplex_Type, (real, imag)); redirect to the
+           real class. Same reverse map as PyObject_GetAttr. */
+        var fnBc = rt.builtinClassForStruct && rt.builtinClassForStruct.get(fnHandle);
+        if (fnBc && fnBc !== fn) fn = fnBc;
         var args = argsHandle === 0 ? [] : rt.unwrap(argsHandle);
         if (args === null) args = [];
         // Fold any C-written linear-memory buffer (__wasthon_cstr__) into the
@@ -6699,6 +6707,9 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var fn = rt.unwrap(fnH);
         if (!fn) return 0;
+        /* Bound builtin-type struct → real Brython class (see PyObject_CallObject). */
+        var fnBc = rt.builtinClassForStruct && rt.builtinClassForStruct.get(fnH);
+        if (fnBc && fnBc !== fn) fn = fnBc;
         var args = argsH === 0 ? [] : rt.unwrap(argsH);
         if (args === null) args = [];
         args = Array.from(args);
