@@ -4981,8 +4981,9 @@ mergeInto(LibraryManager.library, {
                  [12,'__mod__','__rmod__'],[116,'__floordiv__','__rfloordiv__'],[120,'__truediv__','__rtruediv__'],
                  [44,'__lshift__','__rlshift__'],[48,'__rshift__','__rrshift__'],
                  [52,'__and__','__rand__'],[56,'__xor__','__rxor__'],[60,'__or__','__ror__'],
+                 [136,'__matmul__','__rmatmul__'],
                  [76,'__iadd__',null],[80,'__isub__',null],[84,'__imul__',null],
-                 [116+8,'__ifloordiv__',null],[120+8,'__itruediv__',null]
+                 [116+8,'__ifloordiv__',null],[120+8,'__itruediv__',null],[140,'__imatmul__',null]
                 ].forEach(function(s) {
                     var p = HEAP32[(pNum + s[0]) >> 2];
                     if (!p) return;
