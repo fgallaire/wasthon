@@ -8578,7 +8578,7 @@ mergeInto(LibraryManager.library, {
      * Returns 1 on success, 0 on failure (with TypeError set). Out pointers
      * for absent optional args are left as-is (caller initializes them).
      */
-    PyArg_ParseTupleAndKeywords__deps: ['$WasthonRT', 'PyUnicode_AsUTF8', 'PyFloat_AsDouble'],
+    PyArg_ParseTupleAndKeywords__deps: ['$WasthonRT', 'PyUnicode_AsUTF8', 'PyUnicode_AsUTF8AndSize', 'PyBytes_AsString', 'PyBytes_AsStringAndSize', 'PyFloat_AsDouble'],
     PyArg_ParseTupleAndKeywords: function(argsH, kwdsH, formatPtr, kwlistPtr, varargs) {
         var rt = WasthonRT;
         var args = rt.unwrap(argsH);
@@ -8699,12 +8699,19 @@ mergeInto(LibraryManager.library, {
                 groupInner = format.slice(i + 1, gClose);
                 i = gClose;                     /* for-loop i++ steps past ')' */
             }
+            /* '#' suffix (s#/z#/y#/U#): the buffer code is followed by a second
+             * varargs out-pointer receiving the length (Py_ssize_t). numpy's
+             * compare_chararrays uses "OOs#O&". Detected here so the buffer
+             * store below knows to also write the length and consume the extra
+             * varargs slot; the '#' char is stepped past (never its own slot). */
+            var hasHash = (i + 1 < format.length && format[i + 1] === '#');
             if (isConv || isTypeCheck) { i++; }
+            else if (hasHash) { i++; }
             else if (groupInner === null &&
                 c !== 'O' && c !== 'i' && c !== 'I' && c !== 'k' &&
                 c !== 'l' && c !== 'L' && c !== 'K' && c !== 'n' &&
                 c !== 'b' && c !== 'B' && c !== 'h' && c !== 'H' &&
-                c !== 'p' && c !== 'C' && c !== 'U' &&
+                c !== 'p' && c !== 'C' && c !== 'U' && c !== 'y' &&
                 c !== 's' && c !== 'z' && c !== 'f' && c !== 'd') {
                 rt.setError(rt.wrap(rt._b_.SystemError),
                     "PyArg_ParseTuple[AndKeywords]: format char '" + c + "' not implemented");
@@ -8801,13 +8808,37 @@ mergeInto(LibraryManager.library, {
                     if (c === 'O') {
                         HEAP32[outPtr >> 2] = rt.wrap(value);
                     } else if (c === 'U') {
-                        /* Unicode object: must be a str; store the handle. */
+                        /* Unicode object: must be a str; store the handle.
+                         * 'U#' also writes the UTF-8 byte length to the second
+                         * out slot. */
                         if (rt.asJSStr(value) === null) {
                             rt.setError(rt.wrap(rt._b_.TypeError),
                                 "argument must be str");
                             return 0;
                         }
                         HEAP32[outPtr >> 2] = rt.wrap(value);
+                        if (hasHash) {
+                            var uLenOut = HEAP32[(p + 4) >> 2];
+                            if (uLenOut !== 0)
+                                HEAP32[uLenOut >> 2] = new TextEncoder().encode(rt.asJSStr(value)).length;
+                        }
+                    } else if (c === 'y') {
+                        /* bytes-like -> C char buffer. 'y#' also writes the
+                         * length to the second out slot (PyBytes_AsStringAndSize);
+                         * bare 'y' rejects embedded NULs (PyBytes_AsString). */
+                        if (hasHash) {
+                            var yLenOut = HEAP32[(p + 4) >> 2];
+                            if (_PyBytes_AsStringAndSize(rt.wrap(value), outPtr, yLenOut) !== 0) {
+                                if (!rt.pendingException)
+                                    rt.setError(rt.wrap(rt._b_.TypeError),
+                                        "a bytes-like object is required");
+                                return 0;
+                            }
+                        } else {
+                            var yp = _PyBytes_AsString(rt.wrap(value));
+                            if (yp === 0) return 0;
+                            HEAP32[outPtr >> 2] = yp;
+                        }
                     } else if (c === 'p') {
                         /* predicate: store a full int 0/1. CPython's 'p' writes
                          * an int* (4 bytes); writing only the low byte (HEAPU8)
@@ -8829,9 +8860,20 @@ mergeInto(LibraryManager.library, {
                         HEAP32[outPtr >> 2] = s.codePointAt(0) || s.charCodeAt(0);
                     } else if (c === 's' || c === 'z') {
                         /* str -> C UTF-8 string (reuses PyUnicode_AsUTF8: cached
-                         * and kept alive with the str). 'z' accepts None->NULL. */
+                         * and kept alive with the str). 'z' accepts None->NULL.
+                         * 's#'/'z#' also write the UTF-8 byte length to the
+                         * second out slot (numpy's compare_chararrays "s#"). */
                         if (c === 'z' && value === rt._b_.None) {
                             HEAP32[outPtr >> 2] = 0;
+                            if (hasHash) {
+                                var zLenOut = HEAP32[(p + 4) >> 2];
+                                if (zLenOut !== 0) HEAP32[zLenOut >> 2] = 0;
+                            }
+                        } else if (hasHash) {
+                            var sLenOut = HEAP32[(p + 4) >> 2];
+                            var sp2 = _PyUnicode_AsUTF8AndSize(rt.wrap(value), sLenOut);
+                            if (sp2 === 0) return 0;   /* str-expected TypeError set */
+                            HEAP32[outPtr >> 2] = sp2;
                         } else {
                             var sp = _PyUnicode_AsUTF8(rt.wrap(value));
                             if (sp === 0) return 0;   /* str-expected TypeError set */
@@ -8918,7 +8960,7 @@ mergeInto(LibraryManager.library, {
             /* A converter (O&) or typed-object (O!) slot consumes two varargs
              * entries (type/fn ptr + output addr); a '(...)' group consumes
              * one per inner code; everything else consumes one. */
-            p += (isConv || isTypeCheck) ? 8
+            p += (isConv || isTypeCheck || hasHash) ? 8
                  : (groupInner !== null ? 4 * groupInner.length : 4);
             slotIdx++;
         }
