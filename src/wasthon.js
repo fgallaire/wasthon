@@ -13983,6 +13983,32 @@ mergeInto(LibraryManager.library, {
         }
     },
 
+    /* numpy._core.multiarray.add_docstring(obj, doc) — numpy ships its C
+     * methods/types with NULL ml_doc and attaches the real docstring (and its
+     * argument-clinic text signature) at import via this call (_add_newdocs).
+     * The stock C impl writes into obj's C struct (tp_doc / m_ml->ml_doc / …),
+     * which OOBs on our opaque bridge handles — so the recipe used to no-op it,
+     * silently stripping every C-method __doc__ and __text_signature__ (help()
+     * empty, inspect.signature failed → numpy's ~hundreds of introspection
+     * tests, and real IDE/doc tooling, all broken). Set them JS-side instead.
+     * numpy feeds "<name>($self, …)\n--\n\n<doc>"; we expose "($self, …)" as
+     * $text_signature (Brython's inspect._signature_fromstr reads it). */
+    wasthon_set_docstring__deps: ['$WasthonRT'],
+    wasthon_set_docstring: function(objHandle, docPtr) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objHandle);
+        if (!obj || typeof obj !== 'object' || !docPtr) return;
+        var doc = UTF8ToString(docPtr);
+        try {
+            obj.__doc__ = doc;
+            var lp = doc.indexOf('(');
+            if (lp > 0 && /^[A-Za-z_][\w.]*$/.test(doc.slice(0, lp))) {
+                var end = doc.indexOf(')\n--\n\n', lp);
+                if (end !== -1) obj.$text_signature = doc.slice(lp, end + 1);
+            }
+        } catch (e) {}
+    },
+
     /* Extract a clinic text signature from a C docstring. CPython prefixes a
      * docstring with "<name>(<sig>)\n--\n\n" and exposes "(<sig>)" as
      * __text_signature__ (consumed by inspect.signature). Returns the
