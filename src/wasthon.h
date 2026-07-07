@@ -1670,6 +1670,9 @@ extern PyObject *PyExc_UnicodeError;
 extern PyObject *PyExc_UnicodeDecodeError;
 extern PyObject *PyExc_UnicodeEncodeError;
 extern PyObject *PyExc_ImportError;
+extern PyObject *PyExc_ModuleNotFoundError;
+extern PyObject *PyExc_GeneratorExit;
+extern PyObject *PyExc_UnboundLocalError;
 extern PyObject *PyExc_Exception;
 extern PyObject *PyExc_OSError;
 extern PyObject *PyExc_AttributeError;
@@ -2154,7 +2157,7 @@ int PyErr_WarnFormat(PyObject *, Py_ssize_t, const char *, ...);
 void PyErr_WriteUnraisable(PyObject *);
 void PyException_SetCause(PyObject *, PyObject *);
 void PyException_SetContext(PyObject *, PyObject *);
-void PyException_SetTraceback(PyObject *, PyObject *);
+int PyException_SetTraceback(PyObject *, PyObject *);  /* CPython: returns 0/-1 */
 PyObject *PyCapsule_Import(const char *, int);
 int PyCapsule_IsValid(PyObject *, const char *);
 void *PyCapsule_GetContext(PyObject *);
