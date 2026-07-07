@@ -435,6 +435,15 @@ mergeInto(LibraryManager.library, {
                 B.$wasthon_weakref_track = function(obj, cell, clear) {
                     var ptr = obj && obj.__wasthon_ptr__;
                     if (!ptr) return;
+                    // A type object now carries __wasthon_ptr__ (its C type-struct
+                    // pointer, for Cython cdef classes reading base->tp_new), but a
+                    // type is never a GC-collectable instance — never register its
+                    // weak cells, else the instance-GC mark can decide the type is
+                    // unreachable and clear a live weakref. That silently emptied
+                    // collections.abc registries (Sequence.register(sqlite3.Row) →
+                    // WeakSet → issubclass(Row, Sequence) went False).
+                    if (obj.__mro__ !== undefined || obj.tp_bases !== undefined ||
+                        obj.tp_mro !== undefined) return;
                     var e = _rtWR.weakRegistry.get(ptr);
                     if (!e) { e = { inst: obj, cells: [], clears: [] }; _rtWR.weakRegistry.set(ptr, e); }
                     // the weak cell must not make its referent reachable:
@@ -7190,9 +7199,13 @@ mergeInto(LibraryManager.library, {
     /* --- Type / eval / sys --- */
     PyType_GetFlags__deps: ['$WasthonRT'],
     PyType_GetFlags: function(typeH) { var rt = WasthonRT;
-        /* return a permissive flag set; numpy tests specific bits but the
-         * bridge types are all "ready" heap-like. TODO(phase-4): real bits. */
-        return 0xFFFFFFFF >>> 0; },
+        /* Permissive flag set (numpy tests specific bits; bridge types are all
+         * "ready" heap-like). BUT never claim Py_TPFLAGS_IS_ABSTRACT (1<<20):
+         * Cython's cdef `tp_new` routes an abstract base to
+         * `PyBaseObject_Type.tp_new`, which is NULL on the bridge → trap. Also
+         * clear DISALLOW_INSTANTIATION so nothing refuses to construct.
+         * TODO(phase-4): real per-type bits. */
+        return (0xFFFFFFFF & ~0x00100000 & ~0x00000008) >>> 0; },
     PyType_Modified__deps: ['$WasthonRT'],
     PyType_Modified: function(typeH) { /* no attribute cache to invalidate */ },
     PyEval_GetBuiltins__deps: ['$WasthonRT'],
@@ -12540,8 +12553,16 @@ mergeInto(LibraryManager.library, {
         if (!rt._defaultTpAlloc) rt._defaultTpAlloc = _wasthon_get_default_tp_alloc();
         if (!rt._builtinTpIter)  rt._builtinTpIter  = _wasthon_get_builtin_tp_iter();
         if (!rt._defaultTpFree)  rt._defaultTpFree  = _wasthon_get_default_tp_free();
-        var typeStructPtr = _malloc(64);
-        HEAPU8.fill(0, typeStructPtr, typeStructPtr + 64);
+        // Full wasthon.h PyTypeObject size (through tp_is_gc@172 → 176, rounded
+        // to 180). Historically truncated at 64, but Cython cdef classes read C
+        // type-struct fields DIRECTLY — a subclass's tp_new does
+        // `base->tp_new(...)`, and feature/size checks read tp_basicsize@64,
+        // tp_call@100, tp_flags@120, tp_base@140. Those live past 64; a truncated
+        // struct read them as adjacent-heap garbage (bogus non-NULL pointer →
+        // "null function or function signature mismatch"). One malloc PER TYPE
+        // (dozens per session), not per instance — the extra ~116 B is trivial.
+        var typeStructPtr = _malloc(180);
+        HEAPU8.fill(0, typeStructPtr, typeStructPtr + 180);
         var dictObj = rt.$B.get_dict(cls);
         // Pinned: stored in the malloc'd type struct (tp_dict), read by C
         // for the type's whole life (same as ensureTypeStruct's pin).
@@ -12558,6 +12579,24 @@ mergeInto(LibraryManager.library, {
         // __init__ on an already-initialised connection, connection.c:253).
         // Leaving it NULL is an indirect call to null. Wire the spec slot.
         HEAP32[(typeStructPtr + 44) >> 2] = slotMap[54 /* Py_tp_clear */] || 0;   // tp_clear
+        // C-struct fields Cython cdef classes read directly (offsets per
+        // wasthon.h struct _typeobject). tp_new/tp_init drive (sub)class
+        // construction — a Cython subclass calls base->tp_new; the rest are read
+        // by feature checks and inherited-slot dispatch. Unpopulated fields stay
+        // 0 (in-bounds, = "absent"), never adjacent-heap garbage.
+        HEAP32[(typeStructPtr +  20) >> 2] = slotMap[61 /* Py_tp_init */]        || 0;  // tp_init
+        HEAP32[(typeStructPtr +  36) >> 2] = slotMap[71 /* Py_tp_traverse */]    || 0;  // tp_traverse
+        HEAP32[(typeStructPtr +  52) >> 2] = slotMap[51 /* Py_tp_repr */]        || 0;  // tp_repr
+        HEAP32[(typeStructPtr +  60) >> 2] = slotMap[65 /* Py_tp_new */]         || 0;  // tp_new
+        HEAP32[(typeStructPtr +  64) >> 2] = basicsize;                                 // tp_basicsize
+        HEAP32[(typeStructPtr +  68) >> 2] = itemsize;                                  // tp_itemsize
+        HEAP32[(typeStructPtr +  96) >> 2] = slotMap[58 /* Py_tp_hash */]        || 0;  // tp_hash
+        HEAP32[(typeStructPtr + 100) >> 2] = slotMap[77 /* Py_tp_call */]        || 0;  // tp_call
+        HEAP32[(typeStructPtr + 104) >> 2] = slotMap[50 /* Py_tp_str */]         || 0;  // tp_str
+        HEAP32[(typeStructPtr + 108) >> 2] = slotMap[57 /* Py_tp_getattro */]    || 0;  // tp_getattro
+        HEAP32[(typeStructPtr + 112) >> 2] = slotMap[59 /* Py_tp_setattro */]    || 0;  // tp_setattro
+        HEAPU32[(typeStructPtr + 120) >> 2] = flags;                                    // tp_flags
+        HEAP32[(typeStructPtr + 128) >> 2] = slotMap[60 /* Py_tp_richcompare */] || 0;  // tp_richcompare
         // tp_finalize is past the 64-byte bridge struct, so stash it on the
         // class; PyObject_CallFinalizerFromDealloc invokes it (connection_dealloc
         // runs it to emit the unclosed-database ResourceWarning).
@@ -12565,6 +12604,12 @@ mergeInto(LibraryManager.library, {
         var typeHandle = typeStructPtr;
         rt.bindInstance(typeHandle, cls);
         cls.__wasthon_type_handle__ = typeHandle;
+        // The type object's C handle IS its type-struct pointer, so a C caller
+        // that reads the class as a PyTypeObject* (Cython's `base->tp_new`,
+        // `Py_TYPE(x)->tp_flags`, …) resolves fields at the right addresses.
+        // Without this, rt.wrap(cls) minted a fresh handle-map index and the
+        // field reads landed on unrelated memory.
+        cls.__wasthon_ptr__ = typeHandle;
         cls.__wasthon_type_token__  = specPtr;
         rt.types.set(typeHandle, {
             basicsize: basicsize,
