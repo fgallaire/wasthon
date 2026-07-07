@@ -4865,6 +4865,34 @@ mergeInto(LibraryManager.library, {
                 if (rc < 0 && rt.pendingException) { var pe = rt.pendingException; rt.pendingException = null; throw rt.pendingExc(pe); }
                 return rc | 0;
             }));
+            /* tp_iternext@56 → __next__ (and tp_iter@24 → __iter__): static C
+             * iterator types (numpy's `broadcast` = PyArrayMultiIter_Type,
+             * `flatiter`, nditer) drive Python for-loops through these slots.
+             * Gated on tp_iternext so only real iterators get __iter__/__next__
+             * — iterable *containers* (ndarray has tp_iter but no tp_iternext)
+             * keep Brython's sequence-based iteration. Without this, np.roll's
+             * `for sh, ax in broadcast(...)` raised "'broadcast' object is not
+             * iterable". */
+            var tpIternextPtr = HEAP32[(typePtr + 56) >> 2];
+            if (tpIternextPtr) {
+                installSlot('tp_iternext', '__next__', rt.scoped(function(self) {
+                    var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    rt.pendingException = null;
+                    var resH = getWasmTableEntry(tpIternextPtr)(selfH);
+                    if (rt.pendingException) { var pe = rt.pendingException; rt.pendingException = null; throw rt.pendingExc(pe); }
+                    if (resH === 0) throw rt.$B.$call(rt._b_.StopIteration);
+                    return rt.unwrapResult(resH);
+                }));
+                var tpIterPtr2 = HEAP32[(typePtr + 24) >> 2];
+                installSlot('tp_iter', '__iter__', rt.scoped(function(self) {
+                    var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    if (tpIterPtr2) {
+                        var resH = getWasmTableEntry(tpIterPtr2)(selfH);
+                        if (resH !== 0) return rt.unwrapResult(resH);
+                    }
+                    return self;   /* self-iterator (PyObject_SelfIter) */
+                }));
+            }
             /* tp_call@100 → __call__: numpy ufuncs (add, multiply, …) are
              * callable via tp_call; without __call__ on the Brython class,
              * callable(ufunc) is false and numpy's _PyArray_SetNumericOps
