@@ -4988,6 +4988,27 @@ mergeInto(LibraryManager.library, {
                     return rt.unwrapResult(resH);
                 });
             };
+            /* nb_power is a TERNARY slot (a, b, modulo) — pow(a, b, mod). The
+             * binary `a ** b` passes modulo = Py_None (CPython convention;
+             * numpy's array_power tests `modulo != Py_None`). wrapBin can't
+             * carry the third arg, so ndarray/scalar __pow__ was never
+             * installed → `np.array(...) ** 1` raised "unsupported operand
+             * type(s) for **: 'ndarray'". */
+            var wrapPow = function(ptr, swapped) {
+                return rt.scoped(function(self, other, modulo) {
+                    rt.pendingException = null;
+                    var a = swapped ? hOf(other) : hOf(self);
+                    var b = swapped ? hOf(self) : hOf(other);
+                    var c = (modulo === undefined || modulo === null ||
+                             modulo === rt._b_.None) ? rt.wrap(rt._b_.None) : hOf(modulo);
+                    var resH = getWasmTableEntry(ptr)(a, b, c);
+                    if (resH === 0 || rt.pendingException) {
+                        if (rt.pendingException) throwPending();
+                        return rt._b_.NotImplemented;
+                    }
+                    return rt.unwrapResult(resH);
+                });
+            };
             var wrapLen = function(ptr) {
                 return rt.scoped(function(self) {
                     rt.pendingException = null;
@@ -5055,6 +5076,12 @@ mergeInto(LibraryManager.library, {
                     installDunder(s[1], wrapBin(p, false));
                     if (s[2]) installDunder(s[2], wrapBin(p, true));
                 });
+                /* nb_power@20 (ternary): __pow__/__rpow__ — see wrapPow. */
+                var pPow = HEAP32[(pNum + 20) >> 2];
+                if (pPow) {
+                    installDunder('__pow__', wrapPow(pPow, false));
+                    installDunder('__rpow__', wrapPow(pPow, true));
+                }
                 [[24,'__neg__'],[28,'__pos__'],[32,'__abs__'],[40,'__invert__'],
                  /* conversion slots — numpy scalars: int(np.int32(x)) needs
                   * __int__/__index__, float(np.float64(x)) needs __float__.
