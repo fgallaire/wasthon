@@ -7016,23 +7016,42 @@ mergeInto(LibraryManager.library, {
     /* PyObject_Init(op, type) — op is a freshly-malloc'd struct ptr (e.g.
        numpy's PyArray_IterNew mallocs a PyArrayIterObject then PyObject_Inits
        it against PyArrayIter_Type). Bind the raw pointer to its type so it
-       crosses the bridge as a real object; the no-op left arr.flat as null. */
+       crosses the bridge as a real object; the no-op left arr.flat as null.
+       Idempotent: if the pointer is already a bound handle (e.g. _PyObject_NewVar
+       allocated it and the caller re-inits — array_converter_new does), update
+       the type in place so the richer wrapper's __wasthon_type__ + gc/refcount
+       registration survive. */
     PyObject_Init__deps: ['$WasthonRT'],
     PyObject_Init: function(oH, typeH) {
         var rt = WasthonRT;
         var t = rt.unwrap(typeH);
-        if (t) rt.handles.set(oH, { __wasthon_ptr__: oH, __class__: t, ob_type: t });
+        var existing = rt.handles.get(oH);
+        if (existing && typeof existing === 'object') {
+            if (t) { existing.__class__ = t; existing.ob_type = t; }
+        } else if (t) {
+            rt.handles.set(oH, { __wasthon_ptr__: oH, __class__: t, ob_type: t });
+        }
         return oH;
     },
     PyObject_InitVar__deps: ['$WasthonRT'],
     PyObject_InitVar: function(oH, typeH, n) {
         var rt = WasthonRT;
         var t = rt.unwrap(typeH);
-        if (t) rt.handles.set(oH, { __wasthon_ptr__: oH, __class__: t, ob_type: t });
+        var existing = rt.handles.get(oH);
+        if (existing && typeof existing === 'object') {
+            if (t) { existing.__class__ = t; existing.ob_type = t; }
+        } else if (t) {
+            rt.handles.set(oH, { __wasthon_ptr__: oH, __class__: t, ob_type: t });
+            HEAP32[oH >> 2] = n | 0;   // ob_size, mirroring _PyObject_InitVar
+        }
         return oH;
     },
+    /* _PyObject_NewVar(type, nitems) — allocate a var-length object
+       (basicsize + nitems*itemsize) and bind it. numpy's array_converter_new
+       (_array_converter(...)) builds itself this way; the stub returned 0, so
+       `conv` came back null and `conv.as_arrays()` blew up in np.linspace. */
     _PyObject_NewVar__deps: ['$WasthonRT'],
-    _PyObject_NewVar: function(typeH, n) { return 0; },
+    _PyObject_NewVar: function(typeH, n) { return _wasthon_object_gc_new_var(typeH, n); },
     PyMethod_New__deps: ['$WasthonRT'],
     PyMethod_New: function(funcH, selfH) { var rt = WasthonRT;
         try { return rt.wrapNewRef(rt.$B.$call(rt.$B.method || rt._b_.object,
