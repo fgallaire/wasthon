@@ -5253,8 +5253,18 @@ mergeInto(LibraryManager.library, {
 
     PyCapsule_IsValid__deps: ['$WasthonRT'],
     PyCapsule_IsValid: function(capH, namePtr) {
+        /* Valid iff a real capsule whose name matches (CPython: both NULL or
+         * strcmp-equal). The old permissive `cap ? 1 : 0` ignored the name, so
+         * numpy's from_dlpack — which distinguishes the versioned vs unversioned
+         * DLPack capsule purely by name (PyCapsule_IsValid(cap, VERSIONED_NAME))
+         * — treated every capsule as versioned, read version.major out of the
+         * wrong struct (garbage > 1) and raised "exported DLPack major version
+         * is too high". */
         var rt = WasthonRT; var cap = rt.unwrap(capH);
-        return cap ? 1 : 0;   /* permissive first pass */
+        if (!cap || cap.__class__ !== 'PyCapsule') return 0;
+        var reqName = namePtr ? UTF8ToString(namePtr) : null;
+        var capName = (cap.name === undefined) ? null : cap.name;
+        return (capName === reqName) ? 1 : 0;
     },
 
     PyCapsule_CheckExact__deps: ['$WasthonRT'],
