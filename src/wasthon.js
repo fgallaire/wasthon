@@ -686,6 +686,32 @@ mergeInto(LibraryManager.library, {
             return inst;
         },
 
+        // Give a bridge-allocated instance a real __dict__ iff its class is a
+        // Python subclass of a C type (not the C type itself) and has no
+        // __slots__ — mirroring the tp_new subtype path (which init_dict's the
+        // instance so `self.foo = bar` works). Base C types (own
+        // __wasthon_type_handle__) get no dict, matching CPython (e.g.
+        // np.array([1]).__dict__ is AttributeError). Needed because numpy
+        // builds subclass instances through its own C tp_alloc (arr.view(Sub),
+        // numpy.ma's MaskedConstant singleton), bypassing tp_new; without a
+        // dict, MaskedArray.__array_finalize__'s `self.__dict__.update(...)`
+        // read undefined.
+        maybeInitInstanceDict: function(cls, instance) {
+            // Init an instance __dict__ iff the class has its OWN `__dict__`
+            // descriptor — Brython stamps one on user classes whose instances
+            // carry a dict (no __slots__ blocking it), and base C types like
+            // ndarray don't have one. This is the reliable discriminator: the
+            // __wasthon_type_handle__ marker is set on both C types and their
+            // Python subclasses (ensureTypeStruct), so it can't tell them apart.
+            if (!cls) return;
+            try {
+                var cd = cls[this.$B.DICT];
+                if (cd && Object.prototype.hasOwnProperty.call(cd, '__dict__')) {
+                    this.$B.init_dict(instance);
+                }
+            } catch (e) {}
+        },
+
         // Bind a Brython instance to a real WASM pointer. The handle == ptr.
         bindInstance: function(ptr, brythonInstance) {
             this.handles.set(ptr, brythonInstance);
@@ -13571,6 +13597,7 @@ mergeInto(LibraryManager.library, {
             __wasthon_ptr__: ptr,
             __wasthon_type__: typeHandle,
         };
+        rt.maybeInitInstanceDict(typeInfo.brythonClass, instance);
         rt.bindInstance(ptr, instance);
         rt.refcounts.set(ptr, 1);  // CPython convention: fresh object starts at 1
         return ptr;
@@ -13600,6 +13627,7 @@ mergeInto(LibraryManager.library, {
             __wasthon_ptr__: ptr,
             __wasthon_type__: typeHandle,
         };
+        rt.maybeInitInstanceDict(typeInfo.brythonClass, instance);
         rt.bindInstance(ptr, instance);
         rt.refcounts.set(ptr, 1);  // CPython convention: fresh object starts at 1
         return ptr;
