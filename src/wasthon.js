@@ -7013,10 +7013,24 @@ mergeInto(LibraryManager.library, {
     PyObject_GenericGetDict: function(oH, ctx) { var rt = WasthonRT; var o = rt.unwrap(oH);
         try { return rt.wrapNewRef(rt.$B.$getattr(o, '__dict__')); }
         catch (e) { rt.forwardError(e, rt._b_.AttributeError); return 0; } },
+    /* PyObject_Init(op, type) — op is a freshly-malloc'd struct ptr (e.g.
+       numpy's PyArray_IterNew mallocs a PyArrayIterObject then PyObject_Inits
+       it against PyArrayIter_Type). Bind the raw pointer to its type so it
+       crosses the bridge as a real object; the no-op left arr.flat as null. */
     PyObject_Init__deps: ['$WasthonRT'],
-    PyObject_Init: function(oH, typeH) { return oH; },
+    PyObject_Init: function(oH, typeH) {
+        var rt = WasthonRT;
+        var t = rt.unwrap(typeH);
+        if (t) rt.handles.set(oH, { __wasthon_ptr__: oH, __class__: t, ob_type: t });
+        return oH;
+    },
     PyObject_InitVar__deps: ['$WasthonRT'],
-    PyObject_InitVar: function(oH, typeH, n) { return oH; },
+    PyObject_InitVar: function(oH, typeH, n) {
+        var rt = WasthonRT;
+        var t = rt.unwrap(typeH);
+        if (t) rt.handles.set(oH, { __wasthon_ptr__: oH, __class__: t, ob_type: t });
+        return oH;
+    },
     _PyObject_NewVar__deps: ['$WasthonRT'],
     _PyObject_NewVar: function(typeH, n) { return 0; },
     PyMethod_New__deps: ['$WasthonRT'],
