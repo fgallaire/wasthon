@@ -9204,6 +9204,13 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(objH);
         var name = rt.asJSStr(rt.unwrap(nameH));
         if (!obj) return 0;
+        /* A builtin type struct (&PyUnicode_Type, &PyBytes_Type, …) can end up
+           bound to a bare type-struct wrapper (name 'str' but not the Brython
+           `str`, missing its method dict) after PyType_Ready re-registers its
+           handle. numpy's _vec_string does getattr(&PyUnicode_Type, 'upper') →
+           the wrapper lacks it. Redirect to the real Brython class. */
+        var bc = rt.builtinClassForStruct && rt.builtinClassForStruct.get(objH);
+        if (bc && bc !== obj) obj = bc;
         if (name === null) {
             rt.setError(rt.wrap(rt._b_.TypeError),
                 "attribute name must be string, not '" +
@@ -10540,6 +10547,11 @@ mergeInto(LibraryManager.library, {
         rt.handles.set(structPtr, cls);
         rt.builtinTypeForClass = rt.builtinTypeForClass || new Map();
         rt.builtinTypeForClass.set(cls, structPtr);
+        /* Reverse map (struct ptr → real Brython class), authoritative even if
+           handles[structPtr] is later clobbered by a bare PyType_Ready wrapper.
+           PyObject_GetAttr uses it so getattr(&PyUnicode_Type, 'upper') resolves. */
+        rt.builtinClassForStruct = rt.builtinClassForStruct || new Map();
+        rt.builtinClassForStruct.set(structPtr, cls);
         // Wire tp_repr (offset 52) on the C-allocated struct so direct slot
         // calls like _json's `PyLong_Type.tp_repr(obj)` / `PyFloat_Type.tp_repr`
         // don't trap on a NULL pointer. Only-if-zero: never clobber a real
