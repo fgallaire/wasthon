@@ -7197,8 +7197,18 @@ mergeInto(LibraryManager.library, {
     PyType_Modified: function(typeH) { /* no attribute cache to invalidate */ },
     PyEval_GetBuiltins__deps: ['$WasthonRT'],
     PyEval_GetBuiltins: function() { var rt = WasthonRT;
-        try { return rt.wrap(rt._b_.__builtins__ || rt.$B.builtins_dict || rt._b_); }
-        catch (e) { return 0; } },
+        // CPython contract: PyEval_GetBuiltins() returns the builtins *dict*,
+        // not the module. C code (e.g. Cython's __Pyx_init_assertions_enabled:
+        // PyObject_GetItem(builtins, "__debug__")) subscripts the result, which
+        // raised "'module' object is not subscriptable" when we returned the
+        // module. Return the module's dict.
+        try {
+            var b = rt._b_.__builtins__;
+            if (b && rt.$B.get_class(b) === rt.$B.module) return rt.wrap(rt.$B.get_dict(b));
+            if (b) return rt.wrap(b);
+            if (rt.$B.builtins_dict) return rt.wrap(rt.$B.builtins_dict);
+            return rt.wrap(rt.$B.get_dict(rt._b_));
+        } catch (e) { return 0; } },
     PySys_GetObject__deps: ['$WasthonRT'],
     PySys_GetObject: function(namePtr) { var rt = WasthonRT;
         var name = namePtr ? UTF8ToString(namePtr) : "";
@@ -7316,9 +7326,19 @@ mergeInto(LibraryManager.library, {
              * live in the caller's scope (the scoped tp_call wrapper). */
             var cptr = fn && fn.__wasthon_ptr__;
             var typePtr = fn && fn.__wasthon_type__;
-            if (cptr && typePtr) {
-                var vcOffset = HEAP32[(typePtr + 72) >> 2];   /* tp_vectorcall_offset */
-                if (vcOffset) {
+            /* tp_vectorcall_offset lives at typePtr+72 for full CPython type
+             * structs (numpy ufuncs). Spec-based heap types (Cython's
+             * CyFunctionType) use the compact bridge type struct instead and
+             * record the offset on the Brython class from their
+             * __vectorcalloffset__ member — consult that as a fallback, else
+             * the slow $B.$call path re-enters tp_call = infinite recursion. */
+            var vcOffset = (cptr && typePtr) ? HEAP32[(typePtr + 72) >> 2] : 0;
+            if (cptr && !vcOffset && fn) {
+                var _vcCls = rt.$B.get_class(fn);
+                if (_vcCls && _vcCls.$wasthon_vectorcall_offset) vcOffset = _vcCls.$wasthon_vectorcall_offset;
+            }
+            if (cptr && vcOffset) {
+                {
                     var vcFn = HEAP32[(cptr + vcOffset) >> 2];
                     if (vcFn) {
                         var av = tupleH ? rt.unwrap(tupleH) : [];
@@ -13980,6 +14000,16 @@ mergeInto(LibraryManager.library, {
             var flags   = HEAP32[(mp + 12) >> 2];
             var name    = UTF8ToString(namePtr);
             var readonly = (flags & 1) !== 0;
+
+            /* Special members: CPython's PyType_FromSpec does not install a
+             * descriptor for these — it uses their `offset` to set the type's
+             * tp_vectorcall_offset / tp_dictoffset / tp_weaklistoffset. Cython's
+             * heap types (CyFunctionType) carry __vectorcalloffset__ so calling
+             * an instance dispatches through its stored vectorcall pointer.
+             * Record the offset on the class for PyVectorcall_Call; installing
+             * it as a normal member would both be wrong and shadow the call. */
+            if (name === '__vectorcalloffset__') { cls.$wasthon_vectorcall_offset = offset; continue; }
+            if (name === '__dictoffset__' || name === '__weaklistoffset__') { continue; }
 
             /* Capture loop vars into closure scope. */
             var T = type, O = offset, N = name;
