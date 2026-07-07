@@ -5208,9 +5208,16 @@ mergeInto(LibraryManager.library, {
         if (sl === null) return -1;
         try {
             var t = rt.$B.$getattr(sl, 'indices')(length);   /* slice.indices(len) -> (start,stop,step) */
-            var start = Number(rt.$B.$getitem(t, 0));
-            var stop  = Number(rt.$B.$getitem(t, 1));
-            var step  = Number(rt.$B.$getitem(t, 2));
+            /* Brython's slice.indices() keeps the bound's original type, so a
+             * numpy-scalar bound (arr[np.int32(1):np.int32(3)], and any slice
+             * numpy computes internally — e.g. np.pad's _pad_simple) comes back
+             * as np.int32, not a plain int. `Number(np.int32(1))` is NaN → `|0`
+             * = 0, collapsing every such slice to empty. coerceInt honors
+             * __index__ so the boxed integer converts correctly. */
+            function num(v) { var n = rt.coerceInt(v); return (n === undefined) ? Number(v) : Number(n); }
+            var start = num(rt.$B.$getitem(t, 0));
+            var stop  = num(rt.$B.$getitem(t, 1));
+            var step  = num(rt.$B.$getitem(t, 2));
             var slen  = (step > 0) ? Math.max(0, Math.ceil((stop - start) / step))
                                    : Math.max(0, Math.ceil((stop - start) / step));
             if (pStart)    HEAP32[pStart    >> 2] = start | 0;
