@@ -2270,7 +2270,18 @@ mergeInto(LibraryManager.library, {
         var arr = new Array(n);
         for (var i = 0; i < n; i++) {
             var itemH = HEAP32[(varargs + i * 4) >> 2];
-            arr[i] = rt.unwrap(itemH);
+            var it = rt.unwrap(itemH);
+            /* A non-zero pointer that doesn't resolve yet is a static C object
+             * created before the bridge registered it — numpy packs
+             * `(float64_descr,)*3` type-tuples during import, before the descr
+             * singletons are bound, and caches the tuple. Storing `null` made
+             * that cached tuple `[null,null,null]`, so later ufunc dispatch
+             * (true_divide/divide on Python-int scalars) fed NULLs to the legacy
+             * type_resolver → "Only NumPy must call ufunc->type_resolver()".
+             * Keep a lazy handle-carrying proxy: PyTuple_GetItem re-wraps it, and
+             * by read time the pointer resolves to the real object. */
+            if (it === null && itemH !== 0) it = { __wasthon_ptr__: itemH };
+            arr[i] = it;
             rt.incref(itemH);  // no-steal: tuple takes its own ref on each item
         }
         return rt.wrapNewRef(rt._b_.tuple.$factory(arr));
