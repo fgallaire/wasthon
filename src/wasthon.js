@@ -7328,6 +7328,13 @@ mergeInto(LibraryManager.library, {
             var m = rt.$B.$getattr(self, name);
             var call = [m];
             for (var i = 1; i < nargs; i++) call.push(rt.unwrap(HEAP32[(argsPtr >> 2) + i]));
+            /* NOTE: kwnames are intentionally NOT forwarded yet. Doing so
+               (mirroring PyObject_Vectorcall) is correct and delivers e.g.
+               numpy from_dlpack's `__dlpack__(max_version=…)`, BUT that then
+               makes from_dlpack attempt the VERSIONED DLPack export path, which
+               is still broken here (array_dlpack versioned returns NULL) → a net
+               regression (test_dlpack 70→69). Land both fixes together — see
+               NUMPY_HARD_BUG.md "dlpack versioned export". */
             return rt.wrapNewRef(rt.$B.$call.apply(null, call));
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
     PyArg_VaParseTupleAndKeywords__deps: ['$WasthonRT', 'PyArg_ParseTupleAndKeywords'],
