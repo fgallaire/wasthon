@@ -5187,8 +5187,16 @@ mergeInto(LibraryManager.library, {
 
     PyCapsule_CheckExact__deps: ['$WasthonRT'],
     PyCapsule_CheckExact: function(capH) {
+        /* Only real capsules (PyCapsule_New makes {__class__:'PyCapsule'}).
+         * The old permissive `cap ? 1 : 0` said true for ANY object, so
+         * numpy's __array_finalize__ dispatch (ctors.c: if a subtype's
+         * __array_finalize__ is a PyCapsule it's a C func, else a Python
+         * callable) mistook every Python __array_finalize__ for a capsule,
+         * took the C-func branch, got a 0 pointer and bailed with a silent
+         * NULL — so `.view(subclass)` and numpy.ma's masked singleton died
+         * with "view: call returned NULL". */
         var rt = WasthonRT; var cap = rt.unwrap(capH);
-        return cap ? 1 : 0;   /* permissive first pass */
+        return (cap && cap.__class__ === 'PyCapsule') ? 1 : 0;
     },
 
     PyModule_ExecDef__deps: ['$WasthonRT'],
