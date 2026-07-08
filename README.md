@@ -920,9 +920,28 @@ Infrastructure work that pays back on existing modules:
 
 Eventually:
 
-- [ ] [Array API Standard](https://data-apis.org/array-api/) implementation
-      atop Wasthon's `array` foundation — NumPy-class numerical computing
-      in Brython, the original distant goal of this project.
+- [x] NumPy-class numerical computing in Brython — **achieved, beyond the
+      original formulation**. The plan written here was an [Array API
+      Standard](https://data-apis.org/array-api/) implementation atop
+      Wasthon's `array` foundation; what landed instead is **real NumPy
+      2.5.1**: the actual C core (`_multiarray_umath`, ~150 files)
+      compiled against the bridge, numpy's own Python layer served to
+      Brython, `import numpy` completing (83 modules; `np.linalg` is the
+      one honest stub — LAPACK isn't built for this target, those calls
+      raise `NotImplementedError`). Validated by running **numpy's own
+      test suite** in the browser (via a minimal pytest shim), and
+      numpy.random's nine Cython extensions run with `MT19937.random_raw`
+      **bit-exact vs upstream numpy 2.5.1**. No facade, no semantic
+      drift — the same C that ships in the manylinux wheels. The
+      bridge-side C-API growth this took (an 87-symbol link contract,
+      vectorcall, the buffer protocol over `__array_interface__`, Cython
+      cdef-class support) is merged on `main`; the build recipe, browser
+      demo and test dashboard are being spun out as **NumBry** — *the
+      NumPy stack in the browser with Wasthon* (numpy today; pandas and
+      matplotlib are the mapped next walls). An Array API layer atop
+      `array` could never have gotten there: pandas and matplotlib
+      consume numpy's real C-API (`PyArray_*`, capsules, dtypes), not
+      the Array API surface.
 - [ ] [HPy](https://hpyproject.org/) support — the modern portable C-API.
 
 ## Acknowledgements
