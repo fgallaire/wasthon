@@ -18,6 +18,25 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+## [x] stray debug `print('NotImplementedError for format')` in `annotationlib`
+
+**Impact: cosmetic — numpy's lazy PEP-649 annotations (typing constructs in `numpy._typing`, `numpy.lib._arraysetops_impl`, `numpy.linalg._linalg`) each raise `NotImplementedError` in `annotationlib.call_annotate_function`, which then printed a debug line to stdout. `import numpy` spewed ~9 `NotImplementedError for format` lines onto every page (loader/numpy.html).** A leftover `print(...)` sits in the `except NotImplementedError:` arm of `annotationlib.get_annotations` (`Lib/annotationlib.py`, bundled in `brython_stdlib.js`); the exception is expected (it falls through to the `Format.STRING` path) so the print is pure noise. Removed the `print`, kept the `pass`.
+
+```python
+try:
+    return annotate(format)
+except NotImplementedError:
+    print('NotImplementedError for format')   # before — debug leftover
+    pass
+# after:
+try:
+    return annotate(format)
+except NotImplementedError:
+    pass
+```
+
+---
+
 ## [x] `id()` collides across types — `id(42) == id('42')` (killed the pure-Python pickle memo)
 
 **Impact: `_Pickler`'s memo is keyed by `id(obj)`; an int whose text matches an earlier-memoized str made a false memo hit, so the framed-writer roundtrip read the int `0` back as the string `'0'` (+2 pickle, the delayed-writer Py variants — the last of the framer family; general correctness for anything id-keyed).** Brython derives a primitive's id from `hash(str(value))` — the value's *text*, with no type in the mix, so `42` and `'42'` (and `True`/`'True'`) shared one id: two live, distinct objects with equal ids. The type's class name is now mixed into the hashed string. Source: `_b_.id` in `py_builtin_functions.js`.
@@ -3067,4 +3086,63 @@ RuntimeError: too many arguments provided for a function call   # before
 >>> ba[0:0] = bytes(1000000)
 >>> len(ba)
 1000000                                                         # after
+```
+
+## [x] posix.putenv/unsetenv raise NotImplementedError — no way to set an env var at the C level
+
+**Impact: unblocks `import numpy` (numpy 2.5's `numpy/_core/__init__.py` reload-guard calls `os.putenv('OPENBLAS_MAIN_FREE','1')` then `os.unsetenv(...)` on purpose instead of touching `os.environ`, to avoid a race — gh-30627); general.** Brython's `posix` stubbed `putenv` in the big "not implemented" list and never defined `unsetenv`, so any code using `os.putenv`/`os.unsetenv` (rather than mutating `os.environ`) died with `NotImplementedError: posix.putenv is not implemented`. Gave both real, minimal implementations backed by the module's own `environ` dict, so `getenv` stays consistent with what `putenv` set. Source: the `posix` module in `brython_stdlib.js`.
+
+```python
+>>> import os
+>>> os.putenv('FOO', '1')
+NotImplementedError: posix.putenv is not implemented   # before
+>>> os.putenv('FOO', '1'); os.getenv('FOO')
+'1'                                                     # after
+>>> os.unsetenv('FOO'); os.getenv('FOO') is None
+True
+```
+
+## [x] os.uname() returned 6 fields (platform.uname()) — CPython's is a 5-field uname_result
+
+**Impact: unblocks `numpy._core._add_newdocs_scalars` (`system, _, _, _, machine = os.uname()`); general.** Brython's `os.uname()` was `return platform.uname()`, whose namedtuple carries a 6th `processor` field — but POSIX/CPython `os.uname()` returns exactly 5 (`sysname, nodename, release, version, machine`), so any 5-target unpack raised `ValueError: too many values to unpack (expected 5, got 6)`. It now returns a proper 5-field `uname_result` (dropping `processor`, which belongs to `platform.uname()`). Source: the `os` module in `brython_stdlib.js`.
+
+```python
+>>> import os
+>>> a, b, c, d, e = os.uname()
+ValueError: too many values to unpack (expected 5, got 6)   # before
+>>> os.uname()._fields
+('sysname', 'nodename', 'release', 'version', 'machine')     # after
+```
+
+## [x] `from . import X, X as Y` bound only the alias — the plain name was dropped
+
+**Impact: unblocks `numpy._core.numeric` (`from . import multiarray, numerictypes, numerictypes as nt, overrides, shape_base, umath`, then `extend_all(numerictypes)`); general.** When the same module is imported both plain and aliased in one statement, the codegen emits it twice in `names` (`[…, "numerictypes", "numerictypes", …]`) with a single `aliases` entry keyed by the source name (`{numerictypes: [ns, "nt"]}`). `$import_from`'s loop consulted `aliases[name]` for *every* occurrence, so both bound `nt` and the plain `numerictypes` was never bound — a later `numerictypes.__all__` then hit `undefined`. The loop now tracks names already seen: the first occurrence uses its alias (or plain), any repeat binds the plain name, so both targets land. Source: `$B.$import_from` in `brython.js`.
+
+```python
+>>> from os import path, path as p   # after
+>>> path is p
+True                                  # before: `path` was undefined (only `p` bound)
+```
+
+## [x] issubclass() with a non-class first arg crashed (JS `undefined.indexOf`) instead of raising TypeError
+
+**Impact: unblocks numpy `dtype.name` / `np.issubdtype` (numpy's `issubclass_` wraps `issubclass` in `try/except TypeError`, relying on the TypeError to fall back to `dtype(arg1).type`); general.** CPython's `issubclass(x, C)` raises `TypeError: issubclass() arg 1 must be a class` when `x` isn't a class. Brython went straight to `$B.get_mro(klass).indexOf(...)`; for a non-class `klass` (e.g. a numpy dtype instance passed by `issubdtype`) `get_mro` returns `undefined`, so `.indexOf` threw a raw JS `TypeError: Cannot read properties of undefined` that numpy's `except TypeError` couldn't recognize. It now raises a proper Python `TypeError` when `get_mro(klass)` is undefined. Source: `_b_.issubclass` in `brython.js`.
+
+```python
+>>> issubclass(42, int)
+TypeError: Cannot read properties of undefined (reading 'indexOf')   # before (raw JS)
+>>> issubclass(42, int)
+TypeError: issubclass() arg 1 must be a class                        # after
+```
+
+## [x] types.FunctionType bound module globals to the CALLING frame's module — cross-module re-materialization broke (PEP 695 + Protocol annotations)
+
+**Impact: unblocks numpy `_typing._dtype_like` / `_arraysetops_impl` and any PEP 695 generic class with a `Protocol` base + annotated attribute; general.** `$B.function.$factory` (the `FunctionType(code, globals)` implementation) re-creates a function with `new Function('_b_','__file__', 'locals_'+frame[2], 'return '+code.co_code)` — but `code.co_code` references `locals_<the-defining-module>`, while `frame[2]` is the module of whatever frame is *active at call time*. When `typing.Protocol` lazily evaluates a PEP 695 generic class's `__annotate__` cross-module (through `annotationlib.get_annotations`), the active frame is `annotationlib`, so the parameter came out `locals_annotationlib` and the body threw a raw JS `locals_<orig-module> is not defined` — killing the whole import. It now binds the parameter to the code's OWN module (from the passed globals' `__name__`, else the `locals_…` name the code literally references), so the closure resolves; an unresolved *name* inside the annotation now surfaces as a normal Python `NameError` that the annotation machinery handles, instead of a fatal JS crash. Source: `$B.function.$factory` in `brython.js`.
+
+```python
+>>> from typing import Protocol
+>>> class C[T](Protocol):
+...     x: T
+JavascriptError: locals_<module> is not defined   # before (fatal, at import)
+>>> # after: class defines; Protocol's lazy annotation introspection no longer crashes the module
 ```

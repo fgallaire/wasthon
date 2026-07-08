@@ -3662,6 +3662,19 @@ var code=$.code
 var __name__=$.name===_b_.None ? code.co_name :$.name
 var frame=$B.frame_obj.frame
 var globals_name='locals_'+frame[2]
+/* The compiled body binds its module globals to a parameter literally named
+ * `locals_<defining-module>`; that name must match what the code references,
+ * not the CALLING frame's module. Read it straight out of the code so a
+ * function re-materialized under another frame still binds correctly — e.g. a
+ * PEP 695 generic class's lazy `__annotate__`, which `typing.Protocol` invokes
+ * cross-module through `annotationlib.get_annotations`: with the old
+ * `locals_'+frame[2]` (= `locals_annotationlib`) it raised
+ * `locals_<orig-module> is not defined` and killed the whole import. */
+var $gmod=null
+try{if($.globals && $.globals!==_b_.None){$gmod=$.globals.__name__ ?? $B.str_dict_get($.globals,'__name__',null)}}catch(_e){}
+if(typeof $gmod=='string'){globals_name='locals_'+$gmod.replace(/\./g,'_')}
+else{var $lref=/\blocals_[A-Za-z_$][\w$]*/.exec(code.co_code)
+if($lref){globals_name=$lref[0]}}
 var __file__=frame.__file__
 var func=new Function('_b_','__file__',globals_name,'return '+code.co_code)
 var f=func(_b_,__file__,$.globals)
@@ -4968,6 +4981,7 @@ if($B.is_tuple(classinfo)){for(var i=0;i < classinfo.length;i++){if(issubclass(k
 return false}
 if($B.get_class(classinfo)===$B.GenericAlias){$B.RAISE(_b_.TypeError,'issubclass() arg 2 cannot be a parameterized generic')}
 var mro=$B.get_mro(klass)
+if(mro===undefined){$B.RAISE(_b_.TypeError,'issubclass() arg 1 must be a class')}
 if(klass===classinfo ||mro.indexOf(classinfo)>-1){return true}
 var sch=$B.type_getattribute($B.get_class(classinfo),'__subclasscheck__',$B.NULL)
 if(sch===$B.NULL){return false}
@@ -14148,8 +14162,9 @@ $B.$import(submodule,[],{},{},inum)
 current_module=$B.imported[submodule]}
 if(names.length > 0 && names[0]=='*'){
 for(var item of $B.module_items(current_module)){if(item.key.startsWith('$')||item.key.startsWith('_')){continue}
-locals[item.key]=item.value}}else{for(var name of names){var ns,alias
-if(aliases[name]){[ns,alias]=aliases[name]}else{[ns,alias]=[locals,name]}
+locals[item.key]=item.value}}else{var $seen_imp={};for(var name of names){var ns,alias
+if(aliases[name] && ! $seen_imp[name]){[ns,alias]=aliases[name]}else{[ns,alias]=[locals,name]}
+$seen_imp[name]=true
 var value=$B.module_getattr(current_module,name)
 if(value !==$B.NULL){
 ns[alias]=value}else{
