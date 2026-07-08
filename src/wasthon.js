@@ -12032,6 +12032,89 @@ mergeInto(LibraryManager.library, {
      * The C side (PyObject_GetBuffer) wraps these into a Py_buffer.   *
      * --------------------------------------------------------------- */
 
+    /* Fill a Py_buffer natively for a numpy ndarray (or any object exposing
+     * __array_interface__). The generic wasthon_get_buffer_data path below
+     * copies bytes via tobytes() and reports format "B"/itemsize 1 — that
+     * fails Cython's typed-memoryview validation (`np.ndarray[np.uint32]`
+     * expects format "I"/itemsize 4) and loses in-place writes. numpy arrays
+     * live in wasm linear memory and __array_interface__ hands back the real
+     * data pointer + dtype + shape, so expose them directly: the buffer then
+     * aliases the array's own storage (writable, correct dtype/strides).
+     * Returns 0 = filled, 1 = not an array (caller falls back), -1 = error. */
+    wasthon_fill_array_buffer__deps: ['$WasthonRT'],
+    wasthon_fill_array_buffer: function(handle, viewPtr, flags) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (!obj) return 1;
+        var ai;
+        try { ai = rt.$B.$getattr(obj, '__array_interface__', null); }
+        catch (e) { return 1; }
+        if (!ai) return 1;
+        try {
+            var data     = rt.$B.$getitem(ai, 'data');       // (ptr, readonly)
+            var dataPtr  = Number(rt.$B.$getitem(data, 0));
+            var roFlag   = rt.$B.$getitem(data, 1) ? 1 : 0;
+            var typestr  = rt.$B.$getitem(ai, 'typestr');     // e.g. '<u4'
+            var shapeT   = rt.$B.$getitem(ai, 'shape');       // tuple of ints
+            var stridesO = null;
+            try { stridesO = rt.$B.$getitem(ai, 'strides'); } catch (e) {}
+            var ndim     = rt._b_.len(shapeT);
+            var itemsize = Number(rt.$B.$getattr(obj, 'itemsize'));
+
+            // numpy typestr -> struct/buffer format char. Byte order is dropped
+            // (wasm32 is little-endian = native); Cython's format parser keys
+            // off the type char + size. Unknown dtypes fall back to the
+            // generic (bytes) path rather than mis-describing the buffer.
+            var kind = typestr.replace(/^[<>=|]/, '');        // 'u4', 'f8', ...
+            var FMT = { 'u1':'B','i1':'b','u2':'H','i2':'h','u4':'I','i4':'i',
+                        'u8':'Q','i8':'q','f4':'f','f8':'d','b1':'?' };
+            var fmt = FMT[kind];
+            if (!fmt) return 1;
+
+            // shape[] and (C-contiguous when strides is None) strides[].
+            var shape = new Array(ndim), strides = new Array(ndim);
+            for (var i = 0; i < ndim; i++) shape[i] = Number(rt.$B.$getitem(shapeT, i));
+            if (stridesO && stridesO !== rt._b_.None) {
+                for (var i = 0; i < ndim; i++) strides[i] = Number(rt.$B.$getitem(stridesO, i));
+            } else {
+                var s = itemsize;
+                for (var i = ndim - 1; i >= 0; i--) { strides[i] = s; s *= shape[i]; }
+            }
+            var nbytes = itemsize;
+            for (var i = 0; i < ndim; i++) nbytes *= shape[i];
+
+            // Allocate the aux arrays the view points at; freed on release.
+            var fmtBytes  = fmt.length + 1;
+            var formatPtr = _malloc(fmtBytes);
+            for (var i = 0; i < fmt.length; i++) HEAPU8[formatPtr + i] = fmt.charCodeAt(i);
+            HEAPU8[formatPtr + fmt.length] = 0;
+            var shapePtr   = _malloc(ndim * 4 || 4);
+            var stridesPtr = _malloc(ndim * 4 || 4);
+            for (var i = 0; i < ndim; i++) {
+                HEAP32[(shapePtr   >> 2) + i] = shape[i];
+                HEAP32[(stridesPtr >> 2) + i] = strides[i];
+            }
+
+            HEAP32[viewPtr >> 2]          = dataPtr;      // buf
+            HEAP32[(viewPtr + 4)  >> 2]   = handle;       // obj
+            HEAP32[(viewPtr + 8)  >> 2]   = nbytes;       // len
+            HEAP32[(viewPtr + 12) >> 2]   = itemsize;     // itemsize
+            HEAP32[(viewPtr + 16) >> 2]   = roFlag;       // readonly
+            HEAP32[(viewPtr + 20) >> 2]   = ndim;         // ndim
+            HEAP32[(viewPtr + 24) >> 2]   = formatPtr;    // format
+            HEAP32[(viewPtr + 28) >> 2]   = shapePtr;     // shape
+            HEAP32[(viewPtr + 32) >> 2]   = stridesPtr;   // strides
+            HEAP32[(viewPtr + 36) >> 2]   = 0;            // suboffsets
+            HEAP32[(viewPtr + 40) >> 2]   = 0;            // internal
+
+            // Remember the aux allocations so release frees them WITHOUT
+            // freeing buf (which is the array's own linear-memory storage).
+            if (!rt._wasthonArrayViews) rt._wasthonArrayViews = new Map();
+            rt._wasthonArrayViews.set(viewPtr, [formatPtr, shapePtr, stridesPtr]);
+            return 0;
+        } catch (e) { rt.forwardError(e); return -1; }
+    },
+
     wasthon_get_buffer_data__deps: ['$WasthonRT'],
     wasthon_get_buffer_data: function(handle, outBufPtrPtr, outLenPtr, outReadonlyPtr) {
         /* PickleBuffer stub (binding case 13): the instance carries its
@@ -12182,6 +12265,16 @@ mergeInto(LibraryManager.library, {
     wasthon_buffer_release__deps: ['$WasthonRT'],
     wasthon_buffer_release: function(viewPtr) {
         if (viewPtr === 0) return;
+        // A numpy-array view (wasthon_fill_array_buffer): buf aliases the
+        // array's own linear-memory storage — free only the aux format/shape/
+        // strides allocations, never buf.
+        if (WasthonRT._wasthonArrayViews &&
+                WasthonRT._wasthonArrayViews.has(viewPtr)) {
+            var aux = WasthonRT._wasthonArrayViews.get(viewPtr);
+            for (var i = 0; i < aux.length; i++) if (aux[i]) _free(aux[i]);
+            WasthonRT._wasthonArrayViews.delete(viewPtr);
+            return;
+        }
         // A view borrowed from a wasthon buffer object's own storage
         // (array.array ob_item, via the 'w*' path): C wrote straight into the
         // array, so there is nothing to copy back and the pointer is owned by
@@ -13422,6 +13515,12 @@ mergeInto(LibraryManager.library, {
                     if (pe) throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);
                     throw rt.$B.$call(rt._b_.Exception, "tp_init failed");
                 }
+                // A Python-level `Cls.__init__(self, args)` call (this wrapper is
+                // also exposed as the __init__ attribute below) must return None,
+                // not undefined — Cython's `super().__init__(...)` (numpy.random
+                // MT19937 → BitGenerator.__init__) reads the result and treats a
+                // NULL/undefined return as a raised exception.
+                return rt._b_.None;
             });
             // Expose the C tp_init as the __init__ attribute, so an explicit
             // `inst.__init__(args)` (Struct reinit `s.__init__('>hh')`) and a
@@ -13500,6 +13599,35 @@ mergeInto(LibraryManager.library, {
             cls.tp_funcs = cls.tp_funcs || {};
             cls.tp_funcs.__call__ = _tpCallWrap;
             try { rt.$B.set_to_dict(cls, '__call__', _tpCallWrap); } catch (_) {}
+        }
+
+        // Wire Py_tp_descr_get (slot 84 — see wasthon.h: 56 collides with
+        // Py_tp_doc) so instance attribute access binds a C/Cython descriptor.
+        // A Cython cdef-class method (e.g. numpy.random's `BitGenerator.random_raw`)
+        // is a `cython_function_or_method` stored in the type dict with a
+        // tp_descr_get slot; without wiring it, Brython's getattr returns the
+        // UNBOUND function, so `bg.random_raw(3)` calls it with self=3 (the first
+        // positional) — reading garbage struct fields. Brython invokes
+        // cls.tp_descr_get(value, obj, klass); C sig is
+        // PyObject *descr_get(PyObject *self, PyObject *obj, PyObject *type).
+        var tpDescrGetPtr = slotMap[84 /* Py_tp_descr_get */];
+        if (tpDescrGetPtr) {
+            cls.tp_descr_get = rt.scoped(function(value, obj, klass) {
+                var selfH = (value && value.__wasthon_ptr__)
+                    ? value.__wasthon_ptr__ : rt.wrap(value);
+                // obj is None when the attribute is read on the class itself.
+                var objH = (obj === undefined || obj === null)
+                    ? rt.wrap(rt._b_.None) : rt.wrap(obj);
+                var typeH = klass ? rt.wrap(klass) : 0;
+                rt.pendingException = null;
+                var resH = getWasmTableEntry(tpDescrGetPtr)(selfH, objH, typeH);
+                if (resH === 0 || rt.pendingException) {
+                    var pe = rt.pendingException; rt.pendingException = null;
+                    if (pe) throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);
+                    throw rt.$B.$call(rt._b_.RuntimeError, "tp_descr_get returned NULL");
+                }
+                return rt.unwrapResult(resH);
+            });
         }
 
         // Wire Py_tp_getattro (slot 57 per wasthon.h numbering) using a

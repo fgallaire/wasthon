@@ -507,12 +507,22 @@ extern int wasthon_get_buffer_data(PyObject *obj,
                                    int *out_readonly);
 
 int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
-    (void)flags;  /* PyBUF_SIMPLE only; no flag interpretation yet. */
     if (view == NULL) {
         PyErr_SetString(PyExc_BufferError,
                         "PyObject_GetBuffer: view==NULL argument is obsolete");
         return -1;
     }
+
+    /* numpy ndarray (or any __array_interface__ exporter): expose the real
+     * typed, writable buffer aliasing the array's own linear-memory storage,
+     * so Cython typed memoryviews (np.ndarray[np.uint32]) validate and mutate
+     * in place. Returns 1 when obj is not such an array → generic path below. */
+    extern int wasthon_fill_array_buffer(PyObject *obj, Py_buffer *view, int flags);
+    int arr = wasthon_fill_array_buffer(obj, view, flags);
+    if (arr == 0) return 0;
+    if (arr < 0) return -1;
+
+    (void)flags;  /* generic path: PyBUF_SIMPLE only; no flag interpretation. */
     void *buf = NULL;
     Py_ssize_t len = 0;
     int readonly = 1;  /* JS reports the object's real mutability. */

@@ -1630,9 +1630,15 @@ Py_hash_t _PyObject_HashFast(PyObject *o);
 PyObject *_PyDict_GetItem_KnownHash(PyObject *d, PyObject *k, Py_hash_t hash);
 int       PyObject_SetItem(PyObject *o, PyObject *key, PyObject *v);
 #define   Py_nb_or  39
-/* descriptor protocol slots used by defaultdict's __reduce__. */
-#define   Py_tp_descr_get  56
-#define   Py_tp_descr_set  57
+/* Descriptor protocol slots. NOTE: the natural CPython IDs 56/57 collide here
+ * with Py_tp_doc (56) and Py_tp_getattro (57), which the bridge already reads
+ * as doc/getattro — so wiring tp_descr_get off slot 56 mis-fired on every C
+ * type that carries a docstring (getWasmTableEntry on the doc pointer →
+ * "bad Table get address"). Give them free IDs (84/85) that nothing else uses;
+ * emitter (Cython/C extension specs) and consumer (bridge slotMap) both read
+ * these macros, so the value only has to be internally consistent. */
+#define   Py_tp_descr_get  84
+#define   Py_tp_descr_set  85
 extern PyTypeObject PyODict_Type;
 
 /* More _pickle support. */
