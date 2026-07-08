@@ -246,11 +246,8 @@ int          wasthon_unicode_isdecimal(unsigned int ch);
 int          wasthon_unicode_islinebreak(unsigned int ch);
 #define Py_UNICODE_TOLOWER(c)     wasthon_unicode_tolower(c)
 #define Py_UNICODE_TOUPPER(c)     wasthon_unicode_toupper(c)
-#define Py_UNICODE_ISALPHA(c)     wasthon_unicode_isalpha(c)
-#define Py_UNICODE_ISDIGIT(c)     wasthon_unicode_isdigit(c)
-#define Py_UNICODE_ISALNUM(c)     wasthon_unicode_isalnum(c)
-#define Py_UNICODE_ISSPACE(c)     wasthon_unicode_isspace(c)
-#define Py_UNICODE_ISDECIMAL(c)   wasthon_unicode_isdecimal(c)
+/* Py_UNICODE_IS{ALPHA,DIGIT,ALNUM,SPACE,DECIMAL} are defined once, in the
+ * UCS4 unicodectype block further down (_PyUnicode_Is*). */
 #define Py_UNICODE_ISLINEBREAK(c) wasthon_unicode_islinebreak(c)
 
 /* The real CPython lookups from Objects/unicodectype.c — linked into the
@@ -2208,7 +2205,6 @@ extern PyObject *PyExc_NameError, *PyExc_UserWarning, *PyExc_FloatingPointError,
 /* pymacro.h helpers numpy's loops use */
 #ifndef Py_MAX
 #define Py_MAX(x, y) (((x) > (y)) ? (x) : (y))
-#define Py_MIN(x, y) (((x) < (y)) ? (x) : (y))
 #endif
 #ifndef Py_ABS
 #define Py_ABS(x) ((x) < 0 ? -(x) : (x))
