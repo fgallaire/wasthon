@@ -3249,7 +3249,12 @@ mergeInto(LibraryManager.library, {
                     var j = i + 1;
                     while (j < fmt.length && fmt[j] !== close) {
                         var r = readOne(j);
-                        items.push(r[0]); j = r[1];
+                        /* null = separator (',',' ',':'), skip like the top-level
+                           loop does — numpy's Py_BuildValue("(i,i)", 1, 0) got a
+                           3-tuple (1, null, 0) here, and a ':' inside {} would
+                           shift every key/value pair. */
+                        if (r[0] !== null) items.push(r[0]);
+                        j = r[1];
                     }
                     var coll;
                     if (c === '(') coll = rt._b_.tuple.$factory(items);
@@ -7437,13 +7442,20 @@ mergeInto(LibraryManager.library, {
             var m = rt.$B.$getattr(self, name);
             var call = [m];
             for (var i = 1; i < nargs; i++) call.push(rt.unwrap(HEAP32[(argsPtr >> 2) + i]));
-            /* NOTE: kwnames are intentionally NOT forwarded yet. Doing so
-               (mirroring PyObject_Vectorcall) is correct and delivers e.g.
-               numpy from_dlpack's `__dlpack__(max_version=…)`, BUT that then
-               makes from_dlpack attempt the VERSIONED DLPack export path, which
-               is still broken here (array_dlpack versioned returns NULL) → a net
-               regression (test_dlpack 70→69). Land both fixes together — see
-               NUMPY_HARD_BUG.md "dlpack versioned export". */
+            /* kwnames: values sit in the args buffer after the positionals
+               (numpy from_dlpack calls `obj.__dlpack__(max_version=…)` here —
+               dropping them silently downgraded every DLPack export to the
+               unversioned, always-read-only protocol). */
+            var kwnames = kwnamesH ? rt.unwrap(kwnamesH) : null;
+            if (kwnames && kwnames.length) {
+                var kwMap = {};
+                for (var k = 0; k < kwnames.length; k++) {
+                    var nm = rt.asJSStr(kwnames[k]);
+                    if (nm === null) nm = String(kwnames[k]);
+                    kwMap[nm] = rt.unwrap(HEAP32[(argsPtr >> 2) + nargs + k]);
+                }
+                call.push({ $kw: [kwMap] });
+            }
             return rt.wrapNewRef(rt.$B.$call.apply(null, call));
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
     PyArg_VaParseTupleAndKeywords__deps: ['$WasthonRT', 'PyArg_ParseTupleAndKeywords'],
