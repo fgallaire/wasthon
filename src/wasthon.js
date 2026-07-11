@@ -1019,6 +1019,22 @@ mergeInto(LibraryManager.library, {
             return this.wrapNewRef(obj);
         },
 
+        /* Resolve a raw getset_descriptor handed back by $getattr, per the
+         * descriptor protocol: apply it only when `obj` is an INSTANCE of the
+         * descriptor's owner (d_type in type(obj).__mro__). For class-level
+         * access CPython returns the descriptor itself — numpy's
+         * PyArray_DescrFromTypeObject reads `.dtype` off a np.void SUBCLASS
+         * (np.rec's `record`) and treats a descriptor result as "class
+         * property, keep the default"; force-applying it with the class as
+         * obj raised TypeError and killed every np.rec/recarray construction. */
+        resolveGetset: function(v, obj) {
+            var applies = true;   /* conservative default: old behavior */
+            try {
+                applies = this.$B.get_mro(this.$B.get_class(obj)).includes(v.d_type);
+            } catch (_) {}
+            return applies ? this.$B.getset_descriptor.tp_descr_get(v, obj) : v;
+        },
+
         /* Modular exponentiation in BigInt (base**exp mod m). */
         _modpow: function(base, exp, mod) {
             base %= mod;
@@ -7557,9 +7573,10 @@ mergeInto(LibraryManager.library, {
             if (v === undefined || v === null) { HEAP32[outPtr >> 2] = 0; return 0; }
             // $getattr can hand back a RAW getset_descriptor for some
             // instance/attribute combinations. An unresolved descriptor
-            // must never cross into C — invoke its getter.
+            // must never cross into C — invoke its getter (instance access
+            // only; class access returns the descriptor, per the protocol).
             if (v.ob_type === rt.$B.getset_descriptor) {
-                v = rt.$B.getset_descriptor.tp_descr_get(v, obj);
+                v = rt.resolveGetset(v, obj);
             }
             var h = rt.wrap(v);
             HEAP32[outPtr >> 2] = h;
@@ -9389,7 +9406,7 @@ mergeInto(LibraryManager.library, {
         try {
             var v = rt.$B.$getattr(obj, name);
             if (v && v.ob_type === rt.$B.getset_descriptor) {
-                v = rt.$B.getset_descriptor.tp_descr_get(v, obj);
+                v = rt.resolveGetset(v, obj);
             }
             return rt.wrapMaybeType(v);
         }
