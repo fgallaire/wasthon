@@ -11384,6 +11384,7 @@ mergeInto(LibraryManager.library, {
             case 25: cls = rt.$B.method_descriptor; break;
             /* pybind11: base of pybind11_static_property */
             case 26: cls = rt._b_.property; break;
+            case 27: cls = rt._b_.range; break;
             case 12:
                 // Brython's Python-function class lives at $B.function
                 // (NOT _b_.function, which doesn't exist — the binding was

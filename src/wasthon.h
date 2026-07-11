@@ -2211,7 +2211,8 @@ double _Py_HashDouble(PyObject *, double);
 extern const unsigned char _Py_ascii_whitespace[];
 extern PyTypeObject PyComplex_Type, PyCFunction_Type, PyMemberDescr_Type,
     PyGetSetDescr_Type, PyMethodDescr_Type, PyDictProxy_Type, PySlice_Type,
-    PyBaseObject_Type, PyMemoryView_Type, PyCapsule_Type, PyProperty_Type;
+    PyBaseObject_Type, PyMemoryView_Type, PyCapsule_Type, PyProperty_Type,
+    PyRange_Type;
 extern PyObject *PyExc_NameError, *PyExc_UserWarning, *PyExc_FloatingPointError,
     *PyExc_ImportWarning, *PyExc_ModuleNotFoundError;
 /* Exception-instance class accessor (pyerrors.h) */

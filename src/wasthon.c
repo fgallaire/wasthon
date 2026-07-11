@@ -200,6 +200,7 @@ PyTypeObject PyMemberDescr_Type  = {0};
 PyTypeObject PyMethodDescr_Type  = {0};
 /* pybind11: base class of pybind11_static_property */
 PyTypeObject PyProperty_Type     = {0};
+PyTypeObject PyRange_Type        = {0};
 
 /* ---- Singleton object handles ---- */
 PyObject *Py_None  = (PyObject *)0;
@@ -329,6 +330,8 @@ static PyMappingMethods wasthon_builtin_as_mapping = {
 #define BT_METHODDESCR  25
 /* pybind11 */
 #define BT_PROPERTY     26
+/* Cython 3.3 codegen calls range() through the static type */
+#define BT_RANGE        27
 
 /*
  * Called once after the WASM module is instantiated and before any
@@ -422,6 +425,7 @@ void wasthon_init(void) {
     PyTuple_Type.tp_new = wasthon_builtin_tuple_tp_new;
 
     wasthon_bind_builtin_type(BT_TYPE,    &PyType_Type);
+    wasthon_bind_builtin_type(BT_RANGE,   &PyRange_Type);
     wasthon_bind_builtin_type(BT_TUPLE,   &PyTuple_Type);
     /* PyODict_Type — Brython has no separate OrderedDict at C-type level;
      * alias to dict so PyModule_AddType(&PyODict_Type) finds something.
