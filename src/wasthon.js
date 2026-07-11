@@ -9859,31 +9859,14 @@ mergeInto(LibraryManager.library, {
     PyNumber_Subtract__deps: ['$WasthonRT'],
     PyNumber_Subtract: function(aH, bH) {
         var rt = WasthonRT;
-        var a = rt.unwrap(aH);
-        var b = rt.unwrap(bH);
-        /* Coerce Brython int/float wrappers to plain JS number / bigint
-         * before doing any arithmetic. */
-        function toNum(v) {
-            if (typeof v === 'number' || typeof v === 'bigint') return v;
-            if (v && typeof v.value !== 'undefined') return v.value;
-            if (v === true) return 1;
-            if (v === false) return 0;
-            return Number(v);
-        }
-        try {
-            var na = toNum(a), nb = toNum(b);
-            if (typeof na === 'bigint' || typeof nb === 'bigint') {
-                var ba = typeof na === 'bigint' ? na : BigInt(Math.trunc(na));
-                var bb = typeof nb === 'bigint' ? nb : BigInt(Math.trunc(nb));
-                var r = ba - bb;
-                if (r >= -2147483648n && r <= 2147483647n) return rt.wrapNewRef(Number(r));
-                return rt.wrapNewRef(r);
-            }
-            return rt.wrapNewRef(na - nb);
-        } catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), "subtract failed: " + (e.message || String(e)));
-            return 0;
-        }
+        var a = rt.unwrap(aH), b = rt.unwrap(bH);
+        /* Full binary protocol like every other PyNumber_* — the initial
+         * numeric fast path coerced non-number operands with Number(obj),
+         * so a numpy scalar (no .value) became NaN: numpy's arange
+         * (_calc_length does stop-start via the C-API) saw a NaN length
+         * ("arange: cannot compute length" for np.arange(np.float32(3))). */
+        try { return rt.wrapNewRef(rt.$B.rich_op1('__sub__', a, b)); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
     /* PyLong_FromString — parse C string as int. */
