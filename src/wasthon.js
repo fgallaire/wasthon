@@ -12304,7 +12304,25 @@ mergeInto(LibraryManager.library, {
         tramp.__self__ = selfHandle ? rt.unwrap(selfHandle) : null;
         var mlDocPtr = HEAP32[(mlPtr + 12) >> 2];
         if (mlDocPtr) tramp.$function_infos[rt.$B.func_attrs.__doc__] = UTF8ToString(mlDocPtr);
-        return rt.wrapNewRef(tramp);
+        /* pybind11 casts the returned PyObject* to PyCFunctionObject* and
+         * reads/WRITES the fields by offset (initialize_generic frees and
+         * strdups func->m_ml->ml_doc, cpp_function::name() reads
+         * ->m_ml->ml_name, ->m_self is read raw at pybind11.h:577) — a
+         * sentinel-ID handle is garbage under that cast. Hand back a REAL
+         * C struct (wasthon.h PyCFunctionObject: refcnt@0, m_ml@4, m_self@8,
+         * m_module@12, weakreflist@16, vectorcall@20) whose ADDRESS is the
+         * handle, with the Brython trampoline bound to it — same pattern as
+         * PyType_Type.tp_alloc handing pybind11 a raw PyHeapTypeObject. */
+        var ptr = _malloc(24);
+        HEAPU8.fill(0, ptr, ptr + 24);
+        HEAP32[ptr >> 2] = 1;                    /* ob_refcnt */
+        HEAP32[(ptr + 4)  >> 2] = mlPtr;         /* m_ml (pybind11's own PyMethodDef) */
+        HEAP32[(ptr + 8)  >> 2] = selfHandle;    /* m_self */
+        HEAP32[(ptr + 12) >> 2] = moduleHandle;  /* m_module */
+        tramp.__wasthon_ptr__ = ptr;
+        rt.handles.set(ptr, tramp);
+        rt.refcounts.set(ptr, 1);
+        return ptr;
     },
 
     /* PyCFunction_GET_SELF / PyCFunction_GET_FUNCTION — pickle inspects

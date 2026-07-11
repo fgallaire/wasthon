@@ -7,6 +7,26 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyCFunction_NewEx` hands back a REAL `PyCFunctionObject` struct**
+  (`src/wasthon.js`). pybind11 casts the returned `PyObject*` to
+  `PyCFunctionObject*` and reads/WRITES the fields by offset —
+  `initialize_generic` frees and strdups `func->m_ml->ml_doc`
+  (pybind11.h:638), `->m_self` is read raw (l.577) — so the previous
+  sentinel-ID handle was garbage under the cast (the runtime wall behind
+  every pybind11 module import). Now a malloc'd 24-byte struct (wasthon.h
+  layout: refcnt@0, m_ml@4 = pybind11's own PyMethodDef, m_self@8 = the
+  function_record capsule, m_module@12) whose ADDRESS is the handle, with the
+  Brython trampoline bound to it — the same pattern as `PyType_Type.tp_alloc`
+  handing pybind11 a raw PyHeapTypeObject. With it, matplotlib's pybind11
+  modules run end-to-end: `_c_internal_utils.display_is_valid()` executes C++
+  through the full pybind11 dispatcher, `_path.affine_transform` returns exact
+  results through the numpy `py::array` casters, and (with the VFS-level
+  patches staged for the matplotlib recipe) `import matplotlib`,
+  `matplotlib.use("Agg")`, `pyplot.subplots()` and `ax.plot()` all work.
+  Remaining pybind11 wall: the `py::class_` INSTANCE dispatch
+  (`RendererAgg.draw_path` traps on a wasm-table read) — the same struct
+  family, next in line.
+
 - **Conservative partial-GC finalize: close, don't free** (`src/wasthon.js`).
   The sqlite3 "index out of bounds" hard bug (NUMPY_HARD_BUG.md, open since
   ba03bb2, layout-sensitive) was a **use-after-free**: `$wasthon_gc_collect`'s
