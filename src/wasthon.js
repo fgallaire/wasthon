@@ -12454,7 +12454,38 @@ mergeInto(LibraryManager.library, {
             return 0;
         }
         try {
-            return rt.wrapNewRef(rt.$B.$call(rt._b_.memoryview, obj));
+            if (typeof process !== 'undefined' && process.env && process.env.MVDBG) console.log('[MV] FromObject', rt.$B.class_name(obj));
+            var mv = rt.$B.$call(rt._b_.memoryview, obj);
+            // Brython's memoryview re-bases .obj on an intermediate bytearray:
+            // remember the REAL exporter for GET_BUFFER's typed fill.
+            try { if (obj.__wasthon_ptr__) mv.$wasthon_src = obj; } catch (e0) {}
+            // A typed C ndarray: Brython's generic memoryview reports raw
+            // bytes (itemsize 1, format 'B'). Cython's fused dispatch reads
+            // itemsize/ndim off the view to pick a signature — an object
+            // array came back itemsize 1 and _map_infer_mask found "No
+            // matching signature" (Series.str accessor). Overwrite the
+            // view's typing from the array's real dtype.
+            if (obj.__wasthon_ptr__) {
+                try {
+                    var dt = rt.$B.$getattr(obj, 'dtype', null);
+                    var nd = rt.coerceInt(rt.$B.$getattr(obj, 'ndim', 1));
+                    if (dt) {
+                        var isz = rt.coerceInt(rt.$B.$getattr(dt, 'itemsize'));
+                        var knd = rt.asJSStr(rt.$B.$getattr(dt, 'kind'));
+                        var MVFMT = { 'u1':'B','i1':'b','u2':'H','i2':'h','u4':'I','i4':'i',
+                                      'u8':'Q','i8':'q','f4':'f','f8':'d','b1':'?',
+                                      'c8':'Zf','c16':'Zd','O4':'O','O8':'O' };
+                        var mfmt = (knd === 'O') ? 'O' : MVFMT[knd + isz];
+                        if (mfmt && isz) {
+                            mv.itemsize = isz;
+                            mv.format = mfmt;
+                            mv.ndim = Number(nd) || 1;
+                            try { mv.shape = rt.$B.$getattr(obj, 'shape'); } catch (e2) {}
+                        }
+                    }
+                } catch (e1) {}
+            }
+            return rt.wrapNewRef(mv);
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
@@ -12467,13 +12498,33 @@ mergeInto(LibraryManager.library, {
      * with `readonly` (offset 16) initialised from the view's own flag so
      * load_readonly_buffer keeps a read-only original (zero-copy) instead of
      * re-wrapping it, and a writable one gets marked read-only in place. */
-    PyMemoryView_GET_BUFFER__deps: ['$WasthonRT'],
+    PyMemoryView_GET_BUFFER__deps: ['$WasthonRT', 'PyObject_GetBuffer'],
     PyMemoryView_GET_BUFFER: function(_mvH) {
         var rt = WasthonRT;
         var mv = rt.unwrap(_mvH);
         if (mv && mv.__wasthon_mvbuf__) return mv.__wasthon_mvbuf__;
         var buf = _malloc(48);
         HEAPU8.fill(0, buf, buf + 48);
+        // A C-backed exporter behind the view (ndarray): fill the REAL typed
+        // Py_buffer through PyObject_GetBuffer — the zeroed struct's
+        // itemsize=0/format=NULL made Cython's fused dispatch reject every
+        // memoryview-of-object-array ("No matching signature found",
+        // Series.str accessor via _map_infer_mask).
+        var target = mv && (mv.$wasthon_src || mv.obj);
+        if (typeof process !== 'undefined' && process.env && process.env.MVDBG) console.log('[MV] GET_BUFFER target=', target ? rt.$B.class_name(target) : null, 'cptr=', !!(target && target.__wasthon_ptr__), 'mvKeys=', mv ? Object.keys(mv).slice(0,10).join(',') : null);
+        if (target && target.__wasthon_ptr__) {
+            var rc = _PyObject_GetBuffer(rt.wrap(target), buf, 0);
+            if (rc === 0) {
+                if (typeof process !== 'undefined' && process.env && process.env.MVDBG) {
+                    var fptr = HEAP32[(buf + 24) >> 2];
+                    console.log('[MV] filled: len=', HEAP32[(buf + 8) >> 2], 'itemsize=', HEAP32[(buf + 12) >> 2], 'ro=', HEAP32[(buf + 16) >> 2], 'ndim=', HEAP32[(buf + 20) >> 2], 'fmt=', fptr ? UTF8ToString(fptr) : null, 'shapeP=', HEAP32[(buf + 28) >> 2]);
+                }
+                try { mv.__wasthon_mvbuf__ = buf; } catch (_) {}
+                return buf;
+            }
+            rt.pendingException = null;
+            HEAPU8.fill(0, buf, buf + 48);
+        }
         var ro = 1;
         if (mv) {
             if (mv.readonly === false) ro = 0;
@@ -12783,6 +12834,12 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
         if (!obj) return 1;
+        // A Brython memoryview over a C ndarray (PyMemoryView_FromObject
+        // stamps the real exporter as $wasthon_src): serve the ARRAY's typed
+        // buffer. Cython's memviewslice validation re-gets the buffer off
+        // the VIEW — the generic byte path (itemsize 1, 'B') failed its 'O'
+        // typeinfo and the fused dispatch missed (Series.str accessor).
+        if (obj.$wasthon_src && obj.$wasthon_src.__wasthon_ptr__) obj = obj.$wasthon_src;
         var ai;
         try { ai = rt.$B.$getattr(obj, '__array_interface__', null); }
         catch (e) { return 1; }

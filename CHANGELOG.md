@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Typed memoryviews over C ndarrays** (`src/wasthon.js`). Brython's
+  memoryview re-bases on an intermediate bytearray (itemsize 1,
+  format 'B') and `PyMemoryView_GET_BUFFER` handed back a zeroed
+  Py_buffer — Cython's fused dispatch reads itemsize/ndim off the view
+  and its memviewslice validation re-gets the buffer, so a
+  memoryview-of-object-array never matched any signature
+  ("No matching signature found": lib._map_infer_mask, the whole
+  Series.str accessor). `PyMemoryView_FromObject` stamps the real
+  exporter on the view ($wasthon_src), GET_BUFFER routes through
+  PyObject_GetBuffer for C-backed exporters, and
+  wasthon_fill_array_buffer dereferences a view to its source array.
+
 - **Exception identity through Fetch/Restore** (`src/wasthon.js`).
   `PyErr_Restore` rebuilt the pending exception from `obj.__class__` —
   but the type side is usually a bare type-struct wrapper (a module's
