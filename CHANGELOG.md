@@ -7,6 +7,39 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Exception identity through Fetch/Restore** (`src/wasthon.js`).
+  `PyErr_Restore` rebuilt the pending exception from `obj.__class__` —
+  but the type side is usually a bare type-struct wrapper (a module's
+  `__pyx_builtin_KeyError`: tp_name, no Brython identity), which has no
+  `__class__`, so every Fetch/Restore round-trip DEGRADED the class to
+  `Exception`. Cython runs one round-trip per error label
+  (`__Pyx_AddTraceback`), so no C-level `except KeyError` ever matched:
+  `IndexEngine.__contains__` leaked its KeyError (pd.merge died
+  "KeyError: slice(None,...)"), and the fused-dispatch except chains
+  failed ("No matching signature found" — pivot_table, to_string).
+  Restore now resolves wrappers to the live builtin class by tp_name
+  and rebuilds instance-first; `PyErr_ExceptionMatches` /
+  `PyErr_GivenExceptionMatches` resolve both sides the same way.
+
+- **`np.dtype(str)` mapped to object, not unicode** (`src/wasthon.js`,
+  `src/wasthon.h`, `numpy-probe/probe.sh`). numpy's `_convert_from_type`
+  compares `typ == &PyUnicode_Type` in raw C pointers — never true
+  through the bridge (wrap(str) is not the extern; unifying them
+  regressed pickle). `astype(str)` therefore kept ints in an object
+  array and pandas' `format_percentiles` crashed "unsupported operand
+  + float/str" (df.describe). The numpy recipe now ORs in
+  `__wasthon_type_is_builtin` (live-class identity, str/bytes) at the
+  two descriptor.c sites.
+
+- **`PyObject_GetBuffer` learns real C bf_getbuffer slots**
+  (`src/wasthon.c`, `src/wasthon.js`). Cython's `_memoryviewslice`
+  exports the buffer protocol via its Py_bf_getbuffer slot, which the
+  bridge never consulted: building a typed memoryview over a slice
+  died "a bytes-like object is required, not '_memoryviewslice'"
+  (pandas `libjoin.inner_join`). The class's slot (MRO walk) is called
+  as a LAST resort, behind the calibrated generic path — fronting it
+  regressed binascii/re via array.array's C slot.
+
 - **Three df.mean/df.describe roots** (`src/wasthon.js`). (1)
   `PySequence_Check` said yes to mapping-only C types (getattr
   `__getitem__` heuristic): numpy's dtype discovery then treated a

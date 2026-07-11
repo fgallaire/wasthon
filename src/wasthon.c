@@ -529,12 +529,20 @@ int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
     if (arr == 0) return 0;
     if (arr < 0) return -1;
 
+    extern int wasthon_call_bf_getbuffer(PyObject *obj, Py_buffer *view, int flags);
+
     (void)flags;  /* generic path: PyBUF_SIMPLE only; no flag interpretation. */
     void *buf = NULL;
     Py_ssize_t len = 0;
     int readonly = 1;  /* JS reports the object's real mutability. */
 
     if (wasthon_get_buffer_data(obj, &buf, &len, &readonly) != 0) {
+        /* Last resort: a C type exporting a real Py_bf_getbuffer slot
+         * (Cython's _memoryviewslice — libjoin builds memoryviews over
+         * slices). Kept BEHIND the generic path: fronting it regressed
+         * binascii/re (array.array's C slot vs the calibrated JS path). */
+        int bf = wasthon_call_bf_getbuffer(obj, view, flags);
+        if (bf == 0) { PyErr_Clear(); return 0; }
         /* JS side already set the appropriate exception. */
         view->buf = NULL;
         view->obj = NULL;

@@ -390,6 +390,10 @@ void      PyObject_GC_Del(void *op);
 
 PyTypeObject *_wasthon_Py_TYPE(PyObject *op);
 int _wasthon_Py_IS_TYPE(PyObject *op, PyTypeObject *t);
+/* Live-class identity for TYPE handles vs a builtin (1=str, 2=bytes):
+ * `typ == &PyUnicode_Type` C compares miss because wrap(str) is not the
+ * extern struct. Used by the numpy recipe's descriptor.c patch. */
+int __wasthon_type_is_builtin(PyObject *typ, int tag);
 
 #define Py_TYPE(op)         (_wasthon_Py_TYPE((PyObject*)(op)))
 /* Exact-type, like CPython: an object's class must BE `t`, not a subclass.

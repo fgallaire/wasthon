@@ -5628,11 +5628,37 @@ mergeInto(LibraryManager.library, {
     PyErr_Restore: function(typeH, valueH, tbH) {
         var rt = WasthonRT;
         if (typeH === 0 && valueH === 0) { rt.pendingException = null; return; }
-        var h = valueH || typeH;
-        var obj = rt.unwrap(h);
+        // The type side is often a bare type-struct wrapper (tp_name, no
+        // Brython identity — a module's __pyx_builtin_KeyError): it has no
+        // __class__, so the old fallback DEGRADED the class to Exception on
+        // every Fetch/Restore round-trip (__Pyx_AddTraceback runs one at each
+        // Cython error label — the later `except KeyError` then never
+        // matched and pd.merge leaked "KeyError: slice(None,...)").
+        var resolve = function(c) {
+            if (c && typeof c.tp_name === 'string' && !c.__mro__ && !c.$infos && rt._b_[c.tp_name]) {
+                return rt._b_[c.tp_name];
+            }
+            return c;
+        };
+        var cls = typeH ? resolve(rt.unwrap(typeH)) : null;
+        var val = valueH ? rt.unwrap(valueH) : null;
+        var inst = null;
         try {
-            if (rt.$B.$isinstance(obj, rt._b_.type)) obj = rt.$B.$call(obj)();  /* instantiate a bare class */
+            if (val !== null && val !== undefined && rt.$B.$isinstance(val, rt._b_.BaseException)) {
+                inst = val;
+            } else if (cls && rt.$B.$isinstance(cls, rt._b_.type)) {
+                inst = (val !== null && val !== undefined) ? rt.$B.$call(cls, val) : rt.$B.$call(cls);
+            } else if (val !== null && val !== undefined && rt.$B.$isinstance(val, rt._b_.type)) {
+                inst = rt.$B.$call(resolve(val));
+            }
         } catch (e) {}
+        if (inst) {
+            var icls = inst.__class__ || rt.$B.get_class(inst);
+            var msg = ''; try { msg = String(rt._b_.str.$factory(inst)); } catch (e) { msg = String(inst); }
+            rt.setError(rt.wrap(icls), msg, inst);
+            return;
+        }
+        var obj = (val !== null && val !== undefined) ? val : cls;
         rt.setError(rt.wrap(obj && obj.__class__ ? obj.__class__ : rt._b_.Exception), String(obj), obj);
     },
 
@@ -7593,8 +7619,17 @@ mergeInto(LibraryManager.library, {
     PyErr_GivenExceptionMatches: function(givenH, excH) { var rt = WasthonRT;
         var given = rt.unwrap(givenH), exc = rt.unwrap(excH);
         if (given === null || exc === null) return 0;
+        // Same impostor resolution as PyErr_ExceptionMatches above.
+        var resolve = function(c) {
+            if (c && typeof c.tp_name === 'string' && !c.__mro__ && !c.$infos && rt._b_[c.tp_name]) {
+                return rt._b_[c.tp_name];
+            }
+            return c;
+        };
+        given = resolve(given); exc = resolve(exc);
         try {
             var cls = rt.$B.$isinstance(given, rt._b_.BaseException) ? rt.$B.get_class(given) : given;
+            if (cls === exc) return 1;
             return rt.$B.$issubclass(cls, exc) ? 1 : 0;
         } catch (e) { return 0; } },
     PyErr_NormalizeException__deps: ['$WasthonRT'],
@@ -11957,8 +11992,24 @@ mergeInto(LibraryManager.library, {
     PyErr_ExceptionMatches: function(excHandle) {
         var rt = WasthonRT;
         if (!rt.pendingException) return 0;
-        var current = rt.unwrap(rt.pendingException.exc);
-        var target = rt.unwrap(excHandle);
+        // A bare type-struct wrapper (tp_name but no Brython class identity —
+        // PyType_Ready re-registration impostor) never compares equal: two
+        // modules' __pyx_builtin_KeyError were two distinct wrappers, so
+        // Cython's `except KeyError` NEVER matched (IndexEngine.__contains__
+        // leaked the KeyError — pd.merge died "KeyError: slice(None,...)").
+        // Resolve both sides to the live builtin class by tp_name.
+        var resolve = function(c) {
+            if (c && typeof c.tp_name === 'string' && !c.__mro__ && !c.$infos && rt._b_[c.tp_name]) {
+                return rt._b_[c.tp_name];
+            }
+            return c;
+        };
+        var current = resolve(rt.unwrap(rt.pendingException.exc));
+        var target = resolve(rt.unwrap(excHandle));
+        if (typeof process !== 'undefined' && process.env && process.env.EXCDBG) {
+            var nm = function(c) { return c && (c.__name__ || (c.$infos && c.$infos.__name__) || c.tp_name || String(c).slice(0, 20)); };
+            console.log('[EXC]', nm(current), 'vs', nm(target), '=> same:', current === target);
+        }
         if (!current || !target) return 0;
         if (current === target) return 1;
         try {
@@ -12586,6 +12637,58 @@ mergeInto(LibraryManager.library, {
     },
 
     /* ---- Type-check predicates (called from PyUnicode_Check, etc.) ---- */
+    /* Is this TYPE handle the builtin class itself? C code compares type
+     * pointers (`typ == &PyUnicode_Type`) — false through the bridge because
+     * wrap(str) is str's ensureTypeStruct handle, not the extern (unifying
+     * them regressed pickle). numpy's _convert_from_type needs the live-class
+     * identity so np.dtype(str)/astype(str) map to UNICODE, not object. */
+    __wasthon_type_is_builtin__deps: ['$WasthonRT'],
+    __wasthon_type_is_builtin: function(typeH, tag) {
+        var rt = WasthonRT;
+        var cls = rt.unwrap(typeH);
+        if (!cls) return 0;
+        switch (tag) {
+            case 1: return cls === rt._b_.str   ? 1 : 0;
+            case 2: return cls === rt._b_.bytes ? 1 : 0;
+            default: return 0;
+        }
+    },
+
+    /* Call the object's class's REAL Py_bf_getbuffer C slot (walking the
+     * MRO — Cython's _memoryviewslice inherits it from its memoryview base).
+     * Returns the slot's rc (0 ok / -1 error), or 1 when no class in the
+     * chain declares one (caller falls through to the generic path).
+     * PyObject_GetBuffer refused Cython typed-memoryview re-exports with
+     * "a bytes-like object is required, not '_memoryviewslice'"
+     * (pandas libjoin.inner_join builds memoryviews over slices). */
+    wasthon_call_bf_getbuffer__deps: ['$WasthonRT'],
+    wasthon_call_bf_getbuffer: function(objH, viewPtr, flags) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (obj === undefined || obj === null) return 1;
+        var cls = null;
+        try { cls = rt.$B.get_class(obj); } catch (e) { return 1; }
+        if (!cls) return 1;
+        var chain = [cls];
+        var mro = cls.tp_mro || cls.__mro__;
+        if (mro) chain = chain.concat(mro);
+        for (var i = 0; i < chain.length; i++) {
+            var c = chain[i];
+            var h = c && c.__wasthon_type_handle__;
+            if (!h) continue;
+            var ti = rt.types.get(h);
+            var p = ti && ti.slots && ti.slots[1 /* Py_bf_getbuffer */];
+            if (!p) continue;
+            rt.pendingException = null;
+            var rc = getWasmTableEntry(p)(objH, viewPtr, flags);
+            if (rc !== 0 && !rt.pendingException) {
+                rt.setError(rt.wrap(rt._b_.BufferError), "getbuffer failed");
+            }
+            return rc;
+        }
+        return 1;
+    },
+
     wasthon_isinstance_of_builtin__deps: ['$WasthonRT'],
     wasthon_isinstance_of_builtin: function(handle, tag) {
         var rt = WasthonRT;
