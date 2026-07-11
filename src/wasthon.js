@@ -8123,6 +8123,15 @@ mergeInto(LibraryManager.library, {
         var s = WasthonRT.asJSStr(WasthonRT.unwrap(handle));
         return s === null ? -1 : s.length;
     },
+    /* PyUnicode_ReadChar — codepoint at index; index space matches
+     * PyUnicode_GetLength (UTF-16 units). matplotlib's ft2font iterates
+     * text this way to build the set of glyphs to load. */
+    PyUnicode_ReadChar__deps: ['$WasthonRT'],
+    PyUnicode_ReadChar: function(handle, index) {
+        var s = WasthonRT.asJSStr(WasthonRT.unwrap(handle));
+        if (s === null || index < 0 || index >= s.length) return -1;
+        return s.codePointAt(index);
+    },
     PyUnicode_AsLatin1String__deps: ['$WasthonRT'],
     PyUnicode_AsLatin1String: function(handle) {
         var rt = WasthonRT;

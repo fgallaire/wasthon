@@ -1267,6 +1267,7 @@ int _PyTime_ObjectToTime_t(PyObject *obj, time_t *sec, _PyTime_round_t round);
 int _PyTime_localtime(time_t t, struct tm *tm);
 
 Py_ssize_t PyUnicode_GetLength(PyObject *unicode);
+Py_UCS4    PyUnicode_ReadChar(PyObject *unicode, Py_ssize_t index);
 PyObject  *PyUnicode_AsLatin1String(PyObject *unicode);
 PyObject  *PyObject_Str(PyObject *o);
 PyObject  *PyObject_CallMethodObjArgs(PyObject *obj, PyObject *name, ...);

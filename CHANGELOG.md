@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_ReadChar`** (`src/wasthon.js`). matplotlib's `ft2font`
+  (raw C-API) iterates text codepoint-by-codepoint to build the glyph
+  set to load; the bridge had no `PyUnicode_ReadChar`. Returns the
+  codepoint at the given index (index space matching the bridge's own
+  `PyUnicode_GetLength`). With this, the whole matplotlib Agg C core —
+  `_c_internal_utils`, `_path`, `ft2font` (+ FreeType via emscripten's
+  port), `_backend_agg`, `_image` and the vendored Agg sources — compiles
+  and links clean against the bridge (only `PyArray_API` stays external,
+  resolved by linking matplotlib into the numpy module).
+
 - **pybind11 support layer for C++ extensions** (`src/wasthon.{c,h,js}`).
   matplotlib's modules bind through pybind11 (not Cython): the smallest
   (`_c_internal_utils`) and the core pivot (`_path`, which consumes the
