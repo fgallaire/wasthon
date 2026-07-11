@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Don't bind `PyProperty_Type` in `wasthon_init`** (`src/wasthon.c`). The
+  pybind11-support commit (ba03bb2) added a
+  `wasthon_bind_builtin_type(BT_PROPERTY, &PyProperty_Type)` call to the shared
+  init; that regressed `test_sqlite3.test_function_destructor_via_gc` from a
+  clean 473 to 472/1 with a `JavascriptError: index out of bounds`. The binding
+  is inert to the failure — bisection showed the crash is a latent
+  out-of-bounds wasm-table call in sqlite3's user-function GC destructor, and
+  ANY code added to `wasthon_init` (the bind call, a stray accessor, …) shifts
+  the wasm layout enough to expose it (deterministic per build). Nothing in the
+  CPython bundle uses `property`↔`&PyProperty_Type`; it existed only for
+  pybind11 (matplotlib, a separate module that is blocked further down anyway).
+  Removed the call — test_sqlite3 back to 473/0. The underlying uninitialized
+  function-pointer read remains to be fixed when the matplotlib port resumes.
+
 - **Metatype `tp_alloc` for pybind11's heap-type bootstrap** (`src/wasthon.c`).
   Every pybind11 module's PyInit runs `detail::get_internals()`, which builds
   three internal types (static_property, default_metaclass, object_base) the

@@ -455,7 +455,16 @@ void wasthon_init(void) {
     wasthon_bind_builtin_type(BT_GETSETDESCR,  &PyGetSetDescr_Type);
     wasthon_bind_builtin_type(BT_MEMBERDESCR,  &PyMemberDescr_Type);
     wasthon_bind_builtin_type(BT_METHODDESCR,  &PyMethodDescr_Type);
-    wasthon_bind_builtin_type(BT_PROPERTY,     &PyProperty_Type);
+    /* PyProperty_Type is deliberately NOT bound here. Binding it in the shared
+     * wasthon_init shifts the CPython bundle's wasm layout just enough to expose
+     * a latent out-of-bounds wasm-table call in sqlite3's user-function GC
+     * destructor (test_sqlite3 test_function_destructor_via_gc regressed 473→472
+     * the moment ba03bb2 added this call — the binding itself is inert, ANY code
+     * added to wasthon_init retriggers it). Nothing in the CPython bundle uses
+     * property↔&PyProperty_Type; it exists only for pybind11 (matplotlib, a
+     * separate module). When that port resumes, re-establish it there without
+     * touching wasthon_init, and fix the real uninitialized-fn-pointer read the
+     * layout shift exposes. */
 
     /* Populate tp_as_number for PyLong_Type / PyFloat_Type so _decimal
      * (and other modules that cache nb_* pointers) can read them. */
