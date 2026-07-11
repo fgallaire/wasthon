@@ -5068,7 +5068,26 @@ mergeInto(LibraryManager.library, {
                 });
                 rt.$B.set_to_dict(cls, '__init__', rt.$B.wrapper_descriptor.$factory(cls, '__init__', cls.tp_init));
             } else if (tpNewPtr) {
-                cls.tp_init = rt._b_.object.tp_init;   /* tp_new did it all */
+                // No own Py_tp_init: inherit it through the bases first, as
+                // CPython's PyType_FromSpec does — a Cython subclass relying
+                // on its parent's `def __init__` (pandas ObjectEngine over
+                // IndexEngine) got object.tp_init here, so the parent init
+                // never ran and every cdef field stayed None (Index.get_loc
+                // died "object of type 'NoneType' has no len()", every
+                // DataFrame column lookup). tp_new-does-it-all (__cinit__
+                // only) still lands on object.tp_init at the mro's end.
+                // The mro isn't populated yet at wiring time, so resolve
+                // lazily on first call and cache the result on the class.
+                cls.tp_init = function(self) {
+                    var f = null, m = cls.tp_mro || [];
+                    for (var ii = 0; ii < m.length; ii++) {
+                        var ik = m[ii];
+                        if (ik && ik !== cls && ik.tp_init && ik.tp_init !== rt._b_.object.tp_init) { f = ik.tp_init; break; }
+                    }
+                    if (!f) { cls.tp_init = rt._b_.object.tp_init; return rt._b_.None; }
+                    cls.tp_init = f;
+                    return f.apply(this, arguments);
+                };
             }
             /* neither slot in the struct: inherit tp_new/tp_init through the
              * MRO, as CPython's PyType_Ready does — pgScancodeWrapper (base
@@ -14083,8 +14102,24 @@ mergeInto(LibraryManager.library, {
             rt.$B.set_to_dict(cls, '__init__', rt.$B.wrapper_descriptor.$factory(
                 cls, '__init__', cls.tp_init));
         } else if (tpNewPtr) {
-            // tp_new fully initialised; alias to object so Brython skips init.
-            cls.tp_init = rt._b_.object.tp_init;
+            // No own Py_tp_init: inherit through the bases first, as CPython's
+            // PyType_FromSpec does — a Cython subclass relying on its parent's
+            // `def __init__` (pandas ObjectEngine over IndexEngine) got
+            // object.tp_init here, so the parent init never ran and every cdef
+            // field stayed None (Index.get_loc died "'NoneType' has no len()",
+            // every DataFrame column lookup). The mro isn't populated yet at
+            // wiring time: resolve lazily on first call, cache on the class.
+            // __cinit__-only types still land on object.tp_init (skip).
+            cls.tp_init = function(self) {
+                var f = null, m = cls.tp_mro || [];
+                for (var ii = 0; ii < m.length; ii++) {
+                    var ik = m[ii];
+                    if (ik && ik !== cls && ik.tp_init && ik.tp_init !== rt._b_.object.tp_init) { f = ik.tp_init; break; }
+                }
+                if (!f) { cls.tp_init = rt._b_.object.tp_init; return rt._b_.None; }
+                cls.tp_init = f;
+                return f.apply(this, arguments);
+            };
         }
 
         // Wire Py_tp_call (slot 77, wasthon.h numbering) as cls.tp_call so
