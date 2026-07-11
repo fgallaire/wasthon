@@ -4786,7 +4786,7 @@ mergeInto(LibraryManager.library, {
         return modHandle;
     },
 
-    PyType_Ready__deps: ['$WasthonRT', '$__wasthon_install_methods', '$__wasthon_install_getsets', '$__wasthon_install_members'],
+    PyType_Ready__deps: ['$WasthonRT', '$__wasthon_install_methods', '$__wasthon_install_getsets', '$__wasthon_install_members', 'PyObject_GetBuffer', 'PyBuffer_Release'],
     PyType_Ready: function(typePtr) {
         var rt = WasthonRT;
         if (typePtr === 0) return -1;
@@ -4877,6 +4877,84 @@ mergeInto(LibraryManager.library, {
             if (membersPtr) __wasthon_install_members(cls, membersPtr);
 
             cls.__wasthon_basicsize__ = basicsize;
+
+            /* PEP 688 __buffer__ for a C type exposing tp_as_buffer (offset
+             * 116): Brython's memoryview factory delegates to it, so
+             * memoryview(ndarray) works and pickle.py's protocol-5
+             * save_picklebuffer can read the in-band bytes (numpy's
+             * array_reduce_ex_picklebuffer path — the default-protocol dumps
+             * of every ndarray). The data crosses as a copy: bytearray when
+             * the buffer is writable (so the unpickled buffer round-trips
+             * writable), bytes when read-only. Non-C-contiguous exporters
+             * raise BufferError as PyBUF_SIMPLE does in CPython. */
+            var asBufPtr = HEAP32[(typePtr + 116) >> 2];
+            if (asBufPtr && HEAP32[asBufPtr >> 2] !== 0) {
+                var tfb = cls.tp_funcs = cls.tp_funcs || {};
+                var bufFn = function(self) {
+                    var viewPtr = _malloc(44);
+                    HEAPU8.fill(0, viewPtr, viewPtr + 44);
+                    rt.pendingException = null;
+                    var rc = _PyObject_GetBuffer(rt.wrap(self), viewPtr, 0);
+                    if (rc !== 0) {
+                        _free(viewPtr);
+                        var pe = rt.pendingException; rt.pendingException = null;
+                        throw rt.pendingExc(pe || { exc: rt.wrap(rt._b_.TypeError),
+                            msg: 'buffer extraction failed' });
+                    }
+                    var buf = HEAP32[viewPtr >> 2];
+                    var len = HEAP32[(viewPtr + 8) >> 2];
+                    var itemsize = HEAP32[(viewPtr + 12) >> 2];
+                    var ro  = HEAP32[(viewPtr + 16) >> 2];
+                    var ndim = HEAP32[(viewPtr + 20) >> 2];
+                    var shapePtr = HEAP32[(viewPtr + 28) >> 2];
+                    var stridesPtr = HEAP32[(viewPtr + 32) >> 2];
+                    var contig = true;
+                    if (ndim > 0 && shapePtr && stridesPtr) {
+                        var expect = itemsize;
+                        for (var di = ndim - 1; di >= 0; di--) {
+                            var dsh = HEAP32[(shapePtr >> 2) + di];
+                            var dst = HEAP32[(stridesPtr >> 2) + di];
+                            if (dsh > 1 && dst !== expect) { contig = false; break; }
+                            expect *= dsh;
+                        }
+                    }
+                    if (!contig) {
+                        _PyBuffer_Release(viewPtr);
+                        _free(viewPtr);
+                        rt.pendingException = null;
+                        throw rt.pendingExc({ exc: rt.wrap(rt._b_.BufferError),
+                            msg: 'underlying buffer is not C-contiguous' });
+                    }
+                    var arr = new Array(len);
+                    for (var bi = 0; bi < len; bi++) arr[bi] = HEAPU8[buf + bi];
+                    _PyBuffer_Release(viewPtr);
+                    _free(viewPtr);
+                    var target = ro ? rt._b_.bytes.$factory(arr)
+                                    : rt._b_.bytearray.$factory(arr);
+                    return rt.$B.$call(rt._b_.memoryview, target);
+                };
+                if (!tfb.__buffer__) {
+                    tfb.__buffer__ = bufFn;
+                    bufFn.ob_type = rt.$B.builtin_method;
+                    /* method_descriptor in the class dict so $B.$getattr's
+                     * mro walk finds and binds it (same install shape as
+                     * __wasthon_install_methods — tp_funcs alone only feeds
+                     * the call_attr fast path, not $getattr). */
+                    try {
+                        var bufDict = rt.$B.get_dict(cls);
+                        if (bufDict) {
+                            var bufDescr = {
+                                ob_type: rt.$B.method_descriptor,
+                                method: bufFn,
+                                d_name: '__buffer__',
+                                d_type: cls,
+                            };
+                            rt.$B.str_dict_set(bufDict, '__buffer__', bufDescr);
+                            bufFn.self = bufDescr;
+                        }
+                    } catch (_) {}
+                }
+            }
 
             /* CPython's PyType_Ready fills the inherited/default slots the
              * static struct left NULL. pygame doesn't set .tp_alloc/.tp_free,
@@ -8979,18 +9057,48 @@ mergeInto(LibraryManager.library, {
             } else if (value !== undefined && groupInner !== null) {
                 /* '(...)' group: unpack the sequence, one varargs out-pointer
                  * per inner code. p itself advances once for the whole group
-                 * (see the shared advance below). */
+                 * (see the shared advance below). 'O!' inside a group takes
+                 * two varargs slots (type ptr + out) for one sequence item —
+                 * the '!' was being read as its own integer slot, so numpy's
+                 * array_setstate "(iO!O!iO)" rejected every ndarray unpickle
+                 * with "integer expected in argument 1". */
+                var gSlot = 0, gIdx = 0, gCodes = 0;
+                for (var gq = 0; gq < groupInner.length; gq++) {
+                    if (groupInner[gq] !== '!') gCodes++;
+                }
                 for (var gk = 0; gk < groupInner.length; gk++) {
                     var ic = groupInner[gk];
+                    var icTyped = (ic === 'O' && gk + 1 < groupInner.length &&
+                                   groupInner[gk + 1] === '!');
                     var gItem;
-                    try { gItem = rt.$B.$getitem(value, gk); }
+                    try { gItem = rt.$B.$getitem(value, gIdx); }
                     catch (e) {
                         rt.setError(rt.wrap(rt._b_.TypeError),
                             (fname || 'function') + ": argument " + (slotIdx + 1) +
-                            " must be a sequence of " + groupInner.length + " items");
+                            " must be a sequence of " + gCodes + " items");
                         return 0;
                     }
-                    var gOut = HEAP32[(p + gk * 4) >> 2];
+                    gIdx++;
+                    if (icTyped) {
+                        var gTypeH = HEAP32[(p + gSlot * 4) >> 2];
+                        var gOutT  = HEAP32[(p + (gSlot + 1) * 4) >> 2];
+                        var gType = (rt.builtinClassForStruct &&
+                                     rt.builtinClassForStruct.get(gTypeH)) ||
+                                    rt.unwrap(gTypeH);
+                        if (gType && !rt.$B.$isinstance(gItem, gType)) {
+                            var gtName = (gType.$infos && gType.$infos.__name__) ||
+                                         gType.tp_name || 'the required type';
+                            rt.setError(rt.wrap(rt._b_.TypeError),
+                                (fname || 'function') + ": argument " + (slotIdx + 1) +
+                                " item " + gIdx + " must be " + gtName);
+                            return 0;
+                        }
+                        if (gOutT !== 0) HEAP32[gOutT >> 2] = rt.wrap(gItem);
+                        gSlot += 2; gk++;          /* step past '!' */
+                        continue;
+                    }
+                    var gOut = HEAP32[(p + gSlot * 4) >> 2];
+                    gSlot++;
                     if (gOut !== 0) {
                         if (ic === 'f' || ic === 'd') {
                             var gf = (typeof gItem === 'number') ? gItem
@@ -12398,11 +12506,40 @@ mergeInto(LibraryManager.library, {
         }
 
         var len = src.length;
-        var buf = _malloc(len);
-        if (buf === 0 && len !== 0) {
-            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.MemoryError),
-                "buffer allocation failed");
-            return -1;
+        /* The buffer must outlive the view with the OBJECT's lifetime —
+         * CPython contract ("it is up to the object that supplies the buffer
+         * to guarantee that the buffer sticks around after the release",
+         * numpy PyArray_FromBuffer releases the view and keeps aliasing buf,
+         * so freeing on release handed np.frombuffer dangling memory and
+         * protocol-5 unpickled arrays came back as heap garbage). Cache the
+         * allocation on the object (same model as __wasthon_cstr__) and mark
+         * it object-owned so wasthon_buffer_release skips the free; each
+         * GetBuffer refreshes the content from the live source. */
+        var buf = 0;
+        if (obj.__wasthon_bufptr__ !== undefined &&
+                obj.__wasthon_buflen__ === len) {
+            buf = obj.__wasthon_bufptr__;
+        }
+        if (buf === 0) {
+            if (obj.__wasthon_bufptr__ !== undefined) {
+                if (WasthonRT._wasthonObjOwnedBufs)
+                    WasthonRT._wasthonObjOwnedBufs.delete(obj.__wasthon_bufptr__);
+                _free(obj.__wasthon_bufptr__);
+                delete obj.__wasthon_bufptr__;
+            }
+            buf = _malloc(len);
+            if (buf === 0 && len !== 0) {
+                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.MemoryError),
+                    "buffer allocation failed");
+                return -1;
+            }
+            try {
+                obj.__wasthon_bufptr__ = buf;
+                obj.__wasthon_buflen__ = len;
+                if (!WasthonRT._wasthonObjOwnedBufs)
+                    WasthonRT._wasthonObjOwnedBufs = new Set();
+                WasthonRT._wasthonObjOwnedBufs.add(buf);
+            } catch (_) {}
         }
 
         // Copy into linear memory. TypedArray.set accepts both Uint8Array
@@ -12478,6 +12615,11 @@ mergeInto(LibraryManager.library, {
                 for (var i = 0; i < len; i++) src[i] = HEAPU8[bufPtr + i];
             }
         }
+        // Object-owned allocation (get_buffer_data cache): lives as long as
+        // the supplying object, per the CPython buffer contract — not freed
+        // on release (numpy frombuffer keeps aliasing it).
+        if (WasthonRT._wasthonObjOwnedBufs &&
+                WasthonRT._wasthonObjOwnedBufs.has(bufPtr)) return;
         _free(bufPtr);
     },
 
@@ -14955,6 +15097,18 @@ mergeInto(LibraryManager.library, {
                     (methName === '__reduce_ex__' || methName === '__reduce__')) {
                 var rself = jsArgs[0];
                 var subcls = rself && rself.ob_type;
+                /* If the instance's C-visible type IS its Python class (a
+                 * C-defined class — numpy's Int32DType), the C reduce saw the
+                 * real type and its choice of callable is deliberate:
+                 * arraydescr_reduce names np.dtype for every descr instance,
+                 * and swapping in the concrete DType broke unpickling
+                 * (Int32DType('i4',…) is TypeError by design). Only
+                 * Brython-defined subclasses need the swap — there the C side
+                 * saw the parent struct. */
+                if (subcls && rself.__wasthon_type__ &&
+                        subcls.__wasthon_type_handle__ === rself.__wasthon_type__) {
+                    subcls = null;
+                }
                 if (subcls && typeof result.length === 'number' && result.length >= 2) {
                     var isStrictBase = function(t) {
                         return t && t !== subcls && rt.$B.is_type && rt.$B.is_type(t) &&
