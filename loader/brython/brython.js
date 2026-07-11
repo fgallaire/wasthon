@@ -873,7 +873,8 @@ ft_buffer+=char
 pos++
 continue}else{
 if(ft_buffer.length > 0){t.push(Token(FT_MIDDLE[ft_type],ft_buffer,line_num,ft_start,line_num,ft_start+ft_buffer.length,line))}
-token_mode='regular_within_ft'
+token_mode=new String('regular_within_ft')
+token_mode.nesting=braces.length
 ft_expr_start=pos-line_start
 state=null
 token_modes.push(token_mode)}}else if(char=='}'){if(src.charAt(pos)=='}'){
@@ -899,13 +900,17 @@ t.push(Token(FT_MIDDLE[ft_type],format_specifier,line_num,ft_start,line_num,ft_s
 token_modes.pop()
 token_mode=$B.last(token_modes)
 continue}}else if(char=='{'){
-t.push(Token(FT_MIDDLE[ft_type],format_specifier,line_num,ft_start,line_num,ft_start+format_specifier.length,line))
-token_mode='regular_within_ft'
+if(format_specifier.length > 0){
+t.push(Token(FT_MIDDLE[ft_type],format_specifier,line_num,ft_start,line_num,ft_start+format_specifier.length,line))}
+token_mode=new String('regular_within_ft')
+token_mode.nesting=braces.length
 ft_expr_start=pos-line_start
 state=null
 token_modes.push(token_mode)}else if(char=='}'){
 t.push(Token(FT_MIDDLE[ft_type],format_specifier,line_num,ft_start,line_num,ft_start+format_specifier.length,line))
 t.push(Token('OP',char,line_num,pos-line_start,line_num,pos-line_start+1,line))
+format_specifier=''
+ft_start=pos-line_start+1
 if(braces.length==0 ||$B.last(braces).char !=='{'){throw Error('wrong braces')}
 braces.pop()
 token_modes.pop()
@@ -1053,7 +1058,7 @@ token_modes.pop()
 token_mode='format_specifier'
 token_modes.push(token_mode)
 continue}}else{
-let closing_brace=Token('OP',char,line_num,pos-line_start-op.length+1,line_num,pos-line_start+1,line)
+if(nesting_level(token_modes)==braces.length-1){let closing_brace=Token('OP',char,line_num,pos-line_start-op.length+1,line_num,pos-line_start+1,line)
 closing_brace.metadata=src.substring(
 line_start+ft_expr_start,pos-1)
 t.push(closing_brace)
@@ -1062,7 +1067,7 @@ token_mode=token_modes[token_modes.length-1]
 if(braces.length==0 ||$B.last(braces).char !=='{'){t.push(Error('wrong braces'))
 return t}
 braces.pop()
-continue}}
+continue}}}
 var op=char
 if(op2.includes(char+src[pos])){op=char+src[pos]
 pos++}
@@ -1834,9 +1839,19 @@ if($B.is_or_equals(key,item)){return true}}catch(err){if($B.$is_exc(err,[_b_.Sto
 throw err}}}}else{$B.RAISE(_b_.TypeError,'argument of type '+
 `'${$B.class_name(obj)}' is not iterable`)}}}
 $B.$is_member=function(item,_set){var contains=$B.$getattr($B.get_class(_set),'__contains__',$B.NULL)
-if(contains===$B.NULL){$B.RAISE(_b_.TypeError,`argument of type '${$B.class_name(_set)}' `+
+if(contains===$B.NULL){var it
+var _gi=$B.search_in_mro($B.get_class(_set),'__getitem__',$B.NULL)
+if(_gi !==$B.NULL && _gi.$mp_only &&
+$B.search_slot($B.get_class(_set),'tp_iter',$B.NULL)===$B.NULL){$B.RAISE(_b_.TypeError,`argument of type '${$B.class_name(_set)}' `+
 'is not a container or iterable'
 )}
+try{it=_b_.iter(_set)}catch(err){$B.RAISE(_b_.TypeError,`argument of type '${$B.class_name(_set)}' `+
+'is not a container or iterable'
+)}
+while(true){var v
+try{v=_b_.next(it)}catch(err){if($B.is_exc(err,[_b_.StopIteration])){return false}
+throw err}
+if($B.is_or_equals(item,v)){return true}}}
 return $B.$call(contains,_set,item)}
 $B.nb_call_attr=0
 $B.call_attr=function(obj,attr,inum,...args){
@@ -2331,8 +2346,21 @@ if(cls !==object && cls.__wasthon_type_handle__ && $B.$wasthon_new_instance){
 var w=$B.$wasthon_new_instance(cls)
 if(w !==null && w !==undefined){return w}}
 var res={ob_type:cls}
-if(cls !==object &&
-($B.get_from_dict(cls,'__slots__',$B.NULL)===$B.NULL || cls.$slots_has_dict)){$B.init_dict(res)}
+if(cls !==object){
+// CPython: instances lack a __dict__ only when EVERY class below object in
+// the mro is __slots__-only; a single slot-less class contributes the dict
+// (pandas' SingleBlockManager: a __slots__=() leaf over plain bases must
+// still get a dict). Classes with no queryable dict count as contributing.
+var needs_dict=cls.$slots_has_dict===true
+if(! needs_dict){var klasses=[cls].concat($B.get_mro(cls)||[])
+for(var kls of klasses){if(kls===object){continue}
+if(kls.$slots_has_dict){needs_dict=true
+break}
+var kd=null
+try{kd=$B.get_dict(kls)}catch(err){}
+if(! kd || $B.str_dict_get(kd,'__slots__',$B.NULL)===$B.NULL){needs_dict=true
+break}}}
+if(needs_dict){$B.init_dict(res)}}
 return res}
 var object_funcs=_b_.object.tp_funcs={}
 object_funcs.__class___get=function(self){return $B.get_class(self)}
@@ -2742,7 +2770,7 @@ if(cls.tp_subclasses===undefined){console.log('no subclasses',cls)}
 for(var kls of cls.tp_subclasses){reset_call(kls)}}
 $B.make_descr_get=function(cls){cls.tp_descr_get=$B.NULL
 var get=$B.get_from_dict(cls,'__get__',$B.NULL)
-if(get !==$B.NULL){cls.tp_descr_get=get}else if(cls.tp_base){cls.tp_descr_get=cls.tp_base.tp_descr_get ??
+if(get !==$B.NULL){cls.tp_descr_get=typeof get==='function'?get:function(self,obj,klass){return $B.$call(get,self,obj===$B.NULL?_b_.None:obj,klass===undefined||klass===$B.NULL?_b_.None:klass)}}else if(cls.tp_base){cls.tp_descr_get=cls.tp_base.tp_descr_get ??
 (cls.tp_base.tp_descr_get=$B.make_descr_get(cls.tp_base))}
 return cls.tp_descr_get}
 function reset_descr_get(cls){$B.make_descr_get(cls)
@@ -2877,7 +2905,7 @@ var new_func=cls.tp_new
 if(new_func===undefined){console.log('no tp_new',cls,args,kw)}
 if(test){console.log('new_func',new_func,'is slot tp_new',new_func.$is_slot)}
 var instance
-if(new_func.$is_slot){instance=new_func(cls,args,kw)}else{instance=new_func(cls,...args,$B.dict2kwarg(kw))}
+if(new_func.$is_slot){instance=new_func(cls,args,kw)}else if(typeof new_func!=='function'){instance=$B.$call(new_func,cls,...args,$B.dict2kwarg(kw))}else{instance=new_func(cls,...args,$B.dict2kwarg(kw))}
 var instance_class=$B.get_class(instance)
 if(test){console.log('instance of type',instance,'cls',cls)
 console.log('instance type is cls ?',$B.type_check(instance,cls))}
@@ -2888,7 +2916,7 @@ if(init_func !==$B.NULL && init_func !==_b_.object.tp_init){
 if(typeof init_func=='function'){
 try{if(kw_len > 0){var kwarg=$B.dict2kwarg(kw)
 init_func.call(null,instance,...$.args,kwarg)}else{init_func.call(null,instance,...$.args)}}catch(err){throw err}}
-else if(init_func!==undefined && _b_.callable(init_func)){if(kw_len > 0){$B.$call(init_func,...$.args,$B.dict2kwarg(kw))}else{$B.$call(init_func,...$.args)}}}}
+else if(init_func!==undefined && _b_.callable(init_func)){if(kw_len > 0){$B.$call(init_func,instance,...$.args,$B.dict2kwarg(kw))}else{$B.$call(init_func,instance,...$.args)}}}}
 if(test){console.log('type.tp_call returns instance',instance)}
 return instance}
 _b_.type.tp_getattro=function(obj,name){var test=false 
@@ -3092,8 +3120,8 @@ $B.internal_property=function(module,fget,fset){
 for(var func of[fget,fset]){if($B.get_class(func)===$B.JSFunction){$B.set_type(func,$B.function)}}
 return{
 ob_type:_b_.property,prop_get:fget,prop_set:fset ?? _b_.None,prop_del:_b_.None,doc:_b_.None}}
-property.$factory=function(fget,fset,fdel,doc){var res={ob_type:property}
-property.tp_init(res,fget,fset ?? _b_.None,fdel ?? _b_.None,doc ?? _b_.None)
+property.$factory=function(...args){var res={ob_type:property}
+property.tp_init(res,...args)
 return res}
 _b_.property.tp_descr_set=function(self,obj,value){if(self.prop_set===_b_.None){var fi=self.prop_get.$function_infos
 var name=fi ? fi[$B.func_attrs.__name__] : (self.prop_name ?? self.__name__)
@@ -3125,12 +3153,9 @@ property_funcs.__isabstractmethod___set=function(self){}
 property_funcs.__name___get=function(self){return $B.$getattr(self.prop_get,'__name__')}
 property_funcs.__name___set=function(self){}
 property_funcs.__set_name__=function(self,cls,name){self.prop_name=name}
-property_funcs.deleter=function(self,fdel){self.prop_del=fdel
-return self}
-property_funcs.getter=function(self,fget){self.prop_get=fget
-return self}
-property_funcs.setter=function(self,fset){self.prop_set=fset
-return self}
+property_funcs.deleter=function(self,fdel){var np=Object.assign({},self);np.prop_del=fdel;return np}
+property_funcs.getter=function(self,fget){var np=Object.assign({},self);np.prop_get=fget;return np}
+property_funcs.setter=function(self,fset){var np=Object.assign({},self);np.prop_set=fset;return np}
 _b_.property.tp_methods=["getter","setter","deleter","__set_name__"]
 _b_.property.tp_members=[["fget",$B.TYPES.OBJECT,"prop_get",1],["fset",$B.TYPES.OBJECT,"prop_set",1],["fdel",$B.TYPES.OBJECT,"prop_del",1],["__doc__",$B.TYPES.OBJECT,"prop_doc",0]
 ]
@@ -3425,7 +3450,7 @@ return res}
 $B.method.tp_repr=function(self){var name=$B.$getattr(self.im_func,'__qualname__')
 return "<bound method "+name+
 " of "+_b_.str.$factory(self.im_self)+">"}
-$B.method.tp_hash=function(self){}
+$B.method.tp_hash=function(self){return($B.$hash(self.im_self)^$B.$hash(self.im_func))&0x7FFFFFFF}
 $B.method.tp_call=function(self,...args){return $B.$call(self.im_func,self.im_self,...args)}
 $B.method.tp_getattro=function(self,attr){var tp=$B.get_class(self)
 var descr=$B.search_in_mro(tp,attr,$B.NULL)
@@ -3626,10 +3651,19 @@ builtin_function_or_method_funcs.__self___get=function(self){return $B.imported.
 builtin_function_or_method_funcs.__self___set=_b_.None
 builtin_function_or_method_funcs.__text_signature___get=function(self){return self.$text_signature===undefined?_b_.None:self.$text_signature}
 builtin_function_or_method_funcs.__text_signature___set=function(self){}
+builtin_function_or_method_funcs.__doc___get=function(self){
+// a doc installed at runtime (numpy add_docstring) wins over the creation
+// one; without this getset the lookup fell through to the mro and every
+// C builtin returned OBJECT's docstring
+if(Object.hasOwn(self,'__doc__')){return self.__doc__ ?? _b_.None}
+var infos=self.$function_infos
+var d=infos?infos[$B.func_attrs.__doc__]:undefined
+return d===undefined||d===null?_b_.None:d}
+builtin_function_or_method_funcs.__doc___set=_b_.None
 $B.builtin_function_or_method.tp_methods=["__reduce__"]
 $B.builtin_function_or_method.tp_members=[["__module__",$B.TYPES.OBJECT,"m_module",0]
 ]
-$B.builtin_function_or_method.tp_getset=["__name__","__qualname__","__self__","__text_signature__"
+$B.builtin_function_or_method.tp_getset=["__name__","__qualname__","__self__","__text_signature__","__doc__"
 ]
 $B.set_func_names($B.builtin_function_or_method,"builtins")
 function doc_set(f,value){$B.check_infos(f)
@@ -3999,7 +4033,7 @@ length+=line_length}
 return result}
 _IOBase_funcs.seek=function(_self){_io_unsupported('seek')}
 _IOBase_funcs.seekable=function(){return false}
-_IOBase_funcs.tell=function(self){return $B.$getattr(self,'seek')(0,1)}
+_IOBase_funcs.tell=function(self){return $B.$call($B.$getattr(self,'seek'),0,1)}
 _IOBase_funcs.truncate=function(){_io_unsupported('truncate')}
 _IOBase_funcs.writable=function(){return false}
 _IOBase_funcs.writelines=function(_self,lines){var iter,res;
@@ -4903,7 +4937,9 @@ if(typeof obj==="boolean"){return obj ? 1 :0}else if(typeof obj==="number"){res=
 else{var klass=$B.get_class(obj)
 var hash_func=$B.search_slot(klass,'tp_hash',$B.NULL)
 if(hash_func !==$B.NULL && hash_func !==_b_.None){res=hash_func(obj)
-if(! $B.is_int(res)){$B.RAISE(_b_.TypeError,'__hash__ method should return an integer')}}
+if(! $B.is_int(res)){if(typeof res==='bigint'){res=Number(BigInt.asIntN(32,res))}
+else if(res !==undefined && res !==null && $B.is_big_int && $B.is_big_int(res)){res=Number(BigInt.asIntN(32,$B.int_value(res)))}
+else{$B.RAISE(_b_.TypeError,'__hash__ method should return an integer')}}}
 else{$B.RAISE(_b_.TypeError,"unhashable type: '"+
 _b_.str.$factory($B.jsobj2pyobj(obj))+"'"
 )}}
@@ -4974,7 +5010,11 @@ if(obj_class===cls){return true}
 var mro=$B.get_mro(obj_class)
 if(mro){for(var i=0;i < mro.length;i++){if(mro[i]===cls){return true}}}
 var instancecheck=$B.type_getattribute($B.get_class(cls),'__instancecheck__',$B.NULL)
-if(instancecheck !==$B.NULL){if(instancecheck.method !==_b_.type.tp_funcs.__instancecheck__){return $B.$call(instancecheck,cls,obj)}}
+if(instancecheck !==$B.NULL){if(instancecheck.method !==_b_.type.tp_funcs.__instancecheck__){
+// already bound (e.g. a classmethod on the metaclass): the receiver is in
+// the binding, passing cls again would shift every parameter by one
+if(instancecheck.im_self !==undefined){return $B.$call(instancecheck,obj)}
+return $B.$call(instancecheck,cls,obj)}}
 return false}
 var issubclass=_b_.issubclass=function(klass,classinfo){check_nb_args_no_kw('issubclass',2,arguments)
 if($B.is_tuple(classinfo)){for(var i=0;i < classinfo.length;i++){if(issubclass(klass,classinfo[i])){return true}}
@@ -4985,6 +5025,7 @@ if(mro===undefined){$B.RAISE(_b_.TypeError,'issubclass() arg 1 must be a class')
 if(klass===classinfo ||mro.indexOf(classinfo)>-1){return true}
 var sch=$B.type_getattribute($B.get_class(classinfo),'__subclasscheck__',$B.NULL)
 if(sch===$B.NULL){return false}
+if(sch.im_self !==undefined){return $B.$call(sch,klass)}
 return $B.$call(sch,classinfo,klass)}
 $B.iterator.tp_iter=function(self){return self}
 $B.iterator.tp_iternext=function*(self){var ob_type=$B.get_class(self.it_seq)
@@ -5037,7 +5078,7 @@ var len=_b_.len=function(obj){check_nb_args_no_kw('len',1,arguments)
 var klass=$B.get_class(obj)
 var method=$B.search_in_mro(klass,'__len__',null)
 if(method===null){$B.RAISE(_b_.TypeError,"object of type '"+
-$B.class_name(obj)+"' has no len() VVV")}
+$B.class_name(obj)+"' has no len()")}
 let res=$B.$call(method,obj)
 if(res===undefined){console.log('call',method,'with obj',obj,'returns undef')}
 if(!$B.is_int(res)){$B.RAISE(_b_.TypeError,`'${$B.class_name(res)}' object cannot be interpreted as an integer`
@@ -5347,7 +5388,7 @@ return}else{self.type=type
 self.obj=_b_.None
 self.obj_type=_b_.None
 return}}
-if(Array.isArray(object_or_type)){object_or_type=object_or_type[0]}
+if(Array.isArray(object_or_type)&&object_or_type.__class__===undefined&&object_or_type.ob_type===undefined){object_or_type=object_or_type[0]}
 self.type=type
 self.obj=object_or_type
 self.obj_type=supercheck(type,object_or_type)}
@@ -6732,14 +6773,16 @@ var $=$B.args("indices",2,{self:null,length:null},arguments)
 var self=$.self,length=$.length
 var len=$B.PyNumber_Index(length)
 if(len < 0){$B.RAISE(_b_.ValueError,"length should not be negative")}
-var _step=(self.step==_b_.None)? 1 :self.step,_start,_stop
-if(_step < 0){_start=self.start
-_stop=self.stop
+var nstart=(self.start==_b_.None)?_b_.None:$B.PyNumber_Index(self.start)
+var nstop=(self.stop==_b_.None)?_b_.None:$B.PyNumber_Index(self.stop)
+var _step=(self.step==_b_.None)? 1 :$B.PyNumber_Index(self.step),_start,_stop
+if(_step < 0){_start=nstart
+_stop=nstop
 _start=(_start==_b_.None)? len-1 :
-(_start < 0)? _b_.max(-1,_start+len):_b_.min(len-1,self.start)
-_stop=(self.stop==_b_.None)?-1 :
-(_stop < 0)? _b_.max(-1,_stop+len):_b_.min(len-1,self.stop)}else{_start=(self.start==_b_.None)? 0 :_b_.min(len,self.start)
-_stop=(self.stop==_b_.None)? len :_b_.min(len,self.stop)
+(_start < 0)? _b_.max(-1,_start+len):_b_.min(len-1,nstart)
+_stop=(nstop==_b_.None)?-1 :
+(_stop < 0)? _b_.max(-1,_stop+len):_b_.min(len-1,nstop)}else{_start=(nstart==_b_.None)? 0 :_b_.min(len,nstart)
+_stop=(nstop==_b_.None)? len :_b_.min(len,nstop)
 if(_start < 0){_start=_b_.max(0,_start+len)}
 if(_stop < 0){_stop=_b_.max(0,_stop+len)}}
 return _b_.tuple.$factory([_start,_stop,_step])}
@@ -8165,7 +8208,7 @@ res=_b_.NotImplemented
 break}
 return res}
 _b_.set.nb_subtract=function(self,other){
-if(! $B.$isinstance(self,_b_.set)||
+if(! $B.$isinstance(self,[set,frozenset])||
 ! $B.$isinstance(other,[set,frozenset])){return _b_.NotImplemented}
 return set_difference(self,other)}
 _b_.set.nb_and=function(self,other){if(! $B.$isinstance(self,[set,frozenset])||
@@ -8658,7 +8701,7 @@ if(fmt.mapping_key !==undefined){value=$B.$call(getitem,fmt.mapping_key)}else{if
 if(value===undefined){$B.RAISE(_b_.TypeError,"not enough arguments for format string")}
 argpos++}}
 ret+=func(value,fmt,type)}}
-if(argpos !==null){if(args.length > argpos){$B.RAISE(_b_.TypeError,"not enough arguments for format string")}else if(args.length < argpos){$B.RAISE(_b_.TypeError,"not all arguments converted during string formatting")}}else if(nbph==0){$B.RAISE(_b_.TypeError,"not all arguments converted during string formatting")}
+if(argpos !==null){if(args.length > argpos){$B.RAISE(_b_.TypeError,"not enough arguments for format string")}else if(args.length < argpos){$B.RAISE(_b_.TypeError,"not all arguments converted during string formatting")}}else if(nbph==0 && ! is_mapping(args)){$B.RAISE(_b_.TypeError,"not all arguments converted during string formatting")}
 return ret}
 var combining=[]
 for(var cp=0x300;cp <=0x36F;cp++){combining.push(String.fromCharCode(cp))}
@@ -9505,8 +9548,8 @@ new RegExp(RegExp.escape(sep),'g')
 var mo
 for(mo of self.matchAll(re)){nb_split++
 if(nb_split==maxsplit){break}}
-if(mo){var pos=mo.index+mo[0].length
-if(pos < self.length){res.push(self.substr(pos))}}}
+if(nb_split==maxsplit && mo){var pos=mo.index+mo[0].length
+res.push(self.substr(pos))}}
 if(self instanceof String){res=res.map($B.String)}
 return $B.$list(res)}
 str_funcs.splitlines=function(self,keepends){var args_length=arguments.length
@@ -10716,8 +10759,7 @@ const NINF=fast_float(Number.NEGATIVE_INFINITY),INF=fast_float(Number.POSITIVE_I
 "use strict";
 (function($B){var _b_=$B.builtins
 function conv_complex(...objs){var res=[]
-for(var obj of objs){if($B.$isinstance(obj,_b_.float)){res.push($B.make_complex(obj))}else if($B.is_int(obj)){res.push($B.make_complex(obj))}else{var complex_method=$B.$getattr($B.get_class(obj),'__complex__',$B.NULL)
-if(complex_method !==$B.NULL){res.push($B.$call(complex_method,obj))}else{res.push($B.NULL)}}}
+for(var obj of objs){if($B.$isinstance(obj,_b_.complex)){res.push(obj)}else if($B.$isinstance(obj,_b_.float)){res.push($B.make_complex(obj))}else if($B.is_int(obj)){res.push($B.make_complex(obj))}else{res.push($B.NULL)}}
 return res}
 var complex=_b_.complex
 function complex_eq(self,other){if($B.$isinstance(other,complex)){return self.real.value==other.real.value &&
@@ -10887,11 +10929,8 @@ res.ob_type=cls
 $B.init_dict(res)
 return res}
 _b_.complex.tp_repr=function(self){$B.builtins_repr_check(complex,arguments)
-var real=Number.isInteger(self.real.value)?
-self.real.value+'' :
-_b_.str.$factory(self.real),imag=Number.isInteger(self.imag.value)?
-self.imag.value+'' :
-_b_.str.$factory(self.imag)
+var real=_b_.str.$factory(self.real),imag=_b_.str.$factory(self.imag)
+if(real.endsWith('.0')){real=real.substr(0,real.length-2)}
 if(imag.endsWith('.0')){imag=imag.substr(0,imag.length-2)}
 if(Object.is(self.imag.value,-0)){imag="-0"}
 var sign=imag.startsWith('-')? '' :'+'
@@ -11599,7 +11638,7 @@ var mappingproxy_funcs=$B.mappingproxy.tp_funcs={}
 mappingproxy_funcs.__class_getitem__=function(self){}
 mappingproxy_funcs.__reversed__=function(self){}
 mappingproxy_funcs.copy=function(self){var copy_func=$B.type_getattribute(_b_.dict,'copy')
-return $B.mappingproxy.tp_new($B.mappingproxy,[copy_func(self.mapping)])}
+return $B.$call(copy_func,self.mapping)}
 mappingproxy_funcs.get=function(self,key,_default){if(dict.$contains(self.mapping,key)){return dict.$getitem(self.mapping,key)}
 return _default ?? _b_.None}
 mappingproxy_funcs.items=function(self){return _b_.dict.tp_funcs.items(self.mapping)}
@@ -11659,12 +11698,11 @@ $B.class_name(self))}
 function mp_subscript(self,key){var klass=$B.get_class(self)
 var factory=function(list_res){list_res.ob_type=klass
 return list_res}
-if(! $B.$isinstance(key,[_b_.int,_b_.slice])){$B.RAISE(_b_.TypeError,`list indices must be integers or slices, `+
-`not ${$B.class_name(key)}`
-)}
 if($B.$isinstance(key,_b_.slice)){return _b_.list.$getitem_slice(self,key)}
-try{var int_key=$B.PyNumber_Index(key)}catch(err){$B.RAISE(_b_.TypeError,$B.class_name(self)+
-" indices must be integer, not "+$B.class_name(key))}
+// anything with __index__ works as a list index (numpy int scalars);
+// PyNumber_Index below raises for the rest
+try{var int_key=$B.PyNumber_Index(key)}catch(err){$B.RAISE(_b_.TypeError,`list indices must be integers or slices, `+
+`not ${$B.class_name(key)}`)}
 let items=self.valueOf(),pos=int_key
 if(int_key < 0){pos=items.length+pos}
 if(pos >=0 && pos < items.length){return items[pos]}
@@ -12005,6 +12043,7 @@ return _repr(self)}
 _b_.tuple.tp_hash=function(self){
 var x=0x3456789
 for(var i=0,len=self.length;i < len;i++){var y=_b_.hash(self[i])
+if(typeof y==='bigint'){y=Number(BigInt.asIntN(32,y))}
 x=c_mul(1000003,x)^ y & 0xFFFFFFFF}
 return x}
 _b_.tuple.tp_iter=function(self){return{
@@ -13590,7 +13629,9 @@ $B.module_setattr(self,'__doc__',$.doc)}
 $B.module.tp_new=function(cls,args,kw){var res={ob_type:cls}
 $B.init_dict(res)
 return res}
-$B.module.tp_setattro=function(self,attr,value){var test=false 
+$B.module.tp_setattro=function(self,attr,value){var test=false
+if($B.get_class(self)!==$B.module){
+return _b_.object.tp_setattro(self,attr,value)}
 var res=_b_.object.tp_getattro(self,attr)
 if(res !==$B.NULL){if(test){console.log('res',res,$B.get_class(res).tp_name)}
 if(res.__set__){return res.__set__(value)}}
@@ -13976,10 +14017,10 @@ var cached=$B.$getattr(spec,"cached")
 if(! $B.is_none(cached)){$B.module_setattr(module,'__cached__',cached)}
 if($B.is_none(_loader)){if(!$B.is_none(locs)){_sys_modules[_spec_name]=module}else{$B.RAISE(_b_.ModuleNotFoundError,"No module named '"+mod_name+"'")}}else{var exec_module=$B.$getattr(_loader,"exec_module",_b_.None)
 if($B.is_none(exec_module)){
-module=$B.$getattr(_loader,"load_module")(_spec_name)}else{_sys_modules[_spec_name]=module
+module=$B.$call($B.$getattr(_loader,"load_module"),_spec_name)}else{_sys_modules[_spec_name]=module
 $B.namespace[_spec_name]=Object.create(null)
 if(module===undefined){console.log('no module !!!')}
-try{exec_module(module)}catch(e){delete _sys_modules[_spec_name]
+try{$B.$call(exec_module,module)}catch(e){delete _sys_modules[_spec_name]
 throw e}}}
 return _sys_modules[_spec_name]}
 $B.path_importer_cache={}
@@ -14811,6 +14852,10 @@ $B.set_function_infos(new_func,{__name__:'__new__',__qualname__:'__new__'}
 cls.tp_new.$is_slot=true
 $B.set_to_dict(cls,'__new__',new_func)}
 function make_next(cls){var next_func=function(obj){var itn=cls.tp_iternext(obj)
+// native slots are JS generator functions (call returns a generator);
+// a C-convention slot returns the next VALUE directly (StopIteration
+// already raised by its wrapper)
+if(!(itn && typeof itn.next=='function' && typeof itn.throw=='function')){return itn}
 var res=itn.next()
 if(res.done){$B.RAISE(_b_.StopIteration,res.value)}
 return res.value}
@@ -31141,7 +31186,7 @@ if(
 &&
 $B._PyPegen.lookahead(0,_tmp_239_rule,p)
 )
-{_res=$B.helper_functions.$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"f-string: expecting '=', or '!', or ':', or '}'");
+{_res=$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"f-string: expecting '=', or '!', or ':', or '}'");
 break;}
 p.mark=_mark;}
 {
@@ -31158,7 +31203,7 @@ if(
 &&
 $B._PyPegen.lookahead(0,_tmp_240_rule,p)
 )
-{_res=$B.helper_functions.$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"f-string: expecting '!', or ':', or '}'");
+{_res=$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"f-string: expecting '!', or ':', or '}'");
 break;}
 p.mark=_mark;}
 {
@@ -31199,7 +31244,7 @@ if(
 &&
 $B._PyPegen.lookahead(0,_tmp_242_rule,p)
 )
-{_res=$B.helper_functions.$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"f-string: expecting ':' or '}'");
+{_res=$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"f-string: expecting ':' or '}'");
 break;}
 p.mark=_mark;}
 {
@@ -31227,7 +31272,7 @@ if(
 &&
 $B._PyPegen.lookahead_with_int(0,$B._PyPegen.expect_token,p,26)
 )
-{_res=$B.helper_functions.$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"f-string: expecting '}', or format specs");
+{_res=$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"f-string: expecting '}', or format specs");
 break;}
 p.mark=_mark;}
 {
@@ -31249,7 +31294,7 @@ if(
 &&
 $B._PyPegen.lookahead_with_int(0,$B._PyPegen.expect_token,p,26)
 )
-{_res=$B.helper_functions.$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"f-string: expecting '}'");
+{_res=$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"f-string: expecting '}'");
 break;}
 p.mark=_mark;}
 _res=NULL;
@@ -31358,7 +31403,7 @@ if(
 &&
 $B._PyPegen.lookahead(0,_tmp_247_rule,p)
 )
-{_res=$B.helper_functions.$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"t-string: expecting '=', or '!', or ':', or '}'");
+{_res=$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"t-string: expecting '=', or '!', or ':', or '}'");
 break;}
 p.mark=_mark;}
 {
@@ -31375,7 +31420,7 @@ if(
 &&
 $B._PyPegen.lookahead(0,_tmp_248_rule,p)
 )
-{_res=$B.helper_functions.$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"t-string: expecting '!', or ':', or '}'");
+{_res=$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"t-string: expecting '!', or ':', or '}'");
 break;}
 p.mark=_mark;}
 {
@@ -31416,7 +31461,7 @@ if(
 &&
 $B._PyPegen.lookahead(0,_tmp_250_rule,p)
 )
-{_res=$B.helper_functions.$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"t-string: expecting ':' or '}'");
+{_res=$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"t-string: expecting ':' or '}'");
 break;}
 p.mark=_mark;}
 {
@@ -31444,7 +31489,7 @@ if(
 &&
 $B._PyPegen.lookahead_with_int(0,$B._PyPegen.expect_token,p,26)
 )
-{_res=$B.helper_functions.$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"t-string: expecting '}', or format specs");
+{_res=$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"t-string: expecting '}', or format specs");
 break;}
 p.mark=_mark;}
 {
@@ -31466,7 +31511,7 @@ if(
 &&
 $B._PyPegen.lookahead_with_int(0,$B._PyPegen.expect_token,p,26)
 )
-{_res=$B.helper_functions.$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"t-string: expecting '}'");
+{_res=$B._PyPegen.PyErr_Occurred()? $B.parser_constants.NULL :$B.helper_functions.RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN(p,"t-string: expecting '}'");
 break;}
 p.mark=_mark;}
 _res=NULL;

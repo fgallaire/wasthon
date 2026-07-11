@@ -18,6 +18,140 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+- [x] **`str.split(sep, maxsplit)`: trailing empty field lost + latent double-push** (engine). The implementation delegates to JS `String.split(sep, limit)` (which TRUNCATES at limit) then re-appends the tail after the maxsplit-th separator — but only `if (pos < self.length)`, so `'a:'.split(':', 1)` returned `['a']` instead of CPython's `['a', '']` (broke matplotlibrc parsing: only 310 of 437 rc keys survived, `rcParams['figure.hooks']` KeyError killed `import matplotlib`). Worse, the re-append ran even when the JS split was NOT truncated (`maxsplit` larger than the number of separators), duplicating the last field. Fix: append (even an empty string) exactly when the counting loop hit maxsplit.
+
+- [x] **`property.getter/setter/deleter` mutated the parent property** (engine). The three decorators did `self.prop_set = fset; return self` — CPython returns a NEW property. So `class B(A): @A.x.setter def x(...)` rewired A's OWN setter to B's, and any subclass setter that delegates with `A.x.fset(self, v)` recursed forever (matplotlib `OffsetBox.axes` @Artist.axes.setter → RecursionError building the first Figure). Fix: copy-on-decorate (`Object.assign({}, self)` + the changed slot).
+
+- [x] **`$B.method.tp_hash` was an EMPTY STUB** (engine) — `hash(bound_method)` returned JS `undefined`, so weakref-keyed registries (matplotlib's `CallbackRegistry.connect` hashing a `WeakMethod`) crashed. Fix: CPython's `method_hash` — `(hash(im_self) ^ hash(im_func)) & 0x7FFFFFFF`.
+
+- [x] **`tuple.tp_hash` / `$B.$hash`: BigInt hash values crashed the mix** (engine). A tuple element whose hash is a JS BigInt (any large-int-backed value) hit `y & 0xFFFFFFFF` → "Cannot mix BigInt and other types"; and a `__hash__` returning a big int hit the "should return an integer" guard. Both now fold BigInts to 32 bits (`Number(BigInt.asIntN(32, y))`), and `$hash` guards undefined/null before probing `is_big_int` (an empty tp_hash must still raise TypeError, not crash).
+
+- [x] **`$B.$is_member` falls back to iteration when there is no `__contains__`** (engine) — CPython's `PySequence_Contains` protocol. `x in d.values()` raised "argument of type 'dict_values' is not a container or iterable" (matplotlib `validate_fonttype`); now it iterates with `is_or_equals`, returning False on StopIteration. One refinement mirrors CPython exactly: the old-protocol fallback only applies to real sequences — a C type whose `__getitem__` is MAPPING-only (the bridge's `$mp_only` tag) and that has no `tp_iter` still raises TypeError (sqlite3 `Blob` has `mp_subscript` but no `sq_item`; `"a" in blob` must raise, test_blob_sequence_not_supported).
+
+- [x] **stdlib `threading`: `sys.flags.thread_inherit_context` read with a getattr default** (stdlib, threading.py in brython_stdlib.js). Brython's `sys.flags` lacks the 3.14 flag, so `Thread.start()` died with AttributeError — the 5 TestThreading failures in the scipy.ndimage dashboard (test_filters) and matplotlib's font_manager lock path. `getattr(_sys.flags, 'thread_inherit_context', 0)`.
+
+- [x] **`make_descr_get` wraps a non-JS-function `__get__`** (engine, class creation). `$B.make_descr_get` copies the class dict's `__get__` STRAIGHT into `cls.tp_descr_get`; every call site then invokes it as a JS function (`local_get(attribute, _b_.None, obj)`). For a pure-Python class the dunder IS a JS function, but a class created through the C API with a C-implemented `__get__` (pandas' `MinMaxReso` descriptor in `timestamps.pyx`: a plain Python class defined inside a Cython module, its `__get__` a `cython_function_or_method` — a callable OBJECT, not a JS function) puts an object into the slot, and `pd.Timestamp.min` died with "JavascriptError: local_get is not a function" (blocking pandas' `_testing._hypothesis`, hence EVERY pandas test module importing `pandas._testing`). Fix: when the dict's `__get__` is not a JS function, store a wrapper routing through `$B.$call(get, self, obj→None, klass→None)` (mapping `$B.NULL`/undefined to None per the descriptor protocol). Same-shape latent siblings NOT touched (measure first): `make_descr_set` (`__set__`), `make_call` (`__call__`). Measured: pandas.tests.tslibs importable+running (test_ccalendar 17 collected vs IMPORT FAILED).
+
+- [x] **complex arithmetic returns NotImplemented for non-number operands (no `__complex__` coercion)** (engine, `conv_complex`). `complex.nb_add/subtract/multiply` ran their other operand through `conv_complex`, which for anything that wasn't int/float looked up `__complex__` and CALLED it. CPython's complex arithmetic never does this — it accepts only int/float/complex and returns NotImplemented otherwise (the `__complex__` protocol is for the `complex()` constructor only). So `(1j) * ndarray` called `ndarray.__complex__()`, which raises "only 0-dimensional arrays can be converted to Python scalars" for a size>1 array, instead of returning NotImplemented and letting `ndarray.__rmul__` broadcast. Broke `1j * complex_array` and every numpy expression of that shape (`numpy.polynomial.polyutils.mapdomain` on complex domains, `test_umath_complex`). Fix: `conv_complex` handles complex/float/int and returns NULL (→ NotImplemented) for everything else. Measured: numpy dashboard test_polyutils + test_umath_complex green; test_cmath 32/0, test_math 82/0 unchanged.
+
+- [x] **slice.indices() normalizes bounds through `__index__` before the JS math** (engine, `slice_funcs.indices`). The method read `self.start`/`self.stop`/`self.step` directly into raw JS comparisons (`_start < 0`, `_start + len`). Brython ints are JS numbers so this worked for them, but a boxed integer with `__index__` (a numpy `int32`/`int64` scalar — a bridge object with no `valueOf`) made `_start < 0` evaluate against `NaN` → false → the negative-index adjustment `_start += len` was SKIPPED, and `slice(np.int32(-1), None).indices(4)` came back `(np.int32(-1), 4, 1)` instead of `(3, 4, 1)`. numpy's C `PyArray_Subscript` calls this through the bridge's `PySlice_GetIndicesEx`, so `arr[np.int32(-1):]` on a (4,5) array returned shape (5,5) of garbage, and every `np.pad` mode that slices with computed numpy-int bounds (`wrap`, `reflect`, `symmetric`) produced empty/uninitialized results (test_arraypad). Fix: `nstart/nstop = PyNumber_Index(...)` (None-safe), `_step = PyNumber_Index(step)`, then run the existing normalization on those — identical for plain ints, correct for `__index__` scalars. Measured: numpy dashboard +23 (test_arraypad 574→597; every `np.pad` reflect/wrap/symmetric that computed negative numpy-int slice bounds).
+
+- [x] **list subscripts accept anything with `__index__`** (engine, `py_list.js` area). `mp_subscript` rejected every non-int/slice key BEFORE reaching the `PyNumber_Index` call right below it — `lst[np.int32(1)]` raised "list indices must be integers or slices, not int32" (pandas' engines hand back numpy scalars as positions everywhere). The isinstance pre-check is gone; `PyNumber_Index` decides, and its failure raises the exact CPython message.
+
+- [x] **len(): stray "VVV" debug marker removed from the no-`__len__` TypeError message** (engine).
+
+- [x] **builtin_function_or_method: `__doc__` getset** (engine, `py_builtin_functions.js` area). The type's getsets stop at `__name__`/`__qualname__`/`__self__`/`__text_signature__` — no `__doc__` — so reading `__doc__` on ANY C builtin fell through the mro to OBJECT's docstring ("The base class of the class hierarchy…"). numpy.ma.core's `_convert2ma` asserts its `np_ret` marker is in `np.arange.__doc__` and got object's doc instead, killing `import numpy.ma` (and with it `from numpy import ma` in pandas.core.construction — the whole pandas boot on the browser page). The getset prefers an own `__doc__` property (a runtime `add_docstring` wins over the creation-time doc) and falls back to `$function_infos[func_attrs.__doc__]`; the setter is None (CPython: read-only).
+
+- [x] **make_next: C-convention `tp_iternext` slots return the value, not a generator** (engine, wrapper methods). `make_next` built `__next__` as `cls.tp_iternext(obj).next()` — native Brython slots are JS generator FUNCTIONS, so calling them returns a generator. A bridge C-type's `tp_iternext` follows the CPython slot convention instead: it returns the next VALUE directly (its wrapper already raises StopIteration on NULL). Iterating any C iterator through Brython's `next()` died "itn.next is not a function" — numpy.ma's `MaskedIterator.__next__` calls `next(self.dataiter)` on a C `flatiter`. `make_next` now recognizes a generator by `.next` + `.throw` and passes anything else through as the value.
+
+- [x] **object.tp_new: `__slots__` suppresses the instance `__dict__` only when the WHOLE mro is slotted** (engine, `py_object.js` area). The dict decision was `get_from_dict(cls, '__slots__') === NULL` — an mro-wide lookup, so a `__slots__ = ()` LEAF made instances dict-less even when every base is a plain class. CPython only drops the dict when every class below `object` is `__slots__`-only; a single slot-less class contributes it. pandas builds exactly that shape (SingleBlockManager: `__slots__=()` over plain DataManager/PandasObject bases), so `Series()` died "'SingleBlockManager' object has no attribute 'axes' and no __dict__ for setting". Now each class in `[cls] + mro` is checked for an OWN `__slots__`; classes with no queryable dict count as contributing (permissive for C bases). Strict slot classes still refuse attributes (`class C: __slots__ = ()` → AttributeError, unchanged).
+
+- [x] **f-string tokenizer: nested replacement fields inside format specs** (engine, tokenizer). Three bugs in the `token_modes` stack, surfaced by pandas' `f"{x: .{precision:d}f}"` (io/formats/format.py — a replacement field inside a format spec carrying its own `:d` spec). (1) The `':' → format_specifier` switch compared `braces.length-1` against the nesting recorded at FSTRING_START, so a `:` inside a nested field (one brace deeper) never switched modes and its spec chars tokenized as NAMEs; each pushed `regular_within_ft` mode now records its own `braces.length` (and `nesting_level` finds the nearest). (2) The `'}'` branch symmetrically popped the expression mode on ANY closing brace, so a dict/set literal inside a field broke the mode stack — `f"{ {'a':1}['a'] }"` was "'{' was never closed"; same nesting guard, deeper braces fall through to the generic OP path. (3) `format_specifier` is a single variable, not a stack: popping from a nested spec back into the outer one (format_specifier → format_specifier, so the mode-change reset never fired) leaked the inner spec's text into the outer spec (`'.3df'` — "Invalid format specifier"); the `'}'` branch now resets it (plus no empty FSTRING_MIDDLE before a nested `{`). Token stream now matches CPython's `tokenize` exactly; 12-form battery (nested specs, dict literals, lambdas, nested f-strings) 12/12 against python3.
+
+- [x] **PEG parser codegen: `$B.helper_functions.$B._PyPegen.PyErr_Occurred`** (engine, generated parser). Ten `invalid_*` rule actions reference `PyErr_Occurred` through a mangled `$B.helper_functions.$B.…` chain — `$B.helper_functions.$B` is undefined, so the SECOND parser pass (the one that produces the good error message after a parse failure) died with a raw JS TypeError instead of raising the SyntaxError. Any syntax error in an f-string rule crashed the parser instead of reporting. Now `$B._PyPegen.PyErr_Occurred`.
+
+- [x] **property(): keyword arguments** (engine, `py_builtin_functions.js` area). `$B.$call` routes classes through `$factory` before `tp_call`, and `property.$factory(fget,fset,fdel,doc)` bound its parameters positionally — `property(fget=f, fset=g, doc='x')` (pandas accessor.py generates every delegated property this way) landed the kwargs object in `fget`, filled the rest with `?? None` positionally, and `tp_init`'s `$B.args` then saw both → "got multiple values for argument 'fset'". `$factory` now just delegates to `tp_init`, whose `$B.args` already parses kwargs.
+
+- [x] **str %: a mapping RHS never requires conversion** (engine, `printf_format`). `"no specifier here" % {'name': 'x'}` raised "not all arguments converted during string formatting" — the final check treated `nbph == 0` as an error regardless of the RHS. CPython only enforces consumption for non-mapping RHS (a dict with zero placeholders is fine; `"abc" % "x"` still raises). This is pandas' `@Substitution(name="groupby")` on docstrings with no `%(name)s` — every GroupBy method decorator died. Now `nbph==0 && !is_mapping(args)`.
+
+- [x] **frozenset - frozenset** (engine, set slots). `set.nb_subtract` required `self` to be a strict `set` while `nb_and`/`nb_or`/`nb_xor` all accept `[set, frozenset]` — frozenset inherits the slot and got refused, so `frozenset - frozenset` (pandas.core.computation.expr builds its node whitelists this way at import) raised "unsupported operand type(s)". Aligned with the other three; result type follows `self` as before.
+
+- [x] **isinstance/issubclass: bound `__instancecheck__`/`__subclasscheck__`** (engine, `py_builtin_functions.js` area). The protocol lookup `type_getattribute(get_class(cls), '__instancecheck__')` returns a BOUND method when the metaclass defines it as a classmethod (pandas' `create_pandas_abc_type` — every ABCSeries/ABCDataFrame check), and the call site passed `cls` again → "takes 2 positional arguments but 3 were given" on every isinstance against a pandas ABC. If the lookup result carries `im_self` the receiver is already bound, call with the single remaining argument; plain metaclass functions and abc.ABC unchanged (4/4 against CPython).
+
+- [x] **unicodedata.east_asian_width** (stdlib, `unicodedata` JS module). Missing entirely (the module's `unicode.txt` is UnicodeData.txt, which doesn't carry EastAsianWidth); `from unicodedata import east_asian_width` at the top of pandas.io.formats.printing killed the whole pandas.core.indexes chain. Added as a 317-range non-N table (Unicode 16.0.0, "start:end:width" hex triples, binary search) — 212 sampled code points match host CPython exactly; astral chars arrive as wrapped String objects, so the one-character guard uses `$B.$isinstance(unistr, _b_.str)`, not `typeof`.
+
+- [x] **cmath: drop the `type(abs)(func)` re-badging** (stdlib, `Lib/cmath.py`). The module's epilogue rewrapped every public function via `type(abs)(f)` to cosmetically match CPython's `builtin_function_or_method` — but instantiating `builtin_function_or_method` is refused (CPython refuses it too), so plain `import cmath` raised TypeError cold (pandas `_libs.testing`'s Py_mod_exec imports cmath; the bundled C cmath masks this everywhere the full bundle is loaded). Block removed; the functions stay ordinary Python functions.
+
+- [x] **type.tp_call: pass `instance` to a non-function `__init__`** (engine, `py_type.js` area). The init branch for a callable-but-not-JS-function `tp_init` (a Cython cyfunction `__init__`) called `$B.$call(init_func, ...args)` WITHOUT the freshly created instance — the first user argument arrived as `self`, so instantiating any Cython class-body class with `__init__(self, x)` died with "takes exactly 2 positional arguments (1 given)" (pandas timedeltas' `MinMaxReso("min")`, blocking the whole tslibs chain). The JS-function branch and the `tp_new` branch both pass the receiver; this one now does too.
+
+- [x] **module.tp_setattro: subclasses delegate to object.tp_setattro (no descriptor `__get__` on assignment)** (engine, `py_module.js` area). `module.tp_setattro` located a data descriptor by calling `object.tp_getattro` — which INVOKES a class-level descriptor's `__get__`. For module SUBCLASSES with lazy attribute descriptors this is fatal: six's `_LazyDescr.__get__` itself does `setattr(module, name, resolved)` → tp_setattro → tp_getattro → `__get__` → infinite recursion (`import six` = RecursionError, killing dateutil.tz and everything above it). CPython's setattr never runs `__get__`; it type-lookups the descriptor raw and calls its `__set__` if any — exactly what `object.tp_setattro` already does (`search_in_mro` + `tp_descr_set`), so subclass instances now delegate straight to it; the getattro pre-pass survives only for plain modules (their getset shims).
+
+- [x] **import machinery: `exec_module`/`load_module` called through `$B.$call`** (engine, import code). The module-from-spec path called `exec_module(module)` and `$B.$getattr(_loader,"load_module")(name)` as bare JS functions. For a PYTHON loader registered on `sys.meta_path` (six's `_SixMetaPathImporter`, the machinery behind every `six.moves.*` import) `$getattr` returns a Brython bound method — not callable as a JS function — so any package importing through six died with "exec_module is not a function". Both call sites now dispatch through `$B.$call` (which handles native loaders unchanged).
+
+- [x] **_IOBase.tell: call the object's `seek` through `$B.$call`** (engine, `_IOBase` shim). `tell` did `$B.$getattr(self,'seek')(0,1)` — a bare JS call, broken for any PYTHON file-like object (a bound method comes back). dateutil's tzfile parser calls `tell()` on the stream it's handed; every gettz() died with "is not a function".
+
+- [x] **mappingproxy.copy returns a dict, calls dict.copy through `$B.$call`** (engine). Two bugs in one line: `copy` invoked the `dict.copy` method-descriptor as a bare JS function, and wrapped the result back into a NEW mappingproxy — CPython's `mappingproxy.copy()` returns a plain (mutable) dict. six's `add_metaclass` / functools paths do `vars(cls).copy()` then `.pop()` on the result; the pop raised "mappingproxy object has no attribute 'pop'".
+
+- [x] **sys: structseq slices are tuples** (stdlib, `Lib/sys.py`). `_dataclass.__getitem__` (the shared shape behind `version_info`, `flags`, `float_info`, …) returned a LIST for a slice key; CPython structseq slicing returns a tuple. six's `PY34 = sys.version_info[0:2] >= (3, 4)` raised `'>=' not supported between instances of 'list' and 'tuple'` — the first domino that kept dateutil.tz (hence pandas tslibs.timezones) from importing.
+
+- [x] **zlib: `error` alias** (stdlib, `Lib/zlib.py`). The module defines `class Error(Exception)` but never the canonical `zlib.error` alias; tarfile's gzip error handling does `except zlib.error` and died with AttributeError before it could even report the real problem.
+
+- [x] **zlib._Decompressor: stateful decompressobj (chunked input, max_length, eof/unused_data contract, rewind cache)** (stdlib, `Lib/zlib.py`). The pure-Python `_Decompressor.decompress` built a fresh `BitReader(data)` per call and inflated the whole stream in one shot — but gzip.py's `_GzipReader` (verbatim CPython) feeds a decompressobj in 8192-byte chunks, so ANY gzip member whose compressed size exceeds 8192 bytes died with the raw `Error('end of steam')` from the bit reader hitting the truncated chunk (dateutil's 156 KB zoneinfo tarball; the decoder itself is correct — a bare-node token-by-token comparison against a reference DEFLATE parser matched all 6522 tokens). The decompressor now accumulates input and retries with size-doubling backoff (an empty incoming chunk — EOF — forces a final attempt), serves the inflated output in `max_length` slices per the decompressobj contract (eof only when drained, `unused_data` = trailer + over-read bytes so `_read_eof` and multi-member gzip work), and keeps a 1-slot input→output cache so tarfile's backward seeks (gzip `_rewind` + full re-read per `extractfile`, ~600 members in the zoneinfo tarball) don't re-inflate 1.5 MB each time.
+
+- [x] **_struct: pad alignment added a full size when already aligned** (stdlib, `Lib/_struct.py`). The native-mode alignment formula was `size - pos % size`, which yields `size` (not 0) whenever `pos` is already a multiple — so any format resuming after a pad (`"148B8x356B"`, tarfile's header checksum) read every subsequent group one byte late: `struct.unpack_from("3x2B", b'\\x01..\\x05')` returned `(5, 0)` instead of `(4, 5)`, and every tar header failed "bad checksum". All three sites (calcsize, pack, unpack) now use `-pos % size`.
+
+- [x] **weakref: KeyedRef/WeakMethod `__slots__` dropped** (stdlib, `Lib/weakref.py`). Brython's `_weakref.ref` is pure Python and stores `obj`/`callback` in the instance dict; the stdlib's `KeyedRef.__slots__ = "key",` (and WeakMethod's) removes that dict, so creating any WeakValueDictionary entry raised "'KeyedRef' object has no attribute 'obj' and no __dict__" (dateutil tz caches). The subclass `__slots__` are disabled (renamed) — slightly larger instances, correct behaviour.
+
+- [x] **type.tp_call: route a non-function `tp_new` through `$B.$call`** (engine, `py_type.js` area). `type.tp_call` calls `cls.tp_new` as a bare JS function; when a class's `__new__` is a C-object callable (a Cython cyfunction — pandas' `NaTType.__new__`), the slot holds a plain object and instantiation died with `Function.prototype.apply was called on #<Object>`. One added branch: if `tp_new` is not a JS function, call it through `$B.$call`, which dispatches via the object's class `tp_call`.
+
+- [x] **typing._type_check: convert string constraints and RETURN the checked type** (stdlib, `Lib/typing.py`). Brython's `_type_check` was `assert isinstance(t, type), msg` — no `_type_convert` call and no return. Consequences: (1) any `TypeVar` with a string forward-reference constraint (pandas' `TypeVar("NumpyIndexT", np.ndarray, "Index")`) raised "constraints must be types" where CPython converts to `ForwardRef`; (2) every constrained TypeVar got `__constraints__ = (None, None, …)` since the checked values were dropped. Now: `t = _type_convert(t); assert isinstance(t, (type, ForwardRef)) or callable(t), msg; return t` — `_type_convert` (already present, never called) does the str→ForwardRef conversion.
+
+- [x] **pickle.py: pure-Python `PickleBuffer` fallback when `_pickle` is absent** (stdlib, `Lib/pickle.py`). Brython's pickle.py carries the complete pure-python PickleBuffer machinery (`save_picklebuffer`, `buffer_callback`, NEXT_BUFFER opcodes) but the class itself only comes from `from _pickle import PickleBuffer` — on ImportError the whole feature is disabled (`_HAVE_PICKLE_BUFFER=False`) and `pickle.PickleBuffer` doesn't exist. numpy's `array_reduce_ex_picklebuffer` (the default-protocol dumps of every contiguous ndarray, since `DEFAULT_PROTOCOL=5` in 3.14) does `npy_cache_import_runtime("pickle", "PickleBuffer")` with NO fallback, so every `pickle.dumps(arr)` raised `AttributeError: PyObject_GetAttrString: 'PickleBuffer'` on pages without the C `_pickle`. The `except ImportError` branch now defines a minimal pure-Python `PickleBuffer` (wraps the buffer; `raw()`/`__buffer__` → `memoryview(self.obj)`, `release()`) and sets `_HAVE_PICKLE_BUFFER=True` — `save_picklebuffer` then serializes it in-band exactly like CPython's pure-python pickler with `buffer_callback=None` (writable buffers as bytearray, so unpickled arrays round-trip writable through numpy's `_frombuffer`). Needs the bridge's PEP 688 `__buffer__` on ndarray for `memoryview(ndarray)` to resolve. **numpy grand total +18 on top of the bridge commit (core+random: test_direct +10, test_smoke +6, test_generator_mt19937 +1, test_randomstate +1)**.
+
+  ```python
+  # Lib/pickle.py — the ImportError branch of `from _pickle import PickleBuffer`
+  except ImportError:
+      class PickleBuffer:
+          def __init__(self, buffer):
+              self.obj = buffer
+          def raw(self):
+              return memoryview(self.obj)
+          def release(self):
+              self.obj = None
+          def __buffer__(self, flags=0):
+              return memoryview(self.obj)
+      __all__.append("PickleBuffer")
+      _HAVE_PICKLE_BUFFER = True
+  ```
+
+## [x] hashlib rejects buffer-protocol objects (`expected bytes, got ndarray`)
+
+**Impact: `hashlib.md5(numpy_array)` / `sha256(memoryview(...))` raised `TypeError: expected bytes, got ndarray` — CPython's hashlib accepts any buffer-protocol object.** `bytes2WordArray` (hashlib's CryptoJS module in `brython_stdlib.js`) only accepts `bytes`/`bytearray`. Fix: when the argument isn't bytes, materialize it through its `tobytes()` (memoryview, array.array, numpy ndarray all expose it) before the check.
+
+```js
+if(!$B.$isinstance(obj,[_b_.bytes,_b_.bytearray])){
+    var tb = $B.$getattr(obj, 'tobytes', null)
+    if(tb !== null){ obj = $B.$call(tb) }
+    if(!$B.$isinstance(obj,[_b_.bytes,_b_.bytearray])){
+        $B.RAISE(_b_.TypeError, "expected bytes, got " + $B.class_name(obj))
+    }
+}
+```
+
+```
+>>> import hashlib, numpy as np
+>>> hashlib.md5(np.arange(16, dtype=np.int8)).hexdigest()
+'1ac1ef01e96caf1be0d329331a4fc2a8'
+```
+
+Measured: numpy grand total +4 (test_generator_mt19937's test_jumped hash comparisons).
+
+---
+
+## [x] `repr(complex)` prints integral components in full digits instead of switching to scientific notation
+
+**Impact: `str(complex(1e20))` → `'(100000000000000000000+0j)'` (CPython: `'(1e+20+0j)'`) — numpy's test_print complex suite failed 6 tests because the numpy scalars printed CORRECTLY and the Brython `complex` reference they are compared against did not.** `complex.tp_repr` (py_complex.js) formats an integral component with `Number.isInteger(v) ? v + '' : str(v)` — JS `Number.toString()` only switches to exponent notation at 1e21, while CPython's float repr switches at 1e16. CPython's `complex_repr` formats each component with `PyOS_double_to_string(v, 'r', 0, 0, NULL)` — plain float repr WITHOUT the `.0` suffix. Fix: format both components through Brython's own (already CPython-exact) float `str`, then strip a trailing `.0` (the imag side already did the strip).
+
+```js
+// before
+var real=Number.isInteger(self.real.value)? self.real.value+'' : _b_.str.$factory(self.real),
+    imag=Number.isInteger(self.imag.value)? self.imag.value+'' : _b_.str.$factory(self.imag)
+if(imag.endsWith('.0')){imag=imag.substr(0,imag.length-2)}
+// after
+var real=_b_.str.$factory(self.real),imag=_b_.str.$factory(self.imag)
+if(real.endsWith('.0')){real=real.substr(0,real.length-2)}
+if(imag.endsWith('.0')){imag=imag.substr(0,imag.length-2)}
+```
+
+```
+>>> complex(1e16)
+(1e+16+0j)
+```
+
+Measured: numpy dashboard +6 (test_print 6 complex tests flip). Numeric sweep clean — 8 suites 0 fails (re 154, pickle 941, decimal 357, pyexpat 58, math 82, cmath 32, statistics 370, json 170); numpy smoke 38/38.
+
+---
+
 ## [x] stray debug `print('NotImplementedError for format')` in `annotationlib`
 
 **Impact: cosmetic — numpy's lazy PEP-649 annotations (typing constructs in `numpy._typing`, `numpy.lib._arraysetops_impl`, `numpy.linalg._linalg`) each raise `NotImplementedError` in `annotationlib.call_annotate_function`, which then printed a debug line to stdout. `import numpy` spewed ~9 `NotImplementedError for format` lines onto every page (loader/numpy.html).** A leftover `print(...)` sits in the `except NotImplementedError:` arm of `annotationlib.get_annotations` (`Lib/annotationlib.py`, bundled in `brython_stdlib.js`); the exception is expected (it falls through to the `Format.STRING` path) so the print is pure noise. Removed the `print`, kept the `pass`.
@@ -3145,4 +3279,18 @@ TypeError: issubclass() arg 1 must be a class                        # after
 ...     x: T
 JavascriptError: locals_<module> is not defined   # before (fatal, at import)
 >>> # after: class defines; Protocol's lazy annotation introspection no longer crashes the module
+```
+
+## `super(X, self)` on a list subclass unpacks self's first element
+
+**Impact: unblocks `pd.to_datetime` (dateutil's `_ymd(list)` calls `super(self.__class__, self).__init__(*args)`; the empty-list case turned self into `undefined` and supercheck crashed "Javascript object 'undefined' has no attribute"); general.** Brython's `super.tp_init` ran `if(Array.isArray(object_or_type)){object_or_type=object_or_type[0]}` on its second argument — but instances of `list` subclasses ARE JS arrays, so `super(X, self)` replaced self with its first element (or `undefined` when empty). The unwrap is now gated on the array carrying no `__class__`/`ob_type`, i.e. it no longer fires for real instances. Source: `_b_.super.tp_init` in `brython.js`.
+
+```python
+>>> class X(list):
+...     def __init__(self, *a):
+...         super(X, self).__init__(*a)
+>>> X()
+AttributeError: Javascript object 'undefined' has no attribute   # before
+>>> X()
+[]                                                               # after
 ```
