@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyState_FindModule` finds single-phase modules**
+  (`src/wasthon.js`). It always returned 0, so pandas' vendored ujson —
+  whose `object_is_series_type`/`object_is_dataframe_type` read the
+  cached pandas classes off the module state — never recognized a
+  Series or DataFrame and `to_json` recursed to death through the
+  default handler ("OverflowError: Maximum recursion level reached").
+  Module creation now registers def→module in a state map both for
+  PyModule_Create2 and the FromDefAndSpec path.
+
 - **Typed memoryviews over C ndarrays** (`src/wasthon.js`). Brython's
   memoryview re-bases on an intermediate bytearray (itemsize 1,
   format 'B') and `PyMemoryView_GET_BUFFER` handed back a zeroed

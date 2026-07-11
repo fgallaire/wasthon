@@ -4785,7 +4785,10 @@ mergeInto(LibraryManager.library, {
     },
 
     PyState_FindModule__deps: ['$WasthonRT'],
-    PyState_FindModule: function(def) { return 0; },  /* untracked: caller creates fresh */
+    PyState_FindModule: function(def) {
+        var rt = WasthonRT;
+        return (rt.stateModules && rt.stateModules.get(def)) || 0;
+    },
 
     PyWeakref_CheckRef__deps: ['$WasthonRT'],
     PyWeakref_CheckRef: function(obH) {
@@ -4875,6 +4878,14 @@ mergeInto(LibraryManager.library, {
         if (info.size > 0) { statePtr = _malloc(info.size); HEAPU8.fill(0, statePtr, statePtr + info.size); }
         rt.modules.set(modHandle, { def: info, statePtr: statePtr, name: info.name, obj: modObj, types: [] });
         WasthonRT_module_state[modHandle] = { state: statePtr, types: [] };
+        // Register in the per-def state map, like CPython's import machinery
+        // does implicitly for single-phase modules: PyState_FindModule must
+        // find them back (ujson's object_is_series_type reads its cached
+        // pandas types off the module state — a NULL lookup made every
+        // Series/DataFrame unrecognized and to_json recursed to death
+        // through the default handler).
+        if (!rt.stateModules) rt.stateModules = new Map();
+        rt.stateModules.set(defPtr, modHandle);
         if (info.methods !== 0) __wasthon_install_methods(modObj, info.methods, modHandle, /*moduleScope=*/true);
         return modHandle;
     },
@@ -5771,6 +5782,14 @@ mergeInto(LibraryManager.library, {
         if (info.size > 0) { statePtr = _malloc(info.size); HEAPU8.fill(0, statePtr, statePtr + info.size); }
         rt.modules.set(modHandle, { def: info, statePtr: statePtr, name: info.name, obj: modObj, types: [] });
         WasthonRT_module_state[modHandle] = { state: statePtr, types: [] };
+        // Register in the per-def state map, like CPython's import machinery
+        // does implicitly for single-phase modules: PyState_FindModule must
+        // find them back (ujson's object_is_series_type reads its cached
+        // pandas types off the module state — a NULL lookup made every
+        // Series/DataFrame unrecognized and to_json recursed to death
+        // through the default handler).
+        if (!rt.stateModules) rt.stateModules = new Map();
+        rt.stateModules.set(defPtr, modHandle);
         if (info.methods !== 0) __wasthon_install_methods(modObj, info.methods, modHandle, /*moduleScope=*/true);
         return modHandle;   /* multi-phase: caller runs PyModule_ExecDef */
     },
