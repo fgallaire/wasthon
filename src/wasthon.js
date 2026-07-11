@@ -4827,9 +4827,23 @@ mergeInto(LibraryManager.library, {
                 cls.tp_new = rt.scoped(function(brythonCls, args, kw) {
                     var argsH = rt.wrap(args || []);
                     var isSubclass = brythonCls && brythonCls !== cls;
-                    var kwH = (!isSubclass && kw && rt._b_.dict.mp_length(kw) > 0) ? rt.wrap(kw) : 0;
+                    var kwH = (kw && rt._b_.dict.mp_length(kw) > 0) ? rt.wrap(kw) : 0;
+                    /* Hand the C tp_new the REAL subtype (canonical
+                       ensureTypeStruct handle — the identity the proven
+                       arr.view(subclass) path already feeds NewFromDescr):
+                       base-only kwarg guards
+                       (`type == &X_Type && !_PyArg_NoKeywords`) exempt
+                       subclasses exactly as in CPython, and the C subclass
+                       machinery runs (numpy's array_new honors buffer=/order=
+                       and __array_finalize__ fires). The old code always
+                       passed the parent struct and stripped subclass kwargs
+                       to compensate for the wrongly-firing guard —
+                       ndarray.__new__(matrix, shape, dtype, buffer=arr) lost
+                       its buffer, so every np.matrix was silently zeros and
+                       never finalized. */
+                    var subH = isSubclass ? rt.wrap(brythonCls) : typePtr;
                     rt.pendingException = null;
-                    var resultH = getWasmTableEntry(tpNewPtr)(typePtr, argsH, kwH);
+                    var resultH = getWasmTableEntry(tpNewPtr)(subH, argsH, kwH);
                     if (rt.pendingException) {
                         var pe = rt.pendingException; rt.pendingException = null;
                         throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);
@@ -4837,7 +4851,12 @@ mergeInto(LibraryManager.library, {
                     var inst = rt.unwrapResult(resultH);
                     if (inst && isSubclass) {
                         inst.ob_type = brythonCls; inst.__class__ = brythonCls;
-                        if (rt.$B.get_from_dict(brythonCls, '__slots__', rt.$B.NULL) === rt.$B.NULL) rt.$B.init_dict(inst);
+                        /* init_dict only when the instance has none yet:
+                           it unconditionally installs a fresh empty dict,
+                           which wiped attributes the C tp_new already set
+                           through __array_finalize__ (np.matrix._getitem). */
+                        if (inst[rt.$B.DICT] === undefined &&
+                                rt.$B.get_from_dict(brythonCls, '__slots__', rt.$B.NULL) === rt.$B.NULL) rt.$B.init_dict(inst);
                     }
                     return inst;
                 });
