@@ -7,6 +7,19 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Wire `PyExc_AssertionError`** (`src/wasthon.c`, `src/wasthon.js`). The
+  bridge's curated `PyExc_*` table omitted `AssertionError`, so any C/Cython
+  extension referencing it failed to link with `undefined symbol:
+  PyExc_AssertionError` (surfaced building scipy.ndimage's `_nd_image`). Added
+  the global, the extern getter and the init assignment in wasthon.c plus the
+  `wasthon_get_PyExc_AssertionError` getter
+  (`WasthonRT.wrap(WasthonRT._b_.AssertionError)`) in wasthon.js, mirroring
+  `PyExc_KeyError`. ⚠ The init assignment adds a line to `wasthon_init`, which
+  shifts the wasm layout and re-exposes the latent sqlite3 GC-destructor
+  out-of-bounds documented in `NUMPY_HARD_BUG.md` (test_sqlite3 472/1 on
+  `test_function_destructor_via_gc`). Accepted knowingly — the durable fix is
+  that OOB, not avoiding legitimate `wasthon_init` additions.
+
 - **Don't bind `PyProperty_Type` in `wasthon_init`** (`src/wasthon.c`). The
   pybind11-support commit (ba03bb2) added a
   `wasthon_bind_builtin_type(BT_PROPERTY, &PyProperty_Type)` call to the shared

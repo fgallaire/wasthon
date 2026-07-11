@@ -9803,6 +9803,8 @@ mergeInto(LibraryManager.library, {
     wasthon_get_PyExc_IOError:                 function() { return WasthonRT.wrap(WasthonRT._b_.IOError || WasthonRT._b_.OSError); },
     wasthon_get_PyExc_KeyError__deps:       ['$WasthonRT'],
     wasthon_get_PyExc_KeyError:             function() { return WasthonRT.wrap(WasthonRT._b_.KeyError); },
+    wasthon_get_PyExc_AssertionError__deps: ['$WasthonRT'],
+    wasthon_get_PyExc_AssertionError:       function() { return WasthonRT.wrap(WasthonRT._b_.AssertionError); },
     wasthon_get_PyExc_LookupError__deps:    ['$WasthonRT'],
     wasthon_get_PyExc_LookupError:          function() { return WasthonRT.wrap(WasthonRT._b_.LookupError); },
     wasthon_get_PyExc_NotImplementedError__deps: ['$WasthonRT'],
