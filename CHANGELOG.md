@@ -7,6 +7,24 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Three df.mean/df.describe roots** (`src/wasthon.js`). (1)
+  `PySequence_Check` said yes to mapping-only C types (getattr
+  `__getitem__` heuristic): numpy's dtype discovery then treated a
+  dtype held in an object array as a sequence and PySequence_Fast
+  failed ("Could not convert object to sequence" — df.mean on float
+  frames, pandas' get_dtypes). The wired `__getitem__` now carries
+  `$mp_only` when the type has mp_subscript but no sq_item, and
+  PySequence_Check honors it. (2) `tp_richcompare` was never wired for
+  static C types (PyType_Ready path — the FromModuleAndSpec path had
+  it): comparisons fell back to Brython float/int dunders. Wired as the
+  6 dunders, NotImplemented on clean NULL. (3) numpy scalar compares
+  yield a Brython bool (our float64/int64 scalars ARE Brython natives —
+  accepted NumBry design) where CPython yields np.bool_, so pandas'
+  `(count == 0).any()` (nanmean with a scalar count) crashed
+  "'bool' object has no attribute 'any'": when numpy's bool scalar
+  registers, Brython's bool gains identity any()/all(). df.mean passes
+  on float/mixed/int frames.
+
 - **`PyObject_GetAttr` on a falsy object** (`src/wasthon.js`). The
   unresolved-handle guard was `if (!obj) return 0` — but an unwrapped
   EMPTY STRING (or 0/False) is falsy too, so Cython's

@@ -3439,6 +3439,10 @@ mergeInto(LibraryManager.library, {
             var arr = rt._b_.list.$factory(obj);
             return rt.wrapNewRef(arr);
         } catch (e) {
+            if (typeof process !== 'undefined' && process.env && process.env.SEQDBG) {
+                try { console.log('[SEQ] refused', rt.$B.class_name(obj), String(rt._b_.repr(obj)).slice(0, 80), '|', e.message || String(e).slice(0, 80)); } catch (e2) { console.log('[SEQ] refused (unreprable)', e.message); }
+                try { var fo = rt.$B.frame_obj, n = 0; while (fo && n < 8) { console.log('[SEQ] frame', String(fo.frame[0]), '@', String(fo.frame[2])); fo = fo.prev; n++; } } catch (e3) {}
+            }
             rt.setError(rt.wrap(rt._b_.TypeError),
                 errmsgPtr ? UTF8ToString(errmsgPtr) : "expected a sequence");
             return 0;
@@ -5216,6 +5220,51 @@ mergeInto(LibraryManager.library, {
                 if (rc < 0 && rt.pendingException) { var pe = rt.pendingException; rt.pendingException = null; throw rt.pendingExc(pe); }
                 return rc | 0;
             }));
+            /* tp_richcompare@128 → the 6 comparison dunders, like the
+             * FromModuleAndSpec path. Static C types NEVER had it wired, so a
+             * numpy scalar compare fell back to Brython float/int __eq__ and
+             * returned a Brython bool — CPython returns np.bool_ (which has
+             * .any()/.all(): pandas' nanmean does `(count == 0).any()`). */
+            var tpRichPtr = HEAP32[(typePtr + 128) >> 2];
+            if (tpRichPtr) {
+                var cmpNames = [
+                    ['__lt__', 0], ['__le__', 1], ['__eq__', 2],
+                    ['__ne__', 3], ['__gt__', 4], ['__ge__', 5],
+                ];
+                var makeReadyCmp = function(op) {
+                    return rt.scoped(function(self, other) {
+                        var selfH  = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                        var otherH = other && other.__wasthon_ptr__ ? other.__wasthon_ptr__ : rt.wrap(other);
+                        rt.pendingException = null;
+                        var resH = getWasmTableEntry(tpRichPtr)(selfH, otherH, op);
+                        if (resH === 0 || rt.pendingException) {
+                            if (rt.pendingException) {
+                                var pe = rt.pendingException; rt.pendingException = null;
+                                throw rt.pendingExc(pe);
+                            }
+                            return rt._b_.NotImplemented;
+                        }
+                        return rt.unwrapResult(resH);
+                    });
+                };
+                for (var rci = 0; rci < cmpNames.length; rci++) {
+                    installDunder(cmpNames[rci][0], makeReadyCmp(cmpNames[rci][1]));
+                }
+            }
+            /* numpy's bool scalar registering: our float64/int64 scalars ARE
+             * Brython natives (accepted NumBry design), so scalar compares
+             * yield a Brython bool where CPython yields np.bool_ — give
+             * Brython's bool the np.bool_ reduction surface pandas leans on
+             * (nanmean does `(count == 0).any()` with a SCALAR count).
+             * Installed only when numpy loads, never for plain pages. */
+            if ((fullName === 'numpy.bool' || fullName === 'numpy.bool_') &&
+                    !rt._b_.bool.$np_reductions) {
+                rt._b_.bool.$np_reductions = true;
+                var boolSelf = function(self) { return self; };
+                ['any', 'all'].forEach(function(nm) {
+                    try { rt.$B.set_to_dict(rt._b_.bool, nm, boolSelf); } catch (e) {}
+                });
+            }
             /* tp_iternext@56 → __next__ (and tp_iter@24 → __iter__): static C
              * iterator types (numpy's `broadcast` = PyArrayMultiIter_Type,
              * `flatiter`, nditer) drive Python for-loops through these slots.
@@ -5463,7 +5512,14 @@ mergeInto(LibraryManager.library, {
                 /* mp_subscript wins over sq_item for __getitem__ (CPython
                  * precedence: accepts slices and arbitrary keys). */
                 var mpSubP = HEAP32[(pMap + 4) >> 2];
-                if (mpSubP) installSlot('mp_subscript', '__getitem__', wrapBin(mpSubP, false));
+                if (mpSubP) {
+                    var mpFn = wrapBin(mpSubP, false);
+                    // Mapping-only type (no sq_item): PySequence_Check must
+                    // say NO despite the __getitem__ (np.dtype['field'] made
+                    // numpy's discovery treat dtypes as sequences).
+                    if (!sqItemP) mpFn.$mp_only = true;
+                    installSlot('mp_subscript', '__getitem__', mpFn);
+                }
                 var mpAssP = HEAP32[(pMap + 8) >> 2];
                 if (mpAssP) {
                     installDunder('__setitem__', rt.scoped(function(self, k, v) {
@@ -6941,7 +6997,14 @@ mergeInto(LibraryManager.library, {
             if (rt.$B.$isinstance(obj, [rt._b_.list, rt._b_.tuple,
                     rt._b_.str, rt._b_.bytes, rt._b_.bytearray])) return 1;
             var cls = obj.__class__ || (rt._b_.type && rt.$B.get_class(obj));
-            return (cls && rt.$B.$getattr(cls, '__getitem__', null)) ? 1 : 0;
+            var gi = cls && rt.$B.$getattr(cls, '__getitem__', null);
+            // Mapping-only C types (mp_subscript, no sq_item — np.dtype)
+            // are NOT sequences in CPython; their wired __getitem__ carries
+            // $mp_only. The getattr heuristic said yes for them, so numpy's
+            // dtype discovery treated a dtype held in an object-array as a
+            // sequence and PySequence_Fast blew up ("Could not convert
+            // object to sequence" on df.mean).
+            return (gi && !gi.$mp_only) ? 1 : 0;
         } catch (e) { return 0; }
     },
 
@@ -14051,6 +14114,9 @@ mergeInto(LibraryManager.library, {
                 return;  // skip the generic install below
             }
             dispatch = rt.scoped(dispatch);
+            // Mapping-only __getitem__ (mp_subscript with no sq_item):
+            // PySequence_Check must stay false (np.dtype in an object array).
+            if (sid === 27 && !(isSequence && slotMap[32])) dispatch.$mp_only = true;
             cls[brythonName] = dispatch;
             cls.tp_funcs = cls.tp_funcs || {};
             cls.tp_funcs[brythonName] = dispatch;
