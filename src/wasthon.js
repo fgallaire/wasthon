@@ -3266,6 +3266,12 @@ mergeInto(LibraryManager.library, {
                 case 'C':
                     // C int → one-character Python str (Unicode ordinal).
                     return [String.fromCodePoint(readInt()), i+1];
+                case 'c':
+                    // C int → one-byte Python bytes (numpy's array_reduce
+                    // builds its args tuple with "ONc" — the missing case
+                    // made the whole BuildValue fail and pickled every
+                    // ndarray with a null args slot).
+                    return [rt._b_.bytes.$factory([readInt() & 0xFF]), i+1];
                 case 'i': case 'h': case 'b': case 'l':
                     return [readInt(), i+1];
                 case 'I': case 'H': case 'B': case 'k':
@@ -4816,8 +4822,16 @@ mergeInto(LibraryManager.library, {
                 if (baseCls) { cls.tp_bases = [baseCls]; cls.tp_base = baseCls; cls.tp_mro = rt.$B.make_mro(cls); }
             }
             if (!cls.tp_setattro)  cls.tp_setattro  = rt._b_.object.tp_setattro;
-            if (!cls.tp_getattro)  cls.tp_getattro  = rt._b_.object.tp_getattro;
-            if (!cls.$getattribute) cls.$getattribute = rt._b_.object.tp_getattro;
+            /* A METAtype's instances are classes: their attribute access
+               must walk the CLASS mro (type.tp_getattro), not treat the
+               class as a plain object — with object's default,
+               Int32DType.__reduce__ bound object.__reduce__ instead of
+               finding dtype.__dict__['__reduce__'], so pickling any dtype
+               fell into copyreg and died on _DTypeMeta. */
+            var _ga = (cls.tp_mro && cls.tp_mro.indexOf(rt._b_.type) > -1)
+                ? rt._b_.type.tp_getattro : rt._b_.object.tp_getattro;
+            if (!cls.tp_getattro)  cls.tp_getattro  = _ga;
+            if (!cls.$getattribute) cls.$getattribute = _ga;
             if (cls.tp_descr_get === undefined) cls.tp_descr_get = rt.$B.NULL;
             if (cls.tp_descr_set === undefined) cls.tp_descr_set = rt.$B.NULL;
 
@@ -12746,13 +12760,17 @@ mergeInto(LibraryManager.library, {
          * object's defaults; without them, $B.$setattr finds undefined and
          * calls it as a function — boom. Inherit from object explicitly. */
         if (!cls.tp_setattro) cls.tp_setattro = rt._b_.object.tp_setattro;
-        if (!cls.tp_getattro) cls.tp_getattro = rt._b_.object.tp_getattro;
+        /* Metatype: class instances need type.tp_getattro (see the
+           PyType_Ready twin — the _DTypeMeta / dtype pickling case). */
+        var _specGa = (cls.tp_mro && cls.tp_mro.indexOf(rt._b_.type) > -1)
+            ? rt._b_.type.tp_getattro : rt._b_.object.tp_getattro;
+        if (!cls.tp_getattro) cls.tp_getattro = _specGa;
         /* Brython 3.14's object_getattribute only engages the tp_funcs
          * fast path when `cls.$getattribute === object.tp_getattro`.
          * Without this, getattr() on instances misses C-installed methods
          * (e.g. pickle's `persistent_id` lookup on Pickler) and pickle
          * fails at dump-time with `AttributeError: persistent_id`. */
-        if (!cls.$getattribute) cls.$getattribute = rt._b_.object.tp_getattro;
+        if (!cls.$getattribute) cls.$getattribute = _specGa;
         /* Brython's type_getattribute (py_type.js:1318) reads
          * `cls.tp_descr_get` and checks `if (local_get !== $B.NULL)`. If we
          * leave it `undefined`, the condition is truthy → Brython calls
@@ -12862,6 +12880,42 @@ mergeInto(LibraryManager.library, {
         // Install methods listed in PyMethodDef[].
         if (methodsPtr !== 0) {
             __wasthon_install_methods(cls, methodsPtr, moduleHandle, /*moduleScope=*/false);
+            /* Cython's __Pyx_setup_reduce aliases __reduce_cython__ ->
+             * __reduce__ (and __setstate_cython__ -> __setstate__) at module
+             * init, but only after comparing GetAttr results by POINTER
+             * identity (cls.__getstate__ vs object.__getstate__, __reduce_ex__
+             * likewise) — the bridge can't guarantee one handle per inherited
+             * attribute, so the guard silently bailed, the alias never landed,
+             * and pickling ANY cdef instance (numpy.random SeedSequence,
+             * the bit generators) died in Brython's raising
+             * object.__reduce_ex__ fallback. Do the aliasing here, matching
+             * the upstream OUTCOME: only when the class does not define its
+             * own __reduce__/__setstate__. */
+            var bd2 = rt.$B.get_dict(cls);
+            if (bd2) {
+                /* Alias only when NO ancestor below `object` defines the
+                 * dunder (setup_reduce's `reduce == object_reduce` check):
+                 * MT19937 inherits BitGenerator's real __reduce__ while
+                 * carrying its own RAISING __reduce_cython__ (cdef _bitgen
+                 * is unpicklable) — blind aliasing shadowed the good one. */
+                var mroDefines = function(name) {
+                    if (rt.$B.get_from_dict(cls, name, rt.$B.NULL) !== rt.$B.NULL) return true;
+                    var mro = cls.tp_mro || [];
+                    for (var mi = 0; mi < mro.length; mi++) {
+                        if (mro[mi] === rt._b_.object) break;
+                        if (rt.$B.get_from_dict(mro[mi], name, rt.$B.NULL) !== rt.$B.NULL) return true;
+                    }
+                    return false;
+                };
+                var rc = rt.$B.get_from_dict(cls, '__reduce_cython__', rt.$B.NULL);
+                if (rc !== rt.$B.NULL && !mroDefines('__reduce__')) {
+                    rt.$B.set_to_dict(cls, '__reduce__', rc);
+                }
+                var sc2 = rt.$B.get_from_dict(cls, '__setstate_cython__', rt.$B.NULL);
+                if (sc2 !== rt.$B.NULL && !mroDefines('__setstate__')) {
+                    rt.$B.set_to_dict(cls, '__setstate__', sc2);
+                }
+            }
         }
 
         // Install getset descriptors (typecode, itemsize, etc.).
