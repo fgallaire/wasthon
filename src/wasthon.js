@@ -1903,8 +1903,15 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var fn = rt.unwrap(fnH);
         if (!fn) return 0;
+        // PY_VECTORCALL_ARGUMENTS_OFFSET (the high bit of nargsf) tells the
+        // callee a spare slot precedes args[0]; it is NOT part of the positional
+        // count. Cython's __Pyx_PyObject_FastCallDict sets it, so the raw value
+        // arrived as 0x80000001 (=-2147483647 signed) and `i < nargs` ran zero
+        // times → every positional arg dropped (Enum(name).__init__ and module
+        // __import__ both raised "…takes 1 positional argument (0 given)").
+        var nposargs = nargs & 0x7fffffff;
         var args = [];
-        for (var i = 0; i < nargs; i++) {
+        for (var i = 0; i < nposargs; i++) {
             args.push(rt.pinCallableArg(rt.unwrap(HEAP32[(argsPtr + i * 4) >> 2])));
         }
         // Brython 3.14 expects kwargs in `{$kw: [plain JS map, ...starred]}`
@@ -13620,6 +13627,16 @@ mergeInto(LibraryManager.library, {
         // class; PyObject_CallFinalizerFromDealloc invokes it (connection_dealloc
         // runs it to emit the unclosed-database ResourceWarning).
         if (slotMap[80 /* Py_tp_finalize */]) cls.$wasthon_tp_finalize = slotMap[80];
+        // PyType_GetSlot reads this slotMap; mirror the inherited tp_alloc the
+        // struct got above (offset 16) so PyType_GetSlot(t, Py_tp_alloc) agrees
+        // with the struct field. Cython's __Pyx_AllocateExtensionType (built
+        // with CYTHON_USE_TYPE_SLOTS=0) fetches tp_alloc via
+        // PyType_GetSlot(t, Py_tp_alloc); a spec that omits Py_tp_alloc (it is
+        // inherited from object) otherwise returned 0 → alloc_func(t,0) is a
+        // null-function trap (scipy.ndimage._ni_label's MemviewEnum tp_new).
+        // Only tp_alloc: mirroring tp_free too surfaced an extra attribute on
+        // dir(C.Context()) (test_decimal.test_context_attributes).
+        if (!slotMap[44 /* Py_tp_alloc */]) slotMap[44] = rt._defaultTpAlloc;
         var typeHandle = typeStructPtr;
         rt.bindInstance(typeHandle, cls);
         cls.__wasthon_type_handle__ = typeHandle;

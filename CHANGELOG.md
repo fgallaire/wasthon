@@ -7,6 +7,27 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Mask `PY_VECTORCALL_ARGUMENTS_OFFSET` in `PyObject_VectorcallDict`**
+  (`src/wasthon.js`). The bridge looped `for (i=0;i<nargs;i++)` over the raw
+  `nargsf`. When a caller sets the offset flag (the high bit — Cython's
+  `__Pyx_PyObject_FastCallDict` does), `nargs` arrived as `0x80000001`
+  (= -2147483647 signed), so `i < nargs` ran zero times and **every positional
+  argument was dropped** — `Enum(name).__init__` and a module's `__import__`
+  both raised "… takes 1 positional argument (0 given)". Fixed by taking
+  `nargs & 0x7fffffff` (= `PyVectorcall_NARGS`) as the positional count. Surfaced
+  building scipy.ndimage's Cython `_ni_label`; affects any C caller that routes
+  a vectorcall through the dict form with the offset flag.
+
+- **Inherit `tp_alloc` in `PyType_GetSlot`** (`src/wasthon.js`). A type built
+  through `PyType_FromModuleAndSpec` recorded only the slots its spec listed, so
+  `PyType_GetSlot(t, Py_tp_alloc)` returned 0 when the spec omitted `Py_tp_alloc`
+  (inherited from `object`). Cython's `__Pyx_AllocateExtensionType`
+  (`CYTHON_USE_TYPE_SLOTS=0`) then called `alloc_func(t, 0)` on that NULL → a
+  null-function trap (scipy.ndimage `_ni_label`'s `MemviewEnum` tp_new). Mirror
+  the default `tp_alloc` the type struct already carries (offset 16) into the
+  slot map. Only `tp_alloc`: mirroring `tp_free` too surfaced a spurious
+  attribute on `dir(C.Context())` (test_decimal.test_context_attributes).
+
 - **Wire `PyExc_AssertionError`** (`src/wasthon.c`, `src/wasthon.js`). The
   bridge's curated `PyExc_*` table omitted `AssertionError`, so any C/Cython
   extension referencing it failed to link with `undefined symbol:
