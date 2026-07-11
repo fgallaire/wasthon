@@ -4278,7 +4278,7 @@ mergeInto(LibraryManager.library, {
         var n = rt.coerceInt(rt.unwrap(handle));
         if (n === undefined) {
             rt.setError(rt.wrap(rt._b_.TypeError), "an integer is required");
-            return 0n;
+            return -1n;
         }
         // C long long is 64-bit signed. No range check before meant
         // struct.pack('q'/'<q', 2**64) returned a wrapped value instead of
@@ -4287,7 +4287,13 @@ mergeInto(LibraryManager.library, {
         if (b < -9223372036854775808n || b > 9223372036854775807n) {
             rt.setError(rt.wrap(rt._b_.OverflowError),
                 "Python int too large to convert to C long long");
-            return 0n;
+            /* CPython contract: -1 on error. Returning 0 here made numpy's
+               `error_converting(value)` (value == -1 && PyErr_Occurred())
+               miss the overflow in discover_descriptor_from_pylong, so
+               np.asarray(2**63) picked NPY_INTP (int32 on wasm32) instead
+               of promoting to uint64 and every 64-bit-bound
+               Generator.integers call died packing into an int32 array. */
+            return -1n;
         }
         return b;
     },
