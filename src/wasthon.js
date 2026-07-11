@@ -5788,6 +5788,26 @@ mergeInto(LibraryManager.library, {
             return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(rt.unwrap(setH), 'pop')));
         } catch (e) { rt.forwardError(e, rt._b_.KeyError); return 0; }
     },
+    PySet_Discard__deps: ['$WasthonRT'],
+    PySet_Discard: function(setH, keyH) {
+        var rt = WasthonRT;
+        try {
+            var s = rt.unwrap(setH), k = rt.unwrap(keyH);
+            if (!rt.$B.$is_member(k, s)) return 0;
+            rt.$B.$call(rt.$B.$getattr(s, 'discard'), k);
+            return 1;
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
+    },
+
+    /* PyObject_Dir(o) — dir(o) as a new list ref (ujson's objToJSON walks
+     * attribute names when encoding arbitrary objects). */
+    PyObject_Dir__deps: ['$WasthonRT'],
+    PyObject_Dir: function(objH) {
+        var rt = WasthonRT;
+        try {
+            return rt.wrapNewRef(rt.$B.$call(rt._b_.dir, rt.unwrap(objH)));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+    },
 
     /* PyCFunction_New(ml, self) — a bare C function object from a single
      * PyMethodDef (Cython's unbound-method unpacking path). Same trampoline
@@ -12502,8 +12522,11 @@ mergeInto(LibraryManager.library, {
             // off the type char + size. Unknown dtypes fall back to the
             // generic (bytes) path rather than mis-describing the buffer.
             var kind = typestr.replace(/^[<>=|]/, '');        // 'u4', 'f8', ...
+            // 'O': object arrays hold 32-bit handles = PyObject* in wasm32,
+            // exposing them raw matches CPython's 'O' buffer contract.
             var FMT = { 'u1':'B','i1':'b','u2':'H','i2':'h','u4':'I','i4':'i',
-                        'u8':'Q','i8':'q','f4':'f','f8':'d','b1':'?' };
+                        'u8':'Q','i8':'q','f4':'f','f8':'d','b1':'?',
+                        'c8':'Zf','c16':'Zd','O':'O','O4':'O' };
             var fmt = FMT[kind];
             if (!fmt) return 1;
 

@@ -748,6 +748,9 @@ PyObject  *PyByteArray_FromStringAndSize(const char *s, Py_ssize_t len);
 PyObject *PySet_New(PyObject *iterable);
 PyObject *PyFrozenSet_New(PyObject *iterable);
 int       PySet_Check(PyObject *o);
+/* The bridge PySet_Check already accepts set and frozenset. */
+#define PyAnySet_Check PySet_Check
+PyObject *PyObject_Dir(PyObject *o);
 /* _PySet_Update(set, iterable) — add every element of `iterable` into
  * `set`. Returns 0 on success, -1 on error. Used by pickle to restore
  * set values via the SET opcodes. */
@@ -835,8 +838,14 @@ typedef struct PyModuleDef {
 #define Py_MOD_GIL_NOT_USED  ((void *)1)
 
 /* PyMODINIT_FUNC: in real CPython, marks the symbol as exported. With
-   Emscripten we use EMSCRIPTEN_KEEPALIVE on the init function instead. */
+   Emscripten we use EMSCRIPTEN_KEEPALIVE on the init function instead.
+   C++ extensions (Cython cplus, pybind11) need the C linkage CPython's
+   definition carries, or the PyInit_* wasm export comes out mangled. */
+#ifdef __cplusplus
+#define PyMODINIT_FUNC extern "C" PyObject *
+#else
 #define PyMODINIT_FUNC PyObject *
+#endif
 
 /* ---------------------------------------------------------------- *
  * Built-in type singletons. Declared as struct values (not          *
@@ -1149,6 +1158,7 @@ PyObject *PyInterpreterState_GetDict(PyInterpreterState *interp);
 /* Raw allocator hooks — bridge aliases to libc malloc/free. */
 void *PyObject_Malloc(size_t size);
 void  PyObject_Free(void *ptr);
+#define PyObject_Realloc PyMem_Realloc
 PyObject *_PyObject_Init(PyObject *op, PyTypeObject *type);
 
 /* CPython 3.12+ raised-exception API. We delegate to the pendingException
