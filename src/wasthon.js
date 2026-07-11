@@ -902,13 +902,33 @@ mergeInto(LibraryManager.library, {
             if (!this._builtinTpIter)  this._builtinTpIter  = _wasthon_get_builtin_tp_iter();
             if (!this._builtinTpIternext) this._builtinTpIternext = _wasthon_get_builtin_tp_iternext();
             if (!this._brythonTpNew)   this._brythonTpNew   = _wasthon_get_brython_tp_new();
-            // PyTypeObject layout (Phase 1, 64 bytes): offset 0 = ob_refcnt,
+            // PyTypeObject layout (Phase 1 offsets): 0 = ob_refcnt,
             // 4 = tp_free, 8 = tp_dict, 12 = tp_name, 16 = tp_alloc,
             // 20 = tp_init, 24 = tp_iter, 28 = tp_as_number, 32 = tp_methods,
             // 36 = tp_traverse, 40 = tp_dealloc, 44 = tp_clear,
             // 48 = tp_version_tag, 52 = tp_repr, 56 = tp_iternext, 60 = tp_new.
-            var typeStructPtr = _malloc(64);
-            HEAPU8.fill(0, typeStructPtr, typeStructPtr + 64);
+            // Allocate the FULL wasthon.h PyTypeObject (176 bytes), zeroed:
+            // C code reads appended fields directly (tp_basicsize@64 —
+            // wasthon_object_gc_new's MRO inheritance RELIED on reading 0
+            // here, which the old 64-byte malloc only gave by heap luck —
+            // tp_itemsize@68 in numpy's @name@_arrtype_new, tp_flags@120,
+            // tp_mro@148 in numpy's _descr_from_subtype).
+            var typeStructPtr = _malloc(176);
+            HEAPU8.fill(0, typeStructPtr, typeStructPtr + 176);
+            // tp_mro (offset 148): CPython convention, the class itself
+            // first. numpy's _descr_from_subtype resolves a Python scalar
+            // subclass's dtype via PyTuple_GET_ITEM(type->tp_mro, 1) — a
+            // garbage read here made my_int16(3) resolve to a BOOL descr
+            // (repr printed my_int16(False) while the obval held 3).
+            var mroArr = cls.tp_mro || cls.__mro__;
+            if (mroArr && mroArr.length) {
+                /* Brython type.tp_new mros INCLUDE the class itself;
+                   make_builtin_class ones don't — normalize, else mro[1]
+                   is the class again and _descr_from_subtype recurses. */
+                var mroFull = (mroArr[0] === cls) ? mroArr : [cls].concat(mroArr);
+                HEAP32[(typeStructPtr + 148) >> 2] =
+                    this.wrapPinned(this._b_.tuple.$factory(mroFull));
+            }
             // tp_dict at offset 8: ensure the class has a dict, then wrap.
             var dictObj = this.$B.get_dict(cls);
             if (!dictObj) {
@@ -10627,6 +10647,24 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try {
             var args = rt.unwrap(argsH);
+            /* CPython's float_new hands a SUBTYPE to float_subtype_new
+             * (allocate the subtype, store the value). A plain Brython float
+             * re-classed to the subclass has no __wasthon_ptr__, so every C
+             * slot read on it dereferenced a fresh sentinel handle as a
+             * struct pointer — `B(1.0)` (B a Python np.float64 subclass)
+             * printed heap garbage. Returning NULL with NO error makes the
+             * numpy caller (double_arrtype_new) take its own documented
+             * fallback: PyErr_Clear + convert + tp_alloc the subtype + copy
+             * into its obval — a real struct-backed instance. Python
+             * subclasses are the rt.types entries whose class carries no
+             * __wasthon_basicsize__ (C-registered types set it at bind). */
+            var ti = rt.types.get(typeH);
+            if (ti && ti.brythonClass &&
+                    ti.brythonClass.__wasthon_basicsize__ === undefined &&
+                    args && args.length === 1) {
+                rt.pendingException = null;
+                return 0;
+            }
             var v = (args && args.length > 0) ? args[0] : 0.0;
             /* Return a plain Brython float — numpy's `double_arrtype_new`
              * returns this straight back as the scalar result, so `np.float64`
