@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Expose `__iter__` on iterable-container C types** (`src/wasthon.js`,
+  `PyType_Ready` path). Static C types with `tp_iter` but no `tp_iternext`
+  (numpy's ndarray) iterated fine through Brython's getitem-based sequence
+  fallback, but never got an `__iter__` attribute — so
+  `isinstance(a, collections.abc.Iterable)` and `hasattr(a, '__iter__')` were
+  False. scipy's `_ni_support._normalize_sequence` then mistook an array for a
+  scalar and `ndimage.rotate`/`affine_transform(offset=array)` failed with
+  "no proper offset provided". Calling the C `tp_iter` is circular here —
+  numpy's `array_iter` returns `PySeqIter_New(self)`, which the bridge maps
+  back to `_b_.iter(seq)` — so the installed `__iter__` returns the very
+  object `$B.$iter`'s getitem fallback builds
+  (`{ob_type: $B.iterator, it_seq: self, it_index: 0}`): iteration is
+  byte-identical to before, only the dunder's existence changes. Types without
+  `__getitem__` in the MRO still fall through to the C `tp_iter`.
+
 - **Mask `PY_VECTORCALL_ARGUMENTS_OFFSET` in `PyObject_VectorcallDict`**
   (`src/wasthon.js`). The bridge looped `for (i=0;i<nargs;i++)` over the raw
   `nargsf`. When a caller sets the offset flag (the high bit — Cython's

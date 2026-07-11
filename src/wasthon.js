@@ -5310,6 +5310,28 @@ mergeInto(LibraryManager.library, {
                     }
                     return self;   /* self-iterator (PyObject_SelfIter) */
                 }));
+            } else {
+                /* container types: tp_iter WITHOUT tp_iternext (ndarray).
+                 * Calling the C tp_iter is circular — numpy's array_iter
+                 * returns PySeqIter_New(self), which the bridge maps back to
+                 * _b_.iter(seq) — so keep iterating through Brython's
+                 * getitem-based sequence protocol but expose it as __iter__:
+                 * without the dunder, hasattr(a, '__iter__') and
+                 * isinstance(a, collections.abc.Iterable) are False (scipy's
+                 * _normalize_sequence then mistakes an array for a scalar). */
+                var tpIterOnlyPtr = HEAP32[(typePtr + 24) >> 2];
+                if (tpIterOnlyPtr) installSlot('tp_iter', '__iter__', rt.scoped(function(self) {
+                    var kls = rt.$B.get_class(self);
+                    if (rt.$B.search_in_mro(kls, '__getitem__', rt.$B.NULL) !== rt.$B.NULL) {
+                        /* the object $B.$iter's getitem fallback builds */
+                        return { ob_type: rt.$B.iterator, it_seq: self, it_index: 0 };
+                    }
+                    var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
+                    rt.pendingException = null;
+                    var resH = getWasmTableEntry(tpIterOnlyPtr)(selfH);
+                    if (rt.pendingException) { var pe = rt.pendingException; rt.pendingException = null; throw rt.pendingExc(pe); }
+                    return rt.unwrapResult(resH);
+                }));
             }
             /* tp_call@100 → __call__: numpy ufuncs (add, multiply, …) are
              * callable via tp_call; without __call__ on the Brython class,
