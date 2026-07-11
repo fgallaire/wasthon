@@ -283,6 +283,10 @@ extern PyObject *wasthon_builtin_tuple_tp_new(PyTypeObject *type,
                                               PyObject *args, PyObject *kw);
 extern PyObject *wasthon_builtin_float_tp_new(PyTypeObject *type,
                                               PyObject *args, PyObject *kw);
+extern PyObject *wasthon_builtin_unicode_tp_new(PyTypeObject *type,
+                                                PyObject *args, PyObject *kw);
+extern PyObject *wasthon_builtin_bytes_tp_new(PyTypeObject *type,
+                                              PyObject *args, PyObject *kw);
 /* Shared mapping table for the built-in singletons — C extensions delegate
  * to it (pygame ScancodeWrapper: PyTuple_Type.tp_as_mapping->mp_subscript). */
 static PyMappingMethods wasthon_builtin_as_mapping = {
@@ -386,7 +390,9 @@ void wasthon_init(void) {
     PyFloat_Type.tp_iter   = wasthon_builtin_tp_iter;
     PyFloat_Type.tp_new    = wasthon_builtin_float_tp_new;
     PyUnicode_Type.tp_iter = wasthon_builtin_tp_iter;
+    PyUnicode_Type.tp_new  = wasthon_builtin_unicode_tp_new;
     PyBytes_Type.tp_iter   = wasthon_builtin_tp_iter;
+    PyBytes_Type.tp_new    = wasthon_builtin_bytes_tp_new;
     PyByteArray_Type.tp_iter = wasthon_builtin_tp_iter;
     PySet_Type.tp_iter       = wasthon_builtin_tp_iter;
     PyFrozenSet_Type.tp_iter = wasthon_builtin_tp_iter;

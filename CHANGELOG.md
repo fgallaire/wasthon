@@ -2150,3 +2150,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
       subtyping semantics), resolved once into the registry entry.
       Type identity untouched (the scoped decimal subtype-struct path
       is unaffected). test_defchararray 12→60 passed.
+- [x] `np.str_('x')` / `np.bytes_(b'x')` constructors — "null function or
+      function signature mismatch". numpy's unicode/bytes scalar
+      constructors delegate to their superclass first, exactly like
+      `double_arrtype_new` does for float: `unicode_arrtype_new` calls
+      `PyUnicode_Type.tp_new(subtype, args, kw)` — and that slot (and
+      `PyBytes_Type.tp_new`) was NULL, so every scalar construction, and
+      everything that builds one (the whole `np.strings.upper`/`lower`
+      case-mapping family, `np.char` methods, `chararray.upper()`),
+      trapped on an indirect call to null. Fix: wire
+      `wasthon_builtin_unicode_tp_new` / `_bytes_tp_new` (build a Brython
+      str/bytes from the args), same accepted tradeoff as float64 —
+      plain, correct-valued scalars; perfect scalar identity remains the
+      scalar subsystem's work. numpy dashboard 1667→1678, the
+      np.strings case-mapping API works end to end on U dtypes.

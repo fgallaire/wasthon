@@ -10568,6 +10568,33 @@ mergeInto(LibraryManager.library, {
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
+    /* PyUnicode_Type.tp_new / PyBytes_Type.tp_new — numpy's unicode/bytes
+     * scalar constructors delegate to their superclass first, exactly like
+     * double_arrtype_new does for float (see wasthon_builtin_float_tp_new):
+     * unicode_arrtype_new calls PyUnicode_Type.tp_new(str__subtype, args, kw)
+     * and returns the result. With a NULL slot every np.str_('x') /
+     * np.bytes_(b'x') construction — and everything that builds one, the
+     * whole np.strings.upper/lower family included — was an indirect call
+     * to null. Same accepted tradeoff as float64: the result is a plain
+     * Brython str/bytes, correct-valued and interoperable; perfect scalar
+     * identity stays the scalar subsystem's remaining work. */
+    wasthon_builtin_unicode_tp_new__deps: ['$WasthonRT'],
+    wasthon_builtin_unicode_tp_new: function(typeH, argsH, kwH) {
+        var rt = WasthonRT;
+        try {
+            var args = rt.unwrap(argsH) || [];
+            return rt.wrapNewRef(rt.$B.$call.apply(null, [rt._b_.str].concat(args)));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+    },
+    wasthon_builtin_bytes_tp_new__deps: ['$WasthonRT'],
+    wasthon_builtin_bytes_tp_new: function(typeH, argsH, kwH) {
+        var rt = WasthonRT;
+        try {
+            var args = rt.unwrap(argsH) || [];
+            return rt.wrapNewRef(rt.$B.$call.apply(null, [rt._b_.bytes].concat(args)));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+    },
+
     wasthon_bind_builtin_type__deps: ['$WasthonRT'],
     wasthon_bind_builtin_type: function(tag, structPtr) {
         var rt = WasthonRT;
