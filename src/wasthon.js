@@ -32,6 +32,7 @@ mergeInto(LibraryManager.library, {
      * --------------------------------------------------------------- */
 
     $WasthonRT__postset: 'WasthonRT.init(); Module["wasthon"] = WasthonRT;',
+    $WasthonRT__deps: ['$addFunction'],
     $WasthonRT: {
         _b_: null,
         $B: null,
@@ -846,6 +847,74 @@ mergeInto(LibraryManager.library, {
             this.lastCall = name + (info ? '(' + info + ')' : '');
             // Uncomment for verbose: console.log('[wasthon trace]', this.lastCall);
         },
+        /* The tp_new body behind Brython-class type structs. `owner` is the
+         * class whose struct carries the slot; `typeHandle` is the type being
+         * instantiated. They differ when C code copies the pointer down an
+         * inheritance chain and calls it with a subtype — CPython semantics
+         * there are "run the OWNER's constructor for the target type", so
+         * resolve __new__ on the owner, never on the target: dispatching on
+         * the target re-enters the most-derived __new__ (Cython's
+         * `_Timestamp.__new__(Timestamp, …, fold=…)` — datetime->tp_new
+         * copied through ABCTimestamp — landed back in Timestamp.__new__,
+         * whose fold guard rejected it; called with the owner itself it
+         * recursed until "too much recursion"). owner === null keeps the
+         * historical target dispatch (the shared C trampoline: pickle's
+         * load_newobj reads tp_new off the target's own struct, so both
+         * resolve identically). */
+        brythonTpNew: function(owner, typeHandle, argsHandle, kwargsHandle) {
+            var rt = this;
+            var cls = rt.unwrap(typeHandle);
+            if (cls === null) return 0;
+            var args = argsHandle ? rt.unwrap(argsHandle) : null;
+            var callArgs = [cls];
+            if (Array.isArray(args)) {
+                for (var i = 0; i < args.length; i++) callArgs.push(args[i]);
+            }
+            try {
+                // Forward keyword args via Brython's $kw marker: NEWOBJ_EX
+                // reconstructs as cls.__new__(cls, *args, **kwargs); dropping
+                // them made e.g. an int subclass pickled via
+                // __getnewargs_ex__ rebuild with the default base 10
+                // (int('FACE') -> ValueError).
+                var kwargs = kwargsHandle ? rt.unwrap(kwargsHandle) : null;
+                if (kwargs) {
+                    var kwMap = {};
+                    var items = rt._b_.list.$factory(
+                        rt.$B.$call(rt.$B.$getattr(kwargs, 'items')));
+                    for (var p = 0; p < items.length; p++) {
+                        var nm = rt.asJSStr(items[p][0]);
+                        if (nm === null) nm = String(items[p][0]);
+                        kwMap[nm] = items[p][1];
+                    }
+                    callArgs.push({ $kw: [kwMap] });
+                }
+                var newm = rt.$B.$getattr(owner || cls, '__new__');
+                var inst = rt.$B.$call.apply(rt.$B, [newm].concat(callArgs));
+                return rt.wrapNewRef(inst);
+            } catch (e) {
+                rt.forwardError(e, rt._b_.TypeError);
+                return 0;
+            }
+        },
+        /* A tp_new function pointer bound to its owning Brython class, so the
+         * owner survives C-side pointer copies (see brythonTpNew). Cached on
+         * the class; falls back to the shared target-dispatch trampoline when
+         * the embedder linked without table growth. */
+        tpNewForOwner: function(owner) {
+            if (owner.__wasthon_owner_tp_new__) return owner.__wasthon_owner_tp_new__;
+            var fp;
+            try {
+                var rt = this;
+                fp = addFunction(function(typeHandle, argsHandle, kwargsHandle) {
+                    return rt.brythonTpNew(owner, typeHandle, argsHandle, kwargsHandle);
+                }, 'iiii');
+            } catch (e) {
+                if (!this._brythonTpNew) this._brythonTpNew = _wasthon_get_brython_tp_new();
+                fp = this._brythonTpNew;
+            }
+            owner.__wasthon_owner_tp_new__ = fp;
+            return fp;
+        },
         /* Lazily back a Brython type class with a real PyTypeObject struct
          * in linear memory, so C code can dereference cls->tp_dict, etc.
          * Used for types that arrive via call-Python-and-get-a-type-back
@@ -881,7 +950,6 @@ mergeInto(LibraryManager.library, {
                     if (!this._defaultTpAlloc) this._defaultTpAlloc = _wasthon_get_default_tp_alloc();
                     if (!this._builtinTpIter)  this._builtinTpIter  = _wasthon_get_builtin_tp_iter();
                     if (!this._builtinTpIternext) this._builtinTpIternext = _wasthon_get_builtin_tp_iternext();
-                    if (!this._brythonTpNew)   this._brythonTpNew   = _wasthon_get_brython_tp_new();
                     var bd = this.$B.get_dict(cls);
                     if (!bd) { this.$B.init_dict(cls); bd = this.$B.get_dict(cls); }
                     // Complete the canonical struct exactly like a fresh
@@ -894,7 +962,7 @@ mergeInto(LibraryManager.library, {
                     if (HEAP32[(canon + 16) >> 2] === 0) HEAP32[(canon + 16) >> 2] = this._defaultTpAlloc;
                     if (HEAP32[(canon + 24) >> 2] === 0) HEAP32[(canon + 24) >> 2] = this._builtinTpIter;
                     if (HEAP32[(canon + 56) >> 2] === 0) HEAP32[(canon + 56) >> 2] = this._builtinTpIternext;
-                    if (HEAP32[(canon + 60) >> 2] === 0) HEAP32[(canon + 60) >> 2] = this._brythonTpNew;
+                    if (HEAP32[(canon + 60) >> 2] === 0) HEAP32[(canon + 60) >> 2] = this.tpNewForOwner(cls);
                     var bn = cls.tp_name || (cls.$infos && cls.$infos.__name__) || '<type>';
                     this.types.set(canon, { brythonClass: cls, shortName: bn, fullName: bn });
                 }
@@ -903,7 +971,6 @@ mergeInto(LibraryManager.library, {
             if (!this._defaultTpAlloc) this._defaultTpAlloc = _wasthon_get_default_tp_alloc();
             if (!this._builtinTpIter)  this._builtinTpIter  = _wasthon_get_builtin_tp_iter();
             if (!this._builtinTpIternext) this._builtinTpIternext = _wasthon_get_builtin_tp_iternext();
-            if (!this._brythonTpNew)   this._brythonTpNew   = _wasthon_get_brython_tp_new();
             // PyTypeObject layout (Phase 1 offsets): 0 = ob_refcnt,
             // 4 = tp_free, 8 = tp_dict, 12 = tp_name, 16 = tp_alloc,
             // 20 = tp_init, 24 = tp_iter, 28 = tp_as_number, 32 = tp_methods,
@@ -952,9 +1019,10 @@ mergeInto(LibraryManager.library, {
             HEAP32[(typeStructPtr + 56) >> 2] = this._builtinTpIternext;  // tp_iternext
             // tp_new (offset 60): C code that reconstructs instances from a
             // type struct (e.g. _pickle load_newobj `cls->tp_new(cls,args)`)
-            // needs a non-NULL tp_new. wasthon_brython_tp_new does
-            // cls.__new__(cls, *args) via Brython.
-            HEAP32[(typeStructPtr + 60) >> 2] = this._brythonTpNew;     // tp_new
+            // needs a non-NULL tp_new, and one that keeps running THIS class's
+            // __new__ when C copies the pointer into a subtype's struct
+            // (brythonTpNew's owner contract).
+            HEAP32[(typeStructPtr + 60) >> 2] = this.tpNewForOwner(cls); // tp_new
             cls.__wasthon_type_handle__ = typeStructPtr;
             this.handles.set(typeStructPtr, cls);
             // Register a minimal types-map entry so callers that look up
@@ -7690,14 +7758,64 @@ mergeInto(LibraryManager.library, {
     PyCapsule_Import: function(namePtr, noBlock) { var rt = WasthonRT;
         var name = namePtr ? UTF8ToString(namePtr) : "";
         /* datetime C-API: Brython's datetime is pure-Python and exports no
-         * capsule. numpy dereferences PyDateTimeAPI ONLY in the datetime64<->
-         * datetime conversion path (not at init), so hand back a persistent
-         * zeroed PyDateTime_CAPI so PyDateTime_IMPORT is non-NULL and module
-         * init proceeds. TODO(phase-4): fill the struct with bridge fns to
-         * make datetime64 object conversion real. */
+         * capsule, so build a real PyDateTime_CAPI over it. The five type
+         * pointers back PyDate_Check/PyDateTime_Check/... (as NULLs they made
+         * every check false: pandas' convert_to_tsobject never recognized a
+         * datetime, so Timestamp(year=, month=, day=) died "Cannot convert
+         * input"), and the constructors call the target type — which honors
+         * the subtype the caller passes, like CPython's new_datetime_subclass.
+         * The field-access macros are attribute reads (src/datetime.h). */
         if (name === 'datetime.datetime_CAPI') {
-            if (!rt._datetimeCAPI) { rt._datetimeCAPI = _malloc(256);
-                for (var j = 0; j < 64; j++) HEAP32[(rt._datetimeCAPI >> 2) + j] = 0; }
+            if (!rt._datetimeCAPI) {
+                var dtm = rt.$B.$call(rt._b_.__import__, 'datetime');
+                var g = function(n) { return rt.$B.$getattr(dtm, n); };
+                var cap = _malloc(60);
+                var W = function(i, v) { HEAP32[(cap >> 2) + i] = v; };
+                var call = function(typeH, a) {
+                    return rt.wrapNewRef(rt.$B.$call.apply(rt.$B,
+                        [rt.unwrap(typeH)].concat(a)));
+                };
+                var guard = function(fn) { return function() {
+                    try { return fn.apply(null, arguments); }
+                    catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+                }; };
+                W(0, rt.ensureTypeStruct(g('date')));       // DateType
+                W(1, rt.ensureTypeStruct(g('datetime')));   // DateTimeType
+                W(2, rt.ensureTypeStruct(g('time')));       // TimeType
+                W(3, rt.ensureTypeStruct(g('timedelta')));  // DeltaType
+                W(4, rt.ensureTypeStruct(g('tzinfo')));     // TZInfoType
+                W(5, rt.wrapPinned(rt.$B.$getattr(g('timezone'), 'utc')));
+                W(6, addFunction(guard(function(y, m, d, tH) {          // Date_FromDate
+                    return call(tH, [y, m, d]); }), 'iiiii'));
+                W(7, addFunction(guard(function(y, mo, d, h, mi, s, us, tzH, tH) {
+                    return call(tH, [y, mo, d, h, mi, s, us, rt.unwrap(tzH)]);
+                }), 'iiiiiiiiii'));                                     // DateTime_FromDateAndTime
+                W(8, addFunction(guard(function(h, mi, s, us, tzH, tH) { // Time_FromTime
+                    return call(tH, [h, mi, s, us, rt.unwrap(tzH)]); }), 'iiiiiii'));
+                W(9, addFunction(guard(function(days, secs, us, normalize, tH) {
+                    return call(tH, [days, secs, us]); }), 'iiiiii'));  // Delta_FromDelta
+                W(10, addFunction(guard(function(offH, nmH) {           // TimeZone_FromTimeZone
+                    var a = [rt.unwrap(offH)];
+                    if (nmH) a.push(rt.unwrap(nmH));
+                    return rt.wrapNewRef(rt.$B.$call.apply(rt.$B,
+                        [g('timezone')].concat(a))); }), 'iii'));
+                W(11, addFunction(guard(function(clsH, argsH, kwdsH) {  // DateTime_FromTimestamp
+                    var m = rt.$B.$getattr(rt.unwrap(clsH), 'fromtimestamp');
+                    return rt.wrapNewRef(rt.$B.$call.apply(rt.$B,
+                        [m].concat(rt.unwrap(argsH)))); }), 'iiii'));
+                W(12, addFunction(guard(function(clsH, argsH) {         // Date_FromTimestamp
+                    var m = rt.$B.$getattr(rt.unwrap(clsH), 'fromtimestamp');
+                    return rt.wrapNewRef(rt.$B.$call.apply(rt.$B,
+                        [m].concat(rt.unwrap(argsH)))); }), 'iii'));
+                W(13, addFunction(guard(function(y, mo, d, h, mi, s, us, tzH, fold, tH) {
+                    return call(tH, [y, mo, d, h, mi, s, us, rt.unwrap(tzH),
+                        { $kw: [{ fold: fold }] }]);
+                }), 'iiiiiiiiiii'));                       // DateTime_FromDateAndTimeAndFold
+                W(14, addFunction(guard(function(h, mi, s, us, tzH, fold, tH) {
+                    return call(tH, [h, mi, s, us, rt.unwrap(tzH),
+                        { $kw: [{ fold: fold }] }]); }), 'iiiiiiii'));  // Time_FromTimeAndFold
+                rt._datetimeCAPI = cap;
+            }
             return rt._datetimeCAPI;
         }
         try {
@@ -7706,8 +7824,9 @@ mergeInto(LibraryManager.library, {
             for (var i = 1; i < parts.length; i++) mod = rt.$B.$getattr(mod, parts[i]);
             var cap = rt.$B.$getattr(mod, attr);
             var o = rt.unwrap(rt.wrap(cap));
+            if (typeof process !== 'undefined' && process.env && process.env.CAPDBG) console.log('[CAP]', name, '->', o && o.ptr);
             return (o && o.ptr) ? o.ptr : 0;
-        } catch (e) { rt.setError(rt.wrap(rt._b_.ImportError), "PyCapsule_Import: " + name); return 0; } },
+        } catch (e) { if (typeof process !== 'undefined' && process.env && process.env.CAPDBG) console.log('[CAP] THROW', name, e.message); rt.setError(rt.wrap(rt._b_.ImportError), "PyCapsule_Import: " + name); return 0; } },
     PyMemoryView_GET_BASE__deps: ['$WasthonRT'],
     PyMemoryView_GET_BASE: function(mvH) { var rt = WasthonRT; var mv = rt.unwrap(mvH);
         try { return rt.wrap(rt.$B.$getattr(mv, 'obj')); } catch (e) { return 0; } },
@@ -7769,8 +7888,13 @@ mergeInto(LibraryManager.library, {
                             if (pe) throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);
                             var vcName = (fn && fn.$infos && fn.$infos.__name__) || (fn && fn.tp_name) || '?';
                             if (rt.debugVectorcall) {
-                                console.log('[VC] NULL from callee keys=' + (fn ? Object.keys(fn).join('/') : 'null') +
-                                    ' ptr=' + (fn && fn.__wasthon_ptr__) + ' na=' + na);
+                                var vcCls = '?';
+                                try { vcCls = rt.$B.class_name(fn); } catch (e2) {}
+                                var vcArg0 = '?';
+                                try { if (na > 0) vcArg0 = rt.$B.class_name(av[0]) + ':' + String(rt._b_.repr(av[0])).slice(0, 60); } catch (e3) {}
+                                console.log('[VC] NULL from callee cls=' + vcCls +
+                                    ' keys=' + (fn ? Object.keys(fn).join('/') : 'null') +
+                                    ' ptr=' + (fn && fn.__wasthon_ptr__) + ' na=' + na + ' arg0=' + vcArg0);
                                 console.trace();
                             }
                             throw rt.$B.$call(rt._b_.RuntimeError, "vectorcall returned NULL (callee " + vcName + ")");
@@ -11256,38 +11380,7 @@ mergeInto(LibraryManager.library, {
      * cls.__new__(cls, *args). Used by _pickle's load_newobj (NEWOBJ). */
     wasthon_brython_tp_new__deps: ['$WasthonRT'],
     wasthon_brython_tp_new: function(typeHandle, argsHandle, kwargsHandle) {
-        var rt = WasthonRT;
-        var cls = rt.unwrap(typeHandle);
-        if (cls === null) return 0;
-        var args = argsHandle ? rt.unwrap(argsHandle) : null;
-        var callArgs = [cls];
-        if (Array.isArray(args)) {
-            for (var i = 0; i < args.length; i++) callArgs.push(args[i]);
-        }
-        try {
-            // Forward keyword args via Brython's $kw marker: NEWOBJ_EX
-            // reconstructs as cls.__new__(cls, *args, **kwargs); dropping them
-            // made e.g. an int subclass pickled via __getnewargs_ex__ rebuild
-            // with the default base 10 (int('FACE') -> ValueError).
-            var kwargs = kwargsHandle ? rt.unwrap(kwargsHandle) : null;
-            if (kwargs) {
-                var kwMap = {};
-                var items = rt._b_.list.$factory(
-                    rt.$B.$call(rt.$B.$getattr(kwargs, 'items')));
-                for (var p = 0; p < items.length; p++) {
-                    var nm = rt.asJSStr(items[p][0]);
-                    if (nm === null) nm = String(items[p][0]);
-                    kwMap[nm] = items[p][1];
-                }
-                callArgs.push({ $kw: [kwMap] });
-            }
-            var newm = rt.$B.$getattr(cls, '__new__');
-            var inst = rt.$B.$call.apply(rt.$B, [newm].concat(callArgs));
-            return rt.wrapNewRef(inst);
-        } catch (e) {
-            rt.forwardError(e, rt._b_.TypeError);
-            return 0;
-        }
+        return WasthonRT.brythonTpNew(null, typeHandle, argsHandle, kwargsHandle);
     },
 
     /* ----------------------------------------------------------------

@@ -114,44 +114,51 @@ typedef struct
 } PyDateTime_DateTime;          /* hastzinfo true */
 
 
+/* wasthon: datetime objects are Brython instances — no packed byte struct
+ * exists behind them, so the CPython field macros (data[0]<<8 | data[1], …)
+ * would read garbage off a handle. Route every accessor through a Python
+ * attribute read. The tzinfo helper returns a borrowed-style handle (the
+ * instance keeps its tzinfo alive); like the __wasthon_slice_* helpers this
+ * leaks one handle per read, bounded by handle-scope reaping. */
+static inline int __wasthon_dt_int(PyObject *o, const char *name) {
+    PyObject *v = PyObject_GetAttrString(o, name);
+    if (!v) { PyErr_Clear(); return 0; }
+    return (int)PyLong_AsLong(v);
+}
+static inline PyObject *__wasthon_dt_tzinfo(PyObject *o) {
+    PyObject *v = PyObject_GetAttrString(o, "tzinfo");
+    if (!v) { PyErr_Clear(); return Py_None; }
+    return v;
+}
+
 /* Apply for date and datetime instances. */
 
 // o is a pointer to a time or a datetime object.
-#define _PyDateTime_HAS_TZINFO(o)  (((_PyDateTime_BaseTZInfo *)(o))->hastzinfo)
+#define _PyDateTime_HAS_TZINFO(o)  (!Py_IsNone(__wasthon_dt_tzinfo((PyObject *)(o))))
 
-#define PyDateTime_GET_YEAR(o)     ((((PyDateTime_Date*)(o))->data[0] << 8) | \
-                     ((PyDateTime_Date*)(o))->data[1])
-#define PyDateTime_GET_MONTH(o)    (((PyDateTime_Date*)(o))->data[2])
-#define PyDateTime_GET_DAY(o)      (((PyDateTime_Date*)(o))->data[3])
+#define PyDateTime_GET_YEAR(o)     __wasthon_dt_int((PyObject *)(o), "year")
+#define PyDateTime_GET_MONTH(o)    __wasthon_dt_int((PyObject *)(o), "month")
+#define PyDateTime_GET_DAY(o)      __wasthon_dt_int((PyObject *)(o), "day")
 
-#define PyDateTime_DATE_GET_HOUR(o)        (((PyDateTime_DateTime*)(o))->data[4])
-#define PyDateTime_DATE_GET_MINUTE(o)      (((PyDateTime_DateTime*)(o))->data[5])
-#define PyDateTime_DATE_GET_SECOND(o)      (((PyDateTime_DateTime*)(o))->data[6])
-#define PyDateTime_DATE_GET_MICROSECOND(o)              \
-    ((((PyDateTime_DateTime*)(o))->data[7] << 16) |       \
-     (((PyDateTime_DateTime*)(o))->data[8] << 8)  |       \
-      ((PyDateTime_DateTime*)(o))->data[9])
-#define PyDateTime_DATE_GET_FOLD(o)        (((PyDateTime_DateTime*)(o))->fold)
-#define PyDateTime_DATE_GET_TZINFO(o)      (_PyDateTime_HAS_TZINFO((o)) ? \
-    ((PyDateTime_DateTime *)(o))->tzinfo : Py_None)
+#define PyDateTime_DATE_GET_HOUR(o)        __wasthon_dt_int((PyObject *)(o), "hour")
+#define PyDateTime_DATE_GET_MINUTE(o)      __wasthon_dt_int((PyObject *)(o), "minute")
+#define PyDateTime_DATE_GET_SECOND(o)      __wasthon_dt_int((PyObject *)(o), "second")
+#define PyDateTime_DATE_GET_MICROSECOND(o) __wasthon_dt_int((PyObject *)(o), "microsecond")
+#define PyDateTime_DATE_GET_FOLD(o)        __wasthon_dt_int((PyObject *)(o), "fold")
+#define PyDateTime_DATE_GET_TZINFO(o)      __wasthon_dt_tzinfo((PyObject *)(o))
 
 /* Apply for time instances. */
-#define PyDateTime_TIME_GET_HOUR(o)        (((PyDateTime_Time*)(o))->data[0])
-#define PyDateTime_TIME_GET_MINUTE(o)      (((PyDateTime_Time*)(o))->data[1])
-#define PyDateTime_TIME_GET_SECOND(o)      (((PyDateTime_Time*)(o))->data[2])
-#define PyDateTime_TIME_GET_MICROSECOND(o)              \
-    ((((PyDateTime_Time*)(o))->data[3] << 16) |           \
-     (((PyDateTime_Time*)(o))->data[4] << 8)  |           \
-      ((PyDateTime_Time*)(o))->data[5])
-#define PyDateTime_TIME_GET_FOLD(o)        (((PyDateTime_Time*)(o))->fold)
-#define PyDateTime_TIME_GET_TZINFO(o)      (_PyDateTime_HAS_TZINFO(o) ? \
-    ((PyDateTime_Time *)(o))->tzinfo : Py_None)
+#define PyDateTime_TIME_GET_HOUR(o)        __wasthon_dt_int((PyObject *)(o), "hour")
+#define PyDateTime_TIME_GET_MINUTE(o)      __wasthon_dt_int((PyObject *)(o), "minute")
+#define PyDateTime_TIME_GET_SECOND(o)      __wasthon_dt_int((PyObject *)(o), "second")
+#define PyDateTime_TIME_GET_MICROSECOND(o) __wasthon_dt_int((PyObject *)(o), "microsecond")
+#define PyDateTime_TIME_GET_FOLD(o)        __wasthon_dt_int((PyObject *)(o), "fold")
+#define PyDateTime_TIME_GET_TZINFO(o)      __wasthon_dt_tzinfo((PyObject *)(o))
 
 /* Apply for time delta instances */
-#define PyDateTime_DELTA_GET_DAYS(o)         (((PyDateTime_Delta*)(o))->days)
-#define PyDateTime_DELTA_GET_SECONDS(o)      (((PyDateTime_Delta*)(o))->seconds)
-#define PyDateTime_DELTA_GET_MICROSECONDS(o)            \
-    (((PyDateTime_Delta*)(o))->microseconds)
+#define PyDateTime_DELTA_GET_DAYS(o)         __wasthon_dt_int((PyObject *)(o), "days")
+#define PyDateTime_DELTA_GET_SECONDS(o)      __wasthon_dt_int((PyObject *)(o), "seconds")
+#define PyDateTime_DELTA_GET_MICROSECONDS(o) __wasthon_dt_int((PyObject *)(o), "microseconds")
 
 
 /* Define structure for C API. */

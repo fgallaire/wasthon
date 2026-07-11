@@ -7,6 +7,34 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **tp_new pointers on Brython-class type structs carry their owning class**
+  (`src/wasthon.js`). The generic `wasthon_brython_tp_new` trampoline
+  resolved `__new__` on the TARGET type, so when Cython copied a base's
+  tp_new down an inheritance chain (`ABCTimestamp->tp_new =
+  datetime->tp_new`, then `_Timestamp.__new__(Timestamp, ..., fold=0)`)
+  the call re-entered the most-derived `Timestamp.__new__` — whose fold
+  guard rejected the components path ("Cannot pass fold with possibly
+  unambiguous input") — and with the owner itself as target it recursed
+  until "too much recursion". `ensureTypeStruct` now installs a
+  per-owner pointer (`addFunction` closure, shared trampoline as
+  fallback) that runs the OWNER's constructor for whatever target type
+  it receives, like CPython. `pd.Timestamp(...)` in every calling form.
+
+- **Real datetime C-API capsule** (`src/wasthon.js`, `src/datetime.h`).
+  `PyCapsule_Import("datetime.datetime_CAPI")` handed back a ZEROED
+  struct, so `PyDate_Check`/`PyDateTime_Check`/`PyDelta_Check` compared
+  against NULL and never matched — pandas' `convert_to_tsobject` refused
+  every datetime ("Cannot convert input [...] to Timestamp") and numpy's
+  datetime64<->pydatetime conversions silently fell back. The capsule
+  now carries the five type pointers (ensureTypeStruct over Brython's
+  pure-Python datetime classes), `timezone.utc`, and the nine
+  constructors as addFunction closures calling the target type. The
+  field-access macros (`PyDateTime_GET_YEAR`, packed `data[]` byte
+  reads — garbage on a Brython instance) became attribute reads via
+  static-inline helpers in `datetime.h`. `pd.Timestamp(year=, month=,
+  day=)`, `pd.to_datetime` (with the vendored super fix), `Timedelta`
+  arithmetic.
+
 - [x] **tp_init inherits through the bases when a spec type has no own Py_tp_init** (bridge). Both class-wiring paths (PyType_Ready and PyType_FromModuleAndSpec) aliased `cls.tp_init` to `object.tp_init` whenever the type declared a tp_new but no tp_init of its own — so a Cython subclass relying on its PARENT's `def __init__` (pandas ObjectEngine over IndexEngine, and every other engine subclass) never ran that init and all its cdef fields stayed None: `Index.get_loc` died "object of type 'NoneType' has no len()", which broke every DataFrame column lookup ("'k' in df.columns" was False, `df['k']`, groupby/merge/sort_values keys, to_json). CPython's PyType_FromSpec inherits tp_init through the bases; the mro isn't populated yet at wiring time, so the slot now resolves lazily on first call and caches on the class (__cinit__-only types still land on object.tp_init and skip). pandas smoke page 5/20 → 10/20 (groupby, Categorical, concat, sort_values, read_csv now compute).
 
 - [x] **add_docstring reaches C-function trampolines + creation-time ml_doc + subclass kwargs/subtype on the FromModuleAndSpec tp_new** (bridge). Three roots behind the pandas smoke page. (1) `wasthon_set_docstring`'s guard read `typeof obj !== 'object'` — a C-function trampoline is `typeof 'function'`, so EVERY numpy `add_docstring` on a function silently dropped (numpy's `_add_docstring` swallows failures with `except Exception: pass`, which is why this never surfaced); with the vendored `__doc__` getset, `np.arange.__doc__` now carries the real doc (numpy.ma's `_convert2ma` asserts on it). (2) `__wasthon_install_methods` now stores ml_doc (minus the clinic signature line, CPython's contract) in `$function_infos[func_attrs.__doc__]` at trampoline creation, so every C module's functions carry their docstring without an add_docstring pass. (3) The `PyType_FromModuleAndSpec` tp_new wrapper — the branch every Cython class comes through — STRIPPED kwargs on subclass instantiation and passed the PARENT struct to the C tp_new (except Decimal), on the theory that a tp_init catches the keywords later. A mandatory Cython `__cinit__` has no tp_init: `Block(values, placement=…, ndim=…)` — behind every pandas Series — died "takes at least 3 positional arguments". Now a subclass instantiation WITH keywords forwards them and hands the C constructor the subclass's canonical ensureTypeStruct handle (the parent struct makes the C base-only kwarg guards wrongly fire); keyword-less subclass calls keep the historical parent-struct path (generalizing the subtype struct regressed test_array -26: array_new/its buffer protocol can't run on the generic struct), and array keeps the historical strip outright — its subclass kwargs are for the Python `__init__`, which still receives them (documented per-module exception alongside Decimal's). pandas smoke page: 0/20 → 5/20 with the vendored companions (Series/DataFrame/cut/isna/np-interop construct and compute). Building pandas' `_libs.window.aggregations` — the first Cython C++ module — surfaced two linkage gaps that apply to every future C++ extension (matplotlib's pybind11 stack): `PyMODINIT_FUNC` now carries `extern "C"` under `__cplusplus` (CPython's definition does; without it the `PyInit_*` wasm export comes out name-mangled) and `cython_compat.h` wraps its declarations in an `extern "C"` guard (seven API symbols resolved mangled at link). New API for the pandas io modules (`_libs.json`/ujson, `_libs.parsers`, `_libs.testing`): `PySet_Discard` and `PyObject_Dir` (wasthon.js, the PySet block's style), `PyAnySet_Check` aliased to the set-or-frozenset `PySet_Check`, `PyObject_Realloc` → `PyMem_Realloc` (wasthon.h). `wasthon_fill_array_buffer` grows the missing buffer formats: `'O'` (an object array's items are 32-bit handles = PyObject* in wasm32, exposable as-is per CPython's `'O'` contract) and complex `'Zf'`/`'Zd'` — Cython typed memoryviews over object/complex128 ndarrays validated format 'B' and died "Buffer dtype mismatch" (every `Series`/`DataFrame` constructor path through `lib.maybe_convert_objects`). `__wasthon_slice_start/stop/step` GetAttr helpers (cython_compat.h) back the build recipe's rerouting of Cython's direct `((PySliceObject*)s)->start` struct reads — garbage on bridge handles (pandas internals.pyx `slice_canonize`, i.e. every `BlockPlacement(slice)` behind every Series). With the vendored companion commit `import pandas` prints `__version__` 2.2.3 end-to-end in the node harness, `BlockPlacement(slice)` constructs, ujson round-trips. numpy grand total unchanged (3041), 21 suites 0 fails, numpy smoke 38/38.
