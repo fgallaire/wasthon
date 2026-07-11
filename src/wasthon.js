@@ -870,7 +870,9 @@ mergeInto(LibraryManager.library, {
             // so wrap(type(None)) must be that extern (test_singleton_types, C path).
             // Safe to unify (unlike str/bytes/containers): their sole instances are
             // None/.../NotImplemented, never reconstructed via NEWOBJ.
-            var canon = (cls === this._b_.int || cls === this.$B.NoneType ||
+            var canon = (cls === this._b_.int || cls === this._b_.bool ||
+                         cls === this._b_.float || cls === this._b_.complex ||
+                         cls === this.$B.NoneType ||
                          cls === this.$B.ellipsis || cls === this.$B.NotImplementedType) &&
                         this.builtinTypeForClass && this.builtinTypeForClass.get(cls);
             if (canon) {
@@ -3786,7 +3788,24 @@ mergeInto(LibraryManager.library, {
     PyFloat_FromString__deps: ['$WasthonRT', 'PyFloat_FromDouble'],
     PyFloat_FromString: function(sH) {
         var rt = WasthonRT;
-        var s = rt.asJSStr(rt.unwrap(sH));
+        var _o = rt.unwrap(sH);
+        var s = rt.asJSStr(_o);
+        if (s === null && _o && (_o.__wasthon_cstr__ || (_o.source && typeof _o.source.length === 'number'))) {
+            /* CPython's PyFloat_FromString accepts bytes/bytearray too:
+               _json's number scanner hands the raw numstr as BYTES on its
+               parse_float == &PyFloat_Type fast path (the branch the
+               canonical float unification enables). For a C-allocated bytes
+               (PyBytes_FromStringAndSize(NULL, n) placeholder that C then
+               memcpy'd into), the truth lives in the linear-memory buffer —
+               the Brython .source may still be the blank placeholder. */
+            s = '';
+            if (_o.__wasthon_cstr__) {
+                var _n = _o.__wasthon_cstr_size__ | 0;
+                for (var _i = 0; _i < _n; _i++) s += String.fromCharCode(HEAPU8[_o.__wasthon_cstr__ + _i]);
+            } else {
+                for (var _i = 0; _i < _o.source.length; _i++) s += String.fromCharCode(_o.source[_i]);
+            }
+        }
         if (s === null) {
             rt.setError(rt.wrap(rt._b_.TypeError), "PyFloat_FromString: not a str");
             return 0;
