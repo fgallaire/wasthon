@@ -10094,6 +10094,21 @@ mergeInto(LibraryManager.library, {
         }
     },
 
+    /* PyObject_DelItem(o, key) — `del o[key]`. cppy (kiwisolver's C-API
+     * helper) reaches for it; Brython exposes it as $delitem. */
+    PyObject_DelItem__deps: ['$WasthonRT'],
+    PyObject_DelItem: function(objH, keyH) {
+        var rt = WasthonRT;
+        try {
+            rt.$B.$delitem(rt.unwrap(objH), rt.unwrap(keyH));
+            return 0;
+        }
+        catch (e) {
+            rt.forwardError(e, rt._b_.TypeError);
+            return -1;
+        }
+    },
+
     /* PySequence_List(o) — list(o). */
     PySequence_List__deps: ['$WasthonRT'],
     PySequence_List: function(handle) {

@@ -1646,6 +1646,7 @@ PyObject *_PyType_Lookup(PyTypeObject *type, PyObject *name);
 Py_hash_t _PyObject_HashFast(PyObject *o);
 PyObject *_PyDict_GetItem_KnownHash(PyObject *d, PyObject *k, Py_hash_t hash);
 int       PyObject_SetItem(PyObject *o, PyObject *key, PyObject *v);
+int       PyObject_DelItem(PyObject *o, PyObject *key);
 #define   Py_nb_or  39
 /* Descriptor protocol slots. NOTE: the natural CPython IDs 56/57 collide here
  * with Py_tp_doc (56) and Py_tp_getattro (57), which the bridge already reads

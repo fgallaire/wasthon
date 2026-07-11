@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_DelItem`** (`src/wasthon.js`). kiwisolver (matplotlib's
+  constrained-layout solver, required at `import matplotlib.pyplot`) is
+  a C++ extension over the `cppy` C-API helper, whose `ptr.h` reaches
+  for `PyObject_DelItem` (`del o[key]`). Delegates to Brython's
+  `$delitem`. With this, kiwisolver's `_cext` compiles and links clean
+  against the bridge.
+
 - **`PyUnicode_ReadChar`** (`src/wasthon.js`). matplotlib's `ft2font`
   (raw C-API) iterates text codepoint-by-codepoint to build the glyph
   set to load; the bridge had no `PyUnicode_ReadChar`. Returns the
