@@ -5737,6 +5737,103 @@ mergeInto(LibraryManager.library, {
         }
     },
 
+    /* PySet_Add / PySet_Contains / PySet_Size / PySet_Pop — pandas' Cython
+     * modules use the concrete set API for their uniques/factorize caches. */
+    PySet_Add__deps: ['$WasthonRT'],
+    PySet_Add: function(setH, keyH) {
+        var rt = WasthonRT;
+        try {
+            rt.$B.$call(rt.$B.$getattr(rt.unwrap(setH), 'add'), rt.unwrap(keyH));
+            return 0;
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
+    },
+    PySet_Contains__deps: ['$WasthonRT'],
+    PySet_Contains: function(setH, keyH) {
+        var rt = WasthonRT;
+        try {
+            return rt.$B.$is_member(rt.unwrap(keyH), rt.unwrap(setH)) ? 1 : 0;
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
+    },
+    PySet_Size__deps: ['$WasthonRT'],
+    PySet_Size: function(setH) {
+        var rt = WasthonRT;
+        try { return rt._b_.len(rt.unwrap(setH)) | 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
+    },
+    PySet_Pop__deps: ['$WasthonRT'],
+    PySet_Pop: function(setH) {
+        var rt = WasthonRT;
+        try {
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(rt.unwrap(setH), 'pop')));
+        } catch (e) { rt.forwardError(e, rt._b_.KeyError); return 0; }
+    },
+
+    /* PyCFunction_New(ml, self) — a bare C function object from a single
+     * PyMethodDef (Cython's unbound-method unpacking path). Same trampoline
+     * install_methods builds, module-scope shape (no auto-bind). */
+    PyCFunction_New__deps: ['$WasthonRT', '$__wasthon_make_trampoline'],
+    PyCFunction_New: function(mlPtr, selfH) {
+        var rt = WasthonRT;
+        var namePtr = HEAP32[mlPtr >> 2];
+        var fnPtr   = HEAP32[(mlPtr + 4) >> 2];
+        var flags   = HEAP32[(mlPtr + 8) >> 2];
+        var name    = namePtr ? UTF8ToString(namePtr) : '<anonymous>';
+        var tramp = __wasthon_make_trampoline(fnPtr, flags, 0, name, true, 0);
+        tramp.ob_type = rt.$B.builtin_function_or_method;
+        return rt.wrapNewRef(tramp);
+    },
+
+    /* PyClassMethod_New / PyDescr_NewClassMethod — real Brython classmethod
+     * wrappers (the METH_CLASS shape install_methods already uses). */
+    PyClassMethod_New__deps: ['$WasthonRT'],
+    PyClassMethod_New: function(callableH) {
+        var rt = WasthonRT;
+        return rt.wrapNewRef({
+            ob_type: rt._b_.classmethod,
+            cm_callable: rt.unwrap(callableH),
+        });
+    },
+    PyDescr_NewClassMethod__deps: ['$WasthonRT', '$__wasthon_make_trampoline'],
+    PyDescr_NewClassMethod: function(typeH, mlPtr) {
+        var rt = WasthonRT;
+        var namePtr = HEAP32[mlPtr >> 2];
+        var fnPtr   = HEAP32[(mlPtr + 4) >> 2];
+        var flags   = HEAP32[(mlPtr + 8) >> 2];
+        var name    = namePtr ? UTF8ToString(namePtr) : '<anonymous>';
+        var tramp = __wasthon_make_trampoline(fnPtr, flags, 0, name, false, typeH);
+        tramp.ob_type = rt.$B.builtin_method;
+        return rt.wrapNewRef({ ob_type: rt._b_.classmethod, cm_callable: tramp });
+    },
+
+    /* PyErr_PrintEx — print and clear the pending exception (CPython dumps to
+     * stderr; the browser equivalent is the console). */
+    PyErr_PrintEx__deps: ['$WasthonRT'],
+    PyErr_PrintEx: function(set_sys_last_vars) {
+        var rt = WasthonRT;
+        var pe = rt.pendingException;
+        rt.pendingException = null;
+        if (pe) {
+            try { console.error('PyErr_PrintEx:', rt.asJSStr(pe.msg) || pe.msg); }
+            catch (e) { console.error('PyErr_PrintEx: <unprintable>'); }
+        }
+    },
+
+    /* PyMethod_Check / PyMethod_GET_FUNCTION — bound Python methods. */
+    PyMethod_Check__deps: ['$WasthonRT'],
+    PyMethod_Check: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (!obj) return 0;
+        try { return rt.$B.get_class(obj) === rt.$B.method ? 1 : 0; }
+        catch (e) { return 0; }
+    },
+    PyMethod_GET_FUNCTION__deps: ['$WasthonRT'],
+    PyMethod_GET_FUNCTION: function(methH) {
+        var rt = WasthonRT;
+        try { return rt.wrap(rt.$B.$getattr(rt.unwrap(methH), '__func__')); }
+        catch (e) { return 0; }
+    },
+
     /* PySet_Check(o) — isinstance(o, (set, frozenset)). */
     PySet_Check__deps: ['$WasthonRT'],
     PySet_Check: function(objH) {
@@ -8064,7 +8161,7 @@ mergeInto(LibraryManager.library, {
             if (h === 0) break;
             args.push(rt.toBrythonArg(rt.unwrap(h)));
         }
-        try { return rt.wrapNewRef(rt.$B.$call.apply(null, [fn].concat(args))); }
+        try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
@@ -9458,6 +9555,15 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var a = rt.unwrap(aH);
         var b = rt.unwrap(bH);
+        /* A builtin type struct (&PyUnicode_Type, …) can be bound to a bare
+         * type-struct wrapper rather than the real Brython class (same story
+         * as PyObject_GetAttr) — issubclass(str, wrapper) was False, so
+         * Cython's typed-argument checks failed with "expected str, got str"
+         * (pandas nattype's __Pyx_ArgTypeTest via PyObject_TypeCheck). */
+        var bcA = rt.builtinClassForStruct && rt.builtinClassForStruct.get(aH);
+        if (bcA) a = bcA;
+        var bcB = rt.builtinClassForStruct && rt.builtinClassForStruct.get(bH);
+        if (bcB) b = bcB;
         if (a === b) return 1;
         try { return rt._b_.issubclass(a, b) ? 1 : 0; }
         catch (e) { return 0; }
@@ -9692,7 +9798,7 @@ mergeInto(LibraryManager.library, {
     _PyObject_CallNoArgs: function(handle) {
         var rt = WasthonRT;
         var fn = rt.unwrap(handle);
-        try { return rt.wrapNewRef(rt.$B.$call(fn)); }
+        try { return rt.wrapMaybeType(rt.$B.$call(fn)); }
         catch (e) {
             rt.setError(rt.wrap(rt._b_.TypeError), "call failed: " + (e.message || String(e)));
             return 0;
@@ -11294,9 +11400,14 @@ mergeInto(LibraryManager.library, {
         if (obj === null || obj === undefined) return 0;
         var objClass = (rt.$B.get_class && rt.$B.get_class(obj)) ||
                        obj.__class__ || obj.ob_type;
-        // The type handle resolves to its registered Brython class.
+        // The type handle resolves to its registered Brython class. A bound
+        // builtin struct (&PyUnicode_Type, …) may be registered with a bare
+        // re-readied wrapper — the reverse map gives the REAL class (same
+        // story as PyObject_GetAttr), otherwise Cython's exact typed-argument
+        // tests failed with "expected str, got str" (pandas nattype).
+        var bc = rt.builtinClassForStruct && rt.builtinClassForStruct.get(typeHandle);
         var info = rt.types.get(typeHandle);
-        var typeClass = info ? info.brythonClass : rt.unwrap(typeHandle);
+        var typeClass = bc || (info ? info.brythonClass : rt.unwrap(typeHandle));
         return objClass === typeClass ? 1 : 0;
     },
 

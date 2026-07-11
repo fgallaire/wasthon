@@ -136,6 +136,7 @@ PyTypeObject PySet_Type         = {0};
 PyTypeObject PyFrozenSet_Type   = {0};
 PyTypeObject PyFunction_Type    = {0};
 PyTypeObject PyPickleBuffer_Type = {0};
+PyTypeObject PyWrapperDescr_Type = {0};   /* slot-wrapper descriptors (pandas' Cython method unpacking type-checks against it; never instantiated bridge-side) */
 PyTypeObject _PyNone_Type        = {0};
 PyTypeObject PyEllipsis_Type     = {0};
 PyTypeObject _PyNotImplemented_Type = {0};
