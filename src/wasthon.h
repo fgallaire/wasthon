@@ -270,6 +270,8 @@ int PyModule_Check(PyObject *o);
  * name<->codepoint table via the `ucnhash_CAPI` attribute. */
 PyObject *PyCapsule_New(void *pointer, const char *name, void (*destructor)(PyObject *));
 void     *PyCapsule_GetPointer(PyObject *capsule, const char *name);
+const char *PyCapsule_GetName(PyObject *capsule);
+int       PyCapsule_SetPointer(PyObject *capsule, void *pointer);
 
 #define Py_RETURN_TRUE   do { return Py_True; } while (0)
 #define Py_RETURN_FALSE  do { return Py_False; } while (0)
@@ -511,6 +513,9 @@ typedef struct PyMethodDef {
     int         ml_flags;
     const char *ml_doc;
 } PyMethodDef;
+
+/* pybind11 builds every exposed function through PyCFunction_NewEx. */
+PyObject *PyCFunction_NewEx(PyMethodDef *ml, PyObject *self, PyObject *module);
 
 typedef PyObject *(*getter)(PyObject *, void *);
 typedef int (*setter)(PyObject *, PyObject *, void *);
@@ -1801,7 +1806,7 @@ typedef int  (*initproc)(PyObject *, PyObject *, PyObject *);
 /* thread-state / frame: single-threaded; numpy's sub-interpreter guard
  * reads tstate->interp, so the body lives here (pycore_pystate.h shares
  * the typedef). Both sides return the same singleton at runtime. */
-typedef struct _ts { struct _is *interp; } PyThreadState;
+typedef struct _ts { struct _is *interp; int gilstate_counter; } PyThreadState;
 typedef struct _wasthon_frame PyFrameObject;
 typedef struct _wasthon_code  PyCodeObject;
 PyThreadState *PyEval_SaveThread(void);
@@ -2204,7 +2209,7 @@ double _Py_HashDouble(PyObject *, double);
 extern const unsigned char _Py_ascii_whitespace[];
 extern PyTypeObject PyComplex_Type, PyCFunction_Type, PyMemberDescr_Type,
     PyGetSetDescr_Type, PyMethodDescr_Type, PyDictProxy_Type, PySlice_Type,
-    PyBaseObject_Type, PyMemoryView_Type, PyCapsule_Type;
+    PyBaseObject_Type, PyMemoryView_Type, PyCapsule_Type, PyProperty_Type;
 extern PyObject *PyExc_NameError, *PyExc_UserWarning, *PyExc_FloatingPointError,
     *PyExc_ImportWarning, *PyExc_ModuleNotFoundError;
 /* Exception-instance class accessor (pyerrors.h) */

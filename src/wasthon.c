@@ -197,6 +197,8 @@ PyTypeObject PyCFunction_Type    = {0};
 PyTypeObject PyGetSetDescr_Type  = {0};
 PyTypeObject PyMemberDescr_Type  = {0};
 PyTypeObject PyMethodDescr_Type  = {0};
+/* pybind11: base class of pybind11_static_property */
+PyTypeObject PyProperty_Type     = {0};
 
 /* ---- Singleton object handles ---- */
 PyObject *Py_None  = (PyObject *)0;
@@ -323,6 +325,8 @@ static PyMappingMethods wasthon_builtin_as_mapping = {
 #define BT_GETSETDESCR  23
 #define BT_MEMBERDESCR  24
 #define BT_METHODDESCR  25
+/* pybind11 */
+#define BT_PROPERTY     26
 
 /*
  * Called once after the WASM module is instantiated and before any
@@ -446,6 +450,7 @@ void wasthon_init(void) {
     wasthon_bind_builtin_type(BT_GETSETDESCR,  &PyGetSetDescr_Type);
     wasthon_bind_builtin_type(BT_MEMBERDESCR,  &PyMemberDescr_Type);
     wasthon_bind_builtin_type(BT_METHODDESCR,  &PyMethodDescr_Type);
+    wasthon_bind_builtin_type(BT_PROPERTY,     &PyProperty_Type);
 
     /* Populate tp_as_number for PyLong_Type / PyFloat_Type so _decimal
      * (and other modules that cache nb_* pointers) can read them. */

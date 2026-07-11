@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **pybind11 support layer for C++ extensions** (`src/wasthon.{c,h,js}`).
+  matplotlib's modules bind through pybind11 (not Cython): the smallest
+  (`_c_internal_utils`) and the core pivot (`_path`, which consumes the
+  numpy CAPI) now compile and link clean against the bridge. Additive
+  gaps filled: `PyCFunction_NewEx` (pybind11 wraps every exposed function
+  through it — reuses the module-scope trampoline so `self` becomes the
+  dispatcher's C arg0), `PyCapsule_GetName`/`PyCapsule_SetPointer`
+  (function_record capsules), and a `PyProperty_Type` builtin binding
+  (base of pybind11_static_property). Paired with a small
+  `pybind11_compat.h` force-include (single-thread TSS/thread-state
+  stubs, trivial check macros, managed-dict no-ops) and a handful of
+  surgical seds on the pybind11 headers (raw `ob_type` field reads, the
+  runtime-disabled traceback walk) — both carried by the recipe, not the
+  bridge.
+
 - **`PyState_FindModule` finds single-phase modules**
   (`src/wasthon.js`). It always returned 0, so pandas' vendored ujson —
   whose `object_is_series_type`/`object_is_dataframe_type` read the

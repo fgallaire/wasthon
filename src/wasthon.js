@@ -11309,6 +11309,8 @@ mergeInto(LibraryManager.library, {
             case 23: cls = rt.$B.getset_descriptor; break;
             case 24: cls = rt.$B.member_descriptor; break;
             case 25: cls = rt.$B.method_descriptor; break;
+            /* pybind11: base of pybind11_static_property */
+            case 26: cls = rt._b_.property; break;
             case 12:
                 // Brython's Python-function class lives at $B.function
                 // (NOT _b_.function, which doesn't exist — the binding was
@@ -12121,6 +12123,26 @@ mergeInto(LibraryManager.library, {
         return obj.ptr;
     },
 
+    PyCapsule_GetName__deps: ['$WasthonRT'],
+    PyCapsule_GetName: function(capsuleHandle) {
+        var obj = WasthonRT.unwrap(capsuleHandle);
+        if (!obj || obj.__class__ !== 'PyCapsule' || obj.name == null) return 0;
+        if (!obj.$namePtr) {
+            var n = lengthBytesUTF8(obj.name) + 1;
+            obj.$namePtr = _malloc(n);
+            stringToUTF8(obj.name, obj.$namePtr, n);
+        }
+        return obj.$namePtr;
+    },
+
+    PyCapsule_SetPointer__deps: ['$WasthonRT'],
+    PyCapsule_SetPointer: function(capsuleHandle, ptr) {
+        var obj = WasthonRT.unwrap(capsuleHandle);
+        if (!obj || obj.__class__ !== 'PyCapsule') return -1;
+        obj.ptr = ptr;
+        return 0;
+    },
+
     /* PyOS_string_to_double(s, *endptr, overflow_exc) — parse a C string
      * as a double. *endptr (if non-NULL) gets the address right after the
      * parsed prefix; on overflow we set overflow_exc and return -1.0.
@@ -12191,6 +12213,26 @@ mergeInto(LibraryManager.library, {
 
     /* PyBuffer_IsContiguous — minimal buffer impl is always contiguous. */
     PyBuffer_IsContiguous: function(_view, _order) { return 1; },
+
+    /* pybind11 builds every function it exposes through PyCFunction_NewEx
+     * with self = its function_record capsule (read back through
+     * PyCFunction_GET_SELF). Reuse the module-scope trampoline: it passes
+     * `self` as the C arg0, exactly what pybind11's dispatcher expects. */
+    PyCFunction_NewEx__deps: ['$WasthonRT', '$__wasthon_make_trampoline'],
+    PyCFunction_NewEx: function(mlPtr, selfHandle, moduleHandle) {
+        var rt = WasthonRT;
+        var namePtr = HEAP32[mlPtr >> 2];
+        var fnPtr   = HEAP32[(mlPtr + 4) >> 2];
+        var flags   = HEAP32[(mlPtr + 8) >> 2];
+        var name    = namePtr ? UTF8ToString(namePtr) : '<anonymous>';
+        if (selfHandle) rt.incref(selfHandle);  /* the function owns m_self */
+        var tramp = __wasthon_make_trampoline(fnPtr, flags, selfHandle, name, /*moduleScope=*/true, 0);
+        tramp.ob_type = rt.$B.builtin_function_or_method;
+        tramp.__self__ = selfHandle ? rt.unwrap(selfHandle) : null;
+        var mlDocPtr = HEAP32[(mlPtr + 12) >> 2];
+        if (mlDocPtr) tramp.$function_infos[rt.$B.func_attrs.__doc__] = UTF8ToString(mlDocPtr);
+        return rt.wrapNewRef(tramp);
+    },
 
     /* PyCFunction_GET_SELF / PyCFunction_GET_FUNCTION — pickle inspects
      * C-method objects to pickle bound methods. The bridge wraps C
