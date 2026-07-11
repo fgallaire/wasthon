@@ -1373,6 +1373,27 @@ mergeInto(LibraryManager.library, {
             }
             return obj;
         },
+
+        // A struct-backed CALLABLE (Cython function) handed to Brython code
+        // as a call argument is routinely STORED by the callee — property(
+        // fget), decorators, type() namespaces — but Brython holds only the
+        // JS wrapper and never takes a bridge ref, so the C caller's own
+        // DECREF drops rc to 0 and frees the struct under the live wrapper
+        // (pandas nattype: every class-body cyfunction died during
+        // Py_mod_exec, its address recycled by the next one). Pin one ref
+        // the first time such a callable crosses; callables are code
+        // definitions, so the pinned set is bounded (return values already
+        // pin via consumeResultRef's instance exemption — this is the
+        // argument-position mirror).
+        pinCallableArg: function(obj) {
+            if (obj && obj.__wasthon_ptr__ && !obj.__wasthon_argpin__ &&
+                    obj.ob_type &&
+                    (obj.ob_type.__call__ || obj.ob_type.tp_call)) {
+                obj.__wasthon_argpin__ = true;
+                this.incref(obj.__wasthon_ptr__);
+            }
+            return obj;
+        },
     },
 
     /* --------------------------------------------------------------- *
@@ -1816,7 +1837,7 @@ mergeInto(LibraryManager.library, {
         if (!fn) return 0;
         var args = [];
         for (var i = 0; i < nargs; i++) {
-            args.push(rt.unwrap(HEAP32[(argsPtr + i * 4) >> 2]));
+            args.push(rt.pinCallableArg(rt.unwrap(HEAP32[(argsPtr + i * 4) >> 2])));
         }
         // Brython 3.14 expects kwargs in `{$kw: [plain JS map, ...starred]}`
         // form. Passing a Brython dict as the $kw element (the previous
@@ -2374,7 +2395,7 @@ mergeInto(LibraryManager.library, {
         var nargs = nargsf & 0x7FFFFFFF;  // PY_VECTORCALL_ARGUMENTS_OFFSET mask
         var args = [];
         for (var i = 0; i < nargs; i++) {
-            args.push(rt.unwrap(HEAP32[(argsPtr + i * 4) >> 2]));
+            args.push(rt.pinCallableArg(rt.unwrap(HEAP32[(argsPtr + i * 4) >> 2])));
         }
         // kwnames: a tuple of keyword names whose matching values sit in the
         // args buffer right after the positionals. Forward them through
@@ -5784,13 +5805,19 @@ mergeInto(LibraryManager.library, {
     },
 
     /* PyClassMethod_New / PyDescr_NewClassMethod — real Brython classmethod
-     * wrappers (the METH_CLASS shape install_methods already uses). */
+     * wrappers (the METH_CLASS shape install_methods already uses).
+     * CPython contract: the classmethod owns a ref on its callable — take it
+     * for struct-backed callables (instance-exempt rule, mirror of
+     * PyDict_SetItem), or the caller's own DECREF frees the struct under
+     * the stored wrapper. */
     PyClassMethod_New__deps: ['$WasthonRT'],
     PyClassMethod_New: function(callableH) {
         var rt = WasthonRT;
+        var callable = rt.unwrap(callableH);
+        if (callable && callable.__wasthon_ptr__) rt.incref(callableH);
         return rt.wrapNewRef({
             ob_type: rt._b_.classmethod,
-            cm_callable: rt.unwrap(callableH),
+            cm_callable: callable,
         });
     },
     PyDescr_NewClassMethod__deps: ['$WasthonRT', '$__wasthon_make_trampoline'],
@@ -6440,7 +6467,7 @@ mergeInto(LibraryManager.library, {
     PyObject_CallOneArg: function(fnHandle, argHandle) {
         var rt = WasthonRT;
         var fn = rt.unwrap(fnHandle);
-        var arg = rt.toBrythonArg(rt.unwrap(argHandle));
+        var arg = rt.pinCallableArg(rt.toBrythonArg(rt.unwrap(argHandle)));
         if (!fn) return 0;
         try {
             var res = rt.$B.$call(fn, arg);
@@ -6486,7 +6513,7 @@ mergeInto(LibraryManager.library, {
             var c = fmt[i];
             if (c === '(' || c === ')' || c === ',' || c === ' ') continue;
             if (c === 'O') {
-                args.push(rt.toBrythonArg(rt.unwrap(HEAP32[p >> 2])));
+                args.push(rt.pinCallableArg(rt.toBrythonArg(rt.unwrap(HEAP32[p >> 2]))));
                 p += 4;
             } else if (c === 's') {
                 var sp = HEAP32[p >> 2];
@@ -6546,7 +6573,10 @@ mergeInto(LibraryManager.library, {
         // zero placeholder) — the post-call syncBytes pass is too late, the
         // callee (e.g. ZeroCopyBytes._reconstruct -> memoryview(obj).obj) reads
         // .source and rebuilt all-zero bytes. Idempotent for read-only buffers.
-        for (var i = 0; i < args.length; i++) rt.syncCstrBytes(args[i]);
+        for (var i = 0; i < args.length; i++) {
+            rt.syncCstrBytes(args[i]);
+            rt.pinCallableArg(args[i]);
+        }
         try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
@@ -7046,7 +7076,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var self = rt.unwrap(selfH);
         var name = rt.asJSStr(rt.unwrap(nameH));
-        var arg = rt.unwrap(argH);
+        var arg = rt.pinCallableArg(rt.unwrap(argH));
         if (!self || name === null) return 0;
         try {
             var m = rt.$B.$getattr(self, name);
@@ -7068,7 +7098,7 @@ mergeInto(LibraryManager.library, {
         if (fnBc && fnBc !== fn) fn = fnBc;
         var args = argsH === 0 ? [] : rt.unwrap(argsH);
         if (args === null) args = [];
-        args = Array.from(args);
+        args = Array.from(args, function(a) { return rt.pinCallableArg(a); });
         try {
             // Forward keyword args via Brython's $kw marker — same as
             // PyObject_Vectorcall. Dropping kwargsH silently skipped EVERY
@@ -7698,7 +7728,13 @@ mergeInto(LibraryManager.library, {
                         if (resH === 0 || rt.pendingException) {
                             var pe = rt.pendingException; rt.pendingException = null;
                             if (pe) throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);
-                            throw rt.$B.$call(rt._b_.RuntimeError, "vectorcall returned NULL");
+                            var vcName = (fn && fn.$infos && fn.$infos.__name__) || (fn && fn.tp_name) || '?';
+                            if (rt.debugVectorcall) {
+                                console.log('[VC] NULL from callee keys=' + (fn ? Object.keys(fn).join('/') : 'null') +
+                                    ' ptr=' + (fn && fn.__wasthon_ptr__) + ' na=' + na);
+                                console.trace();
+                            }
+                            throw rt.$B.$call(rt._b_.RuntimeError, "vectorcall returned NULL (callee " + vcName + ")");
                         }
                         return resH;   /* already a new reference owned by the caller */
                     }
@@ -7718,7 +7754,7 @@ mergeInto(LibraryManager.library, {
             var self = rt.unwrap(HEAP32[argsPtr >> 2]);
             var m = rt.$B.$getattr(self, name);
             var call = [m];
-            for (var i = 1; i < nargs; i++) call.push(rt.unwrap(HEAP32[(argsPtr >> 2) + i]));
+            for (var i = 1; i < nargs; i++) call.push(rt.pinCallableArg(rt.unwrap(HEAP32[(argsPtr >> 2) + i])));
             /* kwnames: values sit in the args buffer after the positionals
                (numpy from_dlpack calls `obj.__dlpack__(max_version=…)` here —
                dropping them silently downgraded every DLPack export to the
@@ -7895,7 +7931,7 @@ mergeInto(LibraryManager.library, {
         for (var p = varargs; ; p += 4) {
             var h = HEAP32[p >> 2];
             if (h === 0) break;
-            args.push(rt.unwrap(h));
+            args.push(rt.pinCallableArg(rt.unwrap(h)));
         }
         try {
             var m = rt.$B.$getattr(obj, name);
@@ -8159,7 +8195,7 @@ mergeInto(LibraryManager.library, {
         for (var p = varargs; ; p += 4) {
             var h = HEAP32[p >> 2];
             if (h === 0) break;
-            args.push(rt.toBrythonArg(rt.unwrap(h)));
+            args.push(rt.pinCallableArg(rt.toBrythonArg(rt.unwrap(h))));
         }
         try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
@@ -10762,7 +10798,7 @@ mergeInto(LibraryManager.library, {
             // cannot be interpreted as an integer").
             switch (c) {
                 case 'O': case 'N': case 'S':
-                    { var vo = rt.unwrap(HEAP32[p >> 2]); p += 4; return vo; }
+                    { var vo = rt.pinCallableArg(rt.unwrap(HEAP32[p >> 2])); p += 4; return vo; }
                 case 's': case 'z': case 'U':
                     // 's#'/'z#'/'U#' take a trailing Py_ssize_t length vararg.
                     { var sp = HEAP32[p >> 2]; p += 4;
