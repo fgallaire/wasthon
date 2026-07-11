@@ -116,8 +116,25 @@ static inline int PyObject_VisitManagedDict(PyObject *o, visitproc v, void *a) {
 #ifndef Py_tp_vectorcall
 #define Py_tp_vectorcall 82
 #endif
+#ifndef Py_nb_and
+#define Py_nb_and 8            /* wasthon slot id — wasthon.js slotMap wires 8 -> __and__ */
+#endif
+#ifndef Py_am_send
+#define Py_am_send 200         /* not wired js-side: unknown ids are skipped (generators drive tp_iternext) */
+#endif
+#ifndef Py_TPFLAGS_MANAGED_WEAKREF
+#define Py_TPFLAGS_MANAGED_WEAKREF (1UL << 3)
+#endif
+#ifndef PyRange_Check
+#define PyRange_Check(op) PyObject_TypeCheck(op, &PyRange_Type)
+#endif
 
 #ifdef __cplusplus
 }
 #endif
+
+/* 3.10 am_send slot type — Cython 3.3 generator/coroutine code declares
+ * am_send tables unconditionally on 3.10+; wasthon.h has PySendResult but no
+ * sendfunc. */
+typedef PySendResult (*sendfunc)(PyObject *iter, PyObject *value, PyObject **result);
 #endif

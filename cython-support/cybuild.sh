@@ -46,7 +46,7 @@ fi
 # Py_OptimizeFlag=0: the one symbol the IN_CPYTHON=0 route still references.
 PP="-DCYTHON_USE_TYPE_SPECS=1 -DCYTHON_USE_MODULE_STATE=0 -DCYTHON_FAST_THREAD_STATE=0 -DCYTHON_USE_EXC_INFO_STACK=0 -DCYTHON_USE_TYPE_SLOTS=0 -DCYTHON_USE_PYTYPE_LOOKUP=0 -DCYTHON_USE_UNICODE_INTERNALS=0 -DCYTHON_USE_PYLONG_INTERNALS=0 -DCYTHON_USE_PYLIST_INTERNALS=0 -DCYTHON_ASSUME_SAFE_MACROS=0 -DCYTHON_UNPACK_METHODS=0 -DCYTHON_AVOID_BORROWED_REFS=1 -DPy_OptimizeFlag=0"
 command -v emcc >/dev/null 2>&1 || source "$ROOT/external/emsdk/emsdk_env.sh" 2>/dev/null
-emcc -O1 -c -DNDEBUG -DPy_PYTHON_H $PP -Wno-macro-redefined -Wno-int-conversion -Wno-incompatible-pointer-types \
-  -include "$CS/cython_compat.h" -I "$SRC" -I "$CS" "$C" -o "$OUT/$(basename ${MOD//./_}).o" 2>"$OUT/$(basename ${MOD//./_})_err.txt"
+emcc -O1 -c -DNDEBUG -DPy_PYTHON_H -DCYTHON_VECTORCALL_TPNEW=0 $PP -Wno-macro-redefined -Wno-int-conversion -Wno-incompatible-pointer-types \
+  -include "$SRC/patchlevel.h" -include "$CS/cython_compat.h" -include "$CS/scipy_compat.h" -I "$SRC" -I "$CS" "$C" -o "$OUT/$(basename ${MOD//./_}).o" 2>"$OUT/$(basename ${MOD//./_})_err.txt"
 echo "compile exit=$?  errors=$(grep -c 'error:' "$OUT/$(basename ${MOD//./_})_err.txt")"
 grep 'error:' "$OUT/$(basename ${MOD//./_})_err.txt" | head
