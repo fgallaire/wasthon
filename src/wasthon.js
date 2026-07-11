@@ -13327,17 +13327,32 @@ mergeInto(LibraryManager.library, {
                 // (brythonCls === cls) still forwards kwargs so
                 // `array.array(spam=42)` keeps raising TypeError.
                 var isSubclass = brythonCls && brythonCls !== cls;
-                var kwH   = (!isSubclass && kw && rt._b_.dict.mp_length(kw) > 0) ? rt.wrap(kw) : 0;
-                // Pass the subclass its OWN type struct (not the parent's), so
-                // the C tp_new's exact-type fast paths miss and it builds a
-                // fresh subtype instance — see rt.subtypeStructFor. Scoped to
-                // _decimal: giving array's subclasses their own struct regresses
-                // array -28 (array_new / the buffer protocol read the type
-                // struct in ways the generic subtype struct doesn't satisfy),
-                // while _decimal needs it for A.from_float (the inherited
-                // exact-type fast path must see a non-base type).
-                var typeArg = (isSubclass && fullName === 'decimal.Decimal')
-                    ? rt.subtypeStructFor(brythonCls, typeHandle) : typeHandle;
+                // Subclass keywords must reach the C tp_new: a mandatory Cython
+                // __cinit__ has no tp_init to catch them later (pandas'
+                // Block(values, placement=…, ndim=…) — behind every Series —
+                // died "takes at least 3 positional arguments"). And they must
+                // arrive WITH the real subtype struct, or the C base-only
+                // kwarg guards (`type == &X_Type && !_PyArg_NoKeywords`)
+                // wrongly fire. Keyword-less subclass instantiation keeps the
+                // historical parent-struct path: handing array subclasses
+                // their own struct on every call regressed test_array -26
+                // (array_new/the buffer protocol read the type struct in ways
+                // the generic struct doesn't satisfy). Decimal keeps its
+                // subtypeStructFor shape (A.from_float needs it).
+                var kwH = (kw && rt._b_.dict.mp_length(kw) > 0) ? rt.wrap(kw) : 0;
+                var typeArg = typeHandle;
+                if (isSubclass && fullName === 'decimal.Decimal') {
+                    typeArg = rt.subtypeStructFor(brythonCls, typeHandle);
+                } else if (isSubclass && fullName.indexOf('array.') === 0) {
+                    // array's subclass kwargs are for the PYTHON __init__
+                    // (array_new ignores them on subtypes), and array_new /
+                    // its buffer protocol can't run on the generic subtype
+                    // struct (test_array -14): keep the historical
+                    // parent-struct + stripped-kwargs path for it.
+                    kwH = 0;
+                } else if (isSubclass && kwH) {
+                    typeArg = rt.wrap(brythonCls);
+                }
                 rt.pendingException = null;
                 var resultH = getWasmTableEntry(tpNewPtr)(typeArg, argsH, kwH);
                 if (rt.pendingException) {
@@ -14908,7 +14923,9 @@ mergeInto(LibraryManager.library, {
     wasthon_set_docstring: function(objHandle, docPtr) {
         var rt = WasthonRT;
         var obj = rt.unwrap(objHandle);
-        if (!obj || typeof obj !== 'object' || !docPtr) return;
+        // C-function trampolines are typeof 'function' — the old object-only
+        // guard silently dropped every add_docstring on them
+        if (!obj || (typeof obj !== 'object' && typeof obj !== 'function') || !docPtr) return;
         var doc = UTF8ToString(docPtr);
         try {
             obj.__doc__ = doc;
@@ -14957,6 +14974,17 @@ mergeInto(LibraryManager.library, {
 
             var trampoline = __wasthon_make_trampoline(fnPtr, flags, moduleHandle, name, moduleScope, classHandle);
             if (textSig) trampoline.$text_signature = textSig;
+            // __doc__: CPython serves ml_doc minus the clinic signature line.
+            // Brython's builtin_function_or_method reads it from
+            // $function_infos; leaving it unset resolved __doc__ up the mro
+            // to OBJECT's docstring.
+            var mlDocPtr = HEAP32[(mp + 12) >> 2];
+            if (mlDocPtr) {
+                var mlDoc = UTF8ToString(mlDocPtr);
+                var sigEnd = mlDoc.indexOf(')\n--\n\n');
+                trampoline.$function_infos[rt.$B.func_attrs.__doc__] =
+                    (textSig && sigEnd !== -1) ? mlDoc.slice(sigEnd + 6) : mlDoc;
+            }
             if (moduleScope) {
                 // Mark module-scope trampolines as `builtin_function_or_method`
                 // — CPython's C-level module functions behave this way, and
