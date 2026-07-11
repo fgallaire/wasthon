@@ -9888,7 +9888,10 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
         var name = rt.asJSStr(rt.unwrap(nameH));
-        if (!obj) return 0;
+        // Unresolved handle only — a falsy OBJECT ('', 0, False) is a real
+        // target: `''.startswith` via Cython returned NULL with no exception
+        // ("vectorcall returned NULL"), killing to_offset("D")/date_range.
+        if (obj === undefined || obj === null) return 0;
         /* A builtin type struct (&PyUnicode_Type, &PyBytes_Type, …) can end up
            bound to a bare type-struct wrapper (name 'str' but not the Brython
            `str`, missing its method dict) after PyType_Ready re-registers its

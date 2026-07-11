@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_GetAttr` on a falsy object** (`src/wasthon.js`). The
+  unresolved-handle guard was `if (!obj) return 0` — but an unwrapped
+  EMPTY STRING (or 0/False) is falsy too, so Cython's
+  `''.startswith('-')` got NULL back with no exception set
+  ("vectorcall returned NULL"): `to_offset("D")` died on its
+  `stride.startswith` line (stride is '' for unit strides) and took
+  `pd.date_range` down with it. The guard now rejects only
+  undefined/null.
+
 - **tp_new pointers on Brython-class type structs carry their owning class**
   (`src/wasthon.js`). The generic `wasthon_brython_tp_new` trampoline
   resolved `__new__` on the TARGET type, so when Cython copied a base's
