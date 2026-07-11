@@ -4851,6 +4851,14 @@ mergeInto(LibraryManager.library, {
                 ? rt._b_.type.tp_getattro : rt._b_.object.tp_getattro;
             if (!cls.tp_getattro)  cls.tp_getattro  = _ga;
             if (!cls.$getattribute) cls.$getattribute = _ga;
+            /* Metatype: its instances are classes — calling one must run
+               type_call (tp_new/tp_init of the called class), as CPython's
+               inherited type.tp_call does. _DTypeMeta had no tp_call, so
+               Int32DType('i4', …) — every pickle-loads dtype
+               reconstruction — raised "'_DTypeMeta' object is not callable". */
+            if (!cls.tp_call && cls.tp_mro && cls.tp_mro.indexOf(rt._b_.type) > -1) {
+                cls.tp_call = rt._b_.type.tp_call;
+            }
             if (cls.tp_descr_get === undefined) cls.tp_descr_get = rt.$B.NULL;
             if (cls.tp_descr_set === undefined) cls.tp_descr_set = rt.$B.NULL;
 
@@ -12784,6 +12792,10 @@ mergeInto(LibraryManager.library, {
         var _specGa = (cls.tp_mro && cls.tp_mro.indexOf(rt._b_.type) > -1)
             ? rt._b_.type.tp_getattro : rt._b_.object.tp_getattro;
         if (!cls.tp_getattro) cls.tp_getattro = _specGa;
+        /* Metatype spec twin (see the PyType_Ready site). */
+        if (!cls.tp_call && cls.tp_mro && cls.tp_mro.indexOf(rt._b_.type) > -1) {
+            cls.tp_call = rt._b_.type.tp_call;
+        }
         /* Brython 3.14's object_getattribute only engages the tp_funcs
          * fast path when `cls.$getattribute === object.tp_getattro`.
          * Without this, getattr() on instances misses C-installed methods
