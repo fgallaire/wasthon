@@ -3516,6 +3516,35 @@ mergeInto(LibraryManager.library, {
         var obj = rt.unwrap(bytesHandle);
         if (obj === null) return 0;
         if (obj.__wasthon_cstr__) return obj.__wasthon_cstr__;
+        if (obj.source === undefined && obj.__wasthon_ptr__) {
+            // A C-allocated var-object shell of a bytes subclass — numpy's
+            // PyArray_Scalar builds np.bytes_ scalars via tp_alloc(type,
+            // itemsize) then memcpys the payload into PyBytes_AS_STRING(obj).
+            // The shell has no .source, so the old `src = obj.source || obj`
+            // read length=undefined -> _malloc(NaN): numpy then memcpy'd into
+            // a ~0-byte chunk (heap scribble) and the payload was lost —
+            // len()/upper()/bytes() on the scalar all saw an empty shell.
+            // Hand C a real n-byte buffer (n = ob_size, written at offset 0
+            // by wasthon_object_gc_new_var) and materialize .source lazily
+            // on first Python access — by then C's memcpy has long run.
+            var n = HEAP32[obj.__wasthon_ptr__ >> 2] | 0;
+            var buf = _malloc(n + 1);
+            if (buf === 0) return 0;
+            HEAPU8.fill(0, buf, buf + n + 1);
+            obj.__wasthon_cstr__ = buf;
+            obj.__wasthon_cstr_size__ = n;
+            Object.defineProperty(obj, 'source', {
+                configurable: true,
+                get: function() {
+                    var out = new Array(n);
+                    for (var i = 0; i < n; i++) out[i] = HEAPU8[buf + i];
+                    Object.defineProperty(obj, 'source', {
+                        value: out, writable: true, configurable: true });
+                    return out;
+                },
+            });
+            return buf;
+        }
         var src = obj.source || obj;
         var len = src.length;
         var ptr = _malloc(len + 1);
@@ -4712,7 +4741,16 @@ mergeInto(LibraryManager.library, {
             rt.$B.set_to_dict(cls, '__module__', moduleName);
 
             if (basePtr) {
-                var baseCls = rt.unwrap(basePtr);
+                /* A static type whose tp_base is a BOUND BUILTIN struct
+                 * (&PyBytes_Type, &PyFloat_Type… — numpy's scalar types)
+                 * must inherit the REAL Brython builtin, not a hollow class
+                 * materialized from the struct's tp_name: with the impostor
+                 * in tp_mro, isinstance(np.bytes_(..), bytes) was False and
+                 * instance lookup never reached bytes.upper & co. Same
+                 * reverse map PyObject_GetAttr already uses (d973387). */
+                var baseCls = (rt.builtinClassForStruct &&
+                               rt.builtinClassForStruct.get(basePtr)) ||
+                              rt.unwrap(basePtr);
                 /* numpy readies a concrete DType (Int32DType) inside
                  * set_typeinfo, BEFORE its abstract superclass
                  * (PyArray_IntAbstractDType) is readied in

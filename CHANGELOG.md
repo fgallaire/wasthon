@@ -2164,3 +2164,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
       plain, correct-valued scalars; perfect scalar identity remains the
       scalar subsystem's work. numpy dashboard 1667→1678, the
       np.strings case-mapping API works end to end on U dtypes.
+- [x] `np.bytes_` scalars from S arrays were empty shells — and their
+      construction scribbled the heap. Two layers, one commit:
+      (1) `PyType_Ready`: a static type whose `tp_base` is a bound builtin
+      struct (`&PyBytes_Type`, numpy's scalar types) inherited a hollow
+      class materialized from the struct's `tp_name` instead of the real
+      Brython builtin — `isinstance(scalar, bytes)` was False and instance
+      lookup never reached `bytes.upper` & co. Resolve the base through
+      `builtinClassForStruct` (the reverse map `PyObject_GetAttr` already
+      uses). (2) `PyBytes_AsString` on a C-allocated var-object shell (no
+      `.source`) read `length` of the shell itself → `_malloc(NaN)`:
+      numpy's `PyArray_Scalar` then memcpy'd the payload into a ~0-byte
+      chunk — heap scribble, payload lost, every scalar came out as
+      `np.bytes_(b'')`. Hand C a real `ob_size`-byte buffer and
+      materialize `.source` lazily on first Python access (C's memcpy has
+      long run by then). `len()`/`upper()`/`bytes()`/`==` work on S-array
+      elements, `np.strings` case-mapping works on S dtypes,
+      `issubclass(np.bytes_, bytes)` / `(np.str_, str)` are True.
