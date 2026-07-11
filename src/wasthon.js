@@ -13711,10 +13711,17 @@ mergeInto(LibraryManager.library, {
             cls.tp_descr_get = rt.scoped(function(value, obj, klass) {
                 var selfH = (value && value.__wasthon_ptr__)
                     ? value.__wasthon_ptr__ : rt.wrap(value);
-                // obj is None when the attribute is read on the class itself.
-                var objH = (obj === undefined || obj === null)
-                    ? rt.wrap(rt._b_.None) : rt.wrap(obj);
-                var typeH = klass ? rt.wrap(klass) : 0;
+                // Class access: Brython's type.tp_getattro passes $B.NULL (or
+                // None). CPython's wrap_descr_get maps None to C NULL before
+                // calling the slot — Cython's __Pyx_PyMethod_New tests
+                // `if (!self) return func`, so handing it the None HANDLE
+                // (non-zero) bound every `Cls.method` into a Brython method
+                // (unbound introspection, `__module__` set, and
+                // `Cls.method(inst, …)` calls all broke on cdef classes).
+                var objH = (obj === undefined || obj === null ||
+                            obj === rt.$B.NULL || obj === rt._b_.None)
+                    ? 0 : rt.wrap(obj);
+                var typeH = (klass && klass !== rt.$B.NULL) ? rt.wrap(klass) : 0;
                 rt.pendingException = null;
                 var resH = getWasmTableEntry(tpDescrGetPtr)(selfH, objH, typeH);
                 if (resH === 0 || rt.pendingException) {
