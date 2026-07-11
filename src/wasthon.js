@@ -13955,6 +13955,28 @@ mergeInto(LibraryManager.library, {
             return 0;
         }
         var size = typeInfo.basicsize;
+        if (!(size > 0)) {
+            // A Brython subclass of a C type reaches tp_alloc through an
+            // ensureTypeStruct handle whose rt.types entry carries NO
+            // basicsize. CPython subtypes inherit tp_basicsize; without
+            // this walk the allocation was _malloc(undefined) — a minimal
+            // ~16-byte chunk — and the very next malloc (numpy's
+            // npy_alloc_cache_dim dims/strides block) landed INSIDE the
+            // array struct: for a 2-D .view(Sub), dims[1] wrote over
+            // base@20 ("Cannot set the NumPy array 'base' dependency more
+            // than once"); 1-D only survived because the 8-byte overlap
+            // happened to cover the dims/strides fields themselves.
+            var cls = typeInfo.brythonClass;
+            var chain = [cls].concat((cls && (cls.tp_mro || cls.__mro__)) || []);
+            for (var i = 0; i < chain.length; i++) {
+                var c = chain[i];
+                if (c && c.__wasthon_basicsize__ > 0) {
+                    size = c.__wasthon_basicsize__;
+                    break;
+                }
+            }
+            if (size > 0) typeInfo.basicsize = size;  // resolve the walk once
+        }
         var ptr = _malloc(size);
         if (ptr === 0) {
             rt.setError(rt.wrap(rt._b_.MemoryError), "PyObject_GC_New");
@@ -13978,7 +14000,18 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var typeInfo = rt.types.get(typeHandle);
         if (!typeInfo) return 0;
-        var size = typeInfo.basicsize + n * typeInfo.itemsize;
+        var bs = typeInfo.basicsize;
+        if (!(bs > 0)) {
+            // Same MRO basicsize inheritance as wasthon_object_gc_new.
+            var cls = typeInfo.brythonClass;
+            var chain = [cls].concat((cls && (cls.tp_mro || cls.__mro__)) || []);
+            for (var i = 0; i < chain.length; i++) {
+                var c = chain[i];
+                if (c && c.__wasthon_basicsize__ > 0) { bs = c.__wasthon_basicsize__; break; }
+            }
+            if (bs > 0) typeInfo.basicsize = bs;
+        }
+        var size = bs + n * (typeInfo.itemsize || 0);
         var ptr = _malloc(size);
         if (ptr === 0) {
             rt.setError(rt.wrap(rt._b_.MemoryError), "PyObject_GC_NewVar");

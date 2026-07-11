@@ -2134,3 +2134,19 @@ Module ports and the bridge-surface inventory live in `README.md`.
       the macros to the real `_PyUnicode_To{Numeric,Digit,DecimalDigit}`
       symbols. Reusable pattern: when a JS stub approximates a CPython
       lookup, prefer linking the real CPython source over guessing.
+- [x] 2-D `.view(<ndarray subclass>)` — "Cannot set the NumPy array 'base'
+      dependency more than once". A Brython subclass of a C type reaches
+      `tp_alloc` through an `ensureTypeStruct` handle whose `rt.types`
+      entry has no `basicsize`, so `wasthon_object_gc_new` allocated
+      `_malloc(undefined)` — a minimal ~16-byte chunk instead of the
+      44-byte `PyArrayObject_fields`. numpy's very next malloc (the
+      `npy_alloc_cache_dim` dims/strides block) then landed INSIDE the
+      array struct: for a 2-D view `dims[1]` overwrote `base` (offset
+      20) — the long-mysterious `0x2` was never a leaked handle, it was
+      the second dimension of a (2,2) array. 1-D views only survived
+      because the 8-byte overlap happened to cover the dims/strides
+      fields themselves. Fix: `wasthon_object_gc_new`/`_var` inherit
+      `tp_basicsize` from the first C ancestor in the MRO (CPython
+      subtyping semantics), resolved once into the registry entry.
+      Type identity untouched (the scoped decimal subtype-struct path
+      is unaffected). test_defchararray 12→60 passed.
