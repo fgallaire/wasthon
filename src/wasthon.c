@@ -388,6 +388,11 @@ void wasthon_init(void) {
      * PyTuple_Type.tp_iter(t) directly). All built-ins share the same
      * generic tp_iter that dispatches to Brython's iter(). */
     PyType_Type.tp_iter    = wasthon_builtin_tp_iter;
+    /* pybind11's get_internals() calls PyType_Type.tp_alloc(&PyType_Type, 0)
+     * to build its 3 internal heap types by hand; hand back raw
+     * PyHeapTypeObject memory (see wasthon_type_tp_alloc). */
+    { extern PyObject *wasthon_type_tp_alloc(PyTypeObject *, Py_ssize_t);
+      PyType_Type.tp_alloc = wasthon_type_tp_alloc; }
     PyTuple_Type.tp_iter   = wasthon_builtin_tp_iter;
     PyDict_Type.tp_iter    = wasthon_builtin_tp_iter;
     PyList_Type.tp_iter    = wasthon_builtin_tp_iter;
@@ -684,6 +689,24 @@ extern PyObject *wasthon_object_gc_new_var(PyTypeObject *type, Py_ssize_t n);
 PyObject *wasthon_default_tp_alloc(PyTypeObject *type, Py_ssize_t nitems) {
     if (nitems > 0) return wasthon_object_gc_new_var(type, nitems);
     return wasthon_object_gc_new(type);
+}
+
+/* Metatype tp_alloc — PyType_Type.tp_alloc(&PyType_Type, 0). pybind11's
+ * get_internals() builds its 3 internal types (static_property_type,
+ * default_metaclass, object_base_type) the CPython way: alloc a raw
+ * PyHeapTypeObject, fill ht_type.tp_* by hand (at wasthon.h offsets — it
+ * compiled against our headers), then PyType_Ready() it. So tp_alloc must
+ * hand back zeroed PyHeapTypeObject-sized memory (ht_type at offset 0 →
+ * &heap->ht_type == heap, tp_name@12/tp_base@140/... land where
+ * PyType_Ready reads them). NOT a Brython-backed instance: pybind11 pokes
+ * C fields before the type exists Brython-side. */
+#include <stdlib.h>
+PyObject *wasthon_type_tp_alloc(PyTypeObject *metatype, Py_ssize_t nitems) {
+    (void)metatype; (void)nitems;
+    PyHeapTypeObject *ht = (PyHeapTypeObject *)calloc(1, sizeof(PyHeapTypeObject));
+    if (!ht) return (PyObject *)0;
+    ((PyObject *)ht)->ob_refcnt = 1;
+    return (PyObject *)ht;
 }
 
 /* Accessor so the JS bridge can read the function pointer (table index)

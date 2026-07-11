@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Metatype `tp_alloc` for pybind11's heap-type bootstrap** (`src/wasthon.c`).
+  Every pybind11 module's PyInit runs `detail::get_internals()`, which builds
+  three internal types (static_property, default_metaclass, object_base) the
+  CPython way: `PyType_Type.tp_alloc(&PyType_Type, 0)` to allocate a raw
+  `PyHeapTypeObject`, fill `ht_type.tp_*` by hand, then `PyType_Ready()`.
+  `PyType_Type.tp_alloc` was NULL → "null function or function signature
+  mismatch" on the first pybind11 import. Wired `PyType_Type.tp_alloc` to
+  hand back zeroed `PyHeapTypeObject`-sized memory (ht_type at offset 0, so
+  pybind11's field writes — it compiled against wasthon.h — land where
+  `PyType_Ready` reads them). Gets pybind11's internals bootstrap through;
+  module-function registration (`initialize_generic`) is the next step.
+
 - **`PyObject_DelItem`** (`src/wasthon.js`). kiwisolver (matplotlib's
   constrained-layout solver, required at `import matplotlib.pyplot`) is
   a C++ extension over the `cppy` C-API helper, whose `ptr.h` reaches
