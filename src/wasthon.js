@@ -761,9 +761,27 @@ mergeInto(LibraryManager.library, {
             if (!tp_dealloc) return;
             this.refcounts.delete(ptr);
             this.pushScope();
+            // Conservative finalize: the mark cannot see references held in
+            // compiled-JS locals (a `with` statement keeps its context
+            // manager in a JS `mgr_NNN` variable, invisible from the frame's
+            // locals dict), so a victim may still be reachable from Python.
+            // Under this flag PyObject_GC_Del releases the resources but
+            // keeps the struct memory and the handle binding: a later call
+            // on such an object operates on the CLOSED resource (CPython's
+            // semantics for an explicitly closed connection) instead of
+            // freed memory reused by an unrelated allocation — that was
+            // test_sqlite3's layout-sensitive "index out of bounds" (a
+            // with-held Connection was finalized at gc.collect(), its
+            // struct freed and reused; the manager's __exit__ close() then
+            // read a garbage self->db and sqlite3Close called through a
+            // garbage function pointer).
+            this._gcConservative = true;
             try { getWasmTableEntry(tp_dealloc)(ptr); }
             catch (e) { /* defensive */ }
-            finally { this.popScope(); this.pendingException = null; }
+            finally {
+                this._gcConservative = false;
+                this.popScope(); this.pendingException = null;
+            }
         },
 
         release: function(handle) {
@@ -15099,9 +15117,15 @@ mergeInto(LibraryManager.library, {
         if (ptr === 0) return;
         var rt = WasthonRT;
         rt.clearWeakRefs(ptr);   // refcount death clears weak cells, like CPython
-        rt.handles.delete(ptr);
         rt.refcounts.delete(ptr);
         rt.gcRegistry.delete(ptr);
+        // Partial-GC finalize (see gcFinalize): the imprecise mark means the
+        // object — or anything its dealloc cascade DECREFs — may still be
+        // referenced from Python. Close, don't free: keep the struct bytes
+        // and the ptr→instance binding so a live reference keeps operating
+        // on the closed object instead of dangling memory.
+        if (rt._gcConservative) return;
+        rt.handles.delete(ptr);
         _free(ptr);
     },
 

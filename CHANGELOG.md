@@ -7,6 +7,30 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Conservative partial-GC finalize: close, don't free** (`src/wasthon.js`).
+  The sqlite3 "index out of bounds" hard bug (NUMPY_HARD_BUG.md, open since
+  ba03bb2, layout-sensitive) was a **use-after-free**: `$wasthon_gc_collect`'s
+  mark walks frame locals/globals dicts, but a `with` statement keeps its
+  context manager in a compiled-JS local (`var mgr_NNN = …`), invisible to the
+  mark — so `with memory_database() as dest: … del dest; gc.collect()`
+  finalized the STILL-REFERENCED Connection: tp_dealloc closed the db and
+  `PyObject_GC_Del` freed the struct; the manager's `__exit__` then called
+  `close()` on the dangling struct, read a heap-reuse garbage `self->db` and
+  sqlite3Close trapped through a garbage function pointer (whether the value
+  is in table range depends on the allocation history — hence the
+  layout-sensitivity that made every `wasthon_init` codegen change flip it).
+  Diagnosed by stashing the raw JS stack at Brython's `$B.set_exc` wrap site:
+  `sqlite3BtreeEnterAll ← sqlite3Close ← connection_close ←
+  pysqlite_connection_close ← __exit__` — the crash was never in the GC
+  destructor path the test name suggests. Fix: under `gcFinalize` (and only
+  there — refcount deaths still free), `PyObject_GC_Del` releases the
+  resources, weakrefs and registries but keeps the struct bytes and the
+  ptr→instance binding. A live reference then operates on the CLOSED object —
+  `connection_close` is a no-op on `db == NULL`, CPython's semantics for an
+  explicitly closed connection — instead of dangling memory. The struct bytes
+  of partial-GC victims are a deliberate, bounded leak: the classic
+  conservative-collector trade (never free what might still be referenced).
+
 - **Expose `__iter__` on iterable-container C types** (`src/wasthon.js`,
   `PyType_Ready` path). Static C types with `tp_iter` but no `tp_iternext`
   (numpy's ndarray) iterated fine through Brython's getitem-based sequence
