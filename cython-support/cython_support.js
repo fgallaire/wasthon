@@ -2,7 +2,11 @@
  * The handful of CPython C-API functions Cython-generated modules reference
  * that wasthon.js doesn't already provide. Link alongside wasthon.js:
  *   emcc ... --js-library src/wasthon.js --js-library cython_support.js
- * (Mergeable into wasthon.js later.) */
+ * (Mergeable into wasthon.js later.)
+ * A definition here SILENTLY OVERRIDES wasthon.js's (last library wins), so
+ * no symbol may exist in both files: a duplicate PyCFunction_NewEx shadowed
+ * the struct-backed version pybind11 requires and broke every combined
+ * Cython+pybind11 link (matplotlib+pandas). */
 mergeInto(LibraryManager.library, {
   /* --- traceback/code-object synthesis in __Pyx_AddTraceback. Must be NON-NULL:
    * when CreateCodeObjectForTraceback (which just returns PyCode_NewEmpty) yields
@@ -161,38 +165,12 @@ mergeInto(LibraryManager.library, {
     catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
   },
 
-  /* PyObject_DelItem(o, key) — del o[key]; 0 / -1 (numpy.random's _sfc64
-   * state setter deletes a dict key). */
-  PyObject_DelItem__deps: ['$WasthonRT'],
-  PyObject_DelItem: function(oH, keyH) {
-    var rt = WasthonRT;
-    try { rt.$B.$delitem(rt.unwrap(oH), rt.unwrap(keyH)); return 0; }
-    catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
-  },
-
   /* PyObject_DelAttr(o, name) — delattr(o, name); 0 / -1. */
   PyObject_DelAttr__deps: ['$WasthonRT'],
   PyObject_DelAttr: function(oH, nameH) {
     var rt = WasthonRT;
     try { rt.$B.$call(rt._b_.delattr, rt.unwrap(oH), rt.unwrap(nameH)); return 0; }
     catch (e) { rt.forwardError(e, rt._b_.AttributeError); return -1; }
-  },
-
-  /* PyCFunction_NewEx(ml, self, module) — wrap a single PyMethodDef into a
-   * builtin_function_or_method. Cython's View.MemoryView boilerplate uses it
-   * for the `__pyx_unpickle_Enum` helper. Reuses the bridge's trampoline maker;
-   * PyMethodDef = name(0) meth(4) flags(8) doc(12). */
-  PyCFunction_NewEx__deps: ['$WasthonRT', '$__wasthon_make_trampoline'],
-  PyCFunction_NewEx: function(mlPtr, selfH, moduleH) {
-    var rt = WasthonRT;
-    try {
-      var name  = UTF8ToString(HEAP32[mlPtr >> 2]);
-      var fnPtr = HEAP32[(mlPtr + 4) >> 2];
-      var flags = HEAP32[(mlPtr + 8) >> 2];
-      var tr = __wasthon_make_trampoline(fnPtr, flags, moduleH || 0, name, true, 0);
-      tr.ob_type = rt.$B.builtin_function_or_method;
-      return rt.wrap(tr);
-    } catch (e) { rt.forwardError(e); return 0; }
   },
 
   /* PyVectorcall_Function(op) — the callable's vectorcall pointer, or NULL if it
@@ -297,19 +275,6 @@ mergeInto(LibraryManager.library, {
     var rt = WasthonRT;
     try { rt.setError(rt.wrap(rt._b_.NotImplementedError), 'PyUnicode_Resize'); } catch (e) {}
     return -1;
-  },
-
-  /* PyCapsule_GetName(cap) — the capsule's name as a const char*. The bridge
-   * capsule keeps the name as a JS string; materialize a stable C string
-   * (cached on the object) so callers can strcmp it (numpy.random compares the
-   * "BitGenerator" capsule name). */
-  PyCapsule_GetName__deps: ['$WasthonRT'],
-  PyCapsule_GetName: function(capsuleH) {
-    var rt = WasthonRT;
-    var obj = rt.unwrap(capsuleH);
-    if (!obj || obj.__class__ !== 'PyCapsule' || obj.name == null) return 0;
-    if (!obj.__name_cstr__) obj.__name_cstr__ = stringToNewUTF8(obj.name);
-    return obj.__name_cstr__;
   },
 
   /* PyException_GetTraceback(exc) — new ref to exc.__traceback__, or NULL. */
