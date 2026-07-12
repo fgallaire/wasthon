@@ -2401,6 +2401,11 @@ mergeInto(LibraryManager.library, {
             rt.setError(rt.wrap(rt._b_.IndexError), "tuple index out of range");
             return 0;
         }
+        // CPython reads ob_item directly — a tuple subclass's __getitem__
+        // override must NOT fire (scipy's LowLevelCallable raises ValueError
+        // in its own __getitem__; routing through $getitem made ccallback's
+        // PyTuple_GET_ITEM(llc, 0) come back NULL → "invalid callable given").
+        if (Array.isArray(t)) return rt.wrap(t[ii]);
         try {
             var v = rt.$B.$getitem(t, ii);
             return rt.wrap(v);

@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyTuple_GetItem` reads the raw array — a tuple subclass's
+  `__getitem__` override no longer fires** (`src/wasthon.js`). CPython's
+  `PyTuple_GET_ITEM`/`PyTuple_GetItem` read `ob_item` directly; the bridge
+  routed through `$B.$getitem`, i.e. the Python-level protocol. scipy's
+  `LowLevelCallable` (a tuple subclass) deliberately raises ValueError in
+  its own `__getitem__` — so ccallback's `PyTuple_GET_ITEM(llc, 0)` came
+  back NULL and every LowLevelCallable-wrapped capsule was rejected with
+  "invalid callable given" (scipy.ndimage test_c_api, generic_filter1d /
+  geometric_transform).
+
 - **`Py_tp_descr_set` (slot 85) wired for spec/Cython types**
   (`src/wasthon.js`). Brython keys BOTH descriptor behaviors on
   `cls.tp_descr_set`: it is the setter it invokes, and its non-NULLness is
