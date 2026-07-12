@@ -9222,6 +9222,18 @@ mergeInto(LibraryManager.library, {
             msg = "";
         } else if (typeof v === 'string') {
             msg = v;
+        } else if (Array.isArray(v) && rt.$B.get_class(v) === rt._b_.tuple) {
+            /* CPython's normalization calls exc(*value) when the value is a
+             * TUPLE (numpy's raise_no_loop_found_error sets (ufunc, dtypes));
+             * every other kind stays a single argument — _decimal's list of
+             * flags below must remain exc(flags). Tuples mark JS arrays with
+             * ob_type (not __class__), so classify through get_class — which
+             * is also what keeps Brython LISTS out. */
+            try {
+                rt.setError(excHandle, "",
+                    rt.$B.$call.apply(null, [rt.unwrap(excHandle)].concat(Array.from(v))));
+            } catch (e) { rt.forwardError(e); }
+            return;
         } else if (v && (v.__class__ || (v.ob_type && v.args !== undefined))) {
             try {
                 if (v.args && v.args.length > 0) msg = String(v.args[0]);

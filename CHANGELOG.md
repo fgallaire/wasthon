@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyErr_SetObject(type, tuple)` normalizes to `exc(*tuple)`**
+  (`src/wasthon.js`). CPython's exception normalization unpacks a TUPLE value
+  as constructor args; the bridge passed everything through `exc(str(value))`.
+  numpy's `raise_no_loop_found_error` sets `(ufunc, dtypes)` — the bridge
+  built `_UFuncNoLoopError("tuple")` and the constructor's OWN TypeError
+  ("missing 1 required positional argument: 'dtypes'") escaped instead of
+  the comparison fallback: every `np.float64(x) == 'some str'` (seaborn's
+  `bw_method == 'scott'`) raised instead of returning `np.False_`. Tuples
+  are detected through get_class (they mark JS arrays with ob_type); lists
+  keep the single-argument path (_decimal's signal flags).
+
 - **`iter(0-d ndarray)` raises CPython's TypeError instead of iterating
   empty** (`src/wasthon.js`). Two paired changes: `PySeqIter_New` builds the
   generic sequence-protocol iterator DIRECTLY (CPython does no `__iter__`
