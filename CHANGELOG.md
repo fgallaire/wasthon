@@ -7,6 +7,33 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Buffer protocol for STATIC C types — memoryview(RendererAgg) & np.asarray(FT2Font)**
+  (`src/wasthon.js`). Four gaps closed, all on matplotlib's Agg draw path:
+  (1) `PyType_Ready` now records the type's `bf_getbuffer` slot like
+  `PyType_FromSpec` does, so `wasthon_call_bf_getbuffer`'s mro walk finds
+  static types (RendererAgg/BufferRegion/FT2Font are classic static
+  PyTypeObjects). (2) The slot-return contract is CPython's: only `rc < 0`
+  is an error — matplotlib's `PyRendererAgg_get_buffer` returns 1 on
+  SUCCESS (CPython callers only test `< 0`), which the bridge treated as
+  failure. (3) A slot-filled `Py_buffer.buf` points into the EXPORTER's own
+  memory (FreeType's glyph image, Agg's pixBuffer) — `PyBuffer_Release`
+  must not free it (freeing corrupted the FT allocator: `FT_Done_Glyph`
+  trapped on the second text draw). Registered as borrowed views. (4)
+  `wasthon_object_check_buffer` walks the mro for those static slots so
+  numpy's `PyArray_FromAny` takes its buffer path for `FT2Font` (2-D glyph
+  bitmap in `draw_text_image`) instead of scalar discovery (`int(FT2Font)`).
+  Scoped to STATIC PyType_Ready'd exporters only: counting FromSpec (Cython)
+  types or numpy scalars flipped `__Pyx_GetBuffer` coercions and broke
+  pandas merge/pivot.
+
+- **`Py_BuildValue` `s#`/`z#`/`y#` (pointer+length pairs)** (`src/wasthon.js`).
+  The `#` length variant wasn't implemented; plain `'y'` UTF8-decoded the
+  binary sfnt tables ft2font builds with `"{s:H, … s:y#, s:(kkkk)}"` and
+  `bytes.$factory` threw on the resulting >255 code points, so
+  `FontManager.addfont` → `get_sfnt()` failed and the font list stayed
+  empty. `y#` now slices `HEAPU8` at the exact length; `s#`/`z#` decode
+  UTF-8 with the explicit length.
+
 - **`PyCFunction_NewEx` hands back a REAL `PyCFunctionObject` struct**
   (`src/wasthon.js`). pybind11 casts the returned `PyObject*` to
   `PyCFunctionObject*` and reads/WRITES the fields by offset —

@@ -3371,11 +3371,25 @@ mergeInto(LibraryManager.library, {
                 }
                 case 's': case 'z': case 'U': {
                     var ptr = readPtr();
+                    // 's#'/'z#' — pointer + Py_ssize_t length (may hold NULs).
+                    if (fmt[i+1] === '#') {
+                        var slen = readInt();
+                        if (ptr === 0) return [rt._b_.None, i+2];
+                        return [UTF8ToString(ptr, slen), i+2];
+                    }
                     if (ptr === 0) return [rt._b_.None, i+1];
                     return [UTF8ToString(ptr), i+1];
                 }
                 case 'y': {
                     var ptr = readPtr();
+                    // 'y#' — BINARY buffer + length (ft2font builds its sfnt
+                    // table dicts with "s:y#"; plain 'y' UTF8-decodes and
+                    // corrupts / overflows bytes on non-text data).
+                    if (fmt[i+1] === '#') {
+                        var blen = readInt();
+                        if (ptr === 0) return [rt._b_.None, i+2];
+                        return [rt._b_.bytes.$factory(Array.from(HEAPU8.subarray(ptr, ptr + blen))), i+2];
+                    }
                     if (ptr === 0) return [rt._b_.None, i+1];
                     return [rt._b_.bytes.$factory(UTF8ToString(ptr)), i+1];
                 }
@@ -5018,6 +5032,14 @@ mergeInto(LibraryManager.library, {
              * raise BufferError as PyBUF_SIMPLE does in CPython. */
             var asBufPtr = HEAP32[(typePtr + 116) >> 2];
             if (asBufPtr && HEAP32[asBufPtr >> 2] !== 0) {
+                /* record the slot like PyType_FromSpec does, so
+                 * wasthon_call_bf_getbuffer's mro walk (the path memoryview()
+                 * takes through PyObject_GetBuffer) finds static types too —
+                 * matplotlib's RendererAgg/BufferRegion are PyType_Ready'd. */
+                var bufTi = rt.types.get(typePtr);
+                bufTi.slots = bufTi.slots || {};
+                bufTi.slots[1 /* Py_bf_getbuffer */] = HEAP32[asBufPtr >> 2];
+                bufTi.staticBuffer = true;
                 var tfb = cls.tp_funcs = cls.tp_funcs || {};
                 var bufFn = function(self) {
                     var viewPtr = _malloc(44);
@@ -12902,7 +12924,18 @@ mergeInto(LibraryManager.library, {
             if (!p) continue;
             rt.pendingException = null;
             var rc = getWasmTableEntry(p)(objH, viewPtr, flags);
-            if (rc !== 0 && !rt.pendingException) {
+            /* CPython contract: only rc < 0 is an error (callers test `< 0`;
+             * matplotlib's PyRendererAgg_get_buffer returns 1 on success). */
+            if (rc >= 0) {
+                /* view->buf points into the EXPORTER's own memory (FreeType's
+                 * glyph image, Agg's pixBuffer) — PyBuffer_Release must not
+                 * free it (freeing corrupted the FT allocator: FT_Done_Glyph
+                 * trapped on the next text draw). */
+                (rt._wasthonBorrowedViews ||
+                    (rt._wasthonBorrowedViews = new Set())).add(viewPtr);
+                return 0;
+            }
+            if (!rt.pendingException) {
                 rt.setError(rt.wrap(rt._b_.BufferError), "getbuffer failed");
             }
             return rc;
@@ -13311,6 +13344,36 @@ mergeInto(LibraryManager.library, {
         // tobytes() — treat that as "is a buffer" (matches wasthon_get_buffer_data).
         try { if (WasthonRT.$B.$getattr(obj, 'tobytes', null)) return 1; }
         catch (e) { /* not buffer-like */ }
+        // A C type whose mro registers a Py_bf_getbuffer slot (PyType_Ready /
+        // FromSpec) exports a buffer — numpy's PyArray_FromAny probes
+        // PyObject_CheckBuffer before its buffer path, and matplotlib's
+        // draw_text_image feeds it an FT2Font (2-D glyph bitmap exporter).
+        try {
+            var cls = WasthonRT.$B.get_class(obj);
+            var chain = cls ? [cls].concat(cls.tp_mro || cls.__mro__ || []) : [];
+            var bb = WasthonRT._b_;
+            var slot = false;
+            for (var ci = 0; ci < chain.length; ci++) {
+                var c = chain[ci];
+                // numpy scalars (np.bytes_/np.str_/np.void…) subclass the
+                // Python scalars and carry buffer slots, but their values
+                // flow through the calibrated scalar-discovery path — turning
+                // them into "buffers" broke pandas merge/pivot (int(b'…')).
+                if (c === bb.bytes || c === bb.str || c === bb.int ||
+                    c === bb.float || c === bb.complex || c === bb.bool) { slot = false; break; }
+                var th = c && c.__wasthon_type_handle__;
+                if (!th) continue;
+                var ti = WasthonRT.types.get(th);
+                // Only STATIC PyType_Ready'd exporters (matplotlib's FT2Font/
+                // RendererAgg/BufferRegion). FromSpec (Cython) types and numpy
+                // scalars keep the calibrated pre-existing discovery paths:
+                // counting them flipped __Pyx_GetBuffer coercions and broke
+                // pandas merge/pivot (int(b'…')).
+                if (ti && ti.staticBuffer && ti.slots && ti.slots[1 /* Py_bf_getbuffer */] &&
+                    !(ti.fullName && ti.fullName.lastIndexOf('numpy', 0) === 0)) slot = true;
+            }
+            if (slot) return 1;
+        } catch (e) { /* not buffer-like */ }
         return 0;
     },
 
