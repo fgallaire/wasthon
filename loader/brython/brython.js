@@ -9957,7 +9957,8 @@ if(y==0n){$B.RAISE(_b_.ZeroDivisionError,"integer division or modulo by zero")}
 var x=toBigInt(self)
 return int_or_long((x % y+y)% y)}
 _b_.int.nb_divmod=function(self,other){if(toBigInt(other)===$B.NULL){return _b_.NotImplemented}
-return $B.fast_tuple([int.nb_floor_divide(self,other),int.nb_remainder(self,other)])}
+try{return $B.fast_tuple([int.nb_floor_divide(self,other),int.nb_remainder(self,other)])}
+catch(err){if(err && err.__class__){throw err}return _b_.NotImplemented}}
 _b_.int.nb_power=function(self,other,z){var[x,y]=[self,other].map(toBigInt)
 if(x===$B.NULL ||y===$B.NULL){return _b_.NotImplemented}
 if(typeof other=="number" ||$B.$isinstance(other,int)){if(z !==undefined && z !==_b_.None){
