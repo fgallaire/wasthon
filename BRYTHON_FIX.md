@@ -3310,3 +3310,22 @@ o [object Object] it [object Object]   # before (on the JS console)
 >>> dict([(1, 2)])
 {1: 2}                                  # after
 ```
+
+## [x] f(*generator) masked the generator's real exception as StopIteration
+
+`list.$unpack`'s not-iterable diagnostic re-probed the iterator after
+`list.$factory` failed: on a generator the failed iteration has already
+closed it, so the probe `__next__` raises StopIteration and `throw err1`
+replaced the original exception. pandas' `zip(*(factorize_from_iterable(it)
+for it in iterables))` (MultiIndex.from_product) surfaced a bare
+StopIteration instead of the real error. The probe now only classifies
+TypeError (the nicer not-iterable message); everything else rethrows the
+ORIGINAL exception.
+
+```
+>>> def boom(): raise AttributeError('boom')
+>>> zip(*(boom() for _ in [1]))
+StopIteration                     # before
+>>> zip(*(boom() for _ in [1]))
+AttributeError: boom              # after
+```

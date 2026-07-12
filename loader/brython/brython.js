@@ -11897,7 +11897,7 @@ list.$factory=function(){return factory.apply(list,arguments)}
 list.$unpack=function(obj){
 try{return _b_.list.$factory(obj)}catch(err){try{var it=$B.$iter(obj)
 $B.$call($B.$getattr(it,"__next__"))}catch(err1){if($B.is_exc(err1,[_b_.TypeError])){$B.RAISE(_b_.TypeError,`Value after * must be an iterable, not ${$B.class_name(obj)}`)}
-throw err1}
+throw err}
 throw err}}
 _b_.list.tp_richcompare=function(){return tp_richcompare.apply(this,arguments)}
 _b_.list.sq_repeat=function(){return sq_repeat.apply(null,arguments)}
