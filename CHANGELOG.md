@@ -17,6 +17,19 @@ Module ports and the bridge-surface inventory live in `README.md`.
   "invalid callable given" (scipy.ndimage test_c_api, generic_filter1d /
   geometric_transform).
 
+- **`PyType_GetSlot` falls back to the static type struct**
+  (`src/wasthon.js`). The slot map in `rt.types` only exists for types
+  created via `PyType_FromModuleAndSpec`; for STATIC types (PyType_Ready
+  over a C struct) the handle IS the struct pointer, so the requested
+  function pointer is read straight from the compact wasthon.h layout.
+  Cython compiled with `CYTHON_USE_TYPE_SLOTS=0` fetches `tp_iternext`
+  (id 63) through `PyType_GetSlot` for every generic for-loop: getting 0
+  back made iterating any C-typed iterable — an ndarray in scipy's
+  `_cytest.filter2d` — bail out of the CyFunction with NULL and no
+  exception ("vectorcall returned NULL"), scipy.ndimage test_c_api
+  test_generic_filter. Note: wasthon.h aliases `Py_tp_free` to 63 as
+  well; iteration is the live consumer, so 63 maps to tp_iternext.
+
 - **`Py_tp_descr_set` (slot 85) wired for spec/Cython types**
   (`src/wasthon.js`). Brython keys BOTH descriptor behaviors on
   `cls.tp_descr_set`: it is the setter it invokes, and its non-NULLness is

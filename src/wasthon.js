@@ -2743,8 +2743,23 @@ mergeInto(LibraryManager.library, {
     PyType_GetSlot: function(typeHandle, slotId) {
         var rt = WasthonRT;
         var info = rt.types.get(typeHandle);
-        if (!info || !info.slots) return 0;
-        return info.slots[slotId] || 0;
+        if (info && info.slots && info.slots[slotId]) return info.slots[slotId];
+        // STATIC types (PyType_Ready over a C struct) have no spec slot map:
+        // the handle IS the struct pointer — read the function pointer from
+        // the compact wasthon.h layout. Cython compiled with
+        // CYTHON_USE_TYPE_SLOTS=0 fetches tp_iternext (id 63) this way for
+        // its generic for-loops; returning 0 made iterating any C-typed
+        // iterable (an ndarray in scipy's _cytest.filter2d) bail out of the
+        // CyFunction with NULL and no exception ("vectorcall returned NULL").
+        // NOTE: wasthon.h aliases Py_tp_free to 63 as well — iteration is
+        // the live consumer, so 63 maps to tp_iternext (offset 56).
+        var off = { 44: 16 /* tp_alloc */, 51: 52 /* tp_repr */,
+                    52: 40 /* tp_dealloc */, 61: 20 /* tp_init */,
+                    62: 24 /* tp_iter */, 63: 56 /* tp_iternext */,
+                    65: 60 /* tp_new */ }[slotId];
+        if (off !== undefined && typeHandle >= 0x10000)
+            return HEAP32[(typeHandle + off) >> 2] || 0;
+        return 0;
     },
 
     /* PyType_GetBaseByToken(type, token, *result) — CPython 3.14 stable
