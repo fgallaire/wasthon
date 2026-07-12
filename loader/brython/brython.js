@@ -1547,7 +1547,7 @@ if(kwa[k]!==undefined){$B.RAISE(_b_.TypeError,fname+
 "() got multiple values for argument '"+
 k+"'")}
 if(! getitem){try{getitem=$B.$getattr(cls,'__getitem__')}catch(err){$B.RAISE(_b_.TypeError,`'${$B.class_name(kw_arg)}' object is not subscriptable`)}}
-kwa[k]=getitem(kw_arg,k)}}}
+kwa[k]=typeof getitem=="function" ? getitem(kw_arg,k) :$B.$call(getitem,kw_arg,k)}}}
 return kwa}
 $B.check_nb_args=function(name,expected,args){
 var len=args.length,last=args[len-1]
@@ -5152,7 +5152,7 @@ if(nb_args==0){$B.RAISE(_b_.TypeError,$op_name+" expected 1 arguments, got 0")}e
 var $iter=$B.make_js_iterator_no_trace(args[0]),res=null,x_value,extr_value
 for(var x of $iter){if(res===null){extr_value=func===null ? x :$B.$call(func,x)
 res=x}else{x_value=func===null ? x :$B.$call(func,x)
-if($B.rich_comp(op,x_value,extr_value)){res=x
+if($B.$bool($B.rich_comp(op,x_value,extr_value))){res=x
 extr_value=x_value}}}
 if(res===null){if(has_default){$B.nb_min++
 return default_value}else{$B.RAISE(_b_.ValueError,$op_name+
@@ -5162,7 +5162,7 @@ var res=null,x,x_value,extr_value
 for(var i=0;i < nb_args;i++){x=args[i]
 if(res===null){extr_value=func===null ? x :$B.$call(func,x)
 res=x}else{x_value=func===null ? x :$B.$call(func,x)
-if($B.rich_comp(op,x_value,extr_value)){res=x
+if($B.$bool($B.rich_comp(op,x_value,extr_value))){res=x
 extr_value=x_value}}}
 if(res===null){$B.RAISE(_b_.ValueError,$op_name+
 "() arg is an empty sequence")}else{return res}}}
@@ -8469,8 +8469,12 @@ for(var i=0;i < value;i++){self.it.next()}}
 $B.str_iterator.tp_methods=["__length_hint__","__reduce__","__setstate__"]
 $B.set_func_names($B.str_iterator,'builtins')
 var number_check=function(s,flags){if(! $B.$isinstance(s,[_b_.int,_b_.float])){var type=flags.conversion_type
+var conv=null
+try{conv=$B.$getattr(s,'fFeEgG'.indexOf(type)>-1 ? '__float__' :'__index__')}catch(err){}
+if(conv){return $B.$call(conv)}
 $B.RAISE(_b_.TypeError,`%${type} format: a real number `+
-`is required, not ${$B.class_name(s)}`)}}
+`is required, not ${$B.class_name(s)}`)}
+return s}
 var get_char_array=function(size,char){if(size <=0){return ""}
 return new Array(size+1).join(char)}
 var format_padding=function(s,flags,minus_one){var padding=flags.padding
@@ -8503,7 +8507,7 @@ return ''}
 var str_format=function(val,flags){
 flags.pad_char=" " 
 return format_padding(str.$factory(val),flags)}
-var num_format=function(val,flags){number_check(val,flags)
+var num_format=function(val,flags){val=number_check(val,flags)
 if($B.$isinstance(val,_b_.float)){val=parseInt(val.value)}else if(! $B.is_int(val)){val=parseInt(val)}else if($B.$isinstance(val,_b_.bool)){val=val ? 1 :0}
 var s=format_int_precision(val,flags)
 if(flags.pad_char==="0"){if(val < 0){s=s.substring(1)
@@ -8519,7 +8523,7 @@ if(type=='bytes'){var repr=_b_.repr(val)
 ascii=_b_.str.tp_funcs.encode(repr,'ascii','backslashreplace')
 ascii=$B.bytes_decode(ascii,'ascii')}else{ascii=_b_.ascii(val)}
 return format_padding(ascii,flags)}
-var _float_helper=function(val,flags){number_check(val,flags)
+var _float_helper=function(val,flags){val=number_check(val,flags)
 if(flags.precision===undefined){if(! flags.decimal_point){flags.precision=6}else{flags.precision=0}}else{flags.precision=parseInt(flags.precision,10)
 validate_precision(flags.precision)}
 return $B.is_int(val)? val :val.value}
@@ -8606,7 +8610,7 @@ if(flags.alternate){if(ret.charAt(0)==="-"){if(upper){ret="-0X"+ret.slice(1)}
 else{ret="-0x"+ret.slice(1)}}else{if(upper){ret="0X"+ret}
 else{ret="0x"+ret}}}
 return format_padding(format_sign(val,flags)+ret,flags)}
-var octal_format=function(val,flags){number_check(val,flags)
+var octal_format=function(val,flags){val=number_check(val,flags)
 var ret
 ret=$B.int_value(val).toString(8)
 ret=format_int_precision(ret,flags)
