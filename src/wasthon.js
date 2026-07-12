@@ -11733,7 +11733,24 @@ mergeInto(LibraryManager.library, {
         if (rt._cType && rt._cType.has(handle)) return rt._cType.get(handle);
         var obj = rt.unwrap(handle);
         if (obj === null) return 0;
-        if (obj.__wasthon_type__) return obj.__wasthon_type__;
+        if (obj.__wasthon_type__) {
+            /* A Python subclass of a C type carries the PARENT struct in
+             * __wasthon_type__ (TypeCheck/module-state contract), but CPython's
+             * Py_TYPE returns the real subtype: Cython cpdef bodies do
+             * `Cls.__new__(type(self))` (pandas NDArrayBacked._from_backing_data
+             * behind every DatetimeArray.copy()) and got a BASE instance with no
+             * subclass identity or __dict__ ("no attribute '_freq'"). When the
+             * live Brython class differs from the struct's registered class,
+             * hand back the live class; base instances keep the struct. */
+            var tH = obj.__wasthon_type__;
+            var live = obj.__class__ || (rt.$B.get_class && rt.$B.get_class(obj));
+            if (live) {
+                var reg = (rt.builtinClassForStruct && rt.builtinClassForStruct.get(tH)) ||
+                          (rt.types.get(tH) || {}).brythonClass;
+                if (reg && live !== reg) return rt.wrap(live);
+            }
+            return tH;
+        }
         var cls = obj.__class__ || (rt.$B.get_class && rt.$B.get_class(obj));
         /* Built-in types: return the singleton struct address so that
          * Py_TYPE(x) == &PyTuple_Type comparisons work (otherwise wrap()

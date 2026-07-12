@@ -2471,3 +2471,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
       long run by then). `len()`/`upper()`/`bytes()`/`==` work on S-array
       elements, `np.strings` case-mapping works on S dtypes,
       `issubclass(np.bytes_, bytes)` / `(np.str_, str)` are True.
+
+- [x] `Py_TYPE` of a Python-subclass instance returned the parent C
+      struct — a Python subclass of a C type carries the parent's struct
+      in `__wasthon_type__` (the TypeCheck/module-state contract), but
+      CPython's Py_TYPE returns the real subtype: Cython cpdef bodies
+      doing `Cls.__new__(type(self))` (pandas
+      `NDArrayBacked._from_backing_data`, behind every
+      `DatetimeArray.copy()`) built BASE instances with no subclass
+      identity and no `__dict__` ("'NDArrayBacked' object has no
+      attribute '_freq'"), which blocked `import pandas.conftest`
+      (module-level `MultiIndex.from_product` on a dt64tz level) and with
+      it every conftest fixture. `wasthon_get_type_of` now returns the
+      live Brython class when it differs from the struct's registered
+      class; base instances keep the struct singleton (pointer-compare
+      fast paths intact). pandas test_hashtable 228→44 fails (+364 with
+      the conftest fixtures resolved), test_timezones +31; numpy grand
+      total and the five sentinel suites at baseline, `test_direct`
+      bit-exact.
