@@ -2017,7 +2017,16 @@ return x1 > y1}}
 var res
 // classes compare by identity ONLY under plain `type`; a custom
 // metaclass may define __eq__/__ne__ (pickletester's pickling_metaclass)
-if(x !==null && $B.is_type(x)&& $B.get_class(x)===_b_.type){if(op=="__eq__"){return(x===y)}else if(op=="__ne__"){return !(x===y)}else{$B.RAISE(_b_.TypeError,"'"+method2comp[op]+
+if(x !==null && $B.is_type(x)&& $B.get_class(x)===_b_.type){
+if((op=="__eq__"||op=="__ne__")&&x!==y&&!(y!==null&&$B.is_type(y)&&$B.get_class(y)===_b_.type)){
+// CPython: a plain type compares by object identity = NotImplemented for a
+// non-identical operand, THEN tries the reflected op — numpy's dtype.__eq__
+// coerces np.float64 -> dtype('float64'), so `np.float64 == np.dtype('f8')`
+// is True. Only fall back to identity if the reflected op is NotImplemented.
+var yrf=$B.$getattr($B.get_class(y),op,null)
+if(yrf!==null){var rr0=$B.$call(yrf,y,x);if(rr0!==_b_.NotImplemented){return rr0}}
+return op=="__eq__" ? _b_.False : _b_.True}
+if(op=="__eq__"){return(x===y)}else if(op=="__ne__"){return !(x===y)}else{$B.RAISE(_b_.TypeError,"'"+method2comp[op]+
 "' not supported between instances of '"+$B.class_name(x)+
 "' and '"+$B.class_name(y)+"'")}}
 var rev_op=reversed_op[op]||op,y_rev_func
