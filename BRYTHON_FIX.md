@@ -3294,3 +3294,19 @@ AttributeError: Javascript object 'undefined' has no attribute   # before
 >>> X()
 []                                                               # after
 ```
+
+## [x] Stray upstream debug console.log in dict.update and the string tokenizer
+
+`dict.update(iterable)` printed `o <object> it <iterator>` on every call
+(brython.js dict.$factory update path), and an unterminated string literal
+printed `pos end <source slice>` before the SyntaxError. Both are leftover
+upstream debug prints; every Brython page that captures console.log (the
+NumBry dashboards) got `[object Object]` spam in its output. Removed.
+
+```
+>>> dict([(1, 2)])
+o [object Object] it [object Object]   # before (on the JS console)
+{1: 2}
+>>> dict([(1, 2)])
+{1: 2}                                  # after
+```

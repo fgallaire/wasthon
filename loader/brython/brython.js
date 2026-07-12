@@ -11471,7 +11471,6 @@ if($B.$isinstance(o,dict)){$copy_dict(self,o)}else if(_b_.hasattr(o,"keys")){var
 for(let i=0,len=_keys.length;i < len;i++){var getitem=$B.$getattr(o,"__getitem__",$B.NULL)
 if(getitem !==$B.NULL){var _value=$B.$call(getitem,_keys[i])
 dict.$setitem(self,_keys[i],_value)}}}else{let it=_b_.iter(o),i=0,key_value
-console.log('o',o,'it',it)
 while(true){try{var item=_b_.next(it)}catch(err){if($B.is_exc(err,_b_.StopIteration)){break}
 throw err}
 try{key_value=_b_.list.$factory(item)}catch(err){$B.RAISE(_b_.TypeError,"cannot convert dictionary"+
@@ -18899,7 +18898,6 @@ is_escaped[src.charAt(end+1)]===undefined){zone+='\\'}
 zone+='\\'
 escaped=true
 end++}}}}else if(src.charAt(end)=='\n' && _type !='triple_string'){
-console.log(pos,end,src.substring(pos,end))
 string_error(p,token,["EOL while scanning string literal"])}else{zone+=src.charAt(end)
 end++}}
 var $string=zone,string=''
