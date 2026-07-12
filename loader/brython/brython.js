@@ -10252,12 +10252,12 @@ return res}
 var res
 if(fmt.precision !==undefined){
 let prec=fmt.precision
-if(prec==0){return Math.round(value)+""}
+if(prec==0){if(fmt.type=="g" ||fmt.type=="G"){prec=fmt.precision=1}else{var r0=Math.round(value)+"";if(fmt.alternate && fmt.type!==undefined){r0+="."}if(fmt.type=="%"){r0+="%"}return r0}}
 res=$B.roundDownToFixed(value,prec)
 let pt_pos=res.indexOf(".")
 if(fmt.type !==undefined &&
 (fmt.type=="%" ||fmt.type.toLowerCase()=="f")){if(pt_pos==-1){res+="."+"0".repeat(fmt.precision)}else{var missing=fmt.precision-res.length+pt_pos+1
-if(missing > 0){res+="0".repeat(missing)}}}else if(fmt.type && fmt.type.toLowerCase()=="g"){let exp_fmt=preformat(self,{type:"e"}).split("e"),exp=parseInt(exp_fmt[1])
+if(missing > 0){res+="0".repeat(missing)}}}else if(fmt.type && fmt.type.toLowerCase()=="g"){let exp_fmt=value.toExponential(fmt.precision-1).split("e"),exp=parseInt(exp_fmt[1])
 if(-4 <=exp && exp < fmt.precision){res=preformat(self,{type:"f",precision:fmt.precision-1-exp})}else{res=preformat(self,{type:"e",precision:fmt.precision-1})}
 let parts=res.split("e")
 if(fmt.alternate){if(parts[0].search(/\./)==-1){parts[0]+='.'}}else{let signif=parts[0]
