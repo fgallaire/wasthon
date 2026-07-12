@@ -14803,6 +14803,33 @@ mergeInto(LibraryManager.library, {
             });
         }
 
+        // Wire Py_tp_descr_set (slot 85) symmetrically. Brython keys BOTH
+        // behaviors on cls.tp_descr_set: it is the setter it invokes, and
+        // `tp_descr_set !== $B.NULL` is what makes the descriptor a DATA
+        // descriptor (priority over the instance dict on reads). Left NULL,
+        // a Cython __set__ descriptor (pandas' AxisProperty) was demoted to
+        // non-data: `df.columns = [...]` stored the raw list in the instance
+        // dict and shadowed the descriptor for every later read. C sig is
+        // int descr_set(PyObject *self, PyObject *obj, PyObject *value),
+        // value == NULL meaning delete.
+        var tpDescrSetPtr = slotMap[85 /* Py_tp_descr_set */];
+        if (tpDescrSetPtr) {
+            cls.tp_descr_set = rt.scoped(function(descr, obj, value) {
+                var selfH = (descr && descr.__wasthon_ptr__)
+                    ? descr.__wasthon_ptr__ : rt.wrap(descr);
+                var objH = (obj === undefined || obj === null ||
+                            obj === rt.$B.NULL) ? 0 : rt.wrap(obj);
+                var valH = (value === undefined) ? 0 : rt.wrap(value);
+                rt.pendingException = null;
+                var rc = getWasmTableEntry(tpDescrSetPtr)(selfH, objH, valH);
+                if (rc !== 0 || rt.pendingException) {
+                    var pe = rt.pendingException; rt.pendingException = null;
+                    if (pe) throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);
+                    throw rt.$B.$call(rt._b_.RuntimeError, "tp_descr_set failed");
+                }
+            });
+        }
+
         // Wire Py_tp_getattro (slot 57 per wasthon.h numbering) using a
         // try-default-then-fallback strategy. The C-side custom getattr
         // (e.g. _decimal Context's context_getattr) intercepts specific

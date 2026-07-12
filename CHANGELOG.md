@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`Py_tp_descr_set` (slot 85) wired for spec/Cython types**
+  (`src/wasthon.js`). Brython keys BOTH descriptor behaviors on
+  `cls.tp_descr_set`: it is the setter it invokes, and its non-NULLness is
+  what makes a DATA descriptor (priority over the instance dict on reads).
+  Left unwired, every Cython `__set__` descriptor was demoted to non-data:
+  pandas' AxisProperty (`df.columns = [...]` in `MultiIndex.to_frame`)
+  stored the raw list in the instance dict and shadowed the descriptor for
+  every later read — `pd.concat` then crashed on `'list' object has no
+  attribute 'equals'/'get_indexer'` (seaborn histplot/kdeplot metadata
+  path). Symmetric to the Py_tp_descr_get wiring.
+
 - **`PyErr_SetObject(type, tuple)` normalizes to `exc(*tuple)`**
   (`src/wasthon.js`). CPython's exception normalization unpacks a TUPLE value
   as constructor args; the bridge passed everything through `exc(str(value))`.
