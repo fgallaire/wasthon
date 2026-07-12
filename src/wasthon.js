@@ -11329,23 +11329,22 @@ mergeInto(LibraryManager.library, {
              * struct pointer — `B(1.0)` (B a Python np.float64 subclass)
              * printed heap garbage. Returning NULL with NO error makes the
              * numpy caller (double_arrtype_new) take its own documented
-             * fallback: PyErr_Clear + convert + tp_alloc the subtype + copy
-             * into its obval — a real struct-backed instance. Python
-             * subclasses are the rt.types entries whose class carries no
-             * __wasthon_basicsize__ (C-registered types set it at bind). */
+             * fallback (guarded on exactly 1 positional arg, no kwargs):
+             * PyErr_Clear + PyArray_FromAny + PyArray_ToScalar — a real
+             * struct-backed instance. Taking it for EVERY subtype (Python
+             * subclasses and the C float64 type alike) is what gives
+             * `np.float64(x)` a true scalar with .shape/.dtype instead of a
+             * bare float (np.average's `scl.shape`, a.mean()'s
+             * `ret.dtype.type(ret / rcount)`). */
             var ti = rt.types.get(typeH);
-            if (ti && ti.brythonClass &&
-                    ti.brythonClass.__wasthon_basicsize__ === undefined &&
-                    args && args.length === 1) {
+            var kw = kwH ? rt.unwrap(kwH) : null;
+            if (ti && ti.brythonClass && ti.brythonClass !== rt._b_.float &&
+                    args && args.length === 1 &&
+                    (!kw || rt._b_.dict.mp_length(kw) === 0)) {
                 rt.pendingException = null;
                 return 0;
             }
             var v = (args && args.length > 0) ? args[0] : 0.0;
-            /* Return a plain Brython float — numpy's `double_arrtype_new`
-             * returns this straight back as the scalar result, so `np.float64`
-             * construction yields a real, usable float (a.mean() == 2.5). A
-             * perfect np.float64-scalar identity is the scalar subsystem's
-             * remaining work; a Python float is correct-valued and interoperable. */
             return rt.wrapNewRef(rt.$B.$call(rt._b_.float, v));
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },

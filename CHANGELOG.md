@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`np.float64(x)` returns the real float64 scalar** (`src/wasthon.js`).
+  `PyFloat_Type.tp_new` built a plain Brython float for every caller; numpy's
+  `double_arrtype_new` returned it straight back, so explicit scalar-type
+  construction — `a.mean()`'s `ret.dtype.type(ret / rcount)`, `np.average`'s
+  `scl` — produced a bare float with no shape/dtype (`np.cov` then died on
+  `scl.shape`, blocking seaborn's vendored KDE). The documented
+  NULL-with-no-error fallback (numpy converts itself: PyErr_Clear +
+  PyArray_FromAny + PyArray_ToScalar — a real struct-backed scalar) now
+  serves every SUBTYPE, the C float64 type like the Python subclasses it
+  already served, guarded on exactly 1 positional arg and no kwargs (numpy's
+  own contract).
+
 - **Buffer protocol for STATIC C types — memoryview(RendererAgg) & np.asarray(FT2Font)**
   (`src/wasthon.js`). Four gaps closed, all on matplotlib's Agg draw path:
   (1) `PyType_Ready` now records the type's `bf_getbuffer` slot like
