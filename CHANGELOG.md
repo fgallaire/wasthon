@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`iter(0-d ndarray)` raises CPython's TypeError instead of iterating
+  empty** (`src/wasthon.js`). Two paired changes: `PySeqIter_New` builds the
+  generic sequence-protocol iterator DIRECTLY (CPython does no `__iter__`
+  lookup) — going through `_b_.iter` re-entered the container `__iter__`
+  slot whose C tp_iter (numpy's `array_iter`) is the very caller — and the
+  container-type `__iter__` wrapper now calls the real C tp_iter, preserving
+  its error contract ("iteration over a 0-d array"). The old getitem
+  short-circuit read `arr[0]`'s IndexError as exhaustion, so 0-d arrays
+  iterated as silently EMPTY: matplotlib's
+  `_safe_first_finite(np.asarray(0.0))` hit StopIteration in `ax.bar`
+  (seaborn histplot's color probe).
+
 - **`np.float64(x)` returns the real float64 scalar** (`src/wasthon.js`).
   `PyFloat_Type.tp_new` built a plain Brython float for every caller; numpy's
   `double_arrtype_new` returned it straight back, so explicit scalar-type

@@ -4728,7 +4728,10 @@ mergeInto(LibraryManager.library, {
     PySeqIter_New: function(seqH) {
         var rt = WasthonRT; var seq = rt.unwrap(seqH);
         if (seq === null) return 0;
-        try { return rt.wrapNewRef(rt._b_.iter(seq)); }
+        /* CPython builds the generic sequence-protocol iterator directly, with
+         * NO __iter__ lookup — going through _b_.iter re-entered the container
+         * __iter__ slot whose C tp_iter (numpy's array_iter) is the caller. */
+        try { return rt.wrapNewRef({ ob_type: rt.$B.iterator, it_seq: seq, it_index: 0 }); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
@@ -5352,24 +5355,24 @@ mergeInto(LibraryManager.library, {
                 }));
             } else {
                 /* container types: tp_iter WITHOUT tp_iternext (ndarray).
-                 * Calling the C tp_iter is circular — numpy's array_iter
-                 * returns PySeqIter_New(self), which the bridge maps back to
-                 * _b_.iter(seq) — so keep iterating through Brython's
-                 * getitem-based sequence protocol but expose it as __iter__:
-                 * without the dunder, hasattr(a, '__iter__') and
-                 * isinstance(a, collections.abc.Iterable) are False (scipy's
-                 * _normalize_sequence then mistakes an array for a scalar). */
+                 * Call the C tp_iter: PySeqIter_New builds the getitem-based
+                 * iterator directly (no __iter__ re-entry), so the C slot is
+                 * no longer circular and its own error contract is preserved
+                 * (numpy's array_iter raises "iteration over a 0-d array";
+                 * the old getitem short-circuit iterated 0-d arrays as
+                 * silently EMPTY — arr[0]'s IndexError reads as exhaustion).
+                 * The dunder must exist regardless: without it,
+                 * hasattr(a, '__iter__') and isinstance(a, Iterable) are
+                 * False (scipy's _normalize_sequence then mistakes an array
+                 * for a scalar). */
                 var tpIterOnlyPtr = HEAP32[(typePtr + 24) >> 2];
                 if (tpIterOnlyPtr) installSlot('tp_iter', '__iter__', rt.scoped(function(self) {
-                    var kls = rt.$B.get_class(self);
-                    if (rt.$B.search_in_mro(kls, '__getitem__', rt.$B.NULL) !== rt.$B.NULL) {
-                        /* the object $B.$iter's getitem fallback builds */
-                        return { ob_type: rt.$B.iterator, it_seq: self, it_index: 0 };
-                    }
                     var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
                     rt.pendingException = null;
                     var resH = getWasmTableEntry(tpIterOnlyPtr)(selfH);
                     if (rt.pendingException) { var pe = rt.pendingException; rt.pendingException = null; throw rt.pendingExc(pe); }
+                    if (resH === 0) throw rt.$B.$call(rt._b_.TypeError,
+                        "'" + rt.$B.class_name(self) + "' object is not iterable");
                     return rt.unwrapResult(resH);
                 }));
             }
