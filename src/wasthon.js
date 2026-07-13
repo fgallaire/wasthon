@@ -9406,7 +9406,7 @@ mergeInto(LibraryManager.library, {
      * Returns 1 on success, 0 on failure (with TypeError set). Out pointers
      * for absent optional args are left as-is (caller initializes them).
      */
-    PyArg_ParseTupleAndKeywords__deps: ['$WasthonRT', 'PyUnicode_AsUTF8', 'PyUnicode_AsUTF8AndSize', 'PyBytes_AsString', 'PyBytes_AsStringAndSize', 'PyFloat_AsDouble'],
+    PyArg_ParseTupleAndKeywords__deps: ['$WasthonRT', 'PyUnicode_AsUTF8', 'PyUnicode_AsUTF8AndSize', 'PyBytes_AsString', 'PyBytes_AsStringAndSize', 'PyFloat_AsDouble', 'PyObject_GetBuffer'],
     PyArg_ParseTupleAndKeywords: function(argsH, kwdsH, formatPtr, kwlistPtr, varargs) {
         var rt = WasthonRT;
         var args = rt.unwrap(argsH);
@@ -9428,7 +9428,7 @@ mergeInto(LibraryManager.library, {
         var totalSlots = 0;
         for (var i = 0; i < format.length; i++) {
             var ch = format[i];
-            if (ch === '|' || ch === '&' || ch === '!') continue;
+            if (ch === '|' || ch === '&' || ch === '!' || ch === '*') continue;
             if (ch === '(') {
                 totalSlots++;
                 var d = 1;
@@ -9533,8 +9533,15 @@ mergeInto(LibraryManager.library, {
              * store below knows to also write the length and consume the extra
              * varargs slot; the '#' char is stepped past (never its own slot). */
             var hasHash = (i + 1 < format.length && format[i + 1] === '#');
+            /* '*' suffix (s-star, y-star, z-star, w-star): the buffer code is
+             * followed by a single Py_buffer* out-pointer, filled via the buffer
+             * protocol below. Stepped past here so '*' is never parsed as its own
+             * (unknown) format char, and so 'w' (writable buffer, not otherwise
+             * in the accepted set) is let through. Pillow's decoders parse "y*". */
+            var hasStar = (i + 1 < format.length && format[i + 1] === '*');
             if (isConv || isTypeCheck) { i++; }
             else if (hasHash) { i++; }
+            else if (hasStar) { i++; }
             else if (groupInner === null &&
                 c !== 'O' && c !== 'i' && c !== 'I' && c !== 'k' &&
                 c !== 'l' && c !== 'L' && c !== 'K' && c !== 'n' &&
@@ -9663,7 +9670,23 @@ mergeInto(LibraryManager.library, {
                  * of the store depend on the format char. */
                 var outPtr = HEAP32[p >> 2];
                 if (outPtr !== 0) {
-                    if (c === 'O') {
+                    if (hasStar) {
+                        /* s-star, y-star, z-star, w-star: fill the Py_buffer at
+                         * outPtr from a bytes-like value via the buffer protocol
+                         * (Pillow's decoders read "y*"); PyBuffer_Release frees
+                         * it later. 'z*' accepts None -> a zeroed view. */
+                        if (c === 'z' && value === rt._b_.None) {
+                            for (var _bz = 0; _bz < 44; _bz += 4) HEAP32[(outPtr + _bz) >> 2] = 0;
+                        } else {
+                            var _brc = _PyObject_GetBuffer(rt.wrap(value), outPtr, (c === 'w') ? 1 : 0);
+                            if (_brc !== 0) {
+                                if (!rt.pendingException)
+                                    rt.setError(rt.wrap(rt._b_.TypeError),
+                                        "a bytes-like object is required");
+                                return 0;
+                            }
+                        }
+                    } else if (c === 'O') {
                         HEAP32[outPtr >> 2] = rt.wrap(value);
                     } else if (c === 'U') {
                         /* Unicode object: must be a str; store the handle.

@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyArg_ParseTuple` supports the `s*`/`y*`/`z*`/`w*` buffer formats**
+  (`src/wasthon.js`). The legacy vararg parser handled `s#`/`y#` (data pointer
+  + length) but not the `*` variants that fill a `Py_buffer`: it rejected the
+  `*` as an unknown format char (`SystemError: format char '*' not
+  implemented`). Pillow's image decoders parse their input as `"y*"`
+  (`decode.c`), so every PNG decode and `Image.frombytes` failed. Fix: detect
+  the `*` suffix next to `#`, step past it, and fill the Py_buffer out-pointer
+  through the existing `PyObject_GetBuffer` (`w*` asks for writable); `z*`
+  accepts None as a zeroed view.
+
 - **`PyTuple_GetItem` reads the raw array — a tuple subclass's
   `__getitem__` override no longer fires** (`src/wasthon.js`). CPython's
   `PyTuple_GET_ITEM`/`PyTuple_GetItem` read `ob_item` directly; the bridge
