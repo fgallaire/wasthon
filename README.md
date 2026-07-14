@@ -801,8 +801,12 @@ Infrastructure work that pays back on existing modules:
       OOM. The C free itself works (`decref` → `tp_dealloc` →
       `lzma_end`/`ZSTD_free` → memory reused); the only missing piece was a
       deterministic trigger. The model is an explicit `close()`/`with` contract
-      (as in Pyodide), not an automatic finalizer — a synchronous run never
-      yields, so no auto-GC callback could fire promptly anyway.
+      (as in Pyodide), not an automatic finalizer — within a synchronous run
+      nothing yields, so no auto-GC callback can fire (a page that *does* yield
+      between units of work gets the automatic path too; see "Wrapper-owned
+      result reclamation" below). For a heavy native this stays the right
+      model regardless: `close()` frees a 94 MB context *deterministically*,
+      where a finalizer only frees it whenever the GC gets around to it.
       `loader/wasthon-dealloc.js` wraps the synchronous `$B.$import` to patch
       `lzma.LZMAFile`/`bz2.BZ2File`/`compression.zstd.ZstdFile` `.close()` so a
       `with` block decref's the compressor it drops and reclaims the context at
@@ -845,8 +849,12 @@ Infrastructure work that pays back on existing modules:
       `tp_dealloc` on every gc-finalizable instance no longer reachable
       (`cursor_dealloc` → `stmt_reset` releases the lock; `connection_dealloc` →
       `tp_finalize` → `ResourceWarning`). This is the explicit `gc.collect()`
-      contract, *not* the rejected automatic finalizer (a synchronous run never
-      yields for a FinalizationRegistry callback). Gated to an opt-in set of
+      contract, distinct from the automatic `FinalizationRegistry` path below:
+      that one needs job boundaries (a synchronous run never yields for a
+      finalizer callback) and only frees what the JS GC has *proven* dead,
+      whereas this sweep must fire on demand, mid-job, from a heuristic mark —
+      which is why it is clear-only for the conservative cases and gated to an
+      opt-in set of
       resource-holding types (`$wasthon_gc_finalizable`: sqlite3's
       Connection/Cursor/Blob/Backup, and `_pickle`'s Pickler/Unpickler — their
       memo takes a ref per object pickled, released only at `tp_dealloc`, so a
@@ -883,20 +891,93 @@ Infrastructure work that pays back on existing modules:
       between `batch_list`'s outer list and each item's containers, O(n²)
       bytes. Also halved the pickle suite's wall time (449 s → 255 s).
       Details in `CHANGELOG.md`.
+- [x] Wrapper-owned result reclamation — the *automatic* finalizer, which the
+      entries above call impossible. They are right about a **synchronous run**
+      and wrong about a **yielding one**, and that distinction is the whole
+      design.
+
+      The seam: CPython is refcounted, Brython is tracing-GC with **no
+      refcount at all**. Every C-call result crosses that seam — the bridge
+      allocates the instance at refcount 1 and hands the Brython wrapper back
+      with ownership of that one reference (`consumeResultRef` exempts
+      instances by design). CPython's eval loop would `POP_TOP` a discarded
+      expression statement to zero; Brython simply drops the wrapper and
+      **nothing crosses back**. There is no site to fix: the bridge cannot
+      observe the drop, so the struct plus its `handles`/`refcounts` entries
+      were pinned for the life of the job. One leaked instance per ufunc call.
+
+      Correct, and asymptotically fatal: per-call cost grows with the live-set
+      (the JS GC keeps tracing the pinned wrappers, and the never-freed structs
+      fragment the wasm heap), measured **72 µs flat vs 287 µs after 60k
+      leaked calls**. Nobody hit the knee until a suite ran ~10⁵–10⁶ ops inside
+      one job (scipy's `test_cython_special`), where the tail slowed until the
+      browser killed the script.
+
+      Two mechanisms are *provably* unavailable. A synchronous mark-sweep from
+      the live frames (the `gc.collect()` machinery above) is **racy** for
+      transients: while Brython evaluates `abs(a-b) <= atol + rtol*abs(b)`, the
+      `abs(a-b)` result is alive, refcount 1, and reachable from **neither** a
+      frame local nor the entering call's arguments — a sweep would free it
+      under the running expression. And refcount-1 does not mean dead, because
+      Brython's `x = arr` never increfs. `WeakRef` polling is worse: the spec's
+      *keptObjects* list pins every target of a `new WeakRef` / `.deref()`
+      until the end of the job, so inside one synchronous run **nothing is ever
+      collectible** (verified: 300k WeakRefs plus 1 GB of churn → zero
+      collected). The first attempt demoted the `handles` entries to WeakRefs
+      and was strictly dominated — same live-set, plus a deref on the hottest
+      path in the bridge.
+
+      What survives is the JS GC itself, which is the *only* oracle that can
+      see a Brython drop — and it runs **between jobs**. So: at the outermost
+      scope pop, an instance still at refcount 1 (C kept no reference) is
+      **unbound** from `handles` and its wrapper registered in a
+      `FinalizationRegistry` holding `{ptr, typeH}`. Nothing weak sits on the
+      hot path: Python passing the wrapper back into C re-binds it through
+      `wrap()` (the wrapper carries its own `__wasthon_ptr__`), and the
+      dispatcher fast paths that read that pointer *without* calling `wrap()`
+      recover through `unwrap()`'s miss path — a `demoted` `Map<ptr, WeakRef>`
+      side table consulted only on a miss, so its keptObjects pinning lasts at
+      most until the next boundary, which is exactly when collection could
+      happen anyway. A mid-call `Py_INCREF` (refcount ≥ 2 — C taking durable
+      ownership) simply prevents the demotion at pop; `PyObject_GC_Del`
+      unregisters, or a late callback on a malloc-reused pointer would
+      double-free. When the GC proves the wrapper dead the callback runs the
+      type's `tp_dealloc` against a tombstone binding and frees the struct —
+      a dead wrapper is *proof* of unreachability, which is what makes this
+      sound where the mark-sweep heuristic is not.
+
+      The other half of the contract is the driver: reclamation needs job
+      boundaries, so a page must yield between units of work (`MessageChannel`,
+      not `setTimeout` — nested timeouts clamp to 4 ms). This is why the
+      feature is **opt-in** (`rt.reclaimResults`, default `false` = bit-for-bit
+      the old behaviour). Unconditional reclamation breaks `import numpy`
+      instantly: module-init code pervasively stores fresh refcount-1 instances
+      C-side as borrowed references (statics, caches), and the whole ecosystem
+      quietly *depends* on the leak for its correctness during init. The flag is
+      flipped once imports have settled, when the steady-state per-call flood is
+      the only thing worth reclaiming. With a per-case async runner the handle
+      table stays flat and per-call cost stays at its ~72 µs floor:
+      `test_cython_special` 167/54 → **221 passed / 0 failed** (was killed by
+      the watchdog). Details in `CHANGELOG.md`.
 - [ ] Explicit-contract residual — a C instance held by a Python local that is
       dropped or reassigned without a `close()`/`with` (and with no
-      `gc.collect()` call) is never DECREF'd:
+      `gc.collect()` call, and on a page that does not opt into
+      `reclaimResults` + yields) is never DECREF'd:
       Brython offers no scope-exit or GC callback into `wasthon_decref`, so its
-      native context leaks. Three deterministic triggers now cover the common
-      cases: the `close()`/`with` contract for every heavy native that exposes
-      one (LZMA/Zstd/bz2 file wrappers; sqlite `Connection.close()` frees
+      native context leaks. Four triggers now cover the common cases: the
+      `close()`/`with` contract for every heavy native that exposes one
+      (LZMA/Zstd/bz2 file wrappers; sqlite `Connection.close()` frees
       natively), the one-shot `compress()`/`decompress()` helper wrap for
-      the create-use-drop transient with no `close()`, and an explicit
-      `gc.collect()` mark-sweep for unreachable resource-holding sqlite3 types.
-      The residual is the genuinely unhooked case — a bare compressor/`Connection`
-      kept in a long-lived local and dropped on its own with no `gc.collect()` —
-      acceptable for light natives and a known cap on loop-bench depth for heavy
-      ones. (Instance /
+      the create-use-drop transient with no `close()`, an explicit
+      `gc.collect()` mark-sweep for unreachable resource-holding sqlite3 types,
+      and — on a yielding page that opts in — the automatic
+      `FinalizationRegistry` reclamation above, which covers the create-use-drop
+      *result* flood the other three cannot see. The residual is what none of
+      them reach: a bare compressor/`Connection` kept in a long-lived local and
+      dropped on its own, on a page with no `gc.collect()` and no job boundaries
+      — acceptable for light natives and a known cap on loop-bench depth for
+      heavy ones, since a heavy native is exactly the case that *should* carry
+      an explicit `close()`. (Instance /
       `refcounts` axis; distinct from the sentinel / `handles` leak below.)
 - [x] JS-side handle-map (sentinel) leak — FIXED by **handle scopes** (the
       JNI local-reference / HPy model). Every JS→C entry point (method

@@ -7,6 +7,34 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Wrapper-owned C results are reclaimable — FinalizationRegistry unbinding
+  behind the opt-in `rt.reclaimResults`** (`src/wasthon.js`). Every C-call
+  result instance is seeded at refcount 1 with "ownership handed to the
+  Brython wrapper", but Brython dropping a wrapper never crosses back as a
+  decref, so the struct + `handles`/`refcounts` entries were pinned forever —
+  one leaked entry per ufunc call. Per-call cost then grows with the live-set
+  (72 µs flat vs 287 µs after 60k leaked calls; the GC keeps tracing the
+  pinned wrappers), so scipy's 285k-call `test_cython_special` timed out.
+  Fix: at the outermost scope pop, instances still at refcount 1 are UNBOUND
+  from `handles` and their wrapper registered in a FinalizationRegistry
+  (held value `{ptr, typeH}`); Python passing the wrapper back in re-binds
+  through `wrap()`, dispatcher fast paths that read `__wasthon_ptr__`
+  directly recover through `unwrap()`'s miss path (a `demoted`
+  Map<ptr, WeakRef> side table), and once the JS GC proves the wrapper dead
+  the callback runs tp_dealloc (tombstone-bound) and frees the struct.
+  C taking durable ownership mid-call (Py_INCREF → refcount ≥ 2) simply
+  prevents the demotion at pop, and the callback skips anything whose
+  ownership moved; `PyObject_GC_Del` unregisters (a late callback on a
+  malloc-reused ptr would double-free).
+  Reclamation needs job boundaries — WeakRef targets sit on keptObjects
+  until the job ends, and a FinalizationRegistry only fires after GC — so
+  drivers must yield between test cases (numbry's per-case async runner);
+  default `reclaimResults: false` is bit-for-bit the old behaviour.
+  Unconditional reclamation broke numpy's import instantly (init-era code
+  pervasively stores fresh rc-1 instances C-side as borrowed refs — statics,
+  caches), hence the opt-in. With numbry's driver + recipe fixes: scipy
+  `test_cython_special` 167/54 → 221 passed / 0 failed (+54).
+
 - **`PyArg_ParseTuple` supports the `s*`/`y*`/`z*`/`w*` buffer formats**
   (`src/wasthon.js`). The legacy vararg parser handled `s#`/`y#` (data pointer
   + length) but not the `*` variants that fill a `Py_buffer`: it rejected the

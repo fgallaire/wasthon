@@ -68,6 +68,42 @@ mergeInto(LibraryManager.library, {
         internPool: null,        // Map<string, handle> — pinned interned strings (content-keyed)
         noScopeFree: false,      // A/B harness switch: true = pre-scope behaviour (leak)
 
+        // Wrapper-owned instance reclamation — the fourth handle lifetime,
+        // for C instances whose only owner is their Brython wrapper
+        // (refcount exactly 1) once the outermost C call has returned.
+        // Their `handles` entry is REMOVED (the wrapper re-binds through
+        // wrap() whenever Python passes it back in) and the wrapper is
+        // registered in a FinalizationRegistry: when Python drops it, the
+        // JS GC collects it and _reclaimDead frees the C struct plus the
+        // refcount entry. Without this, every C-call result kept its
+        // wrapper pinned in `handles` forever — one leaked entry per ufunc
+        // call, so per-call cost grew with the live-set (72 µs flat vs
+        // 287 µs after 60k leaked calls) and a 285k-call scipy suite timed
+        // out. No WeakRefs anywhere: WeakRef creation/deref lands targets
+        // on the spec's keptObjects list (pinned until job end), measured
+        // strictly worse. Reclamation still needs the GC to run, i.e. job
+        // boundaries: a driver that yields between test cases gets a flat
+        // table; a fully synchronous run keeps today's behaviour.
+        // OPT-IN (page sets rt.reclaimResults = true once its imports have
+        // settled): module/init-era code pervasively stores fresh rc-1
+        // instances C-side as borrowed refs (statics, init caches — numpy's
+        // import broke instantly under unconditional reclamation), and those
+        // must stay pinned exactly as today. Steady-state per-call results
+        // are the flood worth reclaiming. Default false = bit-for-bit the
+        // pre-change behaviour.
+        reclaimResults: false,
+        resultReg: null,         // FinalizationRegistry -> _reclaimDead({ptr,typeH})
+        // Map<ptr, WeakRef(wrapper)> — unbound, wrapper-owned instances.
+        // The WeakRef exists for ONE consumer: unwrap()'s miss path. The
+        // slot/method dispatchers extract `self.__wasthon_ptr__` directly
+        // (fast path, never through wrap()), so the first C-side unwrap of
+        // an unbound instance must recover the wrapper on its own. The
+        // keptObjects pinning WeakRefs cause lasts only until the next job
+        // boundary — harmless, since the GC can only collect between jobs
+        // anyway (that is when reclamation happens at all).
+        demoted: null,
+        _born: [],               // instance ptrs bound during the current C entry
+
         // Sentinel handle IDs (filled at init).
         SLOT_NONE: 1,
         SLOT_TRUE: 2,
@@ -213,6 +249,11 @@ mergeInto(LibraryManager.library, {
                 if (this.refcounts.has(h)) continue;
                 this.releaseSentinel(h);
             }
+            // Control returned to Python: unbind the instances born during
+            // this C entry that C kept no reference on (see `resultReg`).
+            if (this.scopes.length === 0 && this._born.length !== 0) {
+                this._demotePass();
+            }
         },
         // Release one sentinel handle: drop the table entry, the identity-
         // interning entry, and recycle the id.
@@ -224,6 +265,70 @@ mergeInto(LibraryManager.library, {
                 if (this.sentinelByObj.get(obj) === h) this.sentinelByObj.delete(obj);
             }
             if (h < 0x10000) this.freeList.push(h);
+        },
+        // Record an instance ptr bound during a C call, for _demotePass.
+        // No scope active (module init, loader-time) → immortal, as before.
+        _bornTrack: function(ptr) {
+            if (this.reclaimResults && this.scopes.length !== 0 &&
+                    this.resultReg !== null) {
+                this._born.push(ptr);
+            }
+        },
+        // At the outermost scope pop, unbind each just-born instance that is
+        // still wrapper-owned (refcount exactly 1 — C kept no reference) and
+        // watch the wrapper. While Python holds the wrapper, any trip back
+        // into C re-binds it through wrap() (the wrapper carries its ptr);
+        // when Python drops it, the GC collects it and _reclaimDead fires.
+        _demotePass: function() {
+            var b = this._born;
+            this._born = [];
+            for (var i = 0; i < b.length; i++) {
+                var p = b[i];
+                if (this.refcounts.get(p) !== 1) continue;   // C owns refs, or dead
+                var w = this.handles.get(p);
+                if (w === undefined || w.__wasthon_ptr__ !== p) continue;
+                this.handles.delete(p);
+                this.demoted.set(p, new WeakRef(w));
+                if (w.$wasthon_finreg === undefined) {
+                    w.$wasthon_finreg = 1;
+                    this.resultReg.register(w, {
+                        ptr: p, typeH: w.__wasthon_type__ || 0
+                    }, w);
+                }
+            }
+        },
+        // FinalizationRegistry callback: the wrapper of an unbound instance
+        // has been collected — PROOF it is unreachable from Python (unlike
+        // the gc-mark heuristic gcFinalize must settle for), so a full
+        // dealloc is safe. Runs in its own task, never mid-Python-statement.
+        // The tombstone binding gives the tp_dealloc body its
+        // Py_TYPE()/self lookups; PyObject_GC_Del at its end unbinds & frees.
+        _reclaimDead: function(info) {
+            var ptr = info.ptr;
+            if (!this.demoted.delete(ptr)) return;       // re-bound since, or stale
+            if (this.refcounts.get(ptr) !== 1) return;   // ownership moved
+            this.refcounts.delete(ptr);
+            var typeH = info.typeH;
+            var tp_dealloc = typeH ? HEAP32[(typeH + 40) >> 2] : 0;
+            if (!tp_dealloc) {
+                this.clearWeakRefs(ptr);
+                this.gcRegistry.delete(ptr);
+                _free(ptr);
+                return;
+            }
+            var cls = this.handles.get(typeH);
+            var tomb = { __wasthon_ptr__: ptr, __wasthon_type__: typeH,
+                         ob_type: cls, __class__: cls };
+            this.handles.set(ptr, tomb);
+            var savedExc = this.pendingException;
+            this.pushScope();
+            try { getWasmTableEntry(tp_dealloc)(ptr); }
+            catch (e) { /* defensive */ }
+            finally {
+                this.popScope();
+                this.pendingException = savedExc;
+            }
+            if (this.handles.get(ptr) === tomb) this.handles.delete(ptr);
         },
         // Record a freshly allocated sentinel id in the current scope.
         // No scope active (module init, loader-time) → immortal, exactly
@@ -358,6 +463,12 @@ mergeInto(LibraryManager.library, {
             this.scopes = [];
             this.scopeOf = new Map();
             this.internPool = new Map();
+            this.demoted = new Map();
+            this._born = [];
+            var _rtFR = this;
+            this.resultReg = (typeof FinalizationRegistry !== 'undefined')
+                ? new FinalizationRegistry(function(info) { _rtFR._reclaimDead(info); })
+                : null;
 
             this.handles.set(this.SLOT_NONE,  this._b_.None);
             this.handles.set(this.SLOT_TRUE,  this._b_.True);
@@ -630,6 +741,11 @@ mergeInto(LibraryManager.library, {
             if (obj.__wasthon_ptr__) {
                 if (!this.handles.has(obj.__wasthon_ptr__)) {
                     this.handles.set(obj.__wasthon_ptr__, obj);
+                    // A watched wrapper re-entering C: re-track it so the
+                    // outermost pop unbinds it again (else it re-pins).
+                    if (this.demoted.delete(obj.__wasthon_ptr__)) {
+                        this._bornTrack(obj.__wasthon_ptr__);
+                    }
                 }
                 return obj.__wasthon_ptr__;
             }
@@ -672,6 +788,23 @@ mergeInto(LibraryManager.library, {
             // are valid Python objects — we must NOT coalesce them to null.
             if (handle === 0) return null;
             if (this.handles.has(handle)) return this.handles.get(handle);
+            // A watched (unbound) instance re-entering C through a dispatcher
+            // fast path that read __wasthon_ptr__ directly, never calling
+            // wrap(): recover the wrapper and re-bind it (float64 + float64
+            // hit this — gentype_add's find_binary_operation_path calls
+            // .item() on the raw self handle).
+            if (this.demoted !== null && this.demoted.size !== 0) {
+                var wr = this.demoted.get(handle);
+                if (wr !== undefined) {
+                    var w = wr.deref();
+                    if (w !== undefined) {
+                        this.demoted.delete(handle);
+                        this.handles.set(handle, w);
+                        this._bornTrack(handle);
+                        return w;
+                    }
+                }
+            }
             // A typed C-struct PyObject* recorded in the _cType side-table by
             // Py_SET_TYPE (numpy's static dtype descrs live in _builtin_descrs[]
             // and are never bound as handles) — materialize a Brython wrapper on
@@ -725,6 +858,7 @@ mergeInto(LibraryManager.library, {
         // Bind a Brython instance to a real WASM pointer. The handle == ptr.
         bindInstance: function(ptr, brythonInstance) {
             this.handles.set(ptr, brythonInstance);
+            this._bornTrack(ptr);
             var ot = brythonInstance && brythonInstance.ob_type;
             if (ot && ot.$wasthon_gc_finalizable) {
                 this.gcRegistry.set(ptr, brythonInstance);
@@ -15302,6 +15436,15 @@ mergeInto(LibraryManager.library, {
         rt.clearWeakRefs(ptr);   // refcount death clears weak cells, like CPython
         rt.refcounts.delete(ptr);
         rt.gcRegistry.delete(ptr);
+        // A registered wrapper dying AFTER its struct was freed here would
+        // fire _reclaimDead on a malloc-reused ptr — unregister it now.
+        if (rt.resultReg !== null) {
+            var w = rt.handles.get(ptr);
+            if (w !== undefined && w.$wasthon_finreg !== undefined) {
+                rt.resultReg.unregister(w);
+                rt.demoted.delete(ptr);
+            }
+        }
         // Partial-GC finalize (see gcFinalize): the imprecise mark means the
         // object — or anything its dealloc cascade DECREFs — may still be
         // referenced from Python. Close, don't free: keep the struct bytes
