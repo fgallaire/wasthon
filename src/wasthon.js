@@ -2873,11 +2873,42 @@ mergeInto(LibraryManager.library, {
     },
 
     /* PyType_GetSlot — read a slot off a type at runtime. */
-    PyType_GetSlot__deps: ['$WasthonRT'],
+    PyType_GetSlot__deps: ['$WasthonRT', '$addFunction',
+        'PyNumber_Add', 'PyNumber_And', 'PyNumber_Divmod', 'PyNumber_FloorDivide',
+        'PyNumber_Lshift', 'PyNumber_Multiply', 'PyNumber_Or', 'PyNumber_Remainder',
+        'PyNumber_Rshift', 'PyNumber_Subtract', 'PyNumber_TrueDivide', 'PyNumber_Xor'],
     PyType_GetSlot: function(typeHandle, slotId) {
         var rt = WasthonRT;
         var info = rt.types.get(typeHandle);
         if (info && info.slots && info.slots[slotId]) return info.slots[slotId];
+        // Numeric binary-op slots (Py_nb_add=7, Py_nb_multiply=29, …). Cython
+        // compiled against the 3.10+ stable ABI fetches e.g. Py_nb_add off a
+        // builtin type and calls it DIRECTLY for `obj_int + obj_int`
+        // (__Pyx_PyNumber_Add_object_object). A 0 here made it raise
+        // "unsupported operand type(s) for +: 'int' and 'int'" instead of
+        // adding (scipy.cluster _optimal_leaf_ordering's `link_i + n_points`).
+        // Serve a trampoline routing through the bridge's PyNumber_* — full
+        // binop dispatch, correct for any type, since the slot is only ever
+        // invoked as slot(a, b).
+        var nb = rt._nbBinopSlots;
+        if (nb === undefined) {
+            var B = function(fn) { return addFunction(fn, 'iii'); };
+            nb = rt._nbBinopSlots = {
+                7:  B(function(a, b){ return _PyNumber_Add(a, b); }),
+                8:  B(function(a, b){ return _PyNumber_And(a, b); }),
+                10: B(function(a, b){ return _PyNumber_Divmod(a, b); }),
+                12: B(function(a, b){ return _PyNumber_FloorDivide(a, b); }),
+                28: B(function(a, b){ return _PyNumber_Lshift(a, b); }),
+                29: B(function(a, b){ return _PyNumber_Multiply(a, b); }),
+                31: B(function(a, b){ return _PyNumber_Or(a, b); }),
+                34: B(function(a, b){ return _PyNumber_Remainder(a, b); }),
+                35: B(function(a, b){ return _PyNumber_Rshift(a, b); }),
+                36: B(function(a, b){ return _PyNumber_Subtract(a, b); }),
+                37: B(function(a, b){ return _PyNumber_TrueDivide(a, b); }),
+                38: B(function(a, b){ return _PyNumber_Xor(a, b); }),
+            };
+        }
+        if (nb[slotId] !== undefined) return nb[slotId];
         // STATIC types (PyType_Ready over a C struct) have no spec slot map:
         // the handle IS the struct pointer — read the function pointer from
         // the compact wasthon.h layout. Cython compiled with

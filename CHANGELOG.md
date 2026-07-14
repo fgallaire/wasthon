@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyType_GetSlot` serves the numeric binary-op slots (`Py_nb_add`, …) so
+  Cython's object-level int+int stops raising** (`src/wasthon.js`). Cython
+  compiled against the 3.10+ stable ABI implements `obj + obj` for two exact
+  ints by fetching `PyType_GetSlot(&PyLong_Type, Py_nb_add)` and calling it
+  directly (`__Pyx_PyNumber_Add_object_object`); when that returns NULL it
+  raises `TypeError: unsupported operand type(s) for +: 'int' and 'int'` instead
+  of falling back to `PyNumber_Add`. The bridge's `PyType_GetSlot` only knew a
+  handful of `tp_*` offsets, so every `nb_*` slot came back 0 — `link_i +
+  n_points` inside scipy.cluster's `_optimal_leaf_ordering` (and any Cython
+  object-level int/float arithmetic) blew up. Fix: for the twelve binary number
+  slots, return an `addFunction` trampoline routing through the matching
+  `PyNumber_*` — full binop dispatch, correct for any operand types since the
+  slot is only ever invoked as `slot(a, b)`. +2 scipy.cluster test_hierarchy
+  (`test_optimal_leaf_ordering`).
+
 - **`__array_interface__` absence is memoised per type — a Cython
   `View.MemoryView.array` no longer rebuilds an AttributeError on every buffer
   acquisition** (`src/wasthon.js`). `wasthon_fill_array_buffer` synthesises a
