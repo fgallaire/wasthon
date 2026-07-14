@@ -7,6 +7,25 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`__array_interface__` absence is memoised per type — a Cython
+  `View.MemoryView.array` no longer rebuilds an AttributeError on every buffer
+  acquisition** (`src/wasthon.js`). `wasthon_fill_array_buffer` synthesises a
+  `Py_buffer` from an object's `__array_interface__`. For a non-numpy buffer
+  object — Cython's `array` type, which exposes the buffer protocol but not
+  `__array_interface__` — the `$B.$getattr(obj, '__array_interface__', null)`
+  lookup fails, and Brython builds the AttributeError (`attr_error` →
+  `set_expected_kwargs`) *before* honouring the default, then discards it. That
+  is cheap once and ruinous in a loop: scipy.cluster's `_hierarchy`/`_vq`
+  acquire buffers over these Cython arrays on every call, so the discarded
+  exception pinned the CPU and `test_hierarchy` never finished (an ~8 min
+  freeze in the browser). Whether a type provides `__array_interface__` is a
+  property of the type, never of the instance, so the absence is now memoised
+  in a per-runtime `Set` keyed by `obj.ob_type || obj.__class__`: the first
+  instance of an absent type pays the lookup once; every later one
+  short-circuits to the same generic-buffer fallback (`return 1`) without
+  constructing the exception. Identical behaviour — the fallback was already
+  `return 1` — with the storm gone (test_hierarchy 8 min → 22 s).
+
 - **Wrapper-owned C results are reclaimable — FinalizationRegistry unbinding
   behind the opt-in `rt.reclaimResults`** (`src/wasthon.js`). Every C-call
   result instance is seeded at refcount 1 with "ownership handed to the

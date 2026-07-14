@@ -13234,10 +13234,24 @@ mergeInto(LibraryManager.library, {
         // the VIEW — the generic byte path (itemsize 1, 'B') failed its 'O'
         // typeinfo and the fused dispatch missed (Series.str accessor).
         if (obj.$wasthon_src && obj.$wasthon_src.__wasthon_ptr__) obj = obj.$wasthon_src;
+        // Per-type memo of "__array_interface__ absent". Whether a type provides
+        // __array_interface__ is a property of the TYPE (a getset/descriptor on
+        // ndarray; absent on Cython's View.MemoryView.array), never of the
+        // instance. Without this memo a hot loop acquiring a buffer over a
+        // non-numpy Cython object rebuilds an AttributeError on every call —
+        // Brython's $getattr still runs attr_error → set_expected_kwargs before
+        // honoring the default — which pinned the CPU on scipy.cluster's
+        // memoryview traffic (test_hierarchy "never finishes"). Same generic
+        // fallback (return 1), reached without the per-call exception.
+        var _ty = obj.ob_type || obj.__class__;
+        if (_ty && rt._aiAbsentTypes && rt._aiAbsentTypes.has(_ty)) return 1;
         var ai;
         try { ai = rt.$B.$getattr(obj, '__array_interface__', null); }
-        catch (e) { return 1; }
-        if (!ai) return 1;
+        catch (e) { ai = null; }
+        if (!ai) {
+            if (_ty) (rt._aiAbsentTypes || (rt._aiAbsentTypes = new Set())).add(_ty);
+            return 1;
+        }
         try {
             var data     = rt.$B.$getitem(ai, 'data');       // (ptr, readonly)
             var dataPtr  = Number(rt.$B.$getitem(data, 0));
