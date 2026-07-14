@@ -18,6 +18,24 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+- [x] **`str * n` rejected any non-`int`, ignoring `__index__`** (`www/src/py_string.js`, `_b_.str.sq_repeat`). CPython's `PySequence_Repeat` converts the count with `PyNumber_AsSsize_t` → `__index__`, so `'ab' * numpy.int32(3)` works. Brython's `str.sq_repeat` guarded with a strict `$B.is_int(other)` and raised `TypeError: Can't multiply sequence by non-int of type 'int32'`. `list`/`tuple` already do the right thing — their shared `sq_repeat` (`www/src/py_list.js`) goes through `$B.PyNumber_Index` — so only `str` was out of line. Repro: `'ab' * numpy.int32(3)`. Fix — swap the type guard for the same `PyNumber_Index` conversion (still a `TypeError`, same message, for anything with no `__index__` — `float`, `str`, …):
+
+  ```js
+  // www/src/py_string.js — _b_.str.sq_repeat
+   var _self = to_string(self)
+  -    if(! $B.is_int(other)){
+  +    try{
+  +        other = $B.PyNumber_Index(other)
+  +    }catch(err){
+           $B.RAISE(_b_.TypeError,
+           "Can't multiply sequence by non-int of type '" +
+               $B.class_name(other) + "'")
+       }
+       return _self.repeat(other < 0 ? 0 : other)
+  ```
+
+  `'ab' * numpy.int32(3)` now works (it surfaced in scipy.special's `FuncData` error formatter, which does `str * np.int32`). No pass-count gain today — a real CPython divergence fixed for its own sake.
+
 - [x] **`SomeType == obj` skipped the reflected `__eq__` (returned identity)** (engine, `rich_comp`). The fast path for a class with a plain `type` metaclass returned `x === y` directly for `__eq__`/`__ne__`, so a non-identical operand never got the reflected comparison CPython gives it (a plain type compares by object identity = NotImplemented, THEN tries `y.__eq__(x)`). `np.float64 == np.dtype('float64')` was `False` because numpy's `dtype.__eq__` — which coerces the scalar type to `dtype('float64')` — was never called (only `dtype == np.float64`, the other order, worked). Fix: when the left is a plain-metatype type, the operand is non-identical, and the RHS is not itself a plain-metatype type, try the RHS's reflected `__eq__`/`__ne__` and fall back to identity only if it returns NotImplemented; two bare types still compare by identity. Measured: numpy dashboard **+38** (`test_array_api_info` green + `dtype == scalar-type` comparisons across many suites — `test_multiarray`, `test_dtype`, `test_numerictypes`…); identity sanity intact (`float == int` False, `np.float64 == np.int32` False, `int == np.dtype(int)` True, `M == M` True).
 
 - [x] **`divmod(x, y)` crashed on operands whose reflected `int` slot hit BigInt** (engine, `int.nb_divmod`). `divmod(np.array([-1,0,1,2]), 1)` raised `JavascriptError: Cannot mix BigInt and other types`: ndarray exposes no Python `__divmod__` (numpy uses the C `nb_divmod` slot, which the bridge doesn't surface), so `_b_.divmod`'s `rich_op('__divmod__', …)` fell through to the reflected `int` path, and `int.nb_divmod`'s inner `nb_floor_divide`/`nb_remainder` mixed a BigInt with the array. `_b_.divmod` already has the CPython fallback `[floordiv, mod]` but only on `TypeError`, and this was a raw JS error. Fix: `int.nb_divmod` wraps its body so a raw JS error yields `NotImplemented` (Python exceptions — e.g. `ZeroDivisionError` — are re-thrown), letting `rich_op` raise `TypeError` and `_b_.divmod` take its `[floordiv, mod]` fallback (both work). Measured: numpy dashboard `test_mixins.test_forward_binary_methods` green (18/19 ops already passed; `divmod` was the last); `divmod(arr,1)` == `np.divmod`; `divmod(5,0)` still `ZeroDivisionError`; test_math/decimal/statistics unchanged.

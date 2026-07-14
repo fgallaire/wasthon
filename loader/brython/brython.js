@@ -9035,7 +9035,7 @@ default:
 return _b_.NotImplemented}}
 _b_.str.sq_repeat=function(self,other){$B.check_nb_args_no_kw('str.__mul__',2,arguments)
 var _self=to_string(self)
-if(! $B.is_int(other)){$B.RAISE(_b_.TypeError,"Can't multiply sequence by non-int of type '"+
+try{other=$B.PyNumber_Index(other)}catch(err){$B.RAISE(_b_.TypeError,"Can't multiply sequence by non-int of type '"+
 $B.class_name(other)+"'")}
 return _self.repeat(other < 0 ? 0 :other)}
 _b_.str.nb_remainder=function(self,args){self=to_string(self)
