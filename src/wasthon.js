@@ -14388,14 +14388,28 @@ mergeInto(LibraryManager.library, {
         // instance __dict__ (we init_dict it) and stays picklable, as in
         // CPython.
         (function() {
-            var tf = cls.tp_funcs || {};
             // Exception types excluded: BaseException's own reduce protocol
             // (args-based) must stay in charge — and the raise/except path
             // exercises it (the guard on LZMAError broke LZMAFile tests).
             var isExc = cls.tp_mro && cls.tp_mro.indexOf(rt._b_.BaseException) > -1;
-            if (!isExc && basicsize > 0 && !tf.__reduce__ && !tf.__reduce_ex__ &&
-                    !tf.__getstate__ && !tf.__getnewargs__ &&
-                    !tf.__getnewargs_ex__) {
+            // A pickling protocol INHERITED from a non-object C base counts too:
+            // a Cython subclass (numpy's MT19937 : BitGenerator) carries no
+            // __getstate__/__reduce__ in its own tp_funcs, but BitGenerator's
+            // .pyx defines both — installing the guard here shadowed the real
+            // __getstate__ with `unpicklable` (bit_generator.__getstate__()
+            // raised "cannot pickle 'MT19937'"). Walk the MRO (stop at object,
+            // whose defaults don't count) checking each base's C method table.
+            var protoNames = ['__reduce__', '__reduce_ex__', '__getstate__',
+                              '__getnewargs__', '__getnewargs_ex__'];
+            var hasProto = false, mro = cls.tp_mro || [cls];
+            for (var mi = 0; mi < mro.length && !hasProto; mi++) {
+                if (mro[mi] === rt._b_.object) break;
+                var bf = mro[mi].tp_funcs;
+                if (bf) for (var pi = 0; pi < protoNames.length; pi++) {
+                    if (bf[protoNames[pi]]) { hasProto = true; break; }
+                }
+            }
+            if (!isExc && basicsize > 0 && !hasProto) {
                 var unpicklable = function(self) {
                     var d = null;
                     try { d = rt.$B.get_dict(self); } catch (_) {}

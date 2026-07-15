@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **The "cannot pickle" `__getstate__` guard consults the whole MRO, so a
+  Cython subclass keeps its inherited pickling protocol** (`src/wasthon.js`).
+  The bridge installs an `unpicklable` `__getstate__` on a C type that has
+  opaque struct state (`tp_basicsize > 0`) and defines no pickling protocol —
+  mirroring CPython 3.11's `object.__getstate__`. It inspected only the type's
+  own `tp_funcs`, so numpy's `MT19937` (subclass of `BitGenerator`, whose
+  `.pyx` defines `__getstate__`/`__reduce__`) got the guard and
+  `bit_generator.__getstate__()` raised `cannot pickle 'MT19937'` even though
+  the inherited method returns real `(state, seed_seq)`. Fix: walk the MRO
+  (stop at `object`, whose defaults don't count) checking each base's C method
+  table before installing the guard. `__reduce__`-based `pickle.dumps` was
+  unaffected and stays working. +5 numpy test_direct
+  (`test_getstate` across the five bit generators).
+
 - **`PyType_Ready` honours a multi-base `tp_bases` tuple, so numpy's flexible
   scalar types (`str_`, `bytes_`) actually inherit `numpy.character`**
   (`src/wasthon.js`). numpy DUAL_INHERITs its scalar types — `str_` carries
