@@ -7,6 +7,23 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyType_Ready` honours a multi-base `tp_bases` tuple, so numpy's flexible
+  scalar types (`str_`, `bytes_`) actually inherit `numpy.character`**
+  (`src/wasthon.js`). numpy DUAL_INHERITs its scalar types — `str_` carries
+  `tp_bases = (str, character)`, not just a single `tp_base` — but the bridge
+  read only `tp_base`, dropping the numpy-abstract half of the hierarchy.
+  `issubclass(np.str_, np.character)` was False, so `np.char.array` skipped its
+  character-dtype branch, defaulted `unicode=None → dtype=bytes_`, and
+  ASCII-encoded every element — `np.char.array(['Sigma Σ'])` and
+  chararray.capitalize/lower/title/swapcase over non-ASCII text raised
+  UnicodeEncodeError. Fix: when `tp_bases` holds >1 base, graft the extra
+  abstract bases onto the already-remapped primary and rebuild the C3 MRO. The
+  extras are left un-canonicalised on purpose: canonicalising the numeric
+  DUAL_INHERIT builtins (`float64 : (floating, float)`) to the real `_b_.float`
+  turns np.float64 into a genuine float subclass, which breaks PyFloat_AsDouble
+  and the numpy.random C-module init — and the flexible cluster never needs it.
+  +9 numpy (test_defchararray non-ASCII methods, np.char.array).
+
 - **`PyObject_VectorcallDict` remaps a bound builtin-type struct handle to its
   real Brython class, so Cython's `dtype(x)` for a builtin dtype stops raising
   "bool takes no arguments"** (`src/wasthon.js`). numpy's legacy mtrand

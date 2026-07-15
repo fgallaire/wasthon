@@ -5177,6 +5177,38 @@ mergeInto(LibraryManager.library, {
                 }
                 if (baseCls) { cls.tp_bases = [baseCls]; cls.tp_base = baseCls; cls.tp_mro = rt.$B.make_mro(cls); }
             }
+            /* Multiple inheritance: numpy's flexible scalar types are
+             * DUAL_INHERIT'd (str_ : (str, character); bytes_ : (bytes,
+             * character)) — a real tp_bases TUPLE, not just tp_base. Honouring
+             * only tp_base dropped the numpy-abstract half, so issubclass(str_,
+             * character) was False and np.char.array on non-ASCII text
+             * mis-routed to a bytes-encode. Keep the already-remapped primary
+             * (baseCls, e.g. the real _b_.str) and graft the extra abstract
+             * bases from the tuple, then rebuild the C3 MRO. The extra bases are
+             * left un-canonicalised on purpose: canonicalising the numeric
+             * DUAL_INHERIT builtins (float64 : (floating, float)) to the real
+             * _b_.float made np.float64 a genuine float subclass, which broke
+             * PyFloat_AsDouble and the random C-module init — and the flexible
+             * cluster never needs it. */
+            var basesTupPtr = baseCls ? HEAP32[(typePtr + 144) >> 2] : 0;   /* tp_bases */
+            if (basesTupPtr) {
+                var bt = rt.unwrap(basesTupPtr);
+                if (bt && bt.length > 1) {
+                    var bases = [baseCls];
+                    for (var bi = 0; bi < bt.length; bi++) {
+                        var el = bt[bi];
+                        if (typeof el === 'number') {
+                            el = (rt.builtinClassForStruct && rt.builtinClassForStruct.get(el)) || rt.unwrap(el);
+                        }
+                        if (el && el !== baseCls && bases.indexOf(el) === -1) bases.push(el);
+                    }
+                    if (bases.length > 1) {
+                        cls.tp_bases = bases;
+                        cls.tp_base = bases[0];
+                        cls.tp_mro = rt.$B.make_mro(cls);
+                    }
+                }
+            }
             if (!cls.tp_setattro)  cls.tp_setattro  = rt._b_.object.tp_setattro;
             /* A METAtype's instances are classes: their attribute access
                must walk the CLASS mro (type.tp_getattro), not treat the
