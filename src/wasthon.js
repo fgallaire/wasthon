@@ -7944,7 +7944,13 @@ mergeInto(LibraryManager.library, {
         try {
             var cls = rt.$B.$isinstance(given, rt._b_.BaseException) ? rt.$B.get_class(given) : given;
             if (cls === exc) return 1;
-            return rt.$B.$issubclass(cls, exc) ? 1 : 0;
+            // Use the `issubclass` builtin, not $B.$issubclass (which does not
+            // exist in this Brython) — the missing function threw, was swallowed
+            // by the catch, and every Cython `except (ValueError, …)` fell through
+            // with the exception unmatched (pandas guess_datetime_format leaked
+            // DateParseError instead of returning None). Same fix as
+            // PyErr_ExceptionMatches.
+            return rt._b_.issubclass(cls, exc) ? 1 : 0;
         } catch (e) { return 0; } },
     PyErr_NormalizeException__deps: ['$WasthonRT'],
     PyErr_NormalizeException: function(typePP, valPP, tbPP) { var rt = WasthonRT;

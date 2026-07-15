@@ -7,6 +7,19 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyErr_GivenExceptionMatches` matches subclasses through the `issubclass`
+  builtin, not the non-existent `$B.$issubclass`** (`src/wasthon.js`). The
+  matcher called `rt.$B.$issubclass(cls, exc)`, which doesn't exist in this
+  Brython; the `TypeError` was swallowed by the surrounding `catch` and the
+  function returned 0, so every C-extension `except (SomeBase, …)` routed
+  through it fell through with the exception unmatched. pandas'
+  `guess_datetime_format` let a `DateParseError` (a `ValueError` subclass)
+  escape instead of returning `None` for unparseable strings. Fix: use
+  `rt._b_.issubclass`, exactly as the sibling `PyErr_ExceptionMatches` already
+  does (its comment even flagged the missing function). +6 pandas test_parsing
+  (`test_guess_datetime_format_invalid_inputs`); the matcher is generic, so it
+  repairs subclass-`except` matching across every Cython extension.
+
 - **The "cannot pickle" `__getstate__` guard consults the whole MRO, so a
   Cython subclass keeps its inherited pickling protocol** (`src/wasthon.js`).
   The bridge installs an `unpicklable` `__getstate__` on a C type that has
