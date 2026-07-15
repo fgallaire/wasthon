@@ -2055,6 +2055,12 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var fn = rt.unwrap(fnH);
         if (!fn) return 0;
+        /* Bound builtin-type struct → real Brython class (see PyObject_Call).
+         * Cython's dtype(x) for a builtin dtype (e.g. bool) reaches here with
+         * the type struct handle; without the remap unwrap() yields a stub
+         * bool class whose tp_new is object.tp_new → "bool takes no arguments". */
+        var fnBc = rt.builtinClassForStruct && rt.builtinClassForStruct.get(fnH);
+        if (fnBc && fnBc !== fn) fn = fnBc;
         // PY_VECTORCALL_ARGUMENTS_OFFSET (the high bit of nargsf) tells the
         // callee a spare slot precedes args[0]; it is NOT part of the positional
         // count. Cython's __Pyx_PyObject_FastCallDict sets it, so the raw value

@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_VectorcallDict` remaps a bound builtin-type struct handle to its
+  real Brython class, so Cython's `dtype(x)` for a builtin dtype stops raising
+  "bool takes no arguments"** (`src/wasthon.js`). numpy's legacy mtrand
+  `randint(..., dtype=bool)` with no `size` returns a scalar via
+  `return dtype(ret)`; Cython compiles that `bool(ret)` to
+  `__Pyx_PyObject_FastCallDict` → `PyObject_VectorcallDict(&PyBool_Type, …)`.
+  Unlike `PyObject_Call`, this entry point unwrapped the type-struct handle
+  without consulting `builtinClassForStruct`, so `unwrap()` yielded a stub
+  `bool` class whose `tp_new` is `object.tp_new`; `type.tp_call` then hit
+  `object.tp_new(cls, [ret])`, which raises `${name} takes no arguments`. Fix:
+  mirror `PyObject_Call`'s remap (`builtinClassForStruct.get(fnH)` → the real
+  `_b_.bool`). +4 numpy `test_respect_dtype_singleton`
+  (test_random, test_randomstate, test_generator_mt19937).
+
 - **`PyType_GetSlot` serves the numeric binary-op slots (`Py_nb_add`, …) so
   Cython's object-level int+int stops raising** (`src/wasthon.js`). Cython
   compiled against the 3.10+ stable ABI implements `obj + obj` for two exact
