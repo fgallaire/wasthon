@@ -12700,7 +12700,13 @@ mergeInto(LibraryManager.library, {
         var key = rt.unwrap(keyH);
         try { return rt.wrapNewRef(rt.$B.$getitem(obj, key)); }
         catch (e) {
-            var excCls = (e && e.__class__) ? e.__class__ : rt._b_.KeyError;
+            // A Brython exception may carry its class as ob_type rather than
+            // __class__ — falling straight to KeyError turned a tuple
+            // IndexError into "KeyError: tuple index out of range"
+            // (numpy set_state(()) must raise IndexError, gh-25402).
+            var excCls = (e && e.__class__) ? e.__class__
+                       : (e && e.ob_type && e.args !== undefined) ? rt.$B.get_class(e)
+                       : rt._b_.KeyError;
             rt.setError(rt.wrap(excCls),
                 (e && e.args && e.args.length) ? String(e.args[0])
                                                : (e && e.message) || String(e));

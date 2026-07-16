@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_GetItem` maps a Brython exception through its real class
+  (`__class__` or `ob_type`), not a blanket `KeyError`** (`src/wasthon.js`).
+  The catch used `e.__class__ || KeyError`; a Brython exception raised via
+  `$B.RAISE` may carry its class as `ob_type` only, so a tuple IndexError
+  crossed the bridge as `KeyError: tuple index out of range` — numpy's
+  `RandomState.set_state(())` (gh-25402) must raise IndexError. Same
+  extraction pattern as the tp_methods trampoline. Dict misses still raise
+  KeyError. +1 numpy test_random (`test_set_invalid_state`).
 - **`PySequence_Fast` returns a NEW reference for an already-list/tuple
   argument, like CPython** (`src/wasthon.js`). CPython's `abstract.c` INCREFs
   and returns `v` when it is a list/tuple; the bridge passed the bare handle
