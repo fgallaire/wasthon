@@ -7,6 +7,53 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Builtin type-structs get a real `tp_dealloc`@40 (`PyObject_GC_Del`)**
+  (`src/wasthon.js` + `src/wasthon.c`, `wasthon_bind_builtin_type` — the
+  tp_repr@52/tp_str@104 story at the dealloc slot). A C subclass dealloc
+  that delegates up — numpy's `unicode_arrtype_dealloc` ends with
+  `PyUnicode_Type.tp_dealloc(v)` — hit a NULL slot, and the decref
+  dispatcher's defensive catch swallowed the trap: every `np.str_` scalar
+  reclaimed by C (`_vec_string`'s per-element temporaries) or by the JS
+  wrapper reclaim leaked its gc_new struct, invisibly. Measured with a
+  gated counter in that catch: 3 swallowed "indirect call to null" on a
+  single `chararray.upper()/rstrip()`, 0 after wiring, handle count flat
+  across 3000 scalar round-trips. The base dealloc in the bridge model is
+  exactly `PyObject_GC_Del` (unbind the handle, free the struct) — the same
+  default the spec path installs as `tp_free`. Lesson recorded in
+  README's GC section: the defensive catch turns a dealloc-chain regression
+  into a slow leak instead of a crash, so re-check with the gated counter
+  before trusting it. (0 fail delta; stops a silent per-scalar leak the
+  str_-boxing commit introduced.)
+- **`np.str_` scalars keep their class across the bridge — the "str_ boxing
+  wall"** (`src/wasthon.js` + `src/wasthon.c`, five pieces). Builtin-str
+  subtype construction (`wasthon_builtin_unicode_tp_new`, the target of both
+  `np.str_('x')` and `PyArray_Scalar`'s unicode branch via
+  `PyUnicode_Type.tp_new(subtype, …)`) ignored its subtype argument, so every
+  str_ scalar degraded to a plain Brython str: no `__radd__` from np.generic,
+  and chararray's `isinstance(a[i], character)` rstrip gate was dead. Now a
+  subtype target gets Brython's native str-subclass shape
+  (`{ob_type: cls, $brython_value}`) grafted onto a real
+  `wasthon_object_gc_new` allocation — the caller pokes C struct fields into
+  the result (`PyArrayScalar_VAL(obj, Unicode) = NULL`), which is what sank
+  the first, sentinel-based attempt (heap corruption → "indirect call to
+  null"). Companions this surfaced, all diagnosed by capturing the wasm
+  stack (`--profiling-funcs` + a jsstack hook in the repro harness) before
+  theorizing: (1) `PyType_Ready` stamps `UNICODE_SUBCLASS` on any C class
+  whose mro contains str (Brython's `is_str`/`conv_str` only unbox flagged
+  classes); (2) builtin type structs get a real `tp_str`@104
+  (`wasthon_builtin_tp_str`, the `tp_repr`@52 story one slot over — numpy's
+  `unicodetype_str` delegates to `PyUnicode_Type.tp_str`, which trapped
+  `str(np.str_(…))` and killed `np.asarray(box)` inside `PyObject_Str`);
+  (3) `wasthon_fill_array_buffer` rejects instances without
+  `__wasthon_ptr__` (a pure-Brython `class MyStr(str, np.generic)` inherited
+  np.generic's C `__array_interface__` getset, which ran against a sentinel
+  handle and handed `b'def' + MyStr('abc')` a garbage data pointer);
+  (4) `wasthon_get_buffer_data`'s tobytes() fallback skips ptr-less
+  instances of classes with a C `Py_bf_getbuffer` slot, so the last-resort
+  slot walk runs instead and numpy's `gentype_arrtype_getbuffer` raises the
+  TypeError CPython raises (`test_char_radd` asserts it). +2 numpy with the
+  four vendored str-subclass companions: test_defchararray 99/0 green
+  (getitem_length_zero), test_scalarinherit 6/6 green (char_radd).
 - **`wrapMaybeType` maps a JS `undefined` call result to None**
   (`src/wasthon.js` — the return path of PyObject_CallMethod/CallFunction).
   A JS-side method that returns nothing (the io stack's `close()`) came back

@@ -5221,6 +5221,19 @@ mergeInto(LibraryManager.library, {
                     }
                 }
             }
+            /* CPython's PyType_Ready (inherit_special) stamps
+               Py_TPFLAGS_UNICODE_SUBCLASS on any type deriving from str, and
+               Brython's is_str/conv_str only unbox a $brython_value instance
+               when its class carries that flag (a native `class S(str)` gets
+               it from type_new's base-flag propagation, line "tp_flags |=
+               base.tp_flags & UNICODE_SUBCLASS"). This class was made by
+               make_builtin_class (flags = BASETYPE only), so stamp it here —
+               np.str_ instances then flow through every str builtin, and
+               Python-level subclasses of np.str_ inherit the flag through
+               Brython's own propagation. */
+            if (cls.tp_mro && cls.tp_mro.indexOf(rt._b_.str) > -1) {
+                cls.tp_flags |= rt.$B.TPFLAGS.UNICODE_SUBCLASS;
+            }
             /* ndarray is Py_TPFLAGS_SEQUENCE in numpy (match-case sequence
                patterns; matrix/MaskedArray inherit through tp_bases, which
                Brython's matcher scans). wasthon.h shares bit 5 with HEAPTYPE,
@@ -11686,10 +11699,19 @@ mergeInto(LibraryManager.library, {
      * and returns the result. With a NULL slot every np.str_('x') /
      * np.bytes_(b'x') construction — and everything that builds one, the
      * whole np.strings.upper/lower family included — was an indirect call
-     * to null. Same accepted tradeoff as float64: the result is a plain
-     * Brython str/bytes, correct-valued and interoperable; perfect scalar
-     * identity stays the scalar subsystem's remaining work. */
-    wasthon_builtin_unicode_tp_new__deps: ['$WasthonRT'],
+     * to null.
+     * Subtype-aware: when the target is a str SUBCLASS (np.str_ itself, or
+     * a Python subclass of it), the result must keep that class — CPython's
+     * unicode_new_impl does `unicode_subtype_new` — or every np.str_ scalar
+     * degrades to plain str (no __radd__ from np.generic, chararray's
+     * `isinstance(a[i], character)` rstrip gate dead). Mirror Brython's own
+     * str.__new__ subclass shape ({ob_type: cls, $brython_value: s}, which
+     * is_str/conv_str unbox) grafted onto a REAL wasthon_object_gc_new
+     * allocation: the caller pokes C struct fields into the result
+     * (unicode_arrtype_new's `PyArrayScalar_VAL(obj, Unicode) = NULL`), so
+     * the handle must be owned zeroed memory, not a fake sentinel address —
+     * that poke corrupting the heap is what sank the first boxing attempt. */
+    wasthon_builtin_unicode_tp_new__deps: ['$WasthonRT', 'wasthon_object_gc_new'],
     /* Forward keyword arguments (encoding=/errors=) as Brython's $kw
      * marker: numpy's unicode/string_arrtype_new delegates to
      * PyUnicode_Type.tp_new(type, args, KWDS) — dropping kwds made
@@ -11712,7 +11734,16 @@ mergeInto(LibraryManager.library, {
                 }
                 callArgs.push({ $kw: [kwMap] });
             }
-            return rt.wrapNewRef(rt.$B.$call.apply(null, callArgs));
+            var s = rt.$B.$call.apply(null, callArgs);
+            var cls = rt.unwrap(typeH);
+            if (cls && cls !== rt._b_.str && rt.types.has(typeH)) {
+                var ptr = _wasthon_object_gc_new(typeH);
+                if (ptr) {
+                    rt.unwrap(ptr).$brython_value = s;
+                    return ptr;
+                }
+            }
+            return rt.wrapNewRef(s);
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
     wasthon_builtin_bytes_tp_new__deps: ['$WasthonRT'],
@@ -11855,6 +11886,25 @@ mergeInto(LibraryManager.library, {
         if (HEAP32[(structPtr + 52) >> 2] === 0) {
             HEAP32[(structPtr + 52) >> 2] = rt._builtinTpRepr;
         }
+        // tp_str (offset 104), same story: numpy's unicodetype_str strips
+        // trailing NULs then calls PyUnicode_Type.tp_str(new) directly.
+        if (rt._builtinTpStr === undefined) {
+            rt._builtinTpStr = _wasthon_get_builtin_tp_str();
+        }
+        if (HEAP32[(structPtr + 104) >> 2] === 0) {
+            HEAP32[(structPtr + 104) >> 2] = rt._builtinTpStr;
+        }
+        // tp_dealloc (offset 40), one more delegation target: numpy's
+        // unicode_arrtype_dealloc ends with PyUnicode_Type.tp_dealloc(v),
+        // which trapped (silently — the decref dispatcher's defensive catch)
+        // and leaked the gc_new struct of every reclaimed str_ scalar. The
+        // base dealloc in the bridge model is PyObject_GC_Del.
+        if (rt._builtinTpDealloc === undefined) {
+            rt._builtinTpDealloc = _wasthon_get_builtin_tp_dealloc();
+        }
+        if (HEAP32[(structPtr + 40) >> 2] === 0) {
+            HEAP32[(structPtr + 40) >> 2] = rt._builtinTpDealloc;
+        }
         // tp_name (offset 12): a C string. Error messages format it with
         // %.200s — e.g. _json's "keys must be ... not %.100s" / make_encoder's
         // "argument 1 must be dict or None, not %.200s" read Py_TYPE(x)->tp_name.
@@ -11949,6 +11999,27 @@ mergeInto(LibraryManager.library, {
                 return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(base, '__repr__'), obj));
             }
             return rt.wrapNewRef(rt.$B.$call(rt._b_.repr, obj));
+        } catch (e) { rt.forwardError(e, rt._b_.RuntimeError); return 0; }
+    },
+
+    /* tp_str shim for the builtin type-structs (offset 104), the tp_repr
+     * story one slot over: numpy's unicodetype_str/repr strip trailing NUL
+     * code points from a str_ scalar and delegate the final conversion to
+     * `PyUnicode_Type.tp_str(new)` — with the slot NULL, every str() of an
+     * np.str_ box trapped ("indirect call to null" — np.asarray(np.str_('x'))
+     * dies inside PyArray_FromAny's PyObject_Str). Base-type semantics like
+     * CPython's unicode_str: a str/str-subclass input yields the exact
+     * primitive (asJSStr unboxes $brython_value); anything else falls back
+     * to str(obj). */
+    wasthon_builtin_tp_str__deps: ['$WasthonRT'],
+    wasthon_builtin_tp_str: function(handle) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (obj === null) return 0;
+        try {
+            var s = rt.asJSStr(obj);
+            if (s !== null) return rt.wrapNewRef(s);
+            return rt.wrapNewRef(rt.$B.$call(rt._b_.str, obj));
         } catch (e) { rt.forwardError(e, rt._b_.RuntimeError); return 0; }
     },
 
@@ -13436,6 +13507,14 @@ mergeInto(LibraryManager.library, {
         // the VIEW — the generic byte path (itemsize 1, 'B') failed its 'O'
         // typeinfo and the fused dispatch missed (Series.str accessor).
         if (obj.$wasthon_src && obj.$wasthon_src.__wasthon_ptr__) obj = obj.$wasthon_src;
+        // A pure-Brython instance (no C allocation behind it) cannot have a
+        // C-built __array_interface__: the getset it inherits from a C base
+        // would run C code against a SENTINEL handle and produce a garbage
+        // data pointer — `class MyStr(str, np.generic)` made
+        // b'def' + MyStr('abc') concatenate heap noise instead of raising.
+        // Fall through to the generic path (which rejects it like CPython's
+        // gentype_arrtype_getbuffer does).
+        if (!obj.__wasthon_ptr__) return 1;
         // Per-type memo of "__array_interface__ absent". Whether a type provides
         // __array_interface__ is a property of the TYPE (a getset/descriptor on
         // ndarray; absent on Cython's View.MemoryView.array), never of the
@@ -13608,13 +13687,40 @@ mergeInto(LibraryManager.library, {
             // expose .source; pull their raw bytes via tobytes() — the byte
             // image CPython's buffer protocol would hand back. (Read path only;
             // write-back via w* propagates only to bytes/bytearray .source.)
-            try {
-                var tb = WasthonRT.$B.$getattr(obj, 'tobytes', null);
-                if (tb) {
-                    var b = WasthonRT.$B.$call(tb);
-                    if (b && b.source !== undefined && b.source !== null) src = b.source;
-                }
-            } catch (e) { /* fall through to the type error */ }
+            //
+            // NOT for a pure-Brython instance (no __wasthon_ptr__) of a class
+            // whose mro declares a C Py_bf_getbuffer slot: its inherited
+            // tobytes() is a C trampoline that would read struct fields at a
+            // sentinel address — `class MyStr(str, np.generic)` handed
+            // b'def' + MyStr('abc') heap garbage. Let PyObject_GetBuffer's
+            // last-resort C-slot walk run instead; CPython consults exactly
+            // that slot (numpy's gentype_arrtype_getbuffer raises the
+            // TypeError test_char_radd expects). Real C-allocated instances
+            // (np scalars, Cython _memoryviewslice) carry a ptr and keep the
+            // calibrated tobytes path.
+            var cSlotted = false;
+            if (!obj.__wasthon_ptr__) {
+                try {
+                    var _cls = WasthonRT.$B.get_class(obj);
+                    var _chain = _cls ? [_cls].concat(_cls.tp_mro || []) : [];
+                    for (var _ci = 0; _ci < _chain.length; _ci++) {
+                        var _h = _chain[_ci] && _chain[_ci].__wasthon_type_handle__;
+                        var _ti = _h && WasthonRT.types.get(_h);
+                        if (_ti && _ti.slots && _ti.slots[1 /* Py_bf_getbuffer */]) {
+                            cSlotted = true; break;
+                        }
+                    }
+                } catch (_e) {}
+            }
+            if (!cSlotted) {
+                try {
+                    var tb = WasthonRT.$B.$getattr(obj, 'tobytes', null);
+                    if (tb) {
+                        var b = WasthonRT.$B.$call(tb);
+                        if (b && b.source !== undefined && b.source !== null) src = b.source;
+                    }
+                } catch (e) { /* fall through to the type error */ }
+            }
         }
         if (src === null) {
             var className = WasthonRT.$B.class_name ? WasthonRT.$B.class_name(obj) : typeof obj;

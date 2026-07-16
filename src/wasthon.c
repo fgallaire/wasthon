@@ -786,6 +786,29 @@ void *wasthon_get_builtin_tp_repr(void) {
     return (void *)wasthon_builtin_tp_repr;
 }
 
+/* tp_str for the builtin type-structs, same shape as tp_repr above (offset
+ * 104). numpy's unicodetype_str/repr strip trailing NULs then delegate to
+ * `PyUnicode_Type.tp_str(new)` — a NULL slot trapped on every str(np.str_). */
+extern PyObject *wasthon_builtin_tp_str(PyObject *self);
+EMSCRIPTEN_KEEPALIVE
+void *wasthon_get_builtin_tp_str(void) {
+    return (void *)wasthon_builtin_tp_str;
+}
+
+/* tp_dealloc for the builtin type-structs (offset 40). A C subclass dealloc
+ * delegates up — numpy's unicode_arrtype_dealloc ends with
+ * `PyUnicode_Type.tp_dealloc(v)` — and the NULL slot trapped (silently: the
+ * decref dispatcher's defensive catch ate it), so the gc_new struct behind
+ * every reclaimed str_ scalar leaked. The base behaviour in the bridge model
+ * is exactly PyObject_GC_Del: unbind the handle, free the struct. */
+void wasthon_builtin_tp_dealloc(PyObject *self) {
+    PyObject_GC_Del(self);
+}
+EMSCRIPTEN_KEEPALIVE
+void *wasthon_get_builtin_tp_dealloc(void) {
+    return (void *)wasthon_builtin_tp_dealloc;
+}
+
 /* tp_new for Brython-class type-structs (JS-library). ensureTypeStruct installs
  * this at offset 60 so C code that reconstructs instances from such a struct —
  * e.g. _pickle load_newobj's `cls->tp_new(cls, args, kwargs)` — works. */

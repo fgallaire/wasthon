@@ -795,6 +795,26 @@ Infrastructure work that pays back on existing modules:
       keeps the harness at 1750/4485, zero regression. Proven by
       `loader/test-tp-dealloc.html` (`refcounts.size` flat with dispatch on,
       +1/call with it off). Full design in `CHANGELOG.md`.
+      Exact state of the dispatch chain (2026-07-16): a C subclass dealloc
+      that *delegates up to a builtin* (numpy's `unicode_arrtype_dealloc`
+      ends with `PyUnicode_Type.tp_dealloc(v)`) now lands on a real slot —
+      `wasthon_bind_builtin_type` wires `tp_dealloc`@40 on every builtin
+      struct to `PyObject_GC_Del` (unbind handle + free struct), the base
+      behaviour in the bridge model. Before that the NULL slot trapped
+      *silently* (the dispatcher's defensive catch ate the "indirect call to
+      null") and the gc_new struct of every reclaimed `np.str_` scalar
+      leaked — measured: 3 swallowed traps on a single
+      `chararray.upper()/rstrip()`, 0 after wiring, handle count flat over
+      3000 scalar round-trips. Note the dispatcher's defensive catch is
+      load-bearing for robustness but *hides* exactly this class of bug: if
+      a dealloc chain regresses, the symptom is a slow leak, not a crash —
+      re-check with a gated counter in that catch before trusting it.
+      Lifetime of an `np.str_` scalar box specifically: the C struct is a
+      plain gc_new allocation (`PyUnicodeScalarObject`, ~24 B, obval left
+      NULL); the string payload lives only as the JS `$brython_value`
+      primitive; the struct is freed by this dispatch when C code drops its
+      last reference (`_vec_string` per-element temporaries) or when the JS
+      wrapper is collected (reclaimResults path).
 - [x] Deterministic free of heavy native resources at `close()`/`with`-exit —
       Brython is tracing-GC with no refcount, so a dropped LZMA/Zstd compressor
       (its context is ~94 MB) has no deterministic finalizer and would leak to
