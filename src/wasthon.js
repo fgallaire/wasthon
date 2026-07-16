@@ -11655,11 +11655,29 @@ mergeInto(LibraryManager.library, {
      * Brython str/bytes, correct-valued and interoperable; perfect scalar
      * identity stays the scalar subsystem's remaining work. */
     wasthon_builtin_unicode_tp_new__deps: ['$WasthonRT'],
+    /* Forward keyword arguments (encoding=/errors=) as Brython's $kw
+     * marker: numpy's unicode/string_arrtype_new delegates to
+     * PyUnicode_Type.tp_new(type, args, KWDS) — dropping kwds made
+     * np.str_(b, encoding='unicode-escape') wrap the bytes' repr instead
+     * of decoding (and never raise UnicodeDecodeError). */
     wasthon_builtin_unicode_tp_new: function(typeH, argsH, kwH) {
         var rt = WasthonRT;
         try {
             var args = rt.unwrap(argsH) || [];
-            return rt.wrapNewRef(rt.$B.$call.apply(null, [rt._b_.str].concat(args)));
+            var callArgs = [rt._b_.str].concat(args);
+            var kwargs = kwH ? rt.unwrap(kwH) : null;
+            if (kwargs && rt._b_.dict.mp_length(kwargs) > 0) {
+                var kwMap = {};
+                var items = rt._b_.list.$factory(
+                    rt.$B.$call(rt.$B.$getattr(kwargs, 'items')));
+                for (var p = 0; p < items.length; p++) {
+                    var nm = rt.asJSStr(items[p][0]);
+                    if (nm === null) nm = String(items[p][0]);
+                    kwMap[nm] = items[p][1];
+                }
+                callArgs.push({ $kw: [kwMap] });
+            }
+            return rt.wrapNewRef(rt.$B.$call.apply(null, callArgs));
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
     wasthon_builtin_bytes_tp_new__deps: ['$WasthonRT'],
@@ -11667,7 +11685,20 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try {
             var args = rt.unwrap(argsH) || [];
-            return rt.wrapNewRef(rt.$B.$call.apply(null, [rt._b_.bytes].concat(args)));
+            var callArgs = [rt._b_.bytes].concat(args);
+            var kwargs = kwH ? rt.unwrap(kwH) : null;
+            if (kwargs && rt._b_.dict.mp_length(kwargs) > 0) {
+                var kwMap = {};
+                var items = rt._b_.list.$factory(
+                    rt.$B.$call(rt.$B.$getattr(kwargs, 'items')));
+                for (var p = 0; p < items.length; p++) {
+                    var nm = rt.asJSStr(items[p][0]);
+                    if (nm === null) nm = String(items[p][0]);
+                    kwMap[nm] = items[p][1];
+                }
+                callArgs.push({ $kw: [kwMap] });
+            }
+            return rt.wrapNewRef(rt.$B.$call.apply(null, callArgs));
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 

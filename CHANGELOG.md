@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`wasthon_builtin_unicode_tp_new` / `wasthon_builtin_bytes_tp_new` forward
+  keyword arguments** (`src/wasthon.js`). numpy's `unicode_arrtype_new`
+  delegates to `PyUnicode_Type.tp_new(type, args, KWDS)`; the builtin stubs
+  dropped kwds, so `np.str_(b'…', encoding='unicode-escape')` wrapped the
+  bytes' repr instead of decoding and never raised UnicodeDecodeError on a
+  bad escape. Kwds now cross as Brython's `$kw` marker, like brythonTpNew.
+  Found by tracing: the class-level tp_new wrapper received kw=1 but
+  brythonTpNew never ran — the C-side builtin struct slot points at these
+  dedicated stubs. (+1 numpy test_scalar_ctors `test_superclass`, with the
+  vendored bytes negative-count companion.)
 - **C getset descriptors carry their PyGetSetDef.doc, writable once**
   (`src/wasthon.js`, `__wasthon_install_getsets`). The doc pointer (offset 12)
   was skipped entirely — `ufunc.identity.__doc__` was empty and numpy's
