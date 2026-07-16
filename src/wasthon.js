@@ -5365,7 +5365,14 @@ mergeInto(LibraryManager.library, {
                        never finalized. */
                     var subH = isSubclass ? rt.wrap(brythonCls) : typePtr;
                     rt.pendingException = null;
-                    var resultH = getWasmTableEntry(tpNewPtr)(subH, argsH, kwH);
+                    /* Read tp_new from the live struct slot each call: C code
+                       may overwrite offset 60 AFTER the type is created — numpy
+                       points its legacy string/unicode DType classes at
+                       string_unicode_new, past the legacy_dtype_default_new the
+                       spec installed — and CPython always dispatches through the
+                       current type->tp_new. */
+                    var livePtr = HEAP32[(typePtr + 60) >> 2] || tpNewPtr;
+                    var resultH = getWasmTableEntry(livePtr)(subH, argsH, kwH);
                     if (rt.pendingException) {
                         var pe = rt.pendingException; rt.pendingException = null;
                         throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);

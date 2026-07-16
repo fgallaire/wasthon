@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`tp_new` dispatches through the live type-struct slot (offset 60) on every
+  call, not the pointer captured at type creation** (`src/wasthon.js`).
+  `ensureTypeStruct` wired `cls.tp_new` to the `tp_new` pointer read once from
+  the struct; numpy REWRITES that slot after creating its legacy
+  string/unicode DType classes (`dtypemeta.c` repoints them at
+  `string_unicode_new`, past the spec's `legacy_dtype_default_new`, which only
+  raises the "Preliminary-API: Flexible/Parametric legacy DType" error).
+  CPython always dispatches through the current `type->tp_new`. Fix: re-read
+  `HEAP32[(typePtr+60)>>2]` in the wrapper, falling back to the captured
+  pointer. `StrDType(5)`/`BytesDType(5)` now build `dtype('<U5')`/`dtype('S5')`,
+  unblocking numpy's `_to_bytes_or_str_array` (np.char join/mod/decode/encode).
+  +6 numpy test_defchararray; cython_special re-validated at 221/0 in 165 s
+  with this bridge (no perf regression).
+
 - **`PyErr_GivenExceptionMatches` matches subclasses through the `issubclass`
   builtin, not the non-existent `$B.$issubclass`** (`src/wasthon.js`). The
   matcher called `rt.$B.$issubclass(cls, exc)`, which doesn't exist in this
