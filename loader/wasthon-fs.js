@@ -172,6 +172,17 @@
                 return FS.llseek(FS.getStream(fd), pos, how || 0);
             },
             ftruncate: function (fd, len) { FS.ftruncate(fd, len); return _b_.None; },
+            // dup: a fresh fd on the same node at the same position — numpy's
+            // longdouble TestFileBased reaches it through the tempfile/io
+            // machinery. Emscripten MEMFS has no dup; reopen the stream's
+            // path with its original flags and seek to the current offset.
+            dup: function (fd) {
+                const st = FS.getStream(fd);
+                if (!st) raise(_b_.OSError, 'bad file descriptor: ' + fd);
+                const st2 = FS.open(st.path, st.flags, 0o666);
+                try { FS.llseek(st2, st.position, 0); } catch (e) {}
+                return st2.fd;
+            },
             exists: exists,
         };
 
@@ -185,6 +196,7 @@
             posix.write = sys.write;
             posix.lseek = sys.lseek;
             posix.ftruncate = sys.ftruncate;
+            posix.dup = sys.dup;
             posix.fstat = function (fd) {
                 // FS.stat(stream.path) fails on unlinked-but-open fds; fall back
                 // to the live node when the path is gone.
