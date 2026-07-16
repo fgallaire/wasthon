@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyMemoryView_GET_BUFFER` fills the Py_buffer for ANY exporter, not only
+  C-backed ones** (`src/wasthon.js`). The typed fill was gated on
+  `__wasthon_ptr__`, so a memoryview over a plain Brython bytes/bytearray
+  handed numpy a zeroed Py_buffer (len 0, NULL format) and
+  `_array_from_buffer_3118` built garbage — `np.void(bytearray(b'spam'))`
+  came out `V1` and `np.void(memoryview)` lost its shape. The generic C
+  `PyObject_GetBuffer` serves plain bytes-likes through
+  `wasthon_get_buffer_data`. Found by bridge tracing: FromObject ran,
+  GET_BUFFER's fill never did. +1 numpy test_scalar_ctors
+  (`test_void_arraylike_trumps_byteslike`).
 - **`PyArg_ParseTuple`'s `(...)` group rejects a LONGER sequence**
   (`src/wasthon.js`). The group unpack raised TypeError on a short or
   non-indexable value but silently ignored extra items, so

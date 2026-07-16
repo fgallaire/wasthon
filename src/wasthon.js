@@ -13084,7 +13084,13 @@ mergeInto(LibraryManager.library, {
         // Series.str accessor via _map_infer_mask).
         var target = mv && (mv.$wasthon_src || mv.obj);
         if (typeof process !== 'undefined' && process.env && process.env.MVDBG) console.log('[MV] GET_BUFFER target=', target ? rt.$B.class_name(target) : null, 'cptr=', !!(target && target.__wasthon_ptr__), 'mvKeys=', mv ? Object.keys(mv).slice(0,10).join(',') : null);
-        if (target && target.__wasthon_ptr__) {
+        /* Fill through PyObject_GetBuffer for ANY exporter, not only C-backed
+           ones (__wasthon_ptr__): a memoryview over a plain Brython
+           bytes/bytearray left the Py_buffer zeroed (len 0, format NULL), so
+           numpy's _array_from_buffer_3118 built garbage — np.void(bytearray)
+           came out V1 instead of V<len>. The generic C GetBuffer handles
+           bytes-likes via wasthon_get_buffer_data. */
+        if (target) {
             var rc = _PyObject_GetBuffer(rt.wrap(target), buf, 0);
             if (rc === 0) {
                 if (typeof process !== 'undefined' && process.env && process.env.MVDBG) {
