@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **The full in-place operator family is wired from tp_as_number — the
+  bitwise half was missing** (`src/wasthon.js`, the PyType_Ready
+  PyNumberMethods table). Only iadd/isub/imul/ifloordiv/itruediv/imatmul
+  were installed, so `a |= m` (and `&= ^= <<= >>= %= **=`) on an ndarray
+  fell back to `__or__` + REBIND: a new array under the same name,
+  silently unaliased from every view — test_half's `a |= 0x8000` mutated
+  a copy while the float16 view kept reading the old buffer ("inf location
+  mismatch" two asserts later, misclassified as an FPE wall for two
+  sessions). Diagnosed by sweeping all augmented ops for
+  object-identity + data-pointer stability: the arithmetic half was
+  in-place, the bitwise half rebound. Adds imod@88, ipow@92 (ternary, via
+  wrapPow), ilshift@96, irshift@100, iand@104, ixor@108, ior@112.
+  (+1 numpy test_half spacing_nextafter, with aliasing now correct for
+  every `x op= y` on C types.)
 - **`memoryview(ndarray)` is a live view, not a snapshot** (`src/wasthon.js` —
   the PyType_Ready `__buffer__` shim, plus two runtime helpers). The shim
   copied the exporter's bytes into a JS array, so the view was dead in both

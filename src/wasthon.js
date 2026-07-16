@@ -5896,6 +5896,14 @@ mergeInto(LibraryManager.library, {
                  [52,'__and__','__rand__'],[56,'__xor__','__rxor__'],[60,'__or__','__ror__'],
                  [136,'__matmul__','__rmatmul__'],
                  [76,'__iadd__',null],[80,'__isub__',null],[84,'__imul__',null],
+                 /* the FULL in-place family: the bitwise half was missing, so
+                    `a |= m` on an ndarray fell back to __or__ + REBIND — a new
+                    array under the same name, silently unaliased from every
+                    view (test_half's `a |= 0x8000` mutated a copy and the
+                    f16 view kept reading the old buffer). imod88 ipow92
+                    ilshift96 irshift100 iand104 ixor108 ior112. */
+                 [88,'__imod__',null],[96,'__ilshift__',null],[100,'__irshift__',null],
+                 [104,'__iand__',null],[108,'__ixor__',null],[112,'__ior__',null],
                  [116+8,'__ifloordiv__',null],[120+8,'__itruediv__',null],[140,'__imatmul__',null]
                 ].forEach(function(s) {
                     var p = HEAP32[(pNum + s[0]) >> 2];
@@ -5909,6 +5917,9 @@ mergeInto(LibraryManager.library, {
                     installDunder('__pow__', wrapPow(pPow, false));
                     installDunder('__rpow__', wrapPow(pPow, true));
                 }
+                /* nb_inplace_power@92 (ternary, same shape). */
+                var pIPow = HEAP32[(pNum + 92) >> 2];
+                if (pIPow) installDunder('__ipow__', wrapPow(pIPow, false));
                 [[24,'__neg__'],[28,'__pos__'],[32,'__abs__'],[40,'__invert__'],
                  /* conversion slots — numpy scalars: int(np.int32(x)) needs
                   * __int__/__index__, float(np.float64(x)) needs __float__.
