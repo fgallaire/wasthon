@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **The builtin float tp_new stub passes ALL positional args through**
+  (`src/wasthon.js`, `wasthon_builtin_float_tp_new`). It silently used
+  `args[0]`, so `float.__new__(B1, 1.0, 2.0)` succeeded where CPython's
+  float_new raises TypeError — numpy's `double_arrtype_new` then built a
+  garbage scalar for `B1(1.0, 2.0)` instead of propagating the error
+  (gh-15395 regression test). Multi-arg calls now go through Brython's
+  float(), which raises the CPython TypeError. +1 numpy test_scalarinherit.
 - **`ndarray` gets Brython's `$match_sequence_pattern`** (`src/wasthon.js`,
   PyType_Ready). numpy marks ndarray `Py_TPFLAGS_SEQUENCE` (bit 5) so
   match-case sequence patterns apply; wasthon.h shares that bit with

@@ -11647,6 +11647,13 @@ mergeInto(LibraryManager.library, {
                 rt.pendingException = null;
                 return 0;
             }
+            /* Pass ALL positional args through: float(1.0, 2.0) must raise
+             * TypeError (CPython float_new), which numpy's double_arrtype_new
+             * propagates — silently using args[0] built a garbage scalar for
+             * B1(1.0, 2.0) (gh-15395 expects the TypeError). */
+            if (args && args.length > 1) {
+                return rt.wrapNewRef(rt.$B.$call.apply(null, [rt._b_.float].concat(args)));
+            }
             var v = (args && args.length > 0) ? args[0] : 0.0;
             return rt.wrapNewRef(rt.$B.$call(rt._b_.float, v));
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
