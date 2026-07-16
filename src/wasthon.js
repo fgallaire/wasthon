@@ -3663,8 +3663,13 @@ mergeInto(LibraryManager.library, {
     PySequence_Fast: function(handle, errmsgPtr) {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
-        // If it's already a list or tuple, pass through. Otherwise build a list.
-        if (Array.isArray(obj)) return handle;
+        // If it's already a list or tuple, pass through — but as a NEW
+        // reference, like CPython (abstract.c INCREFs and returns v): the
+        // caller owns the result and Py_DECREFs it. Returning the bare handle
+        // let that DECREF steal the owner's reference — numpy's
+        // subarray->shape tuple died on the first PyArray_IntpConverter pass
+        // and field extraction read a recycled handle ("negative dimensions").
+        if (Array.isArray(obj)) { rt.incref(handle); return handle; }
         try {
             var arr = rt._b_.list.$factory(obj);
             return rt.wrapNewRef(arr);
@@ -12533,7 +12538,7 @@ mergeInto(LibraryManager.library, {
      * as a double. *endptr (if non-NULL) gets the address right after the
      * parsed prefix; on overflow we set overflow_exc and return -1.0.
      * pickle protocol 0 uses this for the FLOAT opcode. */
-    PyOS_string_to_double__deps: ['$WasthonRT'],
+    PyOS_string_to_double__deps: ['$WasthonRT', '__errno_location'],
     PyOS_string_to_double: function(strPtr, endptrPtr, overflowExcH) {
         var rt = WasthonRT;
         if (strPtr === 0) {
@@ -12559,8 +12564,18 @@ mergeInto(LibraryManager.library, {
         }
         var v = parseFloat(m[0]);
         if (!isFinite(v)) {
-            var exc = overflowExcH !== 0 ? rt.unwrap(overflowExcH)
-                                         : rt._b_.OverflowError;
+            if (overflowExcH === 0) {
+                /* CPython contract (pystrtod.c): overflow_exception==NULL
+                 * -> return ±HUGE_VAL with errno=ERANGE and NO Python
+                 * error. numpy's strtold fallback (npy_longdouble_from_
+                 * PyLong via NumPyOS_ascii_strtod_plain) relies on this to
+                 * emit its "overflow encountered" RuntimeWarning instead
+                 * of "Could not parse long as longdouble". */
+                try { HEAP32[___errno_location() >> 2] = 34; /* ERANGE */ } catch (e) {}
+                if (endptrPtr !== 0) { HEAP32[endptrPtr >> 2] = strPtr + m[0].length; }
+                return v;
+            }
+            var exc = rt.unwrap(overflowExcH);
             rt.setError(rt.wrap(exc || rt._b_.OverflowError),
                 "float overflow");
             return -1.0;

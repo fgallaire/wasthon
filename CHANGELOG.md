@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PySequence_Fast` returns a NEW reference for an already-list/tuple
+  argument, like CPython** (`src/wasthon.js`). CPython's `abstract.c` INCREFs
+  and returns `v` when it is a list/tuple; the bridge passed the bare handle
+  through, so the caller's contractual `Py_DECREF(seq_obj)` stole a reference
+  from the object's real owner. numpy's `subarray->shape` tuple (stored by
+  `_convert_from_tuple`, refcount 1) died on the first
+  `PyArray_IntpConverter` pass over it — the handle was recycled and every
+  FIELD EXTRACTION on a structured dtype with sub-array fields
+  (`arr['a']` where `a` has a shape) failed with
+  `ValueError: negative dimensions are not allowed` (creations reconvert the
+  dtype object and never read the stored tuple, which is why only extraction
+  broke). Fix: `rt.incref(handle)` before returning. Found by tracing the
+  handle lifecycle (created/incref/decref/release) and naming the wasm frames
+  with `--profiling-funcs`.
 - **`tp_new` dispatches through the live type-struct slot (offset 60) on every
   call, not the pointer captured at type creation** (`src/wasthon.js`).
   `ensureTypeStruct` wired `cls.tp_new` to the `tp_new` pointer read once from
