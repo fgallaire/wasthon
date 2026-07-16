@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **C getset descriptors carry their PyGetSetDef.doc, writable once**
+  (`src/wasthon.js`, `__wasthon_install_getsets`). The doc pointer (offset 12)
+  was skipped entirely — `ufunc.identity.__doc__` was empty and numpy's
+  `add_newdoc` had nowhere to write. `__doc__` is now a JS accessor that
+  serves the C doc and enforces numpy `add_docstring`'s `_ADDDOC` rule on
+  every write path: fill an empty doc, keep an identical one, refuse a
+  different one with RuntimeError (which `add_newdoc` swallows — an
+  already-documented getset keeps its docstring, `test_errors_are_ignored`).
+  Companion: the vendored getset_descriptor exposes a `__doc__` getset
+  (BRYTHON_FIX). +1 numpy test_function_base (40/0 green).
 - **`PyObject_SetAttr`/`PyObject_SetAttrString` propagate the real exception
   class** (`src/wasthon.js`). Both catches collapsed every failure into
   `AttributeError: set 'name': …`, so a Cython property setter raising

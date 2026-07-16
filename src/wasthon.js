@@ -15618,6 +15618,7 @@ mergeInto(LibraryManager.library, {
             if (namePtr === 0) break;
             var getPtr    = HEAP32[(gp +  4)  >> 2];
             var setPtr    = HEAP32[(gp +  8)  >> 2];
+            var docPtr    = HEAP32[(gp + 12) >> 2];   /* PyGetSetDef.doc */
             var closurePtr = HEAP32[(gp + 16) >> 2];
             var name      = UTF8ToString(namePtr);
 
@@ -15672,12 +15673,28 @@ mergeInto(LibraryManager.library, {
                  * $B.getset_descriptor.$factory at brython.js:3409. */
                 var descriptor = {
                     ob_type: rt.$B.getset_descriptor,
-                    __doc__: rt._b_.None,
                     d_type: cls,
                     d_name: name,
                     getter: fget,
                     setter: fset,
                 };
+                /* __doc__ as a JS accessor: serves the C-side PyGetSetDef.doc
+                   (offset 12 — it was skipped, ufunc.identity.__doc__ was
+                   empty) and enforces numpy add_docstring's _ADDDOC rule on
+                   EVERY write path (fill empty / keep identical / refuse a
+                   different doc with RuntimeError, which add_newdoc ignores —
+                   test_errors_are_ignored relies on the old doc surviving). */
+                (function(descr, initialDoc) {
+                    var _doc = initialDoc;
+                    Object.defineProperty(descr, '__doc__', {
+                        configurable: true,
+                        get: function() { return _doc; },
+                        set: function(v) {
+                            if (_doc === rt._b_.None || _doc === undefined || _doc === v) { _doc = v; return; }
+                            rt.$B.RAISE(rt._b_.RuntimeError, "docstring of " + descr.d_name + " is already set");
+                        },
+                    });
+                })(descriptor, docPtr ? UTF8ToString(docPtr) : rt._b_.None);
                 /* Set in the class's tp_dict — where $B.get_from_dict()
                  * looks for the descriptor. */
                 try {
