@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`ndarray` gets Brython's `$match_sequence_pattern`** (`src/wasthon.js`,
+  PyType_Ready). numpy marks ndarray `Py_TPFLAGS_SEQUENCE` (bit 5) so
+  match-case sequence patterns apply; wasthon.h shares that bit with
+  HEAPTYPE, so the flag alone is ambiguous — gate on the struct's C tp_name
+  ("numpy.ndarray"; the Brython-side cls.tp_name is the leaf name).
+  matrix/MaskedArray inherit through tp_bases, which Brython's matcher
+  scans. Two traps documented in-line: the check must sit AFTER `cls`
+  exists (a hoisted read crashed every PyType_Ready → numpy import died),
+  and a blanket bit-5 check tags bridge heaptypes too. +1 numpy
+  test_defmatrix (44/0 green).
 - **`PyObject_GetBuffer` honours `PyBUF_WRITABLE`** (`src/wasthon.c`). The
   generic path ignored flags entirely, so a writable request on an immutable
   bytes succeeded — numpy's `PyArray_FromBuffer` probes with

@@ -5214,6 +5214,14 @@ mergeInto(LibraryManager.library, {
                     }
                 }
             }
+            /* ndarray is Py_TPFLAGS_SEQUENCE in numpy (match-case sequence
+               patterns; matrix/MaskedArray inherit through tp_bases, which
+               Brython's matcher scans). wasthon.h shares bit 5 with HEAPTYPE,
+               so the bit alone is ambiguous — gate on the class identity. */
+            if (flags & 32) {
+                var _cnp = HEAP32[(typePtr + 12) >> 2];       /* C tp_name */
+                if (_cnp && UTF8ToString(_cnp) === 'numpy.ndarray') cls.$match_sequence_pattern = true;
+            }
             if (!cls.tp_setattro)  cls.tp_setattro  = rt._b_.object.tp_setattro;
             /* A METAtype's instances are classes: their attribute access
                must walk the CLASS mro (type.tp_getattro), not treat the
