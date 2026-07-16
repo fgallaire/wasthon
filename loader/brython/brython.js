@@ -3000,7 +3000,8 @@ $B.make_fast_iter(class_obj)
 if(test){console.log('result of type_new_get_bases',res)}
 if(res < 0){assert(PyErr_Occurred());
 return NULL;}
-if(res==1){return class_obj}
+if(res==1){for(var _sb of class_obj.tp_bases){if(_sb.tp_subclasses){_sb.tp_subclasses.push(class_obj)}}
+return class_obj}
 if(res instanceof Object){
 class_obj=res.type
 $B.make_init(class_obj)
@@ -3040,6 +3041,7 @@ $B.make_new(class_obj)
 $B.make_descr_get(class_obj)
 $B.make_descr_set(class_obj)
 $B.make_call(class_obj)
+for(var _sb of class_obj.tp_bases){if(_sb.tp_subclasses){_sb.tp_subclasses.push(class_obj)}}
 return class_obj}
 var type_funcs=_b_.type.tp_funcs={}
 type_funcs.__abstractmethods___get=function(cls){if(cls !==type){var res=$B.get_from_dict(cls,'__abstractmethods__',$B.NULL)
@@ -3545,9 +3547,15 @@ return self.getter(obj)}
 var getset_descriptor_funcs=$B.getset_descriptor.tp_funcs={}
 getset_descriptor_funcs.__qualname___get=function(self){return self.d_name}
 getset_descriptor_funcs.__qualname___set=function(self,value){self.d_name=value}
+// serve the descriptor's own __doc__ (its JS property is not a Brython
+// __dict__, so plain lookup climbed to object.__doc__ — "The base class of
+// the class hierarchy."); the setter lets numpy's add_newdoc/add_docstring
+// fill C getset docs at import time (flatiter.index, gufunc docs).
+getset_descriptor_funcs.__doc___get=function(self){return self.__doc__ ?? _b_.None}
+getset_descriptor_funcs.__doc___set=function(self,value){self.__doc__=value}
 $B.getset_descriptor.tp_members=[["__objclass__",$B.TYPES.OBJECT,"d_type",1],["__name__",$B.TYPES.OBJECT,"d_name",1]
 ]
-$B.getset_descriptor.tp_getset=["__qualname__"]
+$B.getset_descriptor.tp_getset=["__qualname__","__doc__"]
 $B.set_func_names($B.getset_descriptor,"builtins")
 var wrapper_descriptor=$B.wrapper_descriptor
 wrapper_descriptor.$factory=function(cls,attr,f){
@@ -4336,7 +4344,12 @@ _self.$bytes=bytes
 _self.$byte_pos=0
 _self.$line_pos=0}}
 var cache=$B.get_option('cache'),fake_qs=cache ? '' :'?foo='+(new Date().getTime())
-_self.fd.open('GET',encodeURI(name+fake_qs),false)
+// os.path.abspath/normpath collapse the '//' of an URL-shaped path
+// ('http://host/x' -> 'http:/host/x'): numpy's data-file tests build
+// dirname(abspath(__file__)) + '/data/f' and the XHR then 404s on the
+// broken scheme. Repair it at the I/O boundary.
+var xhr_name=name.replace(/^(https?:)\/(?!\/)/,'$1//')
+_self.fd.open('GET',encodeURI(xhr_name+fake_qs),false)
 _self.fd.send()
 if(_self.fd.error){throw _self.fd.error}}
 var _FileIO_funcs=$B._FileIO.tp_funcs={}
@@ -6017,7 +6030,17 @@ frame_funcs.f_lasti_set=_b_.None
 frame_funcs.f_lineno_get=function(self){return self.$lineno}
 frame_funcs.f_lineno_set=function(self,value){$B.RAISE(_b_.ValueError,'f_lineno can only be set in a trace function')}
 frame_funcs.f_locals_get=function(self){
-if(self.f_locals){return self.f_locals}else if(self.f_globals && self[1]==self[3]){return self.f_locals=self.f_globals}else{return self.f_locals=$B.obj_dict(self[1])}}
+if(self.f_locals){return self.f_locals}else if(self.f_globals && self[1]==self[3]){return self.f_locals=self.f_globals}else{
+// a method's local namespace carries __class__ (super() support), so
+// returning it raw made type(frame.f_locals) the CLASS itself and mapping
+// ops crash ('T' object has no attribute 'keys'; numpy bmat("A,B") reads
+// the caller's f_locals). Serve a plain-dict snapshot without the
+// compiler-internal keys, like CPython's function-frame f_locals.
+var ns=self[1]
+if(ns &&(ns.__class__!==undefined ||(ns.ob_type!==undefined && ns.ob_type!==_b_.dict))){var d=$B.empty_dict()
+for(var k in ns){if(k!=='__class__' && k!=='ob_type' && k.charAt(0)!=='$'){_b_.dict.$setitem(d,k,ns[k])}}
+return self.f_locals=d}
+return self.f_locals=$B.obj_dict(ns)}}
 frame_funcs.f_locals_set=_b_.None
 frame_funcs.f_trace_get=function(self){return self.$f_trace}
 frame_funcs.f_trace_opcodes_get=function(self){}
@@ -7018,7 +7041,7 @@ _t[_ndx]=to[i]}
 return this.$factory(_t)}
 function strip(self,cars,lr){if(cars===undefined){cars=[]
 var ws='\r\n \t'
-for(let i=0,len=ws.length;i < len;i++){cars.push(ws.charCodeAt(i))}}else if($B.$isinstance(cars,bytes)){cars=cars.source}else{$B.RAISE(_b_.TypeError,"Type str doesn't support the buffer API")}
+for(let i=0,len=ws.length;i < len;i++){cars.push(ws.charCodeAt(i))}}else if(cars===ws_cars){}else if($B.$isinstance(cars,bytes)){cars=cars.source}else{$B.RAISE(_b_.TypeError,"Type str doesn't support the buffer API")}
 switch(lr){case 'l':
 for(var i=0,len=self.source.length;i < len;i++){if(cars.indexOf(self.source[i])==-1){break}}
 return this.$factory(self.source.slice(i))
@@ -7096,13 +7119,12 @@ var reversed_self=$B.fast_bytes(self.source.toReversed())
 if(! $B.is_int(maxsplit)){$B.RAISE(_b_.ValueError,`maxsplit should be int, not ${$B.class_name(maxsplit)}`
 )}
 var parts=[]
-if(sep===_b_.None){parts=bytes_split_with_whitespace(cls,self,maxsplit)}else{if($B.$getattr(sep,'__buffer__',$B.NULL)===$B.NULL){$B.RAISE(_b_.TypeError,`a bytes-like object is required, not '${$B.class_name(sep)}'`
+if(sep===_b_.None){parts=bytes_split_with_whitespace(cls,reversed_self,maxsplit)}else{if($B.$getattr(sep,'__buffer__',$B.NULL)===$B.NULL){$B.RAISE(_b_.TypeError,`a bytes-like object is required, not '${$B.class_name(sep)}'`
 )}
 var reversed_seps=Array.from($B.make_js_iterator(sep)).reverse()
 parts=bytes_split_with_sep(cls,reversed_self,reversed_seps,maxsplit)}
 parts.reverse()
-for(part of parts){part.reverse()}
-parts=parts.map(t=> this.$factory(t))
+parts=parts.map(t=> this.$factory(Array.from(t.source).reverse()))
 return $B.$list(parts)}
 function sq_contains(self,other){var[self,other]=self_other_args('__contains__',arguments)
 if(typeof other=="number"){return self.source.indexOf(other)>-1}
@@ -7355,7 +7377,7 @@ bytearray_funcs.startswith=function(self){return startswith.apply(_b_.bytearray,
 bytearray_funcs.strip=function(self){var $=$B.args('lstrip',2,{self:null,cars:null},arguments,{cars:ws_cars})
 var self=$.self,cars=$.cars
 var stripped_right=strip.call(_b_.bytearray,self,cars,'r')
-return strip.call(_b_.bytearray,res,cars,'l')}
+return strip.call(_b_.bytearray,stripped_right,cars,'l')}
 bytearray_funcs.swapcase=function(self){return swapcase.apply(_b_.bytearray,arguments)}
 bytearray_funcs.title=function(self){return title.apply(_b_.bytearray,arguments)}
 bytearray_funcs.translate=function(self){return translate.apply(_b_.bytearray,arguments)}
@@ -7399,7 +7421,7 @@ if(pos==len){return $B.$list([])}
 var start=pos
 pos=source.length-1
 while(pos > 0 && ws.includes(source[pos])){pos--}
-source=source.slice(start,pos-start+1)
+source=source.slice(start,pos+1)
 len=source.length
 var acc=[]
 pos=0
@@ -7432,6 +7454,13 @@ while(i--){int_list[pos++]=0}}else{if(typeof source=="string" ||$B.is_str(source
 int_list=encode(source,encoding ||"utf-8",errors ||"strict")}else{if(encoding !==undefined){console.log('encoding',encoding)
 $B.RAISE(_b_.TypeError,"encoding without a string argument")}
 if(Array.isArray(source)){int_list=source}else{try{int_list=_b_.list.$factory(source)}catch(err){var bytes_method=$B.$getattr(source,'__bytes__',_b_.None)
+// CPython's bytes(obj) falls back to the buffer protocol: a 0-d numpy
+// array is not iterable but exports its bytes — go through tobytes(),
+// like $B.to_bytes (bytes(np.array(567.)) must be the double's 8 bytes).
+if(bytes_method===_b_.None){var _tb=$B.$getattr(source,'tobytes',_b_.None)
+if(_tb!==_b_.None){var _tbres=$B.$call(_tb)
+if($B.is_bytes(_tbres)){_tbres.ob_type=cls
+return _tbres}}}
 if(bytes_method===_b_.None){$B.RAISE(_b_.TypeError,"cannot convert "+
 `'${$B.class_name(source)}' object to bytes`)}
 var res=$B.$call(bytes_method)
@@ -7459,6 +7488,7 @@ var aliases={ascii:['646','us-ascii'],big5:['big5-tw','csbig5'],big5hkscs:['big5
 var codecs_aliases={}
 for(var name in aliases){for(var alias of aliases[name]){codecs_aliases[alias.toLowerCase().replace(/-/g,'_')]=name}}
 function normalise(encoding){
+if(typeof encoding !=='string' && $B.is_str(encoding)){encoding=encoding.$brython_value}
 var enc=encoding.toLowerCase()
 .replace(/ /g,'_')
 .replace(/-/g,'_')
@@ -7567,15 +7597,44 @@ case "latin1":
 case "L1":
 b.forEach(function(item){s+=String.fromCharCode(item)})
 break
-case "unicode_escape":
-if([bytes,bytearray].includes($B.get_class(obj))){obj=decode(obj,"latin-1","strict")}
-return obj.replace(/\\n/g,"\n").
-replace(/\\a/g,"\u0007").
-replace(/\\b/g,"\b").
-replace(/\\f/g,"\f").
-replace(/\\t/g,"\t").
-replace(/\\'/g,"'").
-replace(/\\"/g,'"')
+case "unicode_escape":{
+// CPython 'unicodeescape' decode over the raw bytes: C escapes + \ooo octal,
+// \xhh, \uxxxx, \Uxxxxxxxx (the old regex handled only \n\a\b\f\t\'\" and
+// crashed on a numpy bytes_ scalar via obj.replace).
+var ue=""
+for(var ui=0;ui < b.length;ui++){var uc=b[ui]
+if(uc !==0x5c){ue+=String.fromCharCode(uc);continue}
+ui++
+if(ui >=b.length){ue+="\\";break}
+var uee=b[ui]
+switch(uee){case 0x0a:break
+case 0x5c:ue+="\\";break
+case 0x27:ue+="'";break
+case 0x22:ue+='"';break
+case 0x61:ue+="\x07";break
+case 0x62:ue+="\b";break
+case 0x66:ue+="\f";break
+case 0x6e:ue+="\n";break
+case 0x72:ue+="\r";break
+case 0x74:ue+="\t";break
+case 0x76:ue+="\v";break
+case 0x30:case 0x31:case 0x32:case 0x33:case 0x34:case 0x35:case 0x36:case 0x37:{
+var uoct=String.fromCharCode(uee)
+for(var uk=0;uk < 2 && ui+1 < b.length && b[ui+1]>=0x30 && b[ui+1]<=0x37;uk++){ui++;uoct+=String.fromCharCode(b[ui])}
+ue+=String.fromCharCode(parseInt(uoct,8)& 0xff);break}
+case 0x78:{var uhx=(ui+2 < b.length)?String.fromCharCode(b[ui+1],b[ui+2]):""
+if(/^[0-9a-fA-F]{2}$/.test(uhx)){ui+=2;ue+=String.fromCharCode(parseInt(uhx,16));break}
+$B.RAISE(_b_.UnicodeDecodeError,"'unicodeescape' codec can't decode: truncated \\xXX escape")}
+case 0x75:{var uh4="";for(var uj=1;uj <=4 && ui+uj < b.length;uj++){uh4+=String.fromCharCode(b[ui+uj])}
+if(/^[0-9a-fA-F]{4}$/.test(uh4)){ui+=4;ue+=String.fromCharCode(parseInt(uh4,16));break}
+$B.RAISE(_b_.UnicodeDecodeError,"'unicodeescape' codec can't decode: truncated \\uXXXX escape")}
+case 0x55:{var uh8="";for(var uj=1;uj <=8 && ui+uj < b.length;uj++){uh8+=String.fromCharCode(b[ui+uj])}
+if(/^[0-9a-fA-F]{8}$/.test(uh8)){ui+=8;var ucp=parseInt(uh8,16)
+if(ucp > 0x10ffff){$B.RAISE(_b_.UnicodeDecodeError,"'unicodeescape' codec can't decode: illegal Unicode character")}
+ue+=String.fromCodePoint(ucp);break}
+$B.RAISE(_b_.UnicodeDecodeError,"'unicodeescape' codec can't decode: truncated \\UXXXXXXXX escape")}
+default:ue+="\\"+String.fromCharCode(uee)}}
+return ue}
 case "raw_unicode_escape":
 if([bytes,bytearray].includes($B.get_class(obj))){obj=decode(obj,"latin-1","strict")}
 return obj.replace(/\\U([a-fA-F0-9]{8})|\\u([a-fA-F0-9]{4})/g,function(mo,u8,u4){let cp=parseInt(u8||u4,16)
@@ -7664,6 +7723,19 @@ if(cp <=127){t[pos++]=cp}else if(errors=="backslashreplace"){let hex=_b_.hex(_b_
 if(hex.length < 5){hex='\\x'+'0'.repeat(4-hex.length)+hex.substr(2)}else if(hex.length < 7){hex='\\u'+'0'.repeat(6-hex.length)+hex.substr(2)}else{hex='\\U'+'0'.repeat(10-hex.length)+hex.substr(2)}
 for(let char of hex){t[pos++]=char.charCodeAt(0)}}else if(errors !=='ignore'){$UnicodeEncodeError(encoding,i)}}
 break
+case "unicode_escape":
+// CPython 'unicodeescape' encode: printable ASCII verbatim, \\ \n \r \t, then
+// \xhh / \uxxxx / \Uxxxxxxxx (result is the latin-1 bytes of that repr).
+for(var uei=0;uei < s.length;){var uecp=s.codePointAt(uei)
+if(uecp===0x5c){t.push(0x5c,0x5c)}
+else if(uecp===0x0a){t.push(0x5c,0x6e)}
+else if(uecp===0x0d){t.push(0x5c,0x72)}
+else if(uecp===0x09){t.push(0x5c,0x74)}
+else if(uecp >=0x20 && uecp < 0x7f){t.push(uecp)}
+else{var eh=uecp < 0x100 ? "\\x"+uecp.toString(16).padStart(2,'0') : uecp < 0x10000 ? "\\u"+uecp.toString(16).padStart(4,'0') : "\\U"+uecp.toString(16).padStart(8,'0')
+for(var ek=0;ek < eh.length;ek++){t.push(eh.charCodeAt(ek))}}
+uei+=uecp > 0xffff ? 2 : 1}
+break
 case "raw_unicode_escape":
 for(let i=0,len=s.length;i < len;i++){let cp=s.charCodeAt(i)
 if(cp < 256){t[pos++]=cp}else{let us=cp.toString(16)
@@ -7731,11 +7803,21 @@ return res}
 if(encoding !==$B.NULL){console.log('encoding',encoding)
 $B.RAISE(_b_.TypeError,"encoding without a string argument")}
 if(typeof source=="number" ||$B.is_int(source)){var size=$B.PyNumber_Index(source)
+// CPython: bytes(-2) raises (numpy's bytes_(-2) relies on it to take its
+// int-to-decimal-bytes fallback instead of getting an empty b'')
+if(size < 0){$B.RAISE(_b_.ValueError,"negative count")}
 source=[]
 for(var i=0;i < size;i++){source[i]=0}}else if($B.$isinstance(source,[_b_.bytes,_b_.bytearray])){source=source.source}else if($B.$isinstance(source,_b_.memoryview)){source=source.obj.source}else if($B.imported.array &&
 $B.$isinstance(source,$B.module_getattr($B.imported.array,'array'))){var array=$B.module_getattr($B.imported.array,'array')
 source=array.tp_funcs.tobytes(source).source}else{var int_list
 if(Array.isArray(source)){int_list=source}else{try{int_list=_b_.list.$factory(source)}catch(err){var bytes_method=$B.$getattr(source,'__bytes__',_b_.None)
+// CPython's bytes(obj) falls back to the buffer protocol: a 0-d numpy
+// array is not iterable but exports its bytes — go through tobytes(),
+// like $B.to_bytes (bytes(np.array(567.)) must be the double's 8 bytes).
+if(bytes_method===_b_.None){var _tb=$B.$getattr(source,'tobytes',_b_.None)
+if(_tb!==_b_.None){var _tbres=$B.$call(_tb)
+if($B.is_bytes(_tbres)){_tbres.ob_type=cls
+return _tbres}}}
 if(bytes_method===_b_.None){$B.RAISE(_b_.TypeError,"cannot convert "+
 `'${$B.class_name(source)}' object to bytes`)}
 let res=$B.$call(bytes_method)
@@ -7852,7 +7934,7 @@ bytes_funcs.startswith=function(self){return startswith.apply(_b_.bytes,argument
 bytes_funcs.strip=function(){var $=$B.args('lstrip',2,{self:null,cars:null},arguments,{cars:ws_cars})
 var self=$.self,cars=$.cars
 var stripped_right=strip.call(_b_.bytes,self,cars,'r')
-return strip.call(_b_.bytes,res,cars,'l')}
+return strip.call(_b_.bytes,stripped_right,cars,'l')}
 bytes_funcs.swapcase=function(){return swapcase.apply(_b_.bytes,arguments)}
 bytes_funcs.title=function(){return title.apply(_b_.bytes,arguments)}
 bytes_funcs.translate=function(){return translate.apply(_b_.bytes,arguments)}
@@ -7898,7 +7980,52 @@ function memoryview_eq(self,other){
 var other_obj=($B.get_class(other)===memoryview)?other.obj:other
 var eq=$B.$getattr($B.get_class(self.obj),'__eq__')
 return $B.$call(eq,self.obj,other_obj)===true}
-var struct_format={'x':{'size':1},'b':{'size':1},'B':{'size':1},'c':{'size':1},'s':{'size':1},'p':{'size':1},'h':{'size':2},'H':{'size':2},'i':{'size':4},'I':{'size':4},'l':{'size':4},'L':{'size':4},'q':{'size':8},'Q':{'size':8},'f':{'size':4},'d':{'size':8},'P':{'size':8}}
+var struct_format={'x':{'size':1},'b':{'size':1},'B':{'size':1},'c':{'size':1},'s':{'size':1},'p':{'size':1},'h':{'size':2},'H':{'size':2},'i':{'size':4},'I':{'size':4},'l':{'size':4},'L':{'size':4},'q':{'size':8},'Q':{'size':8},'f':{'size':4},'d':{'size':8},'P':{'size':8},'?':{'size':1}}
+// typed element access over a little-endian byte source (mp_subscript /
+// sq_ass_item / tolist / iter honour format+itemsize instead of raw bytes)
+var mv_scratch=new DataView(new ArrayBuffer(8))
+function mv_read(src,start,format,itemsize){
+for(var i=0;i < itemsize;i++){mv_scratch.setUint8(i,src[start+i])}
+switch(format){case 'b':return mv_scratch.getInt8(0)
+case 'B':case 'c':return mv_scratch.getUint8(0)
+case '?':return mv_scratch.getUint8(0)!==0
+case 'h':return mv_scratch.getInt16(0,true)
+case 'H':return mv_scratch.getUint16(0,true)
+case 'i':case 'l':return mv_scratch.getInt32(0,true)
+case 'I':case 'L':case 'P':return mv_scratch.getUint32(0,true)
+case 'q':var vq=mv_scratch.getBigInt64(0,true)
+return(vq >=-9007199254740991n && vq <=9007199254740991n)? Number(vq):vq
+case 'Q':var vQ=mv_scratch.getBigUint64(0,true)
+return vQ <=9007199254740991n ? Number(vQ):vQ
+case 'f':return $B.fast_float ? $B.fast_float(mv_scratch.getFloat32(0,true)):mv_scratch.getFloat32(0,true)
+case 'd':return $B.fast_float ? $B.fast_float(mv_scratch.getFloat64(0,true)):mv_scratch.getFloat64(0,true)}
+return null}
+function mv_write(src,start,format,itemsize,value){
+switch(format){case 'b':case 'B':case 'c':case 'h':case 'H':case 'i':case 'I':case 'l':case 'L':case 'P':
+var vi=Number($B.PyNumber_Index(value))
+if(format=='b'){mv_scratch.setInt8(0,vi)}
+else if(format=='h'){mv_scratch.setInt16(0,vi,true)}
+else if(format=='H'){mv_scratch.setUint16(0,vi,true)}
+else if(format=='i'||format=='l'){mv_scratch.setInt32(0,vi,true)}
+else if(format=='I'||format=='L'||format=='P'){mv_scratch.setUint32(0,vi,true)}
+else{mv_scratch.setUint8(0,vi)}
+break
+case 'q':mv_scratch.setBigInt64(0,BigInt($B.PyNumber_Index(value)),true)
+break
+case 'Q':mv_scratch.setBigUint64(0,BigInt($B.PyNumber_Index(value)),true)
+break
+case '?':mv_scratch.setUint8(0,$B.$bool(value)? 1 :0)
+break
+case 'f':case 'd':
+var vf=(typeof value=='number')? value :(value && value.value !==undefined && $B.$isinstance(value,_b_.float))? value.value :Number($B.PyNumber_Index(value))
+if(format=='f'){mv_scratch.setFloat32(0,vf,true)}else{mv_scratch.setFloat64(0,vf,true)}
+break
+default:return false}
+for(var i=0;i < itemsize;i++){src[start+i]=mv_scratch.getUint8(i)}
+return true}
+function mv_typed(self){return self.obj && self.obj.source !==undefined &&
+(self.itemsize > 1 ||(self.format !=='B' && self.format !=='c'))&&
+struct_format.hasOwnProperty(self.format)&& self.format !=='x' && self.format !=='s' && self.format !=='p'}
 const MEMORYVIEW={RELEASED:0x001,
 C:0x002,
 FORTRAN:0x004,
@@ -7918,10 +8045,22 @@ default:
 res=_b_.NotImplemented
 break}
 return res}
-_b_.memoryview.sq_ass_item=function(self,key,value){try{$B.$setitem(self.obj,key,value)}catch(err){$B.RAISE(_b_.TypeError,"cannot modify read-only memory")}}
+_b_.memoryview.sq_ass_item=function(self,key,value){
+if($B.is_int(key)&& mv_typed(self)){
+if($B.is_bytes(self.obj)){$B.RAISE(_b_.TypeError,"cannot modify read-only memory")}
+var n=(self.obj.source.length/self.itemsize)|0,k=Number(key)
+if(k < 0){k+=n}
+if(k < 0 ||k >=n){$B.RAISE(_b_.IndexError,"index out of bounds on dimension 1")}
+if(mv_write(self.obj.source,k*self.itemsize,self.format,self.itemsize,value)){return}}
+try{$B.$setitem(self.obj,key,value)}catch(err){$B.RAISE(_b_.TypeError,"cannot modify read-only memory")}}
 _b_.memoryview.tp_repr=function(self){if(self.flags & MEMORYVIEW.RELEASED){return "<released memory>"}else{return "<memory>"}}
 _b_.memoryview.tp_hash=function(self){$B.RAISE(_b_.NotImplementedError,'__hash__')}
-_b_.memoryview.tp_iter=function(self){return{
+_b_.memoryview.tp_iter=function(self){
+if(mv_typed(self)){var mvv=self
+return{ob_type:$B.memory_iterator,it:(function*(){
+var n=(mvv.obj.source.length/mvv.itemsize)|0
+for(var i=0;i < n;i++){yield _b_.memoryview.mp_subscript(mvv,i)}})()}}
+return{
 ob_type:$B.memory_iterator,it:$B.make_js_iterator(self.obj)}}
 _b_.memoryview.tp_new=function(cls,args,kw){var obj=args[0]
 if($B.get_class(obj)===memoryview){return obj}
@@ -7942,6 +8081,12 @@ var coef=256
 for(var i=1;i < 4;i++){res+=self.obj.source[start+i]*coef
 coef*=256}
 return res}else if("B".indexOf(self.format)>-1){if(key > self.obj.source.length-1){$B.RAISE(_b_.KeyError,key)}
+return self.obj.source[key]}else if(mv_typed(self)){
+var n=(self.obj.source.length/self.itemsize)|0,k=Number(key)
+if(k < 0){k+=n}
+if(k < 0 ||k >=n){$B.RAISE(_b_.IndexError,"index out of bounds on dimension 1")}
+res=mv_read(self.obj.source,k*self.itemsize,self.format,self.itemsize)
+if(res !==null){return res}
 return self.obj.source[key]}else{
 return self.obj.source[key]}}
 var getitem=$B.$getattr($B.get_class(self.obj),'__getitem__',$B.NULL)
@@ -7977,6 +8122,16 @@ res.itemsize=4
 res.format="I"
 if(objlen % 4 !=0){$B.RAISE(_b_.TypeError,"memoryview: length is not "+
 "a multiple of itemsize")}
+return res
+default:
+// generic 1-D cast: same shape as the hardcoded "I" branch above, for
+// every standard struct format (cast('i')/('d')/… returned undefined)
+var res=memoryview.$factory(self.obj),objlen=_b_.len(self.obj)
+if(objlen % new_itemsize !=0){$B.RAISE(_b_.TypeError,"memoryview: length is not "+
+"a multiple of itemsize")}
+res.itemsize=new_itemsize
+res.format=format
+res.shape=_b_.tuple.$factory([objlen/new_itemsize])
 return res}}
 memoryview_funcs.contiguous_get=function(self){return self.contiguous}
 memoryview_funcs.contiguous_set=_b_.None
@@ -8038,12 +8193,14 @@ ob_type:_b_.bytes,source:self.obj.source}}else if($B.imported.array){var array=$
 if($B.$isinstance(self.obj,array)){
 return array.tp_funcs.tobytes(self.obj)}}
 $B.RAISE(_b_.TypeError,'cannot run tobytes with '+$B.class_name(self.obj))}
-memoryview_funcs.tolist=function(self){if(self.itemsize==1){return _b_.list.$factory(_b_.bytes.$factory(self.obj))}else if(self.itemsize==4){if(self.format=="I"){var res=[]
+memoryview_funcs.tolist=function(self){if(self.itemsize==1 && ! mv_typed(self)){return _b_.list.$factory(_b_.bytes.$factory(self.obj))}else if(self.itemsize==4 && self.format=="I"){var res=[]
 for(var i=0;i < self.obj.source.length;i+=4){var item=self.obj.source[i],coef=256
 for(var j=1;j < 4;j++){item+=coef*self.obj.source[i+j]
 coef*=256}
 res.push(item)}
-return _b_.list.$factory(res)}}}
+return _b_.list.$factory(res)}else if(mv_typed(self)){var res=[],n=(self.obj.source.length/self.itemsize)|0
+for(var i=0;i < n;i++){res.push(_b_.memoryview.mp_subscript(self,i))}
+return _b_.list.$factory(res)}}
 memoryview_funcs.toreadonly=function(self){var res=memoryview.$factory(self.obj);res.readonly=1;return res}
 _b_.memoryview.tp_methods=["release","tobytes","hex","tolist","cast","toreadonly","count","index","__enter__","__exit__"]
 _b_.memoryview.classmethods=["_from_flags","__class_getitem__"]
@@ -9035,8 +9192,11 @@ default:
 return _b_.NotImplemented}}
 _b_.str.sq_repeat=function(self,other){$B.check_nb_args_no_kw('str.__mul__',2,arguments)
 var _self=to_string(self)
-try{other=$B.PyNumber_Index(other)}catch(err){$B.RAISE(_b_.TypeError,"Can't multiply sequence by non-int of type '"+
-$B.class_name(other)+"'")}
+// non-index -> NotImplemented (CPython: str.__mul__ defers, the binop
+// protocol then tries the right operand's __rmul__ — numpy chararray
+// raises its own ValueError there — and rich_op1 already emits the exact
+// "can't multiply sequence by non-int" TypeError when nothing handles it)
+try{other=$B.PyNumber_Index(other)}catch(err){return _b_.NotImplemented}
 return _self.repeat(other < 0 ? 0 :other)}
 _b_.str.nb_remainder=function(self,args){self=to_string(self)
 if(self===$B.NULL){return _b_.NotImplemented}
@@ -9074,8 +9234,9 @@ if(chars.length==self.length){return self.replace(combining_re,"\u200B$1")}
 for(var i=0;i < chars.length;i++){var cp=_b_.ord(chars[i])
 if(cp >=0x300 && cp <=0x36F){repl+="\u200B"+chars[i]}else{repl+=chars[i]}}
 return repl}
-_b_.str.tp_iter=function(self){return{
-ob_type:$B.str_iterator,obj:self,len:_b_.str.mp_length(self),it:self[Symbol.iterator]()}}
+_b_.str.tp_iter=function(self){var _self=to_string(self)
+return{
+ob_type:$B.str_iterator,obj:_self,len:_b_.str.mp_length(_self),it:_self[Symbol.iterator]()}}
 _b_.str.tp_new=function(cls,args,kw){if(cls===undefined){$B.RAISE(_b_.TypeError,"str.__new__(): not enough arguments")}
 $B.check_expected_keywords('str',kw,['encoding','errors'])
 var nb_kwargs=$B.str_dict_length(kw)
@@ -9172,7 +9333,7 @@ for(var i=0,len=_self.length;i < len ;i++){var char=_self.charAt(i)
 if(("a" <=char && char <="m")||("A" <=char && char <="M")){res+=String.fromCharCode(char.charCodeAt(0)+13)}else if(("m" < char && char <="z")||
 ("M" < char && char <="Z")){res+=String.fromCharCode(char.charCodeAt(0)-13)}else{res+=char}}
 return res}
-return _b_.bytes.tp_new(_b_.bytes,[$.self,$.encoding,$.errors],$B.empty_dict())}
+return _b_.bytes.tp_new(_b_.bytes,[_self,$.encoding,$.errors],$B.empty_dict())}
 str_funcs.endswith=function(self,suffix){
 if(arguments.length==2 && typeof suffix=='string'){return self.endsWith(suffix)}
 var $=$B.args("endswith",4,{self:null,suffix:null,start:null,end:null},arguments,{start:0,end:null},null,null),_self
@@ -9411,7 +9572,7 @@ if(! $B.is_str(obj2)){console.log('str join',arguments)
 $B.RAISE(_b_.TypeError,"sequence item "+count+
 ": expected str instance, "+$B.class_name(obj2)+
 " found")}
-res.push(obj2)
+res.push(to_string(obj2))
 count++}catch(err){if($B.$isinstance(err,_b_.StopIteration)){break}else{throw err}}}
 return res.join(_self)}
 str_funcs.ljust=function(self){var $=$B.args("ljust",3,{self:null,width:null,fillchar:null},arguments,{fillchar:" "},null,null),_self=to_string($.self),len=str.mp_length(_self);
@@ -9427,6 +9588,7 @@ return _self.toLowerCase()}
 str_funcs.lstrip=function(self){var $=$B.args("lstrip",2,{self:null,chars:null},arguments,{chars:_b_.None},null,null),_self=$.self,chars=$.chars
 if(chars===_b_.None){return _self.trimStart()}
 [_self,chars]=to_string(_self,chars)
+if(chars===$B.NULL){$B.RAISE(_b_.TypeError,"lstrip arg must be None or str")}
 while(_self.length > 0){var flag=false
 for(var char of chars){if(_self.startsWith(char)){_self=_self.substr(char.length)
 flag=true
@@ -9535,6 +9697,7 @@ str_funcs.rstrip=function(){var $=$B.args("rstrip",2,{self:null,chars:null},argu
 var chars=$.chars,_self=to_string($.self)
 if(chars===_b_.None){return _self.trimEnd()}
 chars=to_string(chars)
+if(chars===$B.NULL){$B.RAISE(_b_.TypeError,"rstrip arg must be None or str")}
 while(_self.length > 0){var flag=false
 for(var char of chars){if(_self.endsWith(char)){_self=_self.substr(0,_self.length-char.length)
 flag=true
@@ -9639,6 +9802,7 @@ return false}else{$B.RAISE(_b_.TypeError,`startswith first arg must be str or a 
 str_funcs.strip=function(){var $=$B.args("strip",2,{self:null,chars:null},arguments,{chars:_b_.None},null,null)
 var _self=to_string($.self)
 if($.chars===_b_.None){return _self.trim()}
+if(to_string($.chars)===$B.NULL){$B.RAISE(_b_.TypeError,"strip arg must be None or str")}
 return str.tp_funcs.rstrip(str.tp_funcs.lstrip(_self,$.chars),$.chars)}
 str_funcs.swapcase=function(self){$B.check_nb_args_no_kw('str.swapcase',1,arguments)
 var res="",cp,_self=to_string(self)
@@ -11327,7 +11491,7 @@ self[HASHES].push(hash)
 self[VERSION]++
 return _b_.None}
 dict.$literal=function(items){var res=$B.empty_dict()
-for(var item of items){dict.$setitem(res,item[0],item[1],item[2])}
+for(var item of items){dict.$setitem(res,item[0],item[1],typeof item[0]=="string"?item[2]:undefined)}
 return res}
 dict.$factory=function(){var res=$B.empty_dict()
 var args=[res]
@@ -11395,9 +11559,10 @@ dict.tp_funcs.update(self,other)
 return self}
 _b_.dict.mp_ass_subscript=function(self,key,value){if(value===$B.NULL){return dict.$delitem(self,key)}
 return dict.$setitem(self,key,value)}
-_b_.dict.mp_length=function(self){var count=Object.keys(self).length
-if(self[KEYS]){for(var d of self[KEYS]){if(d !==undefined){count++}}}
+_b_.dict.mp_length=function(self){if(self[KEYS]){var count=0
+for(var d of self[KEYS]){if(d !==undefined){count++}}
 return count}
+return Object.keys(self).length}
 _b_.dict.mp_subscript=function(self){var $=$B.args("__getitem__",2,{self:null,arg:null},arguments)
 var self=$.self,arg=$.arg
 return dict.$getitem(self,arg)}
@@ -12009,8 +12174,12 @@ for(var item of _b_.dict.$iter_items($.kw)){if(item.key=="key"){func=item.value}
 if(self.length==0){return _b_.None}
 self.$cl=$elts_class(self)
 var cmp=null;
-function basic_cmp(a,b){return $B.rich_comp("__lt__",a,b)?-1:
-$B.rich_comp('__eq__',a,b)? 0 :1}
+// truth-test through $B.$bool, not raw JS truthiness: numpy's __lt__/__eq__
+// return a wrapped np.bool_ object, which is ALWAYS truthy in JS — every
+// comparison read as "less", so sorted() of numpy scalars never sorted
+// (same fix as min/max in $extreme).
+function basic_cmp(a,b){return $B.$bool($B.rich_comp("__lt__",a,b))?-1:
+$B.$bool($B.rich_comp('__eq__',a,b))? 0 :1}
 function reverse_cmp(a,b){return basic_cmp(b,a)}
 if(func===_b_.None && self.$cl===_b_.str){if(reverse){cmp=function(b,a){return $B.$AlphabeticalCompare(a,b)}}else{cmp=function(a,b){return $B.$AlphabeticalCompare(a,b)}}}else if(func===_b_.None && self.$cl===_b_.int){if(reverse){cmp=function(b,a){return a-b}}else{cmp=function(a,b){return a-b}}}else{cmp=reverse ?
 function(t1,t2){return basic_cmp(t2[0],t1[0])}:
@@ -14524,7 +14693,7 @@ modules._warnings={_acquire_lock:function(){},_defaultaction:"default",_filters_
 ]),warn:function(){
 var $=$B.args('warn',4,{message:null,category:null,stacklevel:null,source:null},arguments,{category:_b_.UserWarning,stacklevel:1,source:_b_.None})
 var message=$.message,category=$.category,stacklevel=$.stacklevel
-if($B.$isinstance(message,_b_.Warning)){category=$B.get_class(message)}
+if($B.$isinstance(message,_b_.Warning)){category=$B.get_class(message)}else{message=$B.$call(category,message)}
 var filters
 if($B.imported.warnings){filters=$B.module_getattr($B.imported.warnings,'filters')}else{filters=$B.module_getattr(modules._warnings,'filters')}
 if(filters[0][0]=='error'){if($B.$isinstance(message,_b_.SyntaxWarning)){var syntax_error=$B.EXC(_b_.SyntaxError,message.args[0])
@@ -14551,7 +14720,7 @@ line=src ? src.split('\n')[lineno-1]:null
 warning_message={ob_type:WarningMessage}
 $B.assign_dict(warning_message,{message:message,category,filename:message.filename ||co_filename,lineno,file:_b_.None,line:line ||_b_.None,source:_b_.None,_category_name:category.__name__}
 )}
-if($B.imported.warnings){var showwarn=$B.module_getattr($B.imported.warnings,'_showwarnmsg_impl')
+if($B.imported.warnings){var showwarn=$B.module_getattr($B.imported.warnings,'_showwarnmsg')
 $B.$call(showwarn,warning_message)}else{var trace=''
 if(file && lineno){trace+=`${file}:${lineno}: `}
 trace+=$B.class_name(message)+': '+message.args[0]

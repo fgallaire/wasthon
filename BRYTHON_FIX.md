@@ -18,6 +18,331 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+- [x] **`memoryview` ignores `format`/`itemsize` for every standard format
+  except a hardcoded `"I"`** (`www/src/py_memoryview.js` — `mp_subscript`,
+  `sq_ass_item`, `tp_iter`, `tolist`, `cast`). Element access read raw
+  BYTES: `cast('i')` returned `undefined` (the cast switch only knew
+  `B`/`I`), and a view stamped with a multi-byte format indexed
+  byte-by-byte. CPython indexes ELEMENTS:
+
+  ```python
+  mv = memoryview(bytearray(b'\x01\x00\x00\x00\x02\x00\x00\x00')).cast('i')
+  mv[0], mv[1], mv[-1]   # CPython: (1, 2, 2) — Brython: crash (cast gave None)
+  mv[1] = 300            # writes 4 little-endian bytes
+  mv.tolist()            # [1, 300]
+  ```
+
+  Fix — a `DataView`-backed `mv_read`/`mv_write` pair over the little-endian
+  byte source handles every standard struct format (`b B h H i I l L q Q f
+  d ?`, int64 returning BigInt only past 2**53); `mp_subscript`/`sq_ass_item`
+  route through it when the view is typed (negative indices and CPython's
+  IndexError/`cannot modify read-only memory` included), `tp_iter`/`tolist`
+  yield elements, and `cast` grows a generic default branch (the `B`/`I`
+  hardcodings untouched). Byte-level views (`format 'B'`, itemsize 1) keep
+  the existing code paths byte-for-byte. (+1 numpy with the bridge
+  live-heap-proxy companion: test_random 142/142 green,
+  `rng.shuffle(np.arange(5).data)` permutes the array.)
+- [x] **str-subclass instances break four str/bytes paths that consume the
+  value raw instead of unboxing `$brython_value`** (`www/src/py_string.js`,
+  `www/src/py_bytes.js`). A `class S(str)` instance is
+  `{ob_type: S, $brython_value: '…'}`; CPython accepts str subclasses
+  everywhere a str is expected. Four spots didn't:
+
+  ```python
+  class S(str): pass
+  b'ab'.decode(S('ascii'))          # RuntimeError: encoding.toLowerCase is not a function
+  list(S('abc'))                    # RuntimeError: self[Symbol.iterator] is not a function
+  '-'.join(['a', S('b')])           # 'a-[object Object]'
+  S(' Σ ').encode('unicode_escape') # b'' (empty)
+  ```
+
+  Fixes, one line each: `normalise(encoding)` unboxes a str subclass before
+  `.toLowerCase()` (covers every bytes.decode/str.encode codec lookup);
+  `str.tp_iter` iterates `to_string(self)`; `str.join` pushes
+  `to_string(obj2)` into the JS `Array.join` (the is_str type check already
+  passed — the raw box stringified as `[object Object]`); `str.encode`
+  passes the `_self` it already computed to `bytes.tp_new` instead of the
+  raw `$.self`. (+2 numpy with the bridge str_-boxing companion:
+  test_defchararray 99/0 green, test_scalarinherit 6/6 — np.str_ scalars
+  are str subclasses that now cross these paths constantly.)
+- [x] **`bytes(obj)` never tries the buffer protocol** (`www/src/py_bytes.js`,
+  the iteration fallback of `bytes.tp_new`). CPython's bytes() accepts any
+  buffer exporter; Brython went list()->__bytes__->TypeError, so
+  `bytes(np.array(567.))` (a 0-d array: not iterable, no __bytes__) raised
+  `cannot convert 'ndarray' object to bytes` instead of yielding the
+  double's 8 bytes. Fix — before the error, go through the exporter's
+  `tobytes()` (the same convention `$B.to_bytes` already uses). (+1 numpy
+  test_scalar_ctors `test_void_from_byteslike`, with the bridge
+  GET_BUFFER-fill companion.)
+
+- [x] **`open()` 404s on an URL-shaped path whose scheme was collapsed by
+  `os.path`** (`www/src/py_files.js`-area, the XHR branch of the file
+  opener). In the browser `os.getcwd()`/module `__file__` are URLs;
+  `os.path.abspath`/`normpath` collapse their `//` (POSIX semantics), so
+  `dirname(abspath(__file__)) + '/data/f'` yields `http:/host/…` and the
+  XHR fails. Repro:
+
+  ```python
+  import os
+  p = os.path.join(os.path.split(os.path.abspath("./x.py"))[0], "data.txt")
+  open(p)   # FileNotFoundError: http:/host/…  (file exists at http://…)
+  ```
+
+  Fix — repair `^https?:/(?!/)` to `https?://` at the I/O boundary, right
+  before the GET. numpy's legacy-pickle data tests build exactly this path.
+  (+3 numpy: test_generator_mt19937 legacy_pickle x2 — 321/0 green — and
+  test_direct SFC64 legacy_pickle.)
+
+- [x] **`bytes(-2)` returns `b''` instead of raising ValueError("negative
+  count")** (`www/src/py_bytes.js`, the int branch of `bytes.tp_new`).
+  Repro: `bytes(-2)` / `bytearray(-1)`. numpy's `string_arrtype_new` relies
+  on the raise to take its int-to-decimal fallback — `np.bytes_(-2)` must be
+  `b'-2'`, and silently getting `b''` from the superclass skipped it. Fix —
+  raise before building the zero-fill. (+1 numpy test_scalar_ctors with the
+  bridge kwargs-forwarding companion.)
+
+- [x] **`getset_descriptor` has no `__doc__` getset — reading it climbs to
+  `object.__doc__` ("The base class of the class hierarchy.")**
+  (`www/src/py_dict.js`-area, `getset_descriptor_funcs`). The descriptor's own
+  `__doc__` JS property is not a Brython `__dict__`, so attribute lookup never
+  saw it. Repro: any C-extension getset, e.g. a wasthon module's property —
+  `SomeCType.prop.__doc__` returned object's docstring instead of the
+  extension's. Fix — `__doc___get`/`__doc___set` in tp_funcs plus `__doc__` in
+  tp_getset (the setter is a plain store; the wasthon bridge layers numpy's
+  fill-once rule on its own descriptors). Companion to the bridge's
+  PyGetSetDef.doc wiring. (+1 numpy test_function_base with it.)
+
+- [x] **`frame.f_locals` of a method frame returns the raw namespace object,
+  whose `__class__` key (super() support) makes it LOOK like an instance of
+  the enclosing class** (`www/src/py_frame.js`-equivalent, `f_locals_get`;
+  `$B.obj_dict` is the identity). `type(frame.f_locals)` came out as the
+  class, and every mapping operation crashed. Repro:
+
+  ```python
+  import sys
+  class T:
+      def run(self):
+          f = sys._getframe(0)
+          print(type(f.f_locals))       # <class 'T'> — expected dict
+          'x' in f.f_locals             # TypeError: 'T' is not a container
+  T().run()
+  ```
+
+  numpy's `bmat("A,B;C,D")` reads the CALLER's `f_locals` to resolve the
+  matrix names and died on it. Fix — when the namespace carries a
+  `__class__`/foreign `ob_type` marker, serve a plain-dict snapshot without
+  the compiler-internal keys (`$…`), like CPython's function-frame f_locals;
+  `super()` still works (the marker stays on the real namespace).
+  (+2 numpy test_defmatrix TestCtor.)
+
+- [x] **`list.sort`/`sorted` never sorts objects whose `__lt__` returns a
+  non-bool — the comparator uses raw JS truthiness** (`www/src/py_list.js`,
+  `basic_cmp`). numpy scalars' `__lt__`/`__eq__` return a wrapped `np.bool_`
+  object, which is ALWAYS truthy in JS, so `basic_cmp` answered "less" for
+  every pair and the sort was an identity. Repro (pure Python):
+
+  ```python
+  class N:
+      def __init__(self, v): self.v = v
+      def __lt__(self, other): return TruthyBox(self.v < other.v)  # non-bool truthy object
+  # sorted([N(3), N(1), N(2)]) keeps [3, 1, 2]
+  ```
+
+  (with numpy: `sorted([np.int32(3), np.int32(1), np.int32(2)])` → `[3, 1, 2]`;
+  `key=int` sorted fine — that path goes through TimSort.) Fix — truth-test the
+  `rich_comp` results through `$B.$bool`, exactly like `$extreme` (min/max)
+  already does. (+3 numpy test_shuffle_masked across generator/randomstate/
+  random suites.)
+
+- [x] **`str.sq_repeat` raises TypeError on a non-index count instead of
+  returning NotImplemented — the right operand's `__rmul__` never runs**
+  (`www/src/py_string.js`). CPython's `str.__mul__` defers (NotImplemented)
+  when the count has no `__index__`, letting the binop protocol try
+  `type(y).__rmul__`; `rich_op1` already emits the exact
+  `can't multiply sequence by non-int of type 'X'` TypeError when nothing
+  handles it. Repro:
+
+  ```python
+  class M:
+      def __rmul__(self, other): return 'RMUL'
+  assert 'x' * M() == 'RMUL'   # TypeError before the fix
+  ```
+
+  Fix — `catch → return NotImplemented`. Message parity kept: `'a' * 'b'`
+  still raises `can't multiply sequence by non-int of type 'str'`.
+  (+1 numpy test_defchararray — `'qrs' * chararray` now reaches numpy's
+  `ValueError: Can only multiply by integers`.)
+
+- [x] **`str.strip`/`lstrip`/`rstrip` with a non-None, non-str argument crash
+  with a raw JS error instead of TypeError** (`www/src/py_string.js`).
+  `to_string(chars)` returns the NULL sentinel for a non-str and the code then
+  iterates it (`for (var char of chars)`) → `chars is not iterable`. CPython
+  raises `TypeError: strip arg must be None or str`. Repro: `'abc'.strip(1)`.
+  Fix — raise the CPython TypeError right after the conversion in all three
+  methods. (+1 numpy test_defchararray, `_vec_string` invalid-args.)
+
+- [x] **`unicode_escape` codec: decode handles only 7 escapes via chained
+  `str.replace` (and crashes on a bytes subclass); encode is missing
+  entirely** (`www/src/py_bytes.js`, the `decode`/`encode` switches). Decode
+  matched only `\n \a \b \f \t \' \"` with regex replaces over a
+  latin-1-decoded string — `\ooo`, `\xhh`, `\uxxxx`, `\Uxxxxxxxx` passed
+  through as literal text — and the latin-1 pre-pass tested
+  `[bytes, bytearray].includes(get_class(obj))`, so a bytes SUBCLASS instance
+  fell through to `obj.replace` (JS crash). Encode had no `unicode_escape`
+  case and fell to the `_codecs` stdlib stub, which returns `None`
+  (`TypeError: codec returns UndefinedType`). Repro:
+  `b'\\u03a3'.decode('unicode_escape')` → `'\\u03a3'` (expected `'Σ'`);
+  `'Σ'.encode('unicode_escape')` → TypeError. Fix — full byte-walking decoder
+  over the raw bytes (C escapes, `\ooo` octal, `\xhh`, `\uxxxx`,
+  `\Uxxxxxxxx`, truncation/out-of-range errors) and a CPython-shaped encoder
+  (printable ASCII verbatim; `\\ \n \r \t`; `\xhh`/`\uxxxx`/`\Uxxxxxxxx`).
+  (+2 numpy test_defchararray.)
+
+- [x] **`bytes`/`bytearray` `strip`/`lstrip`/`rstrip` with NO argument raise
+  `TypeError: Type str doesn't support the buffer API`; two-sided
+  `strip(arg)` hits a JS ReferenceError** (`www/src/py_bytes.js`). The no-arg
+  default is `ws_cars` — a plain JS array of the four whitespace codes — but
+  the shared `strip(self, cars, lr)` helper only accepts `undefined` or a real
+  `bytes` and raises for anything else, so `b'x  '.rstrip()` never worked.
+  Independently, `bytes.strip`/`bytearray.strip` computed
+  `var stripped_right = …` then folded `strip.call(cls, res, …)` — `res` is
+  not defined. Repro: `b'abc  '.rstrip()` → TypeError;
+  `b' x '.strip(b' ')` → `res is not defined`. Fix — the helper passes
+  `cars === ws_cars` through untouched (it IS the whitespace list), and the
+  fold uses `stripped_right`. (+5 numpy test_defchararray —
+  `chararray.__getitem__` rstrips every `bytes_` scalar.)
+
+- [x] **`bytes.rsplit` returns byte-reversed pieces, and its no-sep whitespace
+  path splits the wrong string** (`www/src/py_bytes.js`, `rsplit` +
+  `bytes_split_with_whitespace`). The implementation reverses the input,
+  splits, then must un-reverse each piece — it called `part.reverse()` on the
+  WRAPPER objects and re-wrapped the still-reversed source arrays; the
+  `sep=None` branch split `self` instead of `reversed_self`; and the
+  whitespace right-trim sliced `source.slice(start, pos-start+1)` (a length
+  where an end index belongs). Repro: `b'ab cd'.rsplit()` /
+  `b'a,bb'.rsplit(b',')` → reversed/garbled pieces. Fix —
+  `parts.map(t => this.$factory(Array.from(t.source).reverse()))`, whitespace
+  path over `reversed_self`, slice end `pos+1`. (+1 numpy test_defchararray
+  via `np.char.rsplit`.)
+
+- [x] **A class created through `type.tp_new` is missing from its bases'
+  `__subclasses__()`** (`www/src/py_type.js`, the two `return class_obj` exits
+  of `type.tp_new`). Brython's `$class_constructor`/`finalize_type` push a
+  newly created class into each base's `tp_subclasses`, but the `type.tp_new`
+  path (C code building a class, or `type(name, bases, ns)`) returned without
+  registering it. `abc.ABCMeta.__subclasscheck__` walks `cls.__subclasses__()`
+  to honour `register()`, so virtual-subclass checks silently failed. Repro:
+
+  ```python
+  class Base: pass
+  Child = type('Child', (Base,), {})
+  assert Child in Base.__subclasses__()   # [] before the fix
+  ```
+
+  Fix — bare `tp_subclasses.push(class_obj)` before both exits, guarded with
+  `if (_sb.tp_subclasses)` (C-extension bases have none), mirroring
+  `$class_constructor`. (+2 numpy test_seed_sequence:
+  `issubclass(SeedSequence, ISeedSequence)` after `register()`.)
+
+- [x] **A replaced `warnings.showwarning` was ignored — `_warnings.warn` called
+  `_showwarnmsg_impl` instead of `_showwarnmsg`** (`www/src/builtin_modules.js`,
+  the `_warnings` module's `warn`). `numpy.testing`'s `assert_warns` /
+  `suppress_warnings` record a warning by replacing `warnings.showwarning`;
+  CPython's machinery routes through `_showwarnmsg`, which calls a replaced
+  `showwarning` and only falls back to `_showwarnmsg_impl` (the default stderr
+  sink) when it is unchanged. Brython's C-level `warn` shortcut called
+  `_showwarnmsg_impl` directly, so the override never fired and `assert_warns`
+  reported "No warning raised". Fix — call `_showwarnmsg`:
+
+  ```javascript
+  // www/src/builtin_modules.js — _warnings.warn
+  var showwarn = $B.module_getattr($B.imported.warnings, '_showwarnmsg')
+  // was: '_showwarnmsg_impl'
+  ```
+
+  (Second part, vendored bundle only: the 3.14.1 `brython.js` had also dropped
+  the `warn(str, category)` → `category(str)` instance conversion the brython-dev
+  source still does, so the replaced `showwarning` received a bare `str` and hit
+  `'str' object has no attribute 'args'` — restored in the bundle.) Repro:
+  `numpy.testing.assert_warns(UserWarning, warnings.warn, 'x', UserWarning)`.
+  +1 scipy.cluster test_hierarchy.
+
+- [x] **Float dict *literal* keys whose hash exceeds 2\*\*53 missed on lookup**
+  (`www/src/py_dict.js`, `dict.$literal`). A dict literal `{0.8: 1}` compiles to
+  `dict.$literal([[key, value, hash], …])` where `item[2]` is the key hash the
+  **compiler precomputed**. For a non-string key that hash can be an imprecise
+  JS number — a float's hash exceeds 2\*\*53 (`hash(0.8) == 1844674407370955264`),
+  and `_b_.dict.$setitem` buckets on `self[TABLE][hash]`, so the precomputed
+  Number key disagrees with the exact BigInt hash recomputed by
+  `__getitem__`/`__contains__` on lookup. Hence `0.8 in {0.8: 1}` → False while
+  `x = 0.8; x in {x: 1}` → True (a variable key isn't precomputed, so both sides
+  hash at runtime). Fix — keep the fast path for string keys, recompute every
+  other key's hash at runtime (matching lookup):
+
+  ```javascript
+  // www/src/py_dict.js — dict.$literal, inside the loop
+  dict.$setitem(res, item[0], item[1],
+                typeof item[0] == "string" ? item[2] : undefined)
+  // was: dict.$setitem(res, item[0], item[1], item[2])
+  ```
+
+  Repro: `0.8 in {0.8: 1}` (→ False before). +3 scipy.cluster `test_hierarchy`
+  (`TestFcluster`, whose test-data dicts are keyed by float thresholds).
+
+- [x] **`len()` overcounts a dict once a string key follows a non-string key**
+  (`www/src/py_dict.js`, `dict.mp_length` — regressed in the vendored 3.14.1
+  bundle; the brython-dev source already has it right). A dict switches to TABLE
+  mode the moment a non-string key is inserted; string keys then live in KEYS,
+  but `dict.$setitem` still also writes the value as a direct JS property
+  (`self[key] = value`) — a stale duplicate. The buggy `mp_length` summed BOTH
+  `Object.keys(self).length` (the stray direct props) AND the KEYS entries, so
+  every string key added in TABLE mode was counted twice:
+
+  ```pycon
+  >>> d = {1: 0}; d['a'] = 1; len(d)
+  3          # should be 2 — d.items()/keys() correctly show 2
+  ```
+
+  Fix — in TABLE mode count only KEYS (the direct props are stale duplicates;
+  every read path already goes through KEYS); use `Object.keys` only for a
+  pure-string (non-TABLE) dict:
+
+  ```javascript
+  // www/src/py_dict.js — dict.mp_length  (matches the brython-dev source)
+  _b_.dict.mp_length = function(self) {
+      var count = 0
+      if (self[KEYS]) { for (var d of self[KEYS]) if (d !== undefined) count++ }
+      else { count = Object.keys(self).length }
+      return count }
+  ```
+
+  Repro: `len({1: 0, 'a': 1})` → 3 before. +9 scipy.cluster `test_disjoint_set`
+  (whose keys mix numpy-float/int/str/tuple/None). NB numpy's float scalar hash
+  differs from Brython's (`hash(np.float64(0.8))` = 9007199254740557 vs
+  1844674407370955264) but is self-consistent — the len miscount was the failure,
+  not the hash.
+
+- [x] **`deque(iterable, maxlen=N)` raised `TypeError: object.__new__() takes
+  exactly one argument`** (`www/src/Lib/_collections.py`, `deque.__new__`).
+  `deque.__new__(cls, iterable=(), *args, **kw)` forwarded `*args, **kw` to
+  `object.__new__(cls, *args, **kw)`; with a keyword such as `maxlen` present,
+  `object.__new__` rejects the excess arg (correctly, as in CPython, because
+  `__new__` is overridden). CPython's real deque is a C type and never runs this
+  Python `__new__`. Fix — don't forward (iterable/maxlen are consumed by
+  `__init__`, and `__new__` needs neither):
+
+  ```python
+  # www/src/Lib/_collections.py — deque.__new__
+  def __new__(cls, iterable=(), *args, **kw):
+      self = object.__new__(cls)   # was: object.__new__(cls, *args, **kw)
+      self.clear()
+      return self
+  ```
+
+  Repro: `from collections import deque; deque([1, 2, 3, 4], maxlen=2)`. Surfaced
+  in scipy.cluster `_kmeans` (`deque([diff], maxlen=2)`). +6 test_vq
+  (scipy.cluster kmeans, with the BLAS-shim fix → test_vq 31/0).
+
 - [x] **`str * n` rejected any non-`int`, ignoring `__index__`** (`www/src/py_string.js`, `_b_.str.sq_repeat`). CPython's `PySequence_Repeat` converts the count with `PyNumber_AsSsize_t` → `__index__`, so `'ab' * numpy.int32(3)` works. Brython's `str.sq_repeat` guarded with a strict `$B.is_int(other)` and raised `TypeError: Can't multiply sequence by non-int of type 'int32'`. `list`/`tuple` already do the right thing — their shared `sq_repeat` (`www/src/py_list.js`) goes through `$B.PyNumber_Index` — so only `str` was out of line. Repro: `'ab' * numpy.int32(3)`. Fix — swap the type guard for the same `PyNumber_Index` conversion (still a `TypeError`, same message, for anything with no `__index__` — `float`, `str`, …):
 
   ```js
