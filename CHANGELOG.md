@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`wrapMaybeType` maps a JS `undefined` call result to None**
+  (`src/wasthon.js` — the return path of PyObject_CallMethod/CallFunction).
+  A JS-side method that returns nothing (the io stack's `close()`) came back
+  as handle 0 = C-NULL with no exception, which C callers read as an
+  unreported failure — np.fromfile fetched its data fine, then
+  `npy_PyFile_CloseFile`'s `file.close()` "failed" and the whole read
+  aborted with `fromfile: call returned NULL`. A successful Python call can
+  never yield C-NULL, so undefined is None. Diagnosed with printf steps
+  through array_fromfile → npy_PyFile_Dup2/DupClose2/CloseFile (n.b.
+  Module.print must be routed to console under FORCE_FILESYSTEM). +1 numpy
+  test_longdouble (`fromfile_complex`; fromfile works generally).
 - **`PyOS_string_to_double` reports overflow through the C side's own
   `ERANGE` — WASI numbering, not Linux's** (`src/wasthon.c` + `src/wasthon.js`).
   The overflow path (overflow_exception==NULL, CPython contract: ±HUGE_VAL +

@@ -1251,6 +1251,13 @@ mergeInto(LibraryManager.library, {
          * so the non-type fallback seeds a refcount — C code may store the
          * result in a struct with no further INCREF (ownership transfer). */
         wrapMaybeType: function(obj) {
+            /* A successful Python call can never yield C-NULL: a JS-side
+               method that returns nothing (undefined — e.g. the io stack's
+               close()) means None. Returning 0 here made the C caller see
+               "NULL with no exception set" (np.fromfile's
+               npy_PyFile_CloseFile aborted the whole read after the data
+               was already fetched). */
+            if (obj === undefined) obj = this._b_.None;
             if (obj && this.$B && this._b_ && this._b_.type) {
                 try {
                     if (this.$B.$isinstance(obj, this._b_.type)) {
