@@ -8399,6 +8399,20 @@ mergeInto(LibraryManager.library, {
          * the subtype the caller passes, like CPython's new_datetime_subclass.
          * The field-access macros are attribute reads (src/datetime.h). */
         if (name === 'datetime.datetime_CAPI') {
+            /* When the real C _datetime module is loaded (its star-import
+             * puts the genuine PyCapsule on the datetime module), hand its
+             * pointer straight through: consumers (pandas' PyDateTime_IMPORT)
+             * then talk C-to-C — real type pointers, real fast constructors.
+             * The bridge-built shim below remains the fallback for bundles
+             * without the C module (Brython's _pydatetime). */
+            try {
+                var dtm0 = rt.$B.$call(rt._b_.__import__, 'datetime');
+                var cap0 = rt.$B.$getattr(dtm0, 'datetime_CAPI', null);
+                if (cap0) {
+                    var co = rt.unwrap(rt.wrap(cap0));
+                    if (co && co.ptr) return co.ptr;
+                }
+            } catch (e0) {}
             if (!rt._datetimeCAPI) {
                 var dtm = rt.$B.$call(rt._b_.__import__, 'datetime');
                 var g = function(n) { return rt.$B.$getattr(dtm, n); };
@@ -8824,6 +8838,13 @@ mergeInto(LibraryManager.library, {
         var sec;
         if (typeof obj === 'number') sec = Math.floor(obj);
         else if (typeof obj === 'bigint') sec = Number(obj);
+        // Brython float is a Float box carrying ob_type + value (same story
+        // as PyFloat_CheckExact): date.fromtimestamp(time.time()) hands a
+        // boxed float here.
+        else if (obj && typeof obj.value === 'number' &&
+                 (obj.ob_type === rt._b_.float || obj.__class__ === rt._b_.float)) {
+            sec = Math.floor(obj.value);
+        }
         else { rt.setError(rt.wrap(rt._b_.TypeError), "expected number"); return -1; }
         // time_t is 8 bytes on wasm32 (it's typedef'd to int64_t in emscripten).
         var asU = sec < 0 ? (BigInt(sec) + 0x10000000000000000n) : BigInt(sec);
@@ -8833,8 +8854,12 @@ mergeInto(LibraryManager.library, {
     },
     _PyTime_localtime__deps: ['$WasthonRT'],
     _PyTime_localtime: function(t_lo, t_hi, tmPtr) {
-        // t is int64 split as two 32-bit args by emcc i64 ABI.
-        var sec = (t_hi * 0x100000000) + (t_lo >>> 0);
+        // t is int64: legacy ABI splits it into two 32-bit args; with
+        // WASM_BIGINT (the emsdk default) it arrives as ONE BigInt and the
+        // second arg is tmPtr. Accept both.
+        var sec;
+        if (typeof t_lo === 'bigint') { sec = Number(t_lo); tmPtr = t_hi; }
+        else sec = (t_hi * 0x100000000) + (t_lo >>> 0);
         var d = new Date(sec * 1000);
         // struct tm layout (per emscripten):
         //   +0  tm_sec     int
@@ -12829,6 +12854,40 @@ mergeInto(LibraryManager.library, {
         return rt.wrapNewRef(placeholder);
     },
 
+    /* PyUnicode_WriteChar(u, index, ch) — write one code point into a
+     * PyUnicode_New placeholder buffer (kind-aware) and drop the cached
+     * materialization. _datetimemodule builds isoformat/repr strings this
+     * way. Real (immutable) strings are refused like CPython refuses
+     * interned/shared ones. */
+    PyUnicode_WriteChar__deps: ['$WasthonRT'],
+    PyUnicode_WriteChar: function(uH, index, ch) {
+        var rt = WasthonRT;
+        var u = rt.unwrap(uH);
+        if (!u || u.__wasthon_unicode_buf__ === undefined) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyUnicode_WriteChar: not a writable unicode buffer");
+            return -1;
+        }
+        if (index < 0 || index >= u.__wasthon_unicode_size__) {
+            rt.setError(rt.wrap(rt._b_.IndexError), "string index out of range");
+            return -1;
+        }
+        var buf = u.__wasthon_unicode_buf__, kind = u.__wasthon_unicode_kind__;
+        if (kind === 4)      HEAPU32[(buf + index * 4) >> 2] = ch;
+        else if (kind === 2) HEAPU16[(buf + index * 2) >> 1] = ch;
+        else                 HEAPU8[buf + index] = ch;
+        delete u.__wasthon_unicode_cached__;
+        return 0;
+    },
+
+    /* PyUnicode_DecodeLocale(str, errors) — the wasm "locale" is UTF-8. */
+    PyUnicode_DecodeLocale__deps: ['$WasthonRT'],
+    PyUnicode_DecodeLocale: function(strPtr, _errorsPtr) {
+        var rt = WasthonRT;
+        try { return rt.wrapNewRef(strPtr ? UTF8ToString(strPtr) : ""); }
+        catch (e) { rt.forwardError(e, rt._b_.UnicodeDecodeError); return 0; }
+    },
+
     /* PyUnicode_1BYTE_DATA(str) — returns the pointer to the Latin-1
      * data buffer for a 1-byte-kind PEP 393 string. Only valid on
      * placeholders allocated by PyUnicode_New with maxchar < 0x100. */
@@ -15813,12 +15872,22 @@ mergeInto(LibraryManager.library, {
                 "PyModule_AddType: module handle " + moduleHandle + " did not resolve");
             return -1;
         }
-        if (!typeInfo && typeof _PyType_Ready === 'function') {
+        if (!typeInfo && typeof _PyType_Ready === 'function'
+                && !(rt.builtinClassForStruct && rt.builtinClassForStruct.has(typeHandle))) {
             /* CPython's PyModule_AddType readies the type first. A static
              * PyTypeObject passed in unreadied (pygame's Clock, Vector, …)
              * isn't in the types map yet — ready it, then re-look-up.
              * Without this, PyInit_time/key/window/pixelarray fail with
-             * "type handle N not in types map". */
+             * "type handle N not in types map". A BOUND builtin struct
+             * (wasthon_bind_builtin_type) must NOT take this path: readying
+             * it materialized an impostor class that clobbered the stub in
+             * rt.handles (PickleBuffer lost its tp_new the moment any linked
+             * module made _PyType_Ready exist in the glue, e.g. _datetime —
+             * no import needed). Skipping lands in the fallback below, which
+             * uses the bound class directly — the dormant-era behavior.
+             * PyType_Ready itself stays whole: numpy's exec readies bound
+             * builtin structs (&PyFloat_Type…) and needs the full
+             * materialization side-effects (rt.types entry) — nppd boot. */
             _PyType_Ready(typeHandle);
             typeInfo = rt.types.get(typeHandle);
         }

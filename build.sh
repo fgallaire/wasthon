@@ -9,10 +9,10 @@
 # Usage: ./build.sh <command>
 #   <module>...   build one or several modules (e.g. _sha2, or _sha2 _decimal)
 #   all           build every supported module (~45 s once libs are cached)
-#   wasthon       build the light bundle (22 modules, ~1 MB) — the default
+#   wasthon       build the light bundle (23 modules, ~1 MB) — the default
 #                 drop-in: covers crypto, compression (zlib/bz2/lzma),
 #                 decimal, json/csv/struct/sre/pyexpat, math, array
-#   wasthon-full  build the full bundle (25 modules, ~3 MB), adding the
+#   wasthon-full  build the full bundle (26 modules, ~3 MB), adding the
 #                 three heavy specialists: unicodedata (full Unicode DB),
 #                 _zstd (modern compression) and _sqlite3 (embedded DB)
 #   list          show the known module names
@@ -38,8 +38,8 @@ usage() {
 Usage: $0 <command>
   <module>...   build one or several modules (e.g. _sha2, or _sha2 _decimal)
   all           build every supported module
-  wasthon       light bundle (22 modules, ~1 MB) — the default deliverable
-  wasthon-full  full bundle (25 modules, ~3 MB) — adds unicodedata + _zstd + _sqlite3
+  wasthon       light bundle (23 modules, ~1 MB) — the default deliverable
+  wasthon-full  full bundle (26 modules, ~3 MB) — adds unicodedata + _zstd + _sqlite3
   list          show the known module names
 EOF
 }
@@ -60,7 +60,7 @@ KNOWN_MODULES=(
 
 if [[ "${MODULE}" == "list" ]]; then
     cat <<'EOF'
-Known wasthon modules (25):
+Known wasthon modules (26):
   hashlib:     _md5  _sha1  _sha2  _sha3  _blake2  _hmac
   compression: _zlib  _bz2  _lzma  _zstd
   text/parse:  _csv  _json  _struct  _sre  unicodedata  pyexpat
@@ -68,6 +68,7 @@ Known wasthon modules (25):
   numerics:   _decimal  _random  _statistics  math  cmath
   containers: array
   database:   _sqlite3
+  datetime:   _datetime  (dtconvert.py rewrites its static PyTypeObjects at copy time)
 EOF
     exit 0
 fi
@@ -429,12 +430,12 @@ fi
 # links the lot in one emcc call exporting every PyInit_* symbol.
 #
 # Two targets:
-#   wasthon      — light (22 modules, ~1 MB). The default deliverable.
+#   wasthon      — light (23 modules, ~1 MB). The default deliverable.
 #                  Drops the three heavy specialists (unicodedata, _zstd,
 #                  _sqlite3) that together account for most of the full
 #                  bundle's extra weight. Users who need them load the
 #                  per-module .wasm add-on alongside.
-#   wasthon-full — everything (25 modules, ~3 MB). Kitchen-sink, opt-in.
+#   wasthon-full — everything (26 modules, ~3 MB). Kitchen-sink, opt-in.
 #
 # Per-module .mjs files coexist for dev/bench and on-demand use.
 if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then

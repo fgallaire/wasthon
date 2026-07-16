@@ -254,10 +254,17 @@ operation is small and the bridge crossing dominates:
 
 This is the second selection rule for choosing modules to port. The first
 is **"engine separable from Py-API"** (the C side does substantive work
-that doesn't constantly call back into Python). The third is **"no static
-PyTypeObject"** — modules that define their type with a 50-field static
-struct initializer (like `_datetime`) are incompatible with our
-multi-phase-init-based bridge.
+that doesn't constantly call back into Python). There used to be a third —
+**"no static PyTypeObject"**: modules that define their types with 50-field
+static struct initializers were incompatible with the bridge, because
+wasthon.h reorders `struct _typeobject` and a positional initializer fills
+the wrong slots. That rule fell with `src/dtconvert.py` (see "How it's
+built" below): `_datetime` — 7 static types, 227 positional slots — now
+compiles verbatim and ships in both bundles (`datetime.date + timedelta`
+drops from 146 µs interpreted to 1.7 µs, **86×**). The same conversion,
+generalized, is what put real PyTorch on the bridge
+([BryTorch](https://github.com/fgallaire/brytorch): 31 static types,
+1029 slots).
 
 ## wasthonp — CPython's parser as the frontend
 
@@ -304,6 +311,19 @@ CPython's `Modules/`, one `emcc` invocation produces an Emscripten ES6
 module exposing `PyInit_<x>()`. A small Brython-side loader
 (`loader/wasthon-loader.js`) instantiates it and registers it under
 `__BRYTHON__.imported[<x>]` so `import <x>` from Python just works.
+
+One module gets an extra build step. `_datetime` defines its 7 types as
+**static `PyTypeObject` initializers** — positional C89 lists whose meaning
+depends on the exact field order of `struct _typeobject`, which wasthon.h
+reorders. Compiled raw, every slot lands in the wrong field. So
+`src/dtconvert.py` rewrites the 227 positional slots into **C99 designated
+initializers** (`.tp_dealloc = ...`) at copy time, keyed on CPython's
+canonical slot order. It is a deterministic source-to-source pass, the
+output is ordinary diffable C, and the source stays byte-for-byte upstream
+CPython in the repo — the same zero-fork rule as every other module. The
+runtime half (`_PyDateTime_InitTypes`, singleton registration, the real
+packed-struct `datetime.h` for capsule consumers like pandas) rides in
+`datetime_exec` via `build.sh`.
 
 ```
                 ┌──────────────────────────────────────────────┐
@@ -474,9 +494,9 @@ cd wasthon
 ./build.sh _sha2 _decimal # several specific modules in one go
 ./build.sh all            # everything as per-module .mjs/.wasm
                           # (~45 s once libs are cached; first run downloads + builds the libs too)
-./build.sh wasthon        # light bundle: 22 modules in build/wasthon.{mjs,wasm} (~1 MB)
+./build.sh wasthon        # light bundle: 23 modules in build/wasthon.{mjs,wasm} (~1 MB)
                           # — drops the three specialists (unicodedata, _zstd, _sqlite3)
-./build.sh wasthon-full   # full bundle: 25 modules in build/wasthon-full.{mjs,wasm} (~3 MB)
+./build.sh wasthon-full   # full bundle: 26 modules in build/wasthon-full.{mjs,wasm} (~3 MB)
 ```
 
 The per-module target is best for dev, bench, and incremental work — each
@@ -769,8 +789,9 @@ remains in CPython's stdlib falls into one of three buckets:
 
 - **Structurally impossible in browser** — `_socket`, `_ssl`, `_thread`,
   `_ctypes`, `_curses`, `mmap`, `select`, `_asyncio`, heavy `_io`,
-  `_multiprocessing` (no OS), `_datetime`/`_types` (static `PyTypeObject`,
-  banned by our bridge rules).
+  `_multiprocessing` (no OS). (`_datetime` used to sit here under the
+  static-`PyTypeObject` ban; `dtconvert.py` lifted the ban and it is now
+  module #26.)
 - **Fails the work-density rule** — `_functools` (`lru_cache`/`reduce`),
   `_operator`, `_queue` (no threads anyway). `_heapq` and `_bisect` were
   ported and dropped after benchmarks measured zero-or-negative gain.

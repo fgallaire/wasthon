@@ -253,6 +253,9 @@ int          wasthon_unicode_islinebreak(unsigned int ch);
 /* Py_UNICODE_IS{ALPHA,DIGIT,ALNUM,SPACE,DECIMAL} are defined once, in the
  * UCS4 unicodectype block further down (_PyUnicode_Is*). */
 #define Py_UNICODE_ISLINEBREAK(c) wasthon_unicode_islinebreak(c)
+#define Py_UNICODE_IS_SURROGATE(c) (0xD800 <= (Py_UCS4)(c) && (Py_UCS4)(c) <= 0xDFFF)
+int       PyUnicode_WriteChar(PyObject *unicode, Py_ssize_t index, Py_UCS4 character);
+PyObject *PyUnicode_DecodeLocale(const char *str, const char *errors);
 
 /* The real CPython lookups from Objects/unicodectype.c — linked into the
  * unicodedata module's build. The previous JS-side stubs used parseFloat
@@ -964,7 +967,7 @@ int        PyTuple_SetItem(PyObject *tup, Py_ssize_t i, PyObject *item);
 PyObject  *PyTuple_GetItem(PyObject *tup, Py_ssize_t i);
 PyObject  *PyTuple_Pack(Py_ssize_t n, ...);
 Py_ssize_t PyTuple_Size(PyObject *tup);
-#define PyTuple_SET_ITEM(tup, i, item)  ((void)PyTuple_SetItem((tup), (i), (item)))
+#define PyTuple_SET_ITEM(tup, i, item)  ((void)PyTuple_SetItem((PyObject *)(tup), (i), (item)))
 #define PyTuple_GET_ITEM(tup, i)        PyTuple_GetItem((tup), (i))
 
 /* Callable / iter protocol. */

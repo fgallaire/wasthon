@@ -818,6 +818,89 @@ void *wasthon_get_brython_tp_new(void) {
     return (void *)wasthon_brython_tp_new;
 }
 
+/* ---- pycore_time.h stubs (for _datetimemodule.c) ----------------------
+ * Numeric/UTC-only helpers, with the CPython pytime.c rounding semantics
+ * (fromtimestamp uses HALF_EVEN). _PyTime_ObjectToTime_t and
+ * _PyTime_localtime stay JS-library (wasthon.js): localtime must reflect
+ * the BROWSER timezone via Date, not musl's TZ-less UTC. PyTime_t is int64
+ * nanoseconds, as in wasthon.h. */
+#include <math.h>
+#include "pycore_time.h"
+
+PyObject *_PyLong_FromTime_t(time_t sec) { return PyLong_FromLongLong((long long)sec); }
+
+time_t _PyLong_AsTime_t(PyObject *obj) {
+    long long v = PyLong_AsLongLong(obj);
+    if (v == -1 && PyErr_Occurred()) return (time_t)-1;
+    return (time_t)v;
+}
+
+static double wasthon_time_round(double x, _PyTime_round_t round) {
+    switch (round) {
+        case _PyTime_ROUND_HALF_EVEN: return rint(x);
+        case _PyTime_ROUND_CEILING:
+        case _PyTime_ROUND_UP:        return ceil(x);
+        default:                      return floor(x);
+    }
+}
+
+int _PyTime_ObjectToTimeval(PyObject *obj, time_t *sec, long *usec,
+                            _PyTime_round_t round) {
+    if (PyFloat_Check(obj)) {
+        double d = PyFloat_AsDouble(obj);
+        if (d == -1.0 && PyErr_Occurred()) return -1;
+        if (isnan(d)) {
+            PyErr_SetString(PyExc_ValueError, "Invalid value NaN (not a number)");
+            return -1;
+        }
+        double intpart;
+        double floatpart = modf(d, &intpart) * 1e6;
+        floatpart = wasthon_time_round(floatpart, round);
+        if (floatpart >= 1e6) { floatpart -= 1e6; intpart += 1.0; }
+        else if (floatpart < 0) { floatpart += 1e6; intpart -= 1.0; }
+        *sec = (time_t)intpart;
+        *usec = (long)floatpart;
+        if ((double)*sec != intpart) {
+            PyErr_SetString(PyExc_OverflowError, "timestamp out of range for platform time_t");
+            return -1;
+        }
+        return 0;
+    }
+    *sec = _PyLong_AsTime_t(obj);
+    *usec = 0;
+    if (*sec == (time_t)-1 && PyErr_Occurred()) return -1;
+    return 0;
+}
+
+int _PyTime_AsTimevalTime_t(PyTime_t t, time_t *secs, int *us,
+                            _PyTime_round_t round) {
+    /* t is int64 nanoseconds; us must land in [0, 999999]. */
+    long long sec = t / 1000000000LL;
+    long long nsec = t % 1000000000LL;
+    if (nsec < 0) { nsec += 1000000000LL; sec -= 1; }
+    long long usec;
+    if (round == _PyTime_ROUND_HALF_EVEN) {
+        double r = rint((double)nsec / 1000.0);
+        usec = (long long)r;
+    } else if (round == _PyTime_ROUND_CEILING || round == _PyTime_ROUND_UP) {
+        usec = (nsec + 999) / 1000;
+    } else {
+        usec = nsec / 1000;
+    }
+    if (usec >= 1000000) { usec -= 1000000; sec += 1; }
+    *secs = (time_t)sec;
+    *us = (int)usec;
+    return 0;
+}
+
+int _PyTime_gmtime(time_t t, struct tm *tm) {
+    if (gmtime_r(&t, tm) == NULL) {
+        PyErr_SetString(PyExc_OSError, "gmtime argument out of range");
+        return -1;
+    }
+    return 0;
+}
+
 /* Default tp_free — CPython tp_dealloc bodies end with
  * `Py_TYPE(self)->tp_free(self)`, so every type struct needs a non-NULL
  * tp_free. The bridge installs this (PyObject_GC_Del) unless the module
