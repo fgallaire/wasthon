@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_GetBuffer` honours `PyBUF_WRITABLE`** (`src/wasthon.c`). The
+  generic path ignored flags entirely, so a writable request on an immutable
+  bytes succeeded — numpy's `PyArray_FromBuffer` probes with
+  `PyBUF_WRITABLE|PyBUF_SIMPLE` to set the array's writeable flag, making
+  every `np.frombuffer(b"…")` writable and the output-not-writeable
+  ValueError in `_simple_strided_call` unreachable. A readonly view now
+  refuses the writable request with BufferError, exactly like CPython's
+  bytes exporter. bytearray sources stay writable. +1 numpy
+  test_arraymethod (40/0 green).
 - **The builtin `PyLong_Type.tp_as_number` gains `nb_int`/`nb_index`**
   (`src/wasthon.c` + `src/wasthon.js`). numpy's `void_arrtype_new` calls
   `Py_TYPE(obj)->tp_as_number->nb_int(obj)` directly on the length argument;

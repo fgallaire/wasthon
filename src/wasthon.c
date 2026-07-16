@@ -557,7 +557,7 @@ int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
 
     extern int wasthon_call_bf_getbuffer(PyObject *obj, Py_buffer *view, int flags);
 
-    (void)flags;  /* generic path: PyBUF_SIMPLE only; no flag interpretation. */
+    /* generic path: only PyBUF_WRITABLE is interpreted (below). */
     void *buf = NULL;
     Py_ssize_t len = 0;
     int readonly = 1;  /* JS reports the object's real mutability. */
@@ -575,6 +575,17 @@ int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
         return -1;
     }
 
+    /* Honour PyBUF_WRITABLE: CPython's bytes/str exporters refuse a
+     * writable request. numpy's PyArray_FromBuffer probes with
+     * WRITABLE|SIMPLE to decide the array's writeable flag — always
+     * succeeding made np.frombuffer(b"...") writable and the
+     * output-not-writeable ValueError in _simple_strided_call never fired. */
+    if ((flags & PyBUF_WRITABLE) && readonly) {
+        PyErr_SetString(PyExc_BufferError, "Object is not writable.");
+        view->buf = NULL;
+        view->obj = NULL;
+        return -1;
+    }
     view->buf       = buf;
     view->obj       = obj;       /* No refcount: handle stays alive in JS. */
     view->len       = len;
@@ -594,6 +605,17 @@ int PyBuffer_FillInfo(Py_buffer *view, PyObject *obj, void *buf,
     (void)flags;  /* PyBUF_SIMPLE only, like PyObject_GetBuffer above. */
     if (view == NULL) {
         PyErr_SetString(PyExc_BufferError, "PyBuffer_FillInfo: view is NULL");
+        return -1;
+    }
+    /* Honour PyBUF_WRITABLE: CPython's bytes/str exporters refuse a
+     * writable request. numpy's PyArray_FromBuffer probes with
+     * WRITABLE|SIMPLE to decide the array's writeable flag — always
+     * succeeding made np.frombuffer(b"...") writable and the
+     * output-not-writeable ValueError in _simple_strided_call never fired. */
+    if ((flags & PyBUF_WRITABLE) && readonly) {
+        PyErr_SetString(PyExc_BufferError, "Object is not writable.");
+        view->buf = NULL;
+        view->obj = NULL;
         return -1;
     }
     view->buf       = buf;
