@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyOS_string_to_double` reports overflow through the C side's own
+  `ERANGE` — WASI numbering, not Linux's** (`src/wasthon.c` + `src/wasthon.js`).
+  The overflow path (overflow_exception==NULL, CPython contract: ±HUGE_VAL +
+  errno=ERANGE, no exception) wrote 34 into errno; on Emscripten's WASI
+  numbering 34 is EMLINK and ERANGE is 68, so numpy's
+  `if (errno == ERANGE)` fell through to `else if (errno)` and every
+  longdouble overflow raised `invalid literal for long double: … (Too many
+  links)`. A tiny exported `wasthon_set_errno_erange()` (plus debug
+  set/get) lets the JS bridge store whatever ERANGE the C compilation
+  resolves. Diagnosed with paired C/JS errno probes and printf-instrumented
+  numpy objects (n.b.: FORCE_FILESYSTEM reroutes wasm printf into MEMFS —
+  pass Module.print to see them). +3 numpy: test_scalar_ctors 197/0 green
+  (floating_overflow, with the pytest-shim warns-callable companion),
+  test_longdouble from_int, test_scalar_methods 233/0 green
+  (as_integer_ratio).
 - **`PyMemoryView_GET_BUFFER` fills the Py_buffer for ANY exporter, not only
   C-backed ones** (`src/wasthon.js`). The typed fill was gated on
   `__wasthon_ptr__`, so a memoryview over a plain Brython bytes/bytearray

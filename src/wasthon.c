@@ -854,6 +854,23 @@ void wasthon_init_number_protocols(void) {
     PyFloat_Type.tp_methods   = wasthon_float_methods;
 }
 
+/* errno accessors for the JS bridge. PyOS_string_to_double must report
+ * overflow as errno=ERANGE with NO exception (CPython contract when
+ * overflow_exception==NULL); writing through the JS-side
+ * ___errno_location export landed in a DIFFERENT slot than the one
+ * numpy's C reads (it read a stale 31/EMLINK) — set it from C instead,
+ * whatever location this compilation unit resolves errno to. */
+#include <errno.h>
+EMSCRIPTEN_KEEPALIVE
+void wasthon_set_errno(int v) { errno = v; }
+/* WASI numbering differs from Linux (ERANGE is 68, not 34 — 34 is EMLINK,
+ * which is why the overflow path kept reading "Too many links"): let the C
+ * side supply ITS OWN ERANGE. */
+EMSCRIPTEN_KEEPALIVE
+void wasthon_set_errno_erange(void) { errno = ERANGE; }
+EMSCRIPTEN_KEEPALIVE
+int wasthon_get_errno(void) { return errno; }
+
 /* PyThread stubs — single-threaded WASM. Locks always "succeed". We
  * return a non-zero sentinel so callers don't think allocation failed. */
 PyThread_type_lock PyThread_allocate_lock(void) {

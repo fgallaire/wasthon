@@ -12624,7 +12624,7 @@ mergeInto(LibraryManager.library, {
      * as a double. *endptr (if non-NULL) gets the address right after the
      * parsed prefix; on overflow we set overflow_exc and return -1.0.
      * pickle protocol 0 uses this for the FLOAT opcode. */
-    PyOS_string_to_double__deps: ['$WasthonRT', '__errno_location'],
+    PyOS_string_to_double__deps: ['$WasthonRT', 'wasthon_set_errno_erange'],
     PyOS_string_to_double: function(strPtr, endptrPtr, overflowExcH) {
         var rt = WasthonRT;
         if (strPtr === 0) {
@@ -12657,7 +12657,7 @@ mergeInto(LibraryManager.library, {
                  * PyLong via NumPyOS_ascii_strtod_plain) relies on this to
                  * emit its "overflow encountered" RuntimeWarning instead
                  * of "Could not parse long as longdouble". */
-                try { HEAP32[___errno_location() >> 2] = 34; /* ERANGE */ } catch (e) {}
+                try { _wasthon_set_errno_erange(); /* the C side's own ERANGE — WASI numbering (68), not Linux's 34/EMLINK */ } catch (e) {}
                 if (endptrPtr !== 0) { HEAP32[endptrPtr >> 2] = strPtr + m[0].length; }
                 return v;
             }
