@@ -1485,6 +1485,75 @@ mergeInto(LibraryManager.library, {
         // arrive as boxed String wrappers or Brython str objects whose
         // toString gives the codepoint sequence. typeof of those is "object",
         // so a naive `typeof obj === 'string'` check rejects them.
+        /* A JS-Array-shaped live window on wasm memory: reads and writes at
+         * integer indices hit HEAPU8[base+i] directly. Used as the .source of
+         * the bytearray behind memoryview(ndarray), so the view tracks the
+         * array's storage both ways instead of snapshotting it. The target is
+         * a real (empty) Array: Array.isArray(proxy) stays true and generic
+         * Array.prototype methods resolve through the prototype chain and
+         * operate via the length/index traps. keepAlive rides on the target
+         * so the exporter's wrapper (and its C storage) outlives the view. */
+        heapByteProxy: function(base, n, keepAlive) {
+            var target = [];
+            target.$wasthon_exporter = keepAlive;
+            return new Proxy(target, {
+                get: function(t, p) {
+                    if (p === 'length') return n;
+                    if (typeof p === 'string') {
+                        var i = +p;
+                        if (i === (i | 0) && i >= 0 && i < n) return HEAPU8[base + i];
+                    }
+                    if (p === 'slice') return function(a, b) {
+                        a = a === undefined ? 0 : (a < 0 ? Math.max(n + a, 0) : Math.min(a, n));
+                        b = b === undefined ? n : (b < 0 ? Math.max(n + b, 0) : Math.min(b, n));
+                        return Array.from(HEAPU8.subarray(base + a, base + Math.max(a, b)));
+                    };
+                    return t[p];
+                },
+                set: function(t, p, v) {
+                    if (typeof p === 'string') {
+                        var i = +p;
+                        if (i === (i | 0) && i >= 0 && i < n) { HEAPU8[base + i] = v; return true; }
+                    }
+                    t[p] = v;
+                    return true;
+                },
+                has: function(t, p) {
+                    if (typeof p === 'string') {
+                        var i = +p;
+                        if (i === (i | 0) && i >= 0) return i < n;
+                    }
+                    return p in t;
+                },
+            });
+        },
+
+        /* Stamp a Brython memoryview with the exporter's real dtype typing
+         * (format/itemsize/ndim/shape/strides). Brython's factory reports raw
+         * bytes (itemsize 1, 'B'); Cython's fused dispatch and CPython
+         * semantics (mv[i] is an ELEMENT) need the real typing. */
+        typeMemoryView: function(mv, obj) {
+            var rt = this;
+            try {
+                var dt = rt.$B.$getattr(obj, 'dtype', null);
+                var nd = rt.coerceInt(rt.$B.$getattr(obj, 'ndim', 1));
+                if (!dt) return;
+                var isz = rt.coerceInt(rt.$B.$getattr(dt, 'itemsize'));
+                var knd = rt.asJSStr(rt.$B.$getattr(dt, 'kind'));
+                var MVFMT = { 'u1':'B','i1':'b','u2':'H','i2':'h','u4':'I','i4':'i',
+                              'u8':'Q','i8':'q','f4':'f','f8':'d','b1':'?',
+                              'c8':'Zf','c16':'Zd','O4':'O','O8':'O' };
+                var mfmt = (knd === 'O') ? 'O' : MVFMT[knd + isz];
+                if (mfmt && isz) {
+                    mv.itemsize = isz;
+                    mv.format = mfmt;
+                    mv.ndim = Number(nd) || 1;
+                    try { mv.shape = rt.$B.$getattr(obj, 'shape'); } catch (e2) {}
+                    try { mv.strides = rt.$B.$getattr(obj, 'strides'); } catch (e3) {}
+                }
+            } catch (e1) {}
+        },
+
         asJSStr: function(obj) {
             if (typeof obj === 'string') return obj;
             if (obj instanceof String) return obj.valueOf();
@@ -5335,13 +5404,36 @@ mergeInto(LibraryManager.library, {
                         throw rt.pendingExc({ exc: rt.wrap(rt._b_.BufferError),
                             msg: 'underlying buffer is not C-contiguous' });
                     }
-                    var arr = new Array(len);
-                    for (var bi = 0; bi < len; bi++) arr[bi] = HEAPU8[buf + bi];
+                    var target;
+                    if (!ro && self.__wasthon_ptr__) {
+                        /* Writable C exporter (ndarray): back the bytearray
+                           with a LIVE heap proxy instead of a snapshot, so
+                           memoryview reads see mutations of the array and
+                           element writes land in the array's own storage —
+                           rng.shuffle(np.arange(5).data) must permute the
+                           array, and a snapshot made both directions dead.
+                           The exporter rides on the target array (a plain
+                           property, invisible to indexing) so the wrapper
+                           can't be reclaimed — and its C data freed — while
+                           the view is alive. buf aliases the exporter's own
+                           storage (wasthon_fill_array_buffer), so it stays
+                           valid exactly as long as the exporter does. */
+                        target = rt._b_.bytearray.$factory([]);
+                        target.source = rt.heapByteProxy(buf, len, self);
+                    } else {
+                        var arr = new Array(len);
+                        for (var bi = 0; bi < len; bi++) arr[bi] = HEAPU8[buf + bi];
+                        target = ro ? rt._b_.bytes.$factory(arr)
+                                    : rt._b_.bytearray.$factory(arr);
+                    }
                     _PyBuffer_Release(viewPtr);
                     _free(viewPtr);
-                    var target = ro ? rt._b_.bytes.$factory(arr)
-                                    : rt._b_.bytearray.$factory(arr);
-                    return rt.$B.$call(rt._b_.memoryview, target);
+                    var mv = rt.$B.$call(rt._b_.memoryview, target);
+                    /* Type the view off the exporter's dtype when it has one
+                       (same table as PyMemoryView_FromObject) so a direct
+                       memoryview(arr) matches CPython's format/itemsize. */
+                    if (self.__wasthon_ptr__) rt.typeMemoryView(mv, self);
+                    return mv;
                 };
                 if (!tfb.__buffer__) {
                     tfb.__buffer__ = bufFn;
@@ -13115,26 +13207,7 @@ mergeInto(LibraryManager.library, {
             // array came back itemsize 1 and _map_infer_mask found "No
             // matching signature" (Series.str accessor). Overwrite the
             // view's typing from the array's real dtype.
-            if (obj.__wasthon_ptr__) {
-                try {
-                    var dt = rt.$B.$getattr(obj, 'dtype', null);
-                    var nd = rt.coerceInt(rt.$B.$getattr(obj, 'ndim', 1));
-                    if (dt) {
-                        var isz = rt.coerceInt(rt.$B.$getattr(dt, 'itemsize'));
-                        var knd = rt.asJSStr(rt.$B.$getattr(dt, 'kind'));
-                        var MVFMT = { 'u1':'B','i1':'b','u2':'H','i2':'h','u4':'I','i4':'i',
-                                      'u8':'Q','i8':'q','f4':'f','f8':'d','b1':'?',
-                                      'c8':'Zf','c16':'Zd','O4':'O','O8':'O' };
-                        var mfmt = (knd === 'O') ? 'O' : MVFMT[knd + isz];
-                        if (mfmt && isz) {
-                            mv.itemsize = isz;
-                            mv.format = mfmt;
-                            mv.ndim = Number(nd) || 1;
-                            try { mv.shape = rt.$B.$getattr(obj, 'shape'); } catch (e2) {}
-                        }
-                    }
-                } catch (e1) {}
-            }
+            if (obj.__wasthon_ptr__) rt.typeMemoryView(mv, obj);
             return rt.wrapNewRef(mv);
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);

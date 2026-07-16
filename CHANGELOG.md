@@ -7,6 +7,26 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`memoryview(ndarray)` is a live view, not a snapshot** (`src/wasthon.js` —
+  the PyType_Ready `__buffer__` shim, plus two runtime helpers). The shim
+  copied the exporter's bytes into a JS array, so the view was dead in both
+  directions: `rng.shuffle(np.arange(5).data)` (mtrand's untyped path does
+  `x[i], x[j] = x[j], x[i]` on the view) permuted a snapshot and the array
+  never changed, and mutations of the array were invisible to the view. Now
+  a WRITABLE C exporter gets a bytearray whose `.source` is
+  `rt.heapByteProxy(buf, len, exporter)` — a JS Proxy over a real (empty)
+  Array whose index reads/writes hit `HEAPU8[buf+i]` directly (buf aliases
+  the array's own storage per wasthon_fill_array_buffer), with a fast-path
+  `slice` over `HEAPU8.subarray` and the exporter riding on the target so
+  its wrapper — and its C storage — can't be reclaimed while the view
+  lives. Read-only exporters keep the snapshot path. The dtype typing block
+  of PyMemoryView_FromObject is factored into `rt.typeMemoryView` (now also
+  stamps `strides`) and applied in the shim too, so a direct
+  `memoryview(arr)` matches CPython's format/itemsize. +1 numpy with the
+  vendored typed-memoryview companion: test_random 142/142 green
+  (test_shuffle_memoryview — the LAST playable dashboard failure; the
+  remaining 17 are qualified walls: longdouble-f128 ×4, hardware FPE ×7,
+  dlpack-refcount ×6).
 - **Builtin type-structs get a real `tp_dealloc`@40 (`PyObject_GC_Del`)**
   (`src/wasthon.js` + `src/wasthon.c`, `wasthon_bind_builtin_type` — the
   tp_repr@52/tp_str@104 story at the dealloc slot). A C subclass dealloc
