@@ -31,7 +31,7 @@ const log = (...args) => {
 window.__wasthon_log = log;
 
 const params = new URLSearchParams(location.search);
-const testName = params.get('test') || 'test_struct';
+let testName = params.get('test') || 'test_struct';
 
 // Install ONLY the wasthon module(s) under test — installing all 22 would
 // override Brython's own working stdlib accelerators (e.g. _random, _json)
@@ -43,6 +43,8 @@ const testName = params.get('test') || 'test_struct';
 // stdlib, so the test exercises Brython, not wasthon. (Audited by grepping
 // each test's imports against the wasthon module set.)
 const INSTALL_MAP = {
+    test_datetime: ['_datetime', '_pickle', '_struct', '_random'],
+    datetimetester: ['_datetime', '_pickle', '_struct', '_random'],
     test_struct: ['_struct', 'array', 'binascii', 'math', '_random'],
     test_math: ['math', '_decimal', '_random', '_statistics', '_struct'],
     test_cmath: ['cmath', 'math'],
@@ -63,6 +65,12 @@ const INSTALL_MAP = {
     test_json: ['_json', '_pickle', '_sre', 'unicodedata', '_decimal', 'math'],
     test_hashlib: ['_md5','_sha1','_sha2','_sha3','_blake2', 'array', 'binascii', '_sre'],
 };
+// test_datetime.py is a load_tests wrapper juggling sys.modules via
+// import_fresh_module (Pure vs Fast passes) — not portable here. Run
+// datetimetester directly: it imports `from datetime import …`, which IS
+// the C _datetime under wasthon (the Fast pass, the one that matters).
+if (testName === 'test_datetime') testName = 'datetimetester';
+
 const installList = params.get('install')
     ? params.get('install').split(',')
     : (INSTALL_MAP[testName] || []);

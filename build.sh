@@ -55,7 +55,7 @@ KNOWN_MODULES=(
     _zlib _bz2 _lzma _zstd
     _csv _json _struct _sre unicodedata pyexpat _pickle binascii
     _decimal _random _statistics math cmath
-    array _sqlite3
+    array _sqlite3 _datetime
 )
 
 if [[ "${MODULE}" == "list" ]]; then
@@ -467,7 +467,7 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
         _zlib _bz2 _lzma
         pyexpat _decimal _sre _pickle
         array _csv _json _struct _random _statistics binascii
-        math cmath
+        math cmath _datetime
     )
     [[ $INCLUDE_ZSTD -eq 1 ]]        && BUNDLED_MODULES+=( _zstd )
     [[ $INCLUDE_UNICODEDATA -eq 1 ]] && BUNDLED_MODULES+=( unicodedata )
@@ -506,6 +506,7 @@ if [[ "${MODULE}" == "wasthon" || "${MODULE}" == "wasthon-full" ]]; then
     # would just resolve from the first).
     OBJS=(
         wasthon.o
+        _datetimemodule.o
 
         md5module.o     Hacl_Hash_MD5.o
         sha1module.o    Hacl_Hash_SHA1.o
@@ -798,6 +799,20 @@ _struct)
     cp "${CPYTHON_SRC}/Modules/clinic/_struct.c.h" clinic/ 2>/dev/null || true
     emcc -O3 -c -I . -I "${SRC}" _struct.c -o _struct.o
     link_module "_struct" "PyInit__struct" "_struct_init" _struct.o
+    ;;
+
+_datetime)
+    # CPython's REAL C datetime, verbatim source: dtconvert.py rewrites the
+    # positional static-PyTypeObject initializers to designated ones at copy
+    # time (wasthon's struct _typeobject is reordered) and injects the
+    # interp-init work datetime_exec needs under the bridge. Compiled against
+    # CPython's real packed-struct datetime.h (datetime_real.h) — instances
+    # are real structs, PyDateTime_CAPI is the genuine capsule.
+    cp "${CPYTHON_SRC}/Include/datetime.h" datetime_real.h
+    mkdir -p clinic && cp "${CPYTHON_SRC}/Modules/clinic/_datetimemodule.c.h" clinic/
+    python3 "${SRC}/dtconvert.py" "${CPYTHON_SRC}/Modules/_datetimemodule.c" _datetimemodule.c
+    emcc -O1 -c -I . -I "${SRC}" _datetimemodule.c -o _datetimemodule.o
+    link_module "_datetime" "PyInit__datetime" "_datetime_init" _datetimemodule.o
     ;;
 
 _random)
