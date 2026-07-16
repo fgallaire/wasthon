@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyArg_ParseTuple`'s `(...)` group rejects a LONGER sequence**
+  (`src/wasthon.js`). The group unpack raised TypeError on a short or
+  non-indexable value but silently ignored extra items, so
+  `register_dlpack_dtype((2, 2, 2), dtype)` (format `"(ll)O!"`) passed the
+  parse and died later with the wrong exception (ValueError instead of the
+  TypeError numpy's bad-tuple test expects). A post-unpack `len(value)`
+  check mirrors CPython's "must be a sequence of length N". Unpickle's
+  `array_setstate "(iO!O!iO)"` group is unaffected (exact lengths).
+  +1 numpy test_dlpack (`test_register_bad_dlpack_tuple`).
 - **The builtin float tp_new stub passes ALL positional args through**
   (`src/wasthon.js`, `wasthon_builtin_float_tp_new`). It silently used
   `args[0]`, so `float.__new__(B1, 1.0, 2.0)` succeeded where CPython's

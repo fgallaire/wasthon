@@ -9896,6 +9896,19 @@ mergeInto(LibraryManager.library, {
                         }
                     }
                 }
+                /* CPython rejects a LONGER sequence too ("must be a sequence
+                 * of length N"): (2, 2, 2) against "(ll)" must TypeError —
+                 * numpy's register_dlpack_dtype bad-tuple test. */
+                try {
+                    var gLen = rt._b_.len(value);
+                    gLen = (typeof gLen === 'bigint') ? Number(gLen) : Number(gLen);
+                    if (gLen === gLen && gLen !== gIdx) {
+                        rt.setError(rt.wrap(rt._b_.TypeError),
+                            (fname || 'function') + ": argument " + (slotIdx + 1) +
+                            " must be a sequence of " + gCodes + " items");
+                        return 0;
+                    }
+                } catch (e) { /* no len(): the per-item unpack already validated */ }
             } else if (value !== undefined && isTypeCheck) {
                 /* O!: varargs = [PyTypeObject* expected, PyObject** output].
                  * Require isinstance(value, type), then store the handle. */
