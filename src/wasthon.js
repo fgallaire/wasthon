@@ -11934,6 +11934,17 @@ mergeInto(LibraryManager.library, {
      * thin dispatcher to Brython's int.__op__ / float.__op__. They use
      * the standard CPython binaryfunc / unaryfunc / ternaryfunc ABI.
      * ---------------------------------------------------------------- */
+    /* nb_int / nb_index for the builtin int struct: identity for an int,
+     * __index__ otherwise (numpy void_arrtype_new reads the size this way). */
+    wasthon_long_nb_int__deps: ['$WasthonRT'],
+    wasthon_long_nb_int: function(aH) {
+        var rt = WasthonRT;
+        try {
+            var v = rt.unwrap(aH);
+            return rt.wrapNewRef(rt.$B.PyNumber_Index(v));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+    },
+
     wasthon_long_nb_multiply__deps: ['$WasthonRT'],
     wasthon_long_nb_multiply: function(aH, bH) {
         var rt = WasthonRT;

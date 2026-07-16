@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **The builtin `PyLong_Type.tp_as_number` gains `nb_int`/`nb_index`**
+  (`src/wasthon.c` + `src/wasthon.js`). numpy's `void_arrtype_new` calls
+  `Py_TYPE(obj)->tp_as_number->nb_int(obj)` directly on the length argument;
+  a Brython int resolves to the canonical PyLong struct whose slot was NULL —
+  `np.void(5)` was an "indirect call to null" (`np.void(np.int64(5))`, whose
+  C scalar type has real slots, already worked). The JS body goes through
+  `PyNumber_Index`, so any index-able works. +1 numpy test_scalar_ctors
+  (`test_void_via_length`).
 - **`wasthon_builtin_unicode_tp_new` / `wasthon_builtin_bytes_tp_new` forward
   keyword arguments** (`src/wasthon.js`). numpy's `unicode_arrtype_new`
   delegates to `PyUnicode_Type.tp_new(type, args, KWDS)`; the builtin stubs

@@ -787,6 +787,7 @@ void *wasthon_get_default_tp_free(void) {
  * caches function pointers from PyLong_Type.tp_as_number->nb_multiply etc.
  * and calls them later — these implementations forward to Brython. */
 extern PyObject *wasthon_long_nb_multiply(PyObject *, PyObject *);
+extern PyObject *wasthon_long_nb_int(PyObject *);
 extern PyObject *wasthon_long_nb_floor_divide(PyObject *, PyObject *);
 extern PyObject *wasthon_long_nb_power(PyObject *, PyObject *, PyObject *);
 extern PyObject *wasthon_long_nb_lshift(PyObject *, PyObject *);
@@ -818,6 +819,11 @@ void wasthon_init_number_protocols(void) {
     wasthon_long_nb.nb_floor_divide = wasthon_long_nb_floor_divide;
     wasthon_long_nb.nb_power        = wasthon_long_nb_power;
     wasthon_long_nb.nb_lshift       = wasthon_long_nb_lshift;
+    /* numpy's void_arrtype_new calls Py_TYPE(obj)->tp_as_number->nb_int(obj)
+     * directly on a Brython int — NULL here was an indirect call to null
+     * (np.void(5)). nb_index is the same function, as for CPython's long. */
+    wasthon_long_nb.nb_int          = wasthon_long_nb_int;
+    wasthon_long_nb.nb_index        = wasthon_long_nb_int;
     PyLong_Type.tp_as_number = &wasthon_long_nb;
     PyLong_Type.tp_methods   = wasthon_long_methods;
 
