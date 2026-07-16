@@ -10745,8 +10745,13 @@ mergeInto(LibraryManager.library, {
     PyFloat_CheckExact__deps: ['$WasthonRT'],
     PyFloat_CheckExact: function(handle) {
         var obj = WasthonRT.unwrap(handle);
+        // A Brython float is a Float box carrying ob_type (NOT __class__):
+        // reading only __class__ made every boxed float fail the exact
+        // check, so numpy's NEP 50 weak-scalar marking
+        // (npy_mark_tmp_array_if_pyscalar) never saw Python floats and
+        // f16_array + 2.0 promoted to float64 instead of staying float16.
         return (typeof obj === 'number' && !Number.isInteger(obj)) ||
-               (obj && obj.__class__ === WasthonRT._b_.float) ? 1 : 0;
+               (obj && (obj.__class__ || obj.ob_type) === WasthonRT._b_.float) ? 1 : 0;
     },
 
     PyLong_AsLongAndOverflow__deps: ['$WasthonRT'],
@@ -12210,6 +12215,33 @@ mergeInto(LibraryManager.library, {
         }
     },
 
+    /* float.nb_int — CPython's float_trunc. math.trunc(x) takes the
+     * PyFloat_CheckExact fast path and calls this slot DIRECTLY off the
+     * static PyFloat_Type struct; it trapped (NULL) once CheckExact learned
+     * to recognize Brython's Float box (ob_type carrier). CPython-exact
+     * edges: NaN -> ValueError, inf -> OverflowError, exact big-double
+     * conversion via BigInt past the safe-integer range. */
+    wasthon_float_nb_int__deps: ['$WasthonRT'],
+    wasthon_float_nb_int: function(selfH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(selfH);
+        var v = (typeof obj === 'number') ? obj : (obj ? obj.value : undefined);
+        if (typeof v !== 'number') {
+            rt.setError(rt.wrap(rt._b_.TypeError), "float expected");
+            return 0;
+        }
+        if (Number.isNaN(v)) {
+            rt.setError(rt.wrap(rt._b_.ValueError), "cannot convert float NaN to integer");
+            return 0;
+        }
+        if (!Number.isFinite(v)) {
+            rt.setError(rt.wrap(rt._b_.OverflowError), "cannot convert float infinity to integer");
+            return 0;
+        }
+        var t = Math.trunc(v);
+        return rt.wrapNewRef(Number.isSafeInteger(t) ? t : BigInt(t));
+    },
+
     wasthon_float_nb_absolute__deps: ['$WasthonRT'],
     wasthon_float_nb_absolute: function(handle) {
         var rt = WasthonRT;
@@ -13552,7 +13584,10 @@ mergeInto(LibraryManager.library, {
             case 7: target = rt._b_.float; break;
             default: return 0;
         }
-        if (obj.__class__ === target) return 1;
+        // Boxed builtins carry ob_type, not __class__ (Brython's Float box);
+        // accept either — a subclass box carries its OWN class there, so
+        // exactness is preserved.
+        if ((obj.__class__ || obj.ob_type) === target) return 1;
         if (target === rt._b_.str && typeof obj === 'string') return 1;
         if (target === rt._b_.int &&
                 ((typeof obj === 'number' && Number.isInteger(obj)) ||

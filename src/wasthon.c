@@ -837,6 +837,7 @@ extern PyObject *wasthon_long_nb_floor_divide(PyObject *, PyObject *);
 extern PyObject *wasthon_long_nb_power(PyObject *, PyObject *, PyObject *);
 extern PyObject *wasthon_long_nb_lshift(PyObject *, PyObject *);
 extern PyObject *wasthon_float_nb_absolute(PyObject *);
+extern PyObject *wasthon_float_nb_int(PyObject *);
 
 /* tp_methods entries the built-in types expose. _decimal walks these via
  * cfunc_noargs(t, "name") looking up by name then stashes the function
@@ -873,6 +874,10 @@ void wasthon_init_number_protocols(void) {
     PyLong_Type.tp_methods   = wasthon_long_methods;
 
     wasthon_float_nb.nb_absolute = wasthon_float_nb_absolute;
+    /* nb_int: math.trunc's CheckExact fast path calls
+     * PyFloat_Type.tp_as_number->nb_int(x) directly — NULL trapped once
+     * PyFloat_CheckExact learned to recognize Brython's Float box. */
+    wasthon_float_nb.nb_int = wasthon_float_nb_int;
     PyFloat_Type.tp_as_number = &wasthon_float_nb;
     PyFloat_Type.tp_methods   = wasthon_float_methods;
 }

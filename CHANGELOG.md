@@ -7,6 +7,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyFloat_CheckExact` recognizes Brython's Float box — NEP 50 weak-scalar
+  promotion was dead for Python floats** (`src/wasthon.js`, also
+  `wasthon_exacttype_of_builtin`). A Brython float is a `Float` box
+  carrying `ob_type` (NOT `__class__`); both exact checks read only
+  `__class__`, so numpy's `npy_mark_tmp_array_if_pyscalar` never marked a
+  Python float as weak and EVERY mixed operation promoted to float64:
+  `float16_array + 2.0` → float64, `float32_array * 0.5` → float64
+  (Python ints were fine — they cross as raw JS numbers). Now
+  `(obj.__class__ || obj.ob_type) === _b_.float`; a float subclass box
+  carries its own class there, so exactness is preserved. Found by a gated
+  log inside the check (the probe showed `__class__` undefined, `.value`
+  present). (+1 numpy test_half half_coercion; result_type(f16, 2.0) ==
+  float16 across the board — a global promotion-correctness change, npall
+  swept clean.)
 - **The full in-place operator family is wired from tp_as_number — the
   bitwise half was missing** (`src/wasthon.js`, the PyType_Ready
   PyNumberMethods table). Only iadd/isub/imul/ifloordiv/itruediv/imatmul
