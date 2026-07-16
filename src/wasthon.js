@@ -8872,8 +8872,16 @@ mergeInto(LibraryManager.library, {
             rt.incref(valueHandle);  // no-steal: attribute slot takes its own ref
             return 0;
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.AttributeError),
-                "set '" + name + "' failed: " + (e.message || String(e)));
+            // Propagate the real exception class (a Cython property setter
+            // raising ValueError must not surface as AttributeError — numpy's
+            // RandomState.set_state on a swapped bit generator raises
+            // ValueError("state must be for a PCG64")).
+            var excCls = (e && e.__class__) ? e.__class__
+                       : (e && e.ob_type && e.args !== undefined) ? rt.$B.get_class(e)
+                       : rt._b_.AttributeError;
+            rt.setError(rt.wrap(excCls),
+                (e && e.args && e.args.length) ? String(e.args[0])
+                    : "set '" + name + "': " + (e.message || String(e)));
             return -1;
         }
     },
@@ -8942,8 +8950,16 @@ mergeInto(LibraryManager.library, {
             rt.incref(valueH);  // no-steal: attribute slot takes its own ref
             return 0;
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.AttributeError),
-                "set '" + name + "': " + (e.message || String(e)));
+            // Propagate the real exception class (a Cython property setter
+            // raising ValueError must not surface as AttributeError — numpy's
+            // RandomState.set_state on a swapped bit generator raises
+            // ValueError("state must be for a PCG64")).
+            var excCls = (e && e.__class__) ? e.__class__
+                       : (e && e.ob_type && e.args !== undefined) ? rt.$B.get_class(e)
+                       : rt._b_.AttributeError;
+            rt.setError(rt.wrap(excCls),
+                (e && e.args && e.args.length) ? String(e.args[0])
+                    : "set '" + name + "': " + (e.message || String(e)));
             return -1;
         }
     },

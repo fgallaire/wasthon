@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_SetAttr`/`PyObject_SetAttrString` propagate the real exception
+  class** (`src/wasthon.js`). Both catches collapsed every failure into
+  `AttributeError: set 'name': …`, so a Cython property setter raising
+  ValueError surfaced as AttributeError — numpy's `RandomState.set_state`
+  with a foreign state must raise `ValueError("state must be for a PCG64
+  RNG")` (GH 21808). Same class-extraction pattern as PyObject_GetItem;
+  `__slots__` violations still raise AttributeError. (+1 numpy
+  test_randomstate `test_state_error_alt_bit_gen`, with the runner's fixture
+  teardown.)
 - **`PyObject_GetItem` maps a Brython exception through its real class
   (`__class__` or `ob_type`), not a blanket `KeyError`** (`src/wasthon.js`).
   The catch used `e.__class__ || KeyError`; a Brython exception raised via
