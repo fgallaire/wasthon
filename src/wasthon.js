@@ -1153,6 +1153,14 @@ mergeInto(LibraryManager.library, {
                 var mroFull = (mroArr[0] === cls) ? mroArr : [cls].concat(mroArr);
                 HEAP32[(typeStructPtr + 148) >> 2] =
                     this.wrapPinned(this._b_.tuple.$factory(mroFull));
+                /* tp_base (offset 140): C code walks it (torch's
+                 * python_tensor checks Tensor's tp_base is TensorBase).
+                 * Resolve the first MRO base to its C struct if it has one
+                 * (C types carry __wasthon_type_handle__; builtins map). */
+                var b0 = mroFull[1];
+                var b0Ptr = b0 ? (b0.__wasthon_type_handle__ ||
+                    (this.builtinTypeForClass && this.builtinTypeForClass.get(b0)) || 0) : 0;
+                if (b0Ptr) HEAP32[(typeStructPtr + 140) >> 2] = b0Ptr;
             }
             // tp_dict at offset 8: ensure the class has a dict, then wrap.
             var dictObj = this.$B.get_dict(cls);
