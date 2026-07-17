@@ -10525,7 +10525,11 @@ mergeInto(LibraryManager.library, {
     PyCFunction_Check__deps: ['$WasthonRT'],
     PyCFunction_Check: function(handle) {
         var obj = WasthonRT.unwrap(handle);
-        return (obj && obj.ob_type === WasthonRT.$B.builtin_method) ? 1 : 0;
+        /* trampolines are tagged builtin_method by install_methods but
+         * builtin_function_or_method by PyCFunction_NewEx (pybind11's
+         * overload chain probes the latter) */
+        return (obj && (obj.ob_type === WasthonRT.$B.builtin_method
+                        || obj.ob_type === WasthonRT.$B.builtin_function_or_method)) ? 1 : 0;
     },
 
     /* PyCFunction_GetFunction — return the C function pointer behind a
