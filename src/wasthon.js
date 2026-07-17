@@ -5178,7 +5178,17 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT; var m = rt.unwrap(moduleH);
         if (m === null || namePtr === 0 || valueH === 0) return -1;
         var name = UTF8ToString(namePtr);
-        try { rt.$B.$setattr(m, name, rt.unwrap(valueH)); return 0; }
+        try {
+            /* CPython writes straight into md_dict — no descriptor kicks in.
+             * Routing through $setattr consulted the module's PEP-562
+             * __getattr__ (torch/__init__ raises AttributeError for unknown
+             * names) and the write FAILED for every dtype _initExtension
+             * registers. Write the module dict directly. */
+            var d = rt.$B.get_dict(m);
+            if (d) { rt.$B.str_dict_set(d, name, rt.unwrap(valueH)); }
+            else   { rt.$B.$setattr(m, name, rt.unwrap(valueH)); }
+            return 0;
+        }
         catch (e) { rt.forwardError(e, rt._b_.SystemError); return -1; }
     },
 
