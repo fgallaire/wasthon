@@ -11999,7 +11999,17 @@ mergeInto(LibraryManager.library, {
             case 22: cls = rt.$B.builtin_function_or_method; break;
             case 23: cls = rt.$B.getset_descriptor; break;
             case 24: cls = rt.$B.member_descriptor; break;
-            case 25: cls = rt.$B.method_descriptor; break;
+            case 25: cls = rt.$B.method_descriptor;
+                /* class-method trampolines are tagged $B.builtin_method;
+                 * C code doing strcmp(Py_TYPE(m)->tp_name,
+                 * "method_descriptor") — torch's _add_docstr — must
+                 * resolve them to this struct too (one-way map: the
+                 * struct's canonical class stays method_descriptor) */
+                if (rt.$B.builtin_method) {
+                    rt.builtinTypeForClass = rt.builtinTypeForClass || new Map();
+                    rt.builtinTypeForClass.set(rt.$B.builtin_method, structPtr);
+                }
+                break;
             /* pybind11: base of pybind11_static_property */
             case 26: cls = rt._b_.property; break;
             case 27: cls = rt._b_.range; break;
