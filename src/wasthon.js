@@ -1165,7 +1165,18 @@ mergeInto(LibraryManager.library, {
             HEAP32[(typeStructPtr +  8) >> 2] = this.wrapPinned(dictObj);
             // tp_name (offset 12): leaving 0 (NULL) is fine for callers
             // that don't read it.
-            HEAP32[(typeStructPtr + 16) >> 2] = this._defaultTpAlloc;  // tp_alloc
+            // METATYPE (subclass of type, e.g. torch's CustomClassBaseMeta):
+            // its tp_alloc must hand back raw zeroed PyHeapTypeObject memory
+            // (pybind11 pokes C fields through the result); the instance
+            // default returns a Brython handle and corrupts static data.
+            var _metaAlloc = 0;
+            try {
+                if (this._typeTypeStructPtr && cls !== this._b_.type
+                        && this._b_.issubclass(cls, this._b_.type)) {
+                    _metaAlloc = HEAP32[(this._typeTypeStructPtr + 16) >> 2];
+                }
+            } catch (_) {}
+            HEAP32[(typeStructPtr + 16) >> 2] = _metaAlloc || this._defaultTpAlloc;  // tp_alloc
             HEAP32[(typeStructPtr + 24) >> 2] = this._builtinTpIter;   // tp_iter
             // tp_iternext (offset 56): C code that reads Py_TYPE(it)->tp_iternext
             // and calls it directly (math.sumprod) needs a non-NULL slot —
@@ -5465,10 +5476,20 @@ mergeInto(LibraryManager.library, {
             /* CPython's PyType_Ready fills the inherited/default slots the
              * static struct left NULL. pygame doesn't set .tp_alloc/.tp_free,
              * so its tp_new's `type->tp_alloc(type, 0)` would call NULL
-             * ("indirect call to null"). Install the bridge defaults. */
+             * ("indirect call to null"). Inherit tp_alloc from the base
+             * struct FIRST (CPython's inherit_slots): a METATYPE (pybind11's
+             * default_metaclass, tp_base = &PyType_Type) must inherit
+             * wasthon_type_tp_alloc — raw zeroed PyHeapTypeObject memory —
+             * because pybind11 3.x calls metaclass->tp_alloc and pokes C
+             * fields into the result; the instance default returns a Brython
+             * handle, and writing struct fields through it corrupts static
+             * data. Fall back to the bridge defaults. */
             if (!rt._defaultTpAlloc) rt._defaultTpAlloc = _wasthon_get_default_tp_alloc();
             if (!rt._defaultTpFree)  rt._defaultTpFree  = _wasthon_get_default_tp_free();
-            if (HEAP32[(typePtr + 16) >> 2] === 0) HEAP32[(typePtr + 16) >> 2] = rt._defaultTpAlloc;  /* tp_alloc */
+            if (HEAP32[(typePtr + 16) >> 2] === 0) {
+                var inheritedAlloc = basePtr ? HEAP32[(basePtr + 16) >> 2] : 0;
+                HEAP32[(typePtr + 16) >> 2] = inheritedAlloc || rt._defaultTpAlloc;  /* tp_alloc */
+            }
             if (HEAP32[(typePtr +  4) >> 2] === 0) HEAP32[(typePtr +  4) >> 2] = rt._defaultTpFree;   /* tp_free  */
 
             /* wire tp_new (struct offset 60) so `Type(...)` instantiates via
@@ -11887,7 +11908,12 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var cls;
         switch (tag) {
-            case 0: cls = rt._b_.type;   break;
+            case 0: cls = rt._b_.type;
+                /* remember the C struct of PyType_Type: metatype
+                 * structs must inherit ITS tp_alloc (raw zeroed
+                 * PyHeapTypeObject memory) — see ensureTypeStruct */
+                rt._typeTypeStructPtr = structPtr;
+                break;
             case 1: cls = rt._b_.tuple;  break;
             case 2: cls = rt._b_.dict;   break;
             case 3: cls = rt._b_.list;   break;
@@ -14373,7 +14399,14 @@ mergeInto(LibraryManager.library, {
         HEAP32[(typeStructPtr +  4) >> 2] = slotMap[63 /* Py_tp_free */] || rt._defaultTpFree;  // tp_free
         HEAP32[(typeStructPtr +  8) >> 2] = dictHandle;     // tp_dict
         HEAP32[(typeStructPtr + 12) >> 2] = namePtr;        // tp_name
-        HEAP32[(typeStructPtr + 16) >> 2] = rt._defaultTpAlloc;  // tp_alloc
+        var _metaAlloc2 = 0;
+        try {
+            if (rt._typeTypeStructPtr && cls !== rt._b_.type
+                    && rt._b_.issubclass(cls, rt._b_.type)) {
+                _metaAlloc2 = HEAP32[(rt._typeTypeStructPtr + 16) >> 2];
+            }
+        } catch (_) {}
+        HEAP32[(typeStructPtr + 16) >> 2] = _metaAlloc2 || rt._defaultTpAlloc;  // tp_alloc
         HEAP32[(typeStructPtr + 24) >> 2] = rt._builtinTpIter;   // tp_iter
         HEAP32[(typeStructPtr + 32) >> 2] = methodsPtr;     // tp_methods
         HEAP32[(typeStructPtr + 40) >> 2] = slotMap[52 /* Py_tp_dealloc */] || 0;  // tp_dealloc
