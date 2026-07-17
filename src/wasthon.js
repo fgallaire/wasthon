@@ -185,6 +185,8 @@ mergeInto(LibraryManager.library, {
             // behaviour before tp_dealloc existed, so test-tp-dealloc.html can
             // contrast reclaimed vs leaked memory on the exact same workload.
             if (this.noFree) { rc.set(handle, 0); return; }
+            var pinInst = this.handles.get(handle);
+            if (pinInst && pinInst.$pin_on_zero) { rc.set(handle, 0); return; }
             rc.delete(handle);
             var inst = this.handles.get(handle);
             if (!inst || !inst.__wasthon_type__) {
@@ -13091,6 +13093,12 @@ mergeInto(LibraryManager.library, {
         HEAP32[(ptr + 8)  >> 2] = selfHandle;    /* m_self */
         HEAP32[(ptr + 12) >> 2] = moduleHandle;  /* m_module */
         tramp.__wasthon_ptr__ = ptr;
+        /* module-lifetime pin: pybind11 juggles borrows around def()/attr
+         * assignment whose net count reaches 0 here even though the
+         * trampoline stays reachable from the class dict (CPython's setattr
+         * INCREF would have kept it at 1). Purging would free the C struct
+         * a later cf.name() still dereferences. */
+        tramp.$pin_on_zero = true;
         rt.handles.set(ptr, tramp);
         rt.refcounts.set(ptr, 1);
         return ptr;
