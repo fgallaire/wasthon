@@ -1963,7 +1963,7 @@ PyObject *Py_GetConstant(unsigned int constant_id);
 typedef int PyGILState_STATE;
 PyGILState_STATE PyGILState_Ensure(void);
 void PyGILState_Release(PyGILState_STATE state);
-void *PyGILState_GetThisThreadState(void);
+PyThreadState *PyGILState_GetThisThreadState(void);  /* CPython signature; JS returns a non-null sentinel */
 
 /* Single-threaded WASM stubs. There is exactly one thread and the GIL is
  * always "held"; the interpreter never finalizes (Brython owns the
