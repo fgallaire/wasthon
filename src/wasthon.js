@@ -16439,6 +16439,28 @@ mergeInto(LibraryManager.library, {
 
             var trampoline = __wasthon_make_trampoline(fnPtr, flags, moduleHandle, name, moduleScope, classHandle);
             if (textSig) trampoline.$text_signature = textSig;
+            /* Materialize the C-side function object so code that casts the
+             * handle (torch's _add_docstr: PyCFunctionObject->m_ml,
+             * PyMethodDescrObject->d_method) reads the REAL PyMethodDef
+             * entry instead of arbitrary memory. Same pattern (and pin) as
+             * PyCFunction_NewEx. Layouts per wasthon.h: m_ml@+4 for module
+             * functions; d_type@+4 / d_method@+16 for class methods. */
+            var cfPtr = _malloc(24);
+            if (cfPtr) {
+                HEAPU8.fill(0, cfPtr, cfPtr + 24);
+                HEAP32[cfPtr >> 2] = 1;                       /* ob_refcnt */
+                if (moduleScope) {
+                    HEAP32[(cfPtr + 4) >> 2] = mp;            /* m_ml */
+                    HEAP32[(cfPtr + 12) >> 2] = moduleHandle; /* m_module */
+                } else {
+                    HEAP32[(cfPtr + 4) >> 2] = classHandle;   /* d_type */
+                    HEAP32[(cfPtr + 16) >> 2] = mp;           /* d_method */
+                }
+                trampoline.__wasthon_ptr__ = cfPtr;
+                trampoline.$pin_on_zero = true;
+                rt.handles.set(cfPtr, trampoline);
+                rt.refcounts.set(cfPtr, 1);
+            }
             // __doc__: CPython serves ml_doc minus the clinic signature line.
             // Brython's builtin_function_or_method reads it from
             // $function_infos; leaving it unset resolved __doc__ up the mro
