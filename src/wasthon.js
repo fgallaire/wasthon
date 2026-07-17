@@ -9161,6 +9161,28 @@ mergeInto(LibraryManager.library, {
 
     /* PyModule_New(name) — create a new empty module object. */
     PyModule_New__deps: ['$WasthonRT'],
+    /* PyImport_AddModule — CPython: get-or-create in sys.modules. The
+     * bridge's real import table is $B.imported; registering there makes
+     * `import torch._C._autograd` (pybind11 def_submodule products)
+     * resolvable by Brython's import engine. */
+    PyImport_AddModule__deps: ['$WasthonRT'],
+    PyImport_AddModule: function(namePtr) {
+        var rt = WasthonRT;
+        var name = namePtr ? UTF8ToString(namePtr) : "";
+        try {
+            var existing = rt.$B.imported[name];
+            if (existing !== undefined) return rt.wrapPinned(existing);
+            var mod = rt.$B.module.tp_new(rt.$B.module);
+            rt.$B.module.tp_init(mod, name);
+            /* mark as package: C-created parents (torch.backends via
+             * py::module_::import) must not shadow VFS submodules */
+            try { rt.$B.set_to_dict(rt.$B.get_dict(mod) ? mod : mod, '__path__', rt.$B.$list([])); } catch (e) {
+                try { mod.__path__ = []; } catch (e2) {} }
+            rt.$B.imported[name] = mod;
+            return rt.wrapPinned(mod);
+        } catch (e) { return 0; }
+    },
+
     PyModule_New: function(namePtr) {
         var rt = WasthonRT;
         var name = namePtr ? UTF8ToString(namePtr) : "";
