@@ -513,7 +513,10 @@ typedef PyObject *(*PyCFunctionFastWithKeywords)(PyObject *self, PyObject *const
 
 typedef struct PyMethodDef {
     const char *ml_name;
-    void       *ml_meth;
+    /* PyCFunction, as in CPython: C++ TUs (pybind11, torch) initialize this
+     * with function pointers, which C++ won't implicitly convert to void*.
+     * Same layout (one pointer); the JS bridge reads it by offset. */
+    PyCFunction ml_meth;
     int         ml_flags;
     const char *ml_doc;
 } PyMethodDef;
@@ -831,8 +834,10 @@ typedef struct PyModuleDef {
     PyMethodDef *m_methods;
     PyModuleDef_Slot *m_slots;
     traverseproc m_traverse;
-    void *m_clear;
-    void *m_free;
+    /* typed (not void*): C++ TUs (torch) initialize these with function
+     * pointers, which C++ won't implicitly convert to void*. */
+    inquiry m_clear;
+    freefunc m_free;
 } PyModuleDef;
 
 #define PyModuleDef_HEAD_INIT  NULL
