@@ -2728,7 +2728,11 @@ mergeInto(LibraryManager.library, {
     PyObject_Vectorcall: function(callableH, argsPtr, nargsf, kwnamesH) {
         var rt = WasthonRT;
         var fn = rt.unwrap(callableH);
-        if (fn === null) return 0;
+        if (fn === null) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyObject_Vectorcall: callable handle " + callableH + " did not resolve");
+            return 0;
+        }
         var nargs = nargsf & 0x7FFFFFFF;  // PY_VECTORCALL_ARGUMENTS_OFFSET mask
         var args = [];
         for (var i = 0; i < nargs; i++) {
@@ -7778,7 +7782,14 @@ mergeInto(LibraryManager.library, {
     PyObject_Call: function(fnH, argsH, kwargsH) {
         var rt = WasthonRT;
         var fn = rt.unwrap(fnH);
-        if (!fn) return 0;
+        if (!fn) {
+            /* failing WITHOUT setting the indicator made pybind11 raise
+             * "error_already_set called while Python error indicator not
+             * set" instead of the real story (torch enum_base::init). */
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyObject_Call: callable handle " + fnH + " did not resolve");
+            return 0;
+        }
         /* Bound builtin-type struct → real Brython class (see PyObject_CallObject). */
         var fnBc = rt.builtinClassForStruct && rt.builtinClassForStruct.get(fnH);
         if (fnBc && fnBc !== fn) fn = fnBc;
@@ -8865,7 +8876,11 @@ mergeInto(LibraryManager.library, {
     PyObject_CallNoArgs: function(fnH) {
         var rt = WasthonRT;
         var fn = rt.unwrap(fnH);
-        if (!fn) return 0;
+        if (!fn) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyObject_CallNoArgs: callable handle " + fnH + " did not resolve");
+            return 0;
+        }
         try { return rt.wrapMaybeType(rt.$B.$call(fn)); }
         catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
@@ -8956,7 +8971,11 @@ mergeInto(LibraryManager.library, {
     PyObject_CallFunctionObjArgs: function(callableH, varargs) {
         var rt = WasthonRT;
         var fn = rt.unwrap(callableH);
-        if (!fn) return 0;
+        if (!fn) {
+            rt.setError(rt.wrap(rt._b_.SystemError),
+                "PyObject_CallFunctionObjArgs: callable handle " + callableH + " did not resolve");
+            return 0;
+        }
         var args = [];
         for (var p = varargs; ; p += 4) {
             var h = HEAP32[p >> 2];
