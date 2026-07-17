@@ -47,7 +47,7 @@ mergeInto(LibraryManager.library, {
         //     in this map so JS can retrieve the Brython wrapper.
         handles: null,           // Map<int, object>
         sentinelByObj: null,     // WeakMap<object, int> — identity interning (reverse of handles)
-        nextHandleId: 5,         // 1-4 reserved for sentinels
+        nextHandleId: 15,        // 11-14 reserved for sentinels (see below)
         freeList: [],
 
         // Handle scopes — the third handle lifetime, between "immortal"
@@ -104,11 +104,15 @@ mergeInto(LibraryManager.library, {
         demoted: null,
         _born: [],               // instance ptrs bound during the current C entry
 
-        // Sentinel handle IDs (filled at init).
-        SLOT_NONE: 1,
-        SLOT_TRUE: 2,
-        SLOT_FALSE: 3,
-        SLOT_NOTIMPLEMENTED: 4,
+        // Sentinel handle IDs (filled at init). NOT 1-4: pybind11's
+        // PYBIND11_TRY_NEXT_OVERLOAD is (PyObject*)1, so a None return
+        // (handle 1) from any bound function read as "try next overload"
+        // — the call's side effects ran but the dispatcher reported
+        // "incompatible function arguments" (torch _register_opaque_type).
+        SLOT_NONE: 11,
+        SLOT_TRUE: 12,
+        SLOT_FALSE: 13,
+        SLOT_NOTIMPLEMENTED: 14,
 
         // Pending exception, or null.
         pendingException: null,
