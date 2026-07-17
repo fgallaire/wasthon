@@ -228,7 +228,7 @@ $B.ID=Symbol('ID')
 $B.INUM=Symbol('INUM')
 $B.FAST_ITER=Symbol('FAST_ITER')
 $B.special_string_repr={8:"\\x08",9:"\\t",10:"\\n",11:"\\x0b",12:"\\x0c",13:"\\r",92:"\\\\",160:"\\xa0"}
-$B.$py_next_hash=Math.pow(2,53)-1
+$B.$py_next_hash=Math.pow(2,31)-1
 $B.$py_UUID=Math.floor(Math.random()*2**50)
 $B.lambda_magic=Math.random().toString(36).substr(2,8)
 const func_attrs=['__module__','__name__','__qualname__','__file__','__defaults__','__kwdefaults__','__doc__','arg_names','args_vararg','args_kwarg','positional_length','lineno','flags','free_vars','kwonlyargs_length','posonlyargs_length','varnames','__annotations__','__type_params__','__globals__','method_class'
@@ -2642,10 +2642,19 @@ $B.init_dict(__annotate_func__)
 $B.str_dict_set(dict,'__annotate_func__',__annotate_func__)
 $B.set_function_infos(__annotate_func__,{__defaults__:_b_.None,__doc__:_b_.None,__globals__:$B.frame_obj.frame,__kwdefaults__:_b_.None,__name__:'__annotate__',__module__:class_frame[2],__qualname__:class_frame[0]+'.__annotate__',__file__:class_frame.__file__}
 )}
-$B.check_annotate_format=function(format){if(! $B.is_int(format)){$B.RAISE(_b_.TypeError,'__annotate__ argument should be '+
+$B.check_annotate_format=function(format){
+// annotationlib passes a Format IntEnum member — unbox to its int value
+// before comparing (a raw JS != against the box always mismatched)
+if(! $B.is_int(format) ||typeof format=='object'){try{var _fv=$B.$getattr(format,'value',format)
+if($B.is_int(_fv)){format=_fv}}catch(e){}}
+if(! $B.is_int(format)){$B.RAISE(_b_.TypeError,'__annotate__ argument should be '+
 `int, not ${$B.class_name(format)}`)}
 format=$B.int_value(format)
-if(format !=1 && format !=2){$B.RAISE(_b_.NotImplementedError,'')}}
+// FORWARDREF (3) is served like VALUE: the annotation thunks close over
+// the real scope chain, and the fake-globals retry annotationlib would
+// attempt on NotImplementedError needs __code__/__closure__ that a JS
+// function lacks
+if(format !=1 && format !=2 && format !=3){$B.RAISE(_b_.NotImplementedError,'')}}
 $B.postpone_annotations=function(obj,file){
 var module_frame=$B.frame_obj.frame
 obj.$annotations={}
@@ -2661,7 +2670,15 @@ return locals.__annotate_func__(1)},set(value){locals.$set_annotations=value}}
 Object.defineProperty(locals,'__annotate__',{get(){if(locals.$annotate){return locals.$annotate}
 return locals.__annotate_func__},set(value){locals.$annotate=value}}
 )
-locals.__annotate_func__=function(format){switch(format){case 1:
+locals.__annotate_func__=function(format){
+// annotationlib passes a Format IntEnum member, not a JS number — unbox it
+// (same normalization as the function __annotate__ template)
+try{if(typeof format!='number'){var _fv=$B.$getattr(format,'value',format);format=typeof _fv=='number'?_fv:$B.int_value(_fv)}}catch(e){}
+switch(format){case 1:
+// FORWARDREF (3) evaluates like VALUE: the thunks close over the real
+// scope chain, and the fake-globals retry annotationlib would attempt on
+// NotImplementedError needs __code__/__closure__ a JS function lacks
+case 3:
 var ann_dict=$B.empty_dict()
 for(var key in locals.$annotations){var item=locals.$annotations[key]
 $B.$setitem(ann_dict,key,item[1]())}
@@ -3156,8 +3173,13 @@ self.prop_set=fset
 self.prop_del=fdel
 self.$is_property=true
 if(fget && fget.$attrs){for(var key in fget.$attrs){self[key]=fget.$attrs[key]}}}
-_b_.property.tp_new=function(cls,args,kw){return{
-ob_type:cls}}
+_b_.property.tp_new=function(cls,args,kw){var self={
+ob_type:cls}
+// a Python subclass of property is a heap type with tp_dictoffset: its
+// instances carry a __dict__ (unless the subclass declares __slots__) —
+// torch's _DependentProperty(property) sets self._is_discrete in __init__
+if(cls!==_b_.property && $B.get_from_dict(cls,'__slots__',$B.NULL)===$B.NULL){$B.init_dict(self)}
+return self}
 var property_funcs=_b_.property.tp_funcs={}
 property_funcs.__isabstractmethod___get=function(self){}
 property_funcs.__isabstractmethod___set=function(self){}
@@ -3334,7 +3356,7 @@ var iv=$B.$getattr(self.origin,'__infer_variance__',true)
 var prefix=iv ? '' :'~'
 return prefix+$B.$getattr(self.origin,'__qualname__')+'['+
 reprs.join(", ")+']'}
-$B.GenericAlias.tp_hash=function(self){}
+$B.GenericAlias.tp_hash=function(self){return($B.$hash(self.origin)^$B.$hash(self.args))&0x7FFFFFFF}
 $B.GenericAlias.tp_call=function(self,...args){return $B.$call(self.origin,...args)}
 $B.GenericAlias.tp_getattro=function(self,name){if($B.exact_type(name,_b_.str)){
 if(ga_attr_blocked.includes(name)){return _b_.object.tp_getattro(self,name)}
@@ -3360,10 +3382,14 @@ GenericAlias_funcs.__reduce__=function(self){}
 GenericAlias_funcs.__subclasscheck__=function(self){}
 GenericAlias_funcs.__typing_unpacked_tuple_args___get=function(self){}
 GenericAlias_funcs.__typing_unpacked_tuple_args___set=function(self){}
+// as a member reading self.starred, an alias built without the flag had
+// NO __unpacked__ at all (AttributeError); CPython always exposes False
+GenericAlias_funcs.__unpacked___get=function(self){return self.starred===true}
+GenericAlias_funcs.__unpacked___set=_b_.None
 $B.GenericAlias.tp_methods=["__mro_entries__","__instancecheck__","__subclasscheck__","__reduce__","__dir__"]
-$B.GenericAlias.tp_members=[["__origin__",$B.TYPES.OBJECT,"origin",1],["__args__",$B.TYPES.OBJECT,"args",1],["__unpacked__",$B.TYPES.BOOL,"starred",1]
+$B.GenericAlias.tp_members=[["__origin__",$B.TYPES.OBJECT,"origin",1],["__args__",$B.TYPES.OBJECT,"args",1]
 ]
-$B.GenericAlias.tp_getset=["__parameters__","__typing_unpacked_tuple_args__"]
+$B.GenericAlias.tp_getset=["__parameters__","__typing_unpacked_tuple_args__","__unpacked__"]
 $B.set_func_names($B.GenericAlias,"types")
 $B.UnionType=$B.make_builtin_class("UnionType")
 $B.UnionType.$factory=function(items){return{
@@ -3380,7 +3406,11 @@ for(var item of self.args){if($B.is_type(item)){var s=$B.get_name(item)
 if($B.get_from_dict(item,'__module__')!=="builtins"){s=item.__module__+'.'+s}
 t.push(s)}else{t.push(_b_.repr(item))}}
 return t.join(' | ')}
-$B.UnionType.nb_or=function(self,other){var items=self.args.slice()
+$B.UnionType.nb_or=function(self,other){
+// the reflected path can hand a NON-union left operand (None | SomeUnion:
+// NoneType has no nb_or, and the fallback calls this slot with self=None)
+// — CPython's union___or__ accepts any unionable operand on either side
+var items=(self!==undefined && self!==null && self.args!==undefined)?self.args.slice():[self]
 if(! items.includes(other)){items.push(other)}
 return $B.UnionType.$factory(items)}
 var UnionType_funcs=$B.UnionType.tp_funcs={}
@@ -3656,10 +3686,12 @@ return `<built-in function ${name}>`}}
 $B.builtin_function_or_method.tp_hash=function(self){return _b_.object.tp_hash(self)}
 $B.builtin_function_or_method.tp_call=function(self,...args){return self(...args)}
 var builtin_function_or_method_funcs=$B.builtin_function_or_method.tp_funcs={}
-builtin_function_or_method_funcs.__name___get=function(self){if(self.$function_infos===undefined){console.log('no function infos',self)}
+builtin_function_or_method_funcs.__name___get=function(self){if(self.$function_infos===undefined){throw $B.attr_error('__name__',self)}
 return self.$function_infos[$B.func_attrs.__name__]}
 builtin_function_or_method_funcs.__name___set=_b_.None
-builtin_function_or_method_funcs.__qualname___get=function(self){return self.$function_infos[$B.func_attrs.__qualname__]}
+
+builtin_function_or_method_funcs.__qualname___get=function(self){if(self.$function_infos===undefined){throw $B.attr_error('__qualname__',self)}
+return self.$function_infos[$B.func_attrs.__qualname__]}
 builtin_function_or_method_funcs.__qualname___set=_b_.None
 builtin_function_or_method_funcs.__reduce__=function(self){var name=self.ml ? self.ml.ml_name : self.$function_infos[$B.func_attrs.__name__]
 if(self.m_self !== undefined && self.m_self !== null && ! $B.$isinstance(self.m_self,$B.module)){return $B.fast_tuple([_b_.getattr,$B.fast_tuple([self.m_self,name])])}
@@ -3727,8 +3759,14 @@ if(typeof $gmod=='string'){globals_name='locals_'+$gmod.replace(/\./g,'_')}
 else{var $lref=/\blocals_[A-Za-z_$][\w$]*/.exec(code.co_code)
 if($lref){globals_name=$lref[0]}}
 var __file__=frame.__file__
-var func=new Function('_b_','__file__',globals_name,'return '+code.co_code)
-var f=func(_b_,__file__,$.globals)
+var func=new Function('_b_','__file__','_frame_obj',globals_name,'return '+code.co_code)
+var $ns=(typeof $gmod=='string')? $B.imported[$gmod] :null
+var $genv=$.globals
+if($ns){$genv=new Proxy({},{get:function(t,k){var v=$ns[k]
+if(v!==undefined){return v}
+try{v=$B.str_dict_get($.globals,k,undefined)}catch(e){v=undefined}
+return v}})}
+var f=func(_b_,__file__,$B.frame_obj,$genv)
 $B.set_function_infos(f,{__name__,__qualname__:frame[2]+'.'+__name__}
 )
 var kwargs=$.kw
@@ -13819,10 +13857,31 @@ if(res !==$B.NULL){if(test){console.log('res',res,$B.get_class(res).tp_name)}
 if(res.__set__){return res.__set__(value)}}
 _b_.object.tp_setattro(self,attr,value)}
 var module_funcs=$B.module.tp_funcs={}
-module_funcs.__annotate___get=function(self){}
-module_funcs.__annotate___set=function(self){}
-module_funcs.__annotations___get=function(self){}
-module_funcs.__annotations___set=function(self){}
+// the namespace object carries the real accessors (make_module_annotate's
+// defineProperty) — reading the JS property triggers them; these getset
+// entries shadowed them with EMPTY functions, so getattr(module,
+// '__annotations__') returned raw JS undefined (annotationlib:
+// "__annotations__ is neither a dict nor None")
+// NB: for an imported module the object and its namespace are distinct —
+// make_module_annotate's defineProperty lives on the NAMESPACE, reachable
+// through get_dict(self); reading self directly found nothing and cached
+// an empty dict over the real accessor
+module_funcs.__annotate___get=function(self){var d=$B.get_dict(self)||self
+var v=d.__annotate__
+if(v===undefined && d!==self){v=self.__annotate__}
+return v!==undefined?v:_b_.None}
+module_funcs.__annotate___set=function(self,value){var d=$B.get_dict(self)||self
+d.__annotate__=value}
+module_funcs.__annotations___get=function(self){var d=$B.get_dict(self)||self
+var v=d.__annotations__
+if(v===undefined && d!==self){v=self.__annotations__}
+if(v!==undefined){return v}
+// CPython materializes (and caches) an empty dict on first access
+v=$B.empty_dict()
+try{d.__annotations__=v}catch(e){}
+return v}
+module_funcs.__annotations___set=function(self,value){var d=$B.get_dict(self)||self
+d.__annotations__=value}
 module_funcs.__dict___get=function(self){return $B.get_dict(self)}
 module_funcs.__dict___set=_b_.None
 module_funcs.__dir__=function(self){var dir_func=$B.module_getattr(self,'__dir__')
@@ -15113,6 +15172,24 @@ $B.finalize_type(cls)}}
 // bound builtin methods compare like CPython meth_richcompare: equal if
 // they wrap the same method of the same object (each access mints a new
 // bound wrapper, so identity is never enough)
+$B.set_to_dict($B.UnionType,'__getitem__',function(self,item){return self})
+// CPython 3.14 union equality: same member set, unordered, None ≡ NoneType,
+// and typing's Optional[str] compares equal to str | None. Without it the
+// default identity compare made every `union == union` False.
+$B.set_to_dict($B.UnionType,'__eq__',function(self,other){
+var _NT=$B.get_class(_b_.None)
+var norm=function(x){return x===_b_.None?_NT:x}
+var oargs=null
+if($B.get_class(other)===$B.UnionType){oargs=other.args.slice()}
+else{try{var oa=$B.$getattr(other,'__args__')
+oargs=_b_.list.$factory(oa)}catch(e){return _b_.NotImplemented}}
+var sargs=self.args.map(norm)
+oargs=oargs.map(norm)
+if(sargs.length!=oargs.length){return false}
+for(var a of sargs){var found=false
+for(var b of oargs){try{if(a===b||$B.rich_comp('__eq__',a,b)){found=true;break}}catch(e){}}
+if(!found){return false}}
+return true})
 $B.set_to_dict($B.builtin_method,'__eq__',function(self,other){if(self===other){return true}
 if($B.get_class(other)!==$B.builtin_method){return _b_.NotImplemented}
 if(self.m_self===undefined ||other.m_self===undefined){return false}
@@ -16611,14 +16688,15 @@ if(anns && ! postponed){
 var inum=add_to_positions(scopes,this)
 js+=prefix+`${name2}.__annotate__ = function(format){\n`
 indent()
-js+=prefix+`var locals = {format}\n`+
+js+=prefix+`var locals = new Proxy({format}, {get: function(t, k){ if(k in t){return t[k]} try{ var p = ${globals_name}; if(p && k in p){return p[k]} }catch(e){} return undefined }})\n`+
 prefix+`var frame = ['__annotate__', locals, '${gname}', ${globals_name}]\n`+
 prefix+`$B.enter_frame(frame, __file__, ${this.lineno})\n`+
 prefix+`frame.positions = $B.frame_obj.prev.frame.positions\n`+
 prefix+`frame.positions.push([${this.lineno}, ${this.end_lineno}, ${this.col_offset}, ${this.end_col_offset}])\n`+
 prefix+'try{\n'
 indent()
-js+=prefix+`if(format == 1 || format == 2){\n`+
+js+=prefix+`try{if(typeof format != 'number'){var _fv = $B.$getattr(format, 'value', format); format = typeof _fv == 'number' ? _fv : $B.int_value(_fv)}}catch(e){}\n`+
+prefix+`if(format == 1 || format == 2 || format == 3){\n`+
 prefix+tab+`var res = _b_.dict.$literal(${anns_values})\n`+
 prefix+tab+`return $B.trace_return_and_leave(frame, res)\n`+
 prefix+'}\n'+

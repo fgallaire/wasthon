@@ -3684,3 +3684,309 @@ StopIteration                     # before
 >>> zip(*(boom() for _ in [1]))
 AttributeError: boom              # after
 ```
+
+## typing.ParamSpec is broken: `super().__init__(bound, covariant, contravariant)` reaches object.__init__
+
+In `_typing.py`, `ParamSpec.__init__` still calls
+`super().__init__(bound, covariant, contravariant)` — the CPython-3.11-era
+`_BoundVarianceMixin` base that provided that 3-argument `__init__` was
+flattened away, so the call lands on `object.__init__` and raises. Any
+library that instantiates a ParamSpec at import time (torch, typing-heavy
+code) dies immediately.
+
+```python
+from typing import ParamSpec
+P = ParamSpec("P")          # TypeError: object.__init__() takes exactly
+                            # one argument (the instance to initialize)
+```
+
+CPython: `ParamSpec("P").__bound__ is None` and the object is usable.
+
+Fix: replace the orphan `super().__init__(...)` with the mixin's two real
+effects — raise `ValueError("Bivariant types are not supported.")` when
+`covariant and contravariant`, and set
+`self.__bound__ = _type_check(bound, "Bound must be a type.") if bound else None`.
+
+## typing.TypeVar lacks __or__/__ror__ — PEP 604 unions with TypeVars fail
+
+`_typing.py`'s TypeVar (and ParamSpec) defines no `__or__`/`__ror__`, so
+`T | U` and `int | T` — the standard PEP 604 idiom, used heavily by torch's
+typing layer — raise instead of building a Union.
+
+```python
+from typing import TypeVar
+T = TypeVar('T')
+U = TypeVar('U')
+T | U          # CPython: typing.Union[~T, ~U]; Brython: TypeError
+int | T        # CPython: int | ~T; Brython: TypeError
+```
+
+Fix: give both classes the CPython methods —
+`def __or__(self, right): return Union[self, right]` and
+`def __ror__(self, left): return Union[left, self]`.
+
+## builtin methods leak raw JS `undefined` for __module__ — functools.wraps(object.__new__) dies
+
+Reading `__module__` on a builtin method resolves the JS property directly
+and returns wrapped-undefined instead of 'builtins' (or AttributeError);
+`setattr(f, '__module__', <undefined>)` then fails with the misleading
+"can't set attributes of built-in/extension type 'object'". Any
+`functools.wraps(object.__new__)` — notably `warnings.deprecated` (PEP 702)
+on a class that doesn't override __new__, used across torch — dies.
+
+```python
+object.__new__.__module__      # <Javascript undefined>; CPython: 'builtins'
+import functools
+@functools.wraps(object.__new__)
+def nn(cls): ...
+# TypeError: can't set attributes of built-in/extension type 'object'
+```
+
+Also observed: `object.__new__.__qualname__` returns 'Flag.__new__' (slot
+aliased by whichever class last wrapped it) instead of 'object.__new__'.
+
+Root fix: builtin-function attribute reads must never return raw JS
+undefined — serve 'builtins' for __module__ / raise AttributeError.
+
+## object hash counter starts at 2**53-1 — composite hashes lose integrality
+
+`$B.$py_next_hash` starts at `Math.pow(2,53)-1`, so any object's assigned
+hash sits at the float64 precision edge. Hashing anything that COMBINES such
+hashes arithmetically (a generic alias `list[SomeClass]`, a tuple containing
+a class) multiplies past 2**53 and the result stops being an exact integer:
+`hash()` then raises "__hash__ method should return an integer". torch dies
+building `SUPPORTED_RETURN_TYPES = {list[Tensor]: ...}`.
+
+```python
+class A: pass
+hash((A, 1))     # or hash(list[A]) — fails once hash(A) is near 2**53
+```
+
+Fix: start the counter at `Math.pow(2,31)-1` (2 billion unique descending
+values, all combination arithmetic stays exact).
+
+## types.GenericAlias has an EMPTY tp_hash — hash(list[int]) fails
+
+`$B.GenericAlias.tp_hash = function(self){}` returns undefined, so hashing
+any parametrized builtin generic raises "__hash__ method should return an
+integer". Any dict keyed by generic aliases (torch's
+`SUPPORTED_RETURN_TYPES = {list[Tensor]: ...}`) dies.
+
+```python
+hash(list[int])   # TypeError; CPython: an int (hash(origin) ^ hash(args))
+```
+
+Fix: `return ($B.$hash(self.origin) ^ $B.$hash(self.args)) & 0x7FFFFFFF`
+(CPython's ga_hash is exactly hash(origin) ^ hash(args)).
+
+## collections.abc.Callable[ParamSpec, T] rejects ParamSpec — module check misses `_typing`
+
+`_collections_abc._is_param_expr` checks `type(obj).__module__ == 'typing'`,
+but Brython defines ParamSpec (and _ConcatenateGenericAlias) in `_typing`,
+so the check is always False and `Callable.__class_getitem__` raises.
+`typing.Callable[P, T]` works (typing's own `_is_param_expr` uses isinstance),
+only the collections.abc path is broken — torch/library.py hits it.
+
+```python
+from typing import ParamSpec
+from collections.abc import Callable
+P = ParamSpec('P')
+Callable[P, int]  # TypeError: Expected a list of types, an ellipsis,
+                  # ParamSpec, or Concatenate. Got P — CPython: GenericAlias
+```
+
+Fix (either): accept both modules in `_collections_abc._is_param_expr`
+(`obj.__module__ in ('typing', '_typing')`), or set `__module__ = 'typing'`
+on the ParamSpec/_ConcatenateGenericAlias classes to match CPython.
+
+## a Python subclass of property cannot take instance attributes — tp_new ignores the subclass
+
+`property.tp_new` returns a bare `{ob_type: cls}` whatever `cls` is. In
+CPython a Python subclass of property is a heap type with a nonzero
+tp_dictoffset, so its instances have a `__dict__`; in Brython setattr dies.
+torch's `_DependentProperty(property)` does `self._is_discrete = ...` in
+`__init__` (torch/distributions/constraints.py).
+
+```python
+class P(property):
+    def __init__(self, fn=None):
+        super().__init__(fn)
+        self.tag = 1        # AttributeError: 'P' object has no attribute
+P(lambda s: 0)              # 'tag' and no __dict__ for setting new attributes
+```
+
+Fix: in `property.tp_new`, when `cls is not property` and the subclass does
+not declare `__slots__`, attach an instance dict (`$B.init_dict(self)`).
+
+## urllib.request has no Request class — urlopen only takes a str
+
+Brython's ajax-backed `urllib.request` exposes `urlopen` but not `Request`,
+so the standard `urlopen(Request(url, headers=...))` idiom fails at import
+time (`from urllib.request import Request, urlopen` — torch/hub.py does).
+
+```python
+from urllib.request import Request, urlopen   # ImportError: Request
+```
+
+Fix: minimal faithful `Request` (full_url/data/headers/method, add_header,
+get_method) + `urlopen` unwraps a Request argument (url/data).
+
+## class/module __annotate_func__ only honors format=1 passed as a raw int — dataclasses on a class with annotations dies
+
+Two gaps in the runtime `__annotate_func__` built for class/module bodies:
+(1) `switch(format)` compares strictly, but annotationlib passes a
+`Format` IntEnum member, so even VALUE misses every case; (2) FORWARDREF
+(3) raises NotImplementedError, which sends annotationlib into its
+fake-globals retry — impossible for a JS function without
+`__code__`/`__closure__`, and the failure surfaces as
+"'UndefinedType' object is not subscriptable" deep inside dataclasses
+(any `@dataclass` whose fields have annotations, e.g. torch's
+`_ConfigEntry`).
+
+```python
+from dataclasses import dataclass
+from typing import Any
+@dataclass
+class C:
+    x: Any          # TypeError: 'UndefinedType' object is not subscriptable
+```
+
+Fix (two sites): `$B.check_annotate_format` — called first by the
+class-body annotate the codegen emits — unboxes a non-int format via its
+`.value` and accepts 3; the module-level `__annotate_func__` gets the same
+normalization + `case 3`. FORWARDREF is served like VALUE: the annotation
+thunks close over the real scope chain (same treatment as the function
+`__annotate__` template).
+
+## contextvars.ContextVar is not subscriptable
+
+CPython's ContextVar supports `ContextVar[object]` (PEP 585 style,
+`__class_getitem__ = classmethod(GenericAlias)`); Brython's pure-Python
+`_contextvars.ContextVar` has no `__class_getitem__`, so any annotation
+using it dies at evaluation (torch's `_ConfigEntry` dataclass).
+
+```python
+from contextvars import ContextVar
+ContextVar[object]     # TypeError: type 'ContextVar' is not subscriptable
+```
+
+Fix: add `__class_getitem__` returning `types.GenericAlias(cls, item)`.
+
+## linecache cannot serve the source of imported modules — inspect.getsource always fails
+
+Brython keeps every imported module's source in `$B.file_cache` (the
+traceback machinery reads it), but `linecache.getlines` only tries the
+filesystem, so `inspect.getsource`/`findsource` raise
+"OSError: could not get source code" for ALL Brython modules — torch's
+config system (`inspect.getsource(module)`) and every fx/jit source-reading
+path dies.
+
+```python
+import inspect, json
+inspect.getsource(json.dumps)   # OSError; CPython returns the source
+```
+
+Fix: in `getlines`, before the filesystem path, look the filename up in
+`__BRYTHON__.file_cache` (via `browser.window`) and serve/cache its lines.
+
+## _tokenize's TokenizerIter tokenizes line by line — tokenize/inspect.getsource are broken for any multi-line construct
+
+The `_tokenize` shim feeds each readline() result to `$B.tokenizer`
+SEPARATELY and stamps every token with its physical line number. Any
+construct spanning lines dies: an open parenthesis at end of line raises
+"'(' was never closed", and `inspect.getblock` truncates every multi-line
+`def` (torch's `@overload` signatures, `inspect.getsource(json.dumps)`
+returns the first line only).
+
+```python
+import tokenize, io
+src = "def f(a,\n      b):\n    return a+b\n"
+list(tokenize.generate_tokens(io.StringIO(src).readline))
+# SyntaxError: '(' was never closed — CPython: NL inside the parens
+```
+
+Fix: drain readline first and run `$B.tokenizer` once on the whole source
+(it is the compiler's own tokenizer, and it handles multi-line fine); the
+real lineno/end_lineno come out correct.
+
+## module.__annotations__/__annotate__ getsets are EMPTY functions — getattr returns raw JS undefined
+
+`$B.module.tp_getset` declares `__annotations__`/`__annotate__` but their
+`tp_funcs` getters are empty (`function(self){}`), and the getset shadows
+the working defineProperty accessors `make_module_annotate` installs on the
+namespace object. Inside the module `__annotations__` works; from outside,
+`getattr(module, '__annotations__')` yields undefined and annotationlib
+raises "__annotations__ is neither a dict nor None" (torch's config system
+calls `inspect.get_annotations(module)`).
+
+```python
+# mod.py contains:  x: int = 1
+import mod
+mod.__annotations__    # UndefinedType; CPython: {'x': <class 'int'>}
+```
+
+Fix: the getset getters read the JS property THROUGH get_dict(module)
+(for an imported module the object and its namespace are distinct, and the
+accessor lives on the namespace), `__annotations__` materializes and caches
+an empty dict when absent (CPython behaviour), and the setters assign
+through.
+
+## module __dict__ iteration leaks internal $-prefixed keys
+
+Iterating a module's `__dict__` (`vars(mod).items()`) exposes Brython's
+internal bookkeeping keys (`$annotations`, raw JS objects). Brython's own
+`module.__dir__` filters `key[0] != '$'` manually, but plain dict iteration
+does not — CPython module dicts have no such keys. Any "walk the module
+namespace" pattern chokes on the JS object (torch's config system asserts).
+
+```python
+# mod.py contains:  x: int = 1
+import mod
+[k for k in vars(mod)]   # contains '$annotations'; CPython never
+```
+
+Fix direction: skip '$'-prefixed keys when iterating namespace-backed
+dicts (a Python identifier can never contain '$').
+
+## `None | SomeUnion` crashes — UnionType.nb_or assumes self is a union
+
+With None on the left of `|` against an existing union, the reflected
+fallback invokes `$B.UnionType.nb_or` with `self=None`, and
+`self.args.slice()` dies with a raw JS error ("self.args is undefined").
+torch evaluates `None | PySymType | ...` type aliases at import.
+
+```python
+U = int | str
+None | U     # JS error; CPython: int | str | None
+```
+
+Fix: when self carries no `.args`, treat it as a single operand
+(CPython's union___or__ accepts any unionable operand on either side).
+
+## GenericAlias.__unpacked__ raises AttributeError unless the alias was starred
+
+`__unpacked__` is declared as a tp_member reading the `starred` JS field,
+which only exists on `*tuple[int]`-style aliases — a plain `list[int]` has
+NO `__unpacked__` at all. CPython exposes False. typing's caching walk
+(`typing.py` `_unpack_args`) reads it on every alias (torch's `_refs`
+singledispatch registration dies).
+
+```python
+list[int].__unpacked__   # AttributeError; CPython: False
+```
+
+Fix: expose it as a getset returning `self.starred === true`.
+
+## unions never compare equal — UnionType has no __eq__
+
+`(str | None) == (str | None)` is False (identity compare), and so is
+`(str | None) == Optional[str]` — CPython 3.14: True (same member set,
+None ≡ NoneType, typing unions included). torch's config system checks
+`value_type in (bool, str, Optional[bool], Optional[str])`.
+
+```python
+(str | None) == (str | None)   # False; CPython: True
+```
+
+Fix: set-wise `__eq__` on $B.UnionType (None normalized to NoneType,
+`__args__` consulted on the other operand for typing unions).
