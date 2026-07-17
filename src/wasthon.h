@@ -211,6 +211,10 @@ typedef struct _typeobject PyTypeObject;
  * wasthon_tuple_view in wasthon.js. The cast is hidden behind a macro. */
 typedef struct {
     PyObject **ob_item;
+    /* 3.14 tuple hash cache. Appended so ob_item's offset is stable (the
+     * bridge's wasthon_tuple_view fills it). No caching here: writers
+     * (torch Size resets it to -1) touch scratch; tp_hash recomputes. */
+    Py_ssize_t ob_hash;
 } PyTupleObject;
 PyTupleObject *wasthon_tuple_view(PyObject *t);
 #define _PyTuple_CAST(t) wasthon_tuple_view(t)

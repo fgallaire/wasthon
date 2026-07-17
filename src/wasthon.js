@@ -9411,11 +9411,13 @@ mergeInto(LibraryManager.library, {
             arr = arr ? [arr] : [];
         }
         var n = arr.length;
-        // 4 bytes (ob_item ptr) + 4*n (handles)
-        var structPtr = _malloc(4 + 4 * n);
+        // 4 bytes (ob_item ptr) + 4 (ob_hash, 3.14 cache slot — scratch
+        // only, writers like torch Size reset it) + 4*n (handles)
+        var structPtr = _malloc(8 + 4 * n);
         if (structPtr === 0) return 0;
-        var itemsPtr = structPtr + 4;
+        var itemsPtr = structPtr + 8;
         HEAP32[structPtr >> 2] = itemsPtr;
+        HEAP32[(structPtr >> 2) + 1] = -1;
         for (var i = 0; i < n; i++) {
             HEAP32[(itemsPtr + i*4) >> 2] = rt.wrap(arr[i]);
         }
