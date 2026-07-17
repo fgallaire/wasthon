@@ -13026,6 +13026,43 @@ mergeInto(LibraryManager.library, {
      * PyCFunction_GET_SELF). Reuse the module-scope trampoline: it passes
      * `self` as the C arg0, exactly what pybind11's dispatcher expects. */
     PyCFunction_NewEx__deps: ['$WasthonRT', '$__wasthon_make_trampoline'],
+    /* pybind11 wraps class methods in instancemethod objects
+     * (PYBIND11_INSTANCE_METHOD_NEW): a DESCRIPTOR that binds self on
+     * instance access and hands back the plain function on class access.
+     * Brython's method_descriptor tp_descr_get does exactly that
+     * (method.bind(null, obj) prepends the instance to the args, which is
+     * the FASTCALL prepended-self contract the pybind11 dispatcher needs). */
+    PyInstanceMethod_New__deps: ['$WasthonRT'],
+    PyInstanceMethod_New: function(funcH) {
+        var rt = WasthonRT;
+        var fn = rt.unwrap(funcH);
+        if (!fn) return 0;
+        /* Incarnate the instancemethod as a Brython FUNCTION: functions are
+         * the canonical descriptors — instance access binds through
+         * $B.function.tp_descr_get (method object prepends self), class
+         * access hands back the plain callable, and metatype lookups
+         * (repr(cls)) never see it. Exactly CPython's instancemethod. */
+        var wrapper = function() { return fn.apply(null, arguments); };
+        wrapper.ob_type = rt.$B.function;
+        wrapper.$instancemethod = true;
+        wrapper.$imfunc = fn;
+        wrapper.$infos = fn.$infos || { __name__: 'method' };
+        wrapper.$function_infos = fn.$function_infos || [];
+        return rt.wrapPinned(wrapper);
+    },
+    PyInstanceMethod_Check__deps: ['$WasthonRT'],
+    PyInstanceMethod_Check: function(objH) {
+        var obj = WasthonRT.unwrap(objH);
+        return obj && obj.$instancemethod ? 1 : 0;
+    },
+    PyInstanceMethod_GET_FUNCTION__deps: ['$WasthonRT'],
+    PyInstanceMethod_GET_FUNCTION: function(objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (!obj) return 0;
+        return obj.$instancemethod ? rt.wrap(obj.$imfunc) : objH;
+    },
+
     PyCFunction_NewEx: function(mlPtr, selfHandle, moduleHandle) {
         var rt = WasthonRT;
         var namePtr = HEAP32[mlPtr >> 2];
