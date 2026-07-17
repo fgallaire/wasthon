@@ -186,7 +186,9 @@ mergeInto(LibraryManager.library, {
             // contrast reclaimed vs leaked memory on the exact same workload.
             if (this.noFree) { rc.set(handle, 0); return; }
             var pinInst = this.handles.get(handle);
-            if (pinInst && pinInst.$pin_on_zero) { rc.set(handle, 0); return; }
+            /* pinned: still reachable from a class/module dict, so the
+             * truthful count is 1 (0 made pybind11's try_incref assert) */
+            if (pinInst && pinInst.$pin_on_zero) { rc.set(handle, 1); return; }
             rc.delete(handle);
             var inst = this.handles.get(handle);
             if (!inst || !inst.__wasthon_type__) {
@@ -9171,6 +9173,16 @@ mergeInto(LibraryManager.library, {
                     : "set '" + name + "': " + (e.message || String(e)));
             return -1;
         }
+    },
+
+    wasthon_alias_ptr__deps: ['$WasthonRT'],
+    wasthon_alias_ptr: function(ptr, objH) {
+        var rt = WasthonRT;
+        var obj = rt.unwrap(objH);
+        if (!obj || !ptr) return -1;
+        rt.handles.set(ptr, obj);
+        rt.refcounts.set(ptr, 1);
+        return 0;
     },
 
     /* PyModule_New(name) — create a new empty module object. */

@@ -2278,8 +2278,12 @@ int _PyUnicode_IsWhitespace(Py_UCS4);
 #define PyAPI_FUNC(RTYPE) RTYPE
 #define PyAPI_DATA(RTYPE) extern RTYPE
 #endif
+/* The bridge's per-handle count. A handle is NOT a struct pointer: reading
+ * ((PyObject*)op)->ob_refcnt dereferenced low heap memory and returned
+ * garbage (pybind11's try_incref asserts Py_REFCNT > 0 and aborted). */
+Py_ssize_t _wasthon_py_refcnt(PyObject *op);
 #ifndef Py_REFCNT
-#define Py_REFCNT(op) (((PyObject *)(op))->ob_refcnt)
+#define Py_REFCNT(op) _wasthon_py_refcnt((PyObject *)(op))
 #endif
 
 /* Type flags numpy tests (informational on the bridge side). */
