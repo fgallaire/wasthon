@@ -5262,6 +5262,7 @@ mergeInto(LibraryManager.library, {
             var shortName = dotIdx >= 0 ? fullName.slice(dotIdx + 1) : fullName;
 
             var cls = rt.$B.make_builtin_class(shortName);
+            cls.tp_subclasses = cls.tp_subclasses || [];
             rt.$B.init_dict(cls);
             var moduleName = dotIdx >= 0 ? fullName.slice(0, dotIdx) : '';
             cls.__module__ = moduleName;
@@ -6911,6 +6912,7 @@ mergeInto(LibraryManager.library, {
             bases = [base];
         }
         var cls = rt.$B.make_builtin_class(shortName, bases);
+            cls.tp_subclasses = cls.tp_subclasses || [];
         /* CPython: type(e).__name__ is the SHORT name; the module prefix
          * lives in __module__. make_builtin_class already set tp_name =
          * shortName — don't overwrite with the dotted name. */
@@ -14295,6 +14297,7 @@ mergeInto(LibraryManager.library, {
         // PyDict_SetItemString (used by blake2module to install class-level
         // constants like SALT_SIZE) can write to.
         var cls = rt.$B.make_builtin_class(shortName);
+        cls.tp_subclasses = cls.tp_subclasses || [];
         rt.$B.init_dict(cls);
 
         // gc.collect() finalization opt-in. Unlike the compression File types
