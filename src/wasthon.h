@@ -2136,6 +2136,9 @@ typedef struct _heaptypeobject {
     void *ht_cached_keys;
     PyObject *ht_module;
     char *_ht_tpname;
+    /* appended (torch/pybind11 ≥2.12: `type->tp_as_async = &heap_type->
+     * as_async`); at the END so existing field offsets are stable */
+    PyAsyncMethods as_async;
 } PyHeapTypeObject;
 
 /* Capsule destructor type (capsule creation exists; context/import below). */
