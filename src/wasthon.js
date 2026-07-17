@@ -1163,6 +1163,18 @@ mergeInto(LibraryManager.library, {
                 var b0Ptr = b0 ? (b0.__wasthon_type_handle__ ||
                     (this.builtinTypeForClass && this.builtinTypeForClass.get(b0)) || 0) : 0;
                 if (b0Ptr) HEAP32[(typeStructPtr + 140) >> 2] = b0Ptr;
+                /* tp_bases (offset 144): pybind11's all_type_info walks
+                 * this TUPLE to find its registered base — a Python
+                 * subclass of a pybind11 type (torch's SourceContext
+                 * extends SourceRangeFactory) allocates through
+                 * pybind11_object_new, which fails with "no
+                 * pybind11-registered base types" when it is absent. */
+                var basesArr = (cls.tp_bases && cls.tp_bases.length)
+                    ? cls.tp_bases.slice() : (b0 ? [b0] : []);
+                if (basesArr.length) {
+                    HEAP32[(typeStructPtr + 144) >> 2] =
+                        this.wrapPinned(this._b_.tuple.$factory(basesArr));
+                }
             }
             // tp_dict at offset 8: ensure the class has a dict, then wrap.
             var dictObj = this.$B.get_dict(cls);
