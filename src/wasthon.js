@@ -9175,6 +9175,23 @@ mergeInto(LibraryManager.library, {
         }
     },
 
+    /* Alias a static C struct pointer to an existing Python object — a
+     * compat shell (PyStructSequence static type keeping the real
+     * namedtuple in tp_dict) is stored BY POINTER in module dicts, and
+     * unwrap must resolve it to the real class instead of null. One-way:
+     * wrap(obj) keeps the object's own handle. */
+    /* Py_REFCNT — the truthful per-handle count. Struct-backed pointers
+     * (bound instances, static types) fall back to their ob_refcnt field;
+     * a live handle without a count entry reports 1 (externally owned). */
+    _wasthon_py_refcnt__deps: ['$WasthonRT'],
+    _wasthon_py_refcnt: function(h) {
+        var rt = WasthonRT;
+        if (rt.refcounts.has(h)) return rt.refcounts.get(h);
+        if (rt.handles.has(h)) return 1;
+        var v = HEAP32[h >> 2];
+        return v > 0 ? v : 1;
+    },
+
     wasthon_alias_ptr__deps: ['$WasthonRT'],
     wasthon_alias_ptr: function(ptr, objH) {
         var rt = WasthonRT;
