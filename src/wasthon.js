@@ -8730,13 +8730,25 @@ mergeInto(LibraryManager.library, {
         }
     },
 
-    /* _PyObject_GetState — return obj.__dict__ if present, else None.
-     * Used by pickle protocol. */
+    /* _PyObject_GetState — CPython semantic: obj.__getstate__(). The default
+     * object.__getstate__ collects the instance dict AND the __slots__
+     * values ((dict, slots) 2-tuple); returning the raw dict here dropped
+     * the slots — datetimetester's PicklableFixedOffsetWithSlots unpickled
+     * with no offset (tzinfo.__reduce__ goes through this). */
     _PyObject_GetState__deps: ['$WasthonRT'],
     _PyObject_GetState: function(objH) {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
         if (!obj) return rt.SLOT_NONE;
+        try {
+            var gs = rt.$B.$getattr(obj, '__getstate__', null);
+            if (gs !== null && gs !== undefined && gs !== rt.$B.NULL) {
+                return rt.wrapNewRef(rt.$B.$call(gs));
+            }
+        } catch (e) {
+            rt.forwardError(e, rt._b_.TypeError);
+            return 0;
+        }
         var d = rt.$B.get_dict(obj);
         if (!d) return rt.SLOT_NONE;
         return rt.wrapNewRef(d);
