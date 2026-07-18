@@ -11843,6 +11843,15 @@ mergeInto(LibraryManager.library, {
             return out;
         }
         var args = parse(undefined);
+        // CPython (_PyObject_CallFunctionVa): when the whole format is ONE
+        // top-level "(...)", the built tuple IS the argument list — it is
+        // spread, not passed as a single tuple argument. datetime's
+        // build_struct_time does CallFunction(struct_time, "((iiiiiiiii))"):
+        // the OUTER parens are the argument list, the inner tuple the single
+        // real argument (struct_time takes a 9-sequence).
+        if (args.length === 1 && fmt[0] === '(' && i >= fmt.length && Array.isArray(args[0])) {
+            args = args[0];
+        }
         try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [fn].concat(args))); }
         catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
