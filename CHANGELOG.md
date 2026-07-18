@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyTraceMalloc_Track`/`Untrack` do real per-`(domain, ptr)` size
+  bookkeeping while tracing** (`src/wasthon.js`). Both were no-op stubs
+  returning `0`, so `tracemalloc` saw zero traced memory and pandas' khash
+  memory tests (domain-filtered snapshots) had nothing to read. Now a `Map`
+  on `globalThis.__wasthon_tracemalloc` records size keyed by
+  `(domain, ptr)` when tracing is on — `Track` sets, `Untrack` deletes —
+  and both return `-2` when tracing is off, matching CPython. This is
+  profiling bookkeeping only: it does **not** touch the refcount /
+  `tp_dealloc` object lifecycle. The Python `tracemalloc` module (a
+  numbry-side VFS stub) drives tracing and reads the snapshots. (+31 pandas
+  hashtable.)
 - **`PyObject_RichCompareBool` coerces each result through PYTHON truthiness,
   not JS truthiness** (`src/wasthon.js`). The six comparison results went into a
   bare JS `? 1 : 0`, so a result whose `__bool__` should decide (or raise) was

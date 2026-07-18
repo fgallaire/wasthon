@@ -8686,8 +8686,27 @@ mergeInto(LibraryManager.library, {
     PyInterpreterState_Main__deps: ['$WasthonRT'],
     PyInterpreterState_Main: function() { var rt = WasthonRT;
         return rt._interp || (rt._interp = _malloc(8)); },
-    PyTraceMalloc_Track: function(domain, ptr, size) { return 0; },
-    PyTraceMalloc_Untrack: function(domain, ptr) { return 0; },
+    /* PyTraceMalloc_Track/Untrack — REAL per-(domain,ptr) size bookkeeping
+     * while tracing is on (CPython returns -2 when tracemalloc is off).
+     * The store lives on globalThis.__wasthon_tracemalloc so the Python
+     * tracemalloc module (a VFS stub, browser side) can drive tracing and
+     * take domain-filtered snapshots (pandas' khash memory tests). */
+    PyTraceMalloc_Track__deps: ['$WasthonRT'],
+    PyTraceMalloc_Track: function(domain, ptr, size) {
+        var tm = globalThis.__wasthon_tracemalloc ||
+                 (globalThis.__wasthon_tracemalloc = { tracing: false, map: new Map() });
+        if (!tm.tracing) return -2;
+        tm.map.set(domain + ':' + ptr, size);
+        return 0;
+    },
+    PyTraceMalloc_Untrack__deps: ['$WasthonRT'],
+    PyTraceMalloc_Untrack: function(domain, ptr) {
+        var tm = globalThis.__wasthon_tracemalloc ||
+                 (globalThis.__wasthon_tracemalloc = { tracing: false, map: new Map() });
+        if (!tm.tracing) return -2;
+        tm.map.delete(domain + ':' + ptr);
+        return 0;
+    },
     PyUnstable_Object_IsUniquelyReferenced__deps: ['$WasthonRT'],
     PyUnstable_Object_IsUniquelyReferenced: function(oH) { return 0; },
 
