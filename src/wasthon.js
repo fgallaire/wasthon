@@ -16835,6 +16835,15 @@ mergeInto(LibraryManager.library, {
                 posArgs = jsArgs;
             } else {
                 var self = jsArgs[0];
+                /* METH_CLASS: the C function's first arg is ALWAYS the class.
+                 * Brython's call_attr fast path (tp_funcs + builtin_method)
+                 * hands the INSTANCE for `a.fromordinal(n)` — the C then does
+                 * PyObject_CallFunction(cls=instance,…) → "'date' object is
+                 * not callable". Coerce like classmethod.__get__ does. */
+                if ((flags & METH_CLASS) && self !== undefined &&
+                    !rt.$B.is_type(self)) {
+                    self = rt.$B.get_class(self);
+                }
                 if (self && self.__wasthon_ptr__) {
                     selfHandle = self.__wasthon_ptr__;
                     // Buffer-export safety (array): sync the C struct's
