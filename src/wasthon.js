@@ -5391,6 +5391,14 @@ mergeInto(LibraryManager.library, {
             if (cls.tp_descr_get === undefined) cls.tp_descr_get = rt.$B.NULL;
             if (cls.tp_descr_set === undefined) cls.tp_descr_set = rt.$B.NULL;
 
+            /* CPython finality: a C type without Py_TPFLAGS_BASETYPE
+             * (wasthon.h bit 1 — datetime.timezone) cannot be subclassed.
+             * make_builtin_class defaults Brython's BASETYPE on; clear it so
+             * the class statement raises "not an acceptable base type". */
+            if (!(flags & 2) && rt.$B.TPFLAGS && rt.$B.TPFLAGS.BASETYPE) {
+                cls.tp_flags = (cls.tp_flags || 0) & ~rt.$B.TPFLAGS.BASETYPE;
+            }
+
             /* the STATIC struct pointer IS the type handle */
             rt.bindInstance(typePtr, cls);
             cls.__wasthon_type_handle__ = typePtr;
