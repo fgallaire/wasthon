@@ -913,6 +913,9 @@ extern PyObject *Py_NotImplemented;
 #define Py_IsNone(x)   ((x) == Py_None)
 #define Py_IsTrue(x)   ((x) == Py_True)
 #define Py_IsFalse(x)  ((x) == Py_False)
+/* Py_Is (3.10+) — REAL object identity. Upstream this is (x)==(y); under
+ * the bridge two handles can name the same object, so it's a JS call. */
+int Py_Is(PyObject *x, PyObject *y);
 
 /* ---------------------------------------------------------------- *
  * Forward declarations of functions implemented in JS via imports. *

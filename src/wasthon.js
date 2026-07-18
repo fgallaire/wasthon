@@ -3881,6 +3881,19 @@ mergeInto(LibraryManager.library, {
         }
     },
 
+    /* Py_Is — CPython 3.10+ object identity. Upstream it's the pointer
+     * compare (x)==(y); under the bridge two handles for the SAME object
+     * can differ (a fresh borrow per crossing), so delegate to Brython's
+     * own `is` ($B.$is: === plus the float value/NaN case). */
+    Py_Is__deps: ['$WasthonRT'],
+    Py_Is: function(xH, yH) {
+        var rt = WasthonRT;
+        if (xH === yH) return 1;
+        var x = rt.unwrap(xH), y = rt.unwrap(yH);
+        if (x === null || y === null) return 0;
+        try { return rt.$B.$is(x, y) ? 1 : 0; } catch (e) { return 0; }
+    },
+
     /* Internal helpers exposed via pycore_*.h headers. _sre needs these. */
     _PyUnicode_Copy__deps: ['$WasthonRT'],
     _PyUnicode_Copy: function(handle) {

@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`Py_Is` — real object identity, not a raw pointer compare**
+  (`src/wasthon.js`, decl in `src/wasthon.h`). Upstream `Py_Is(x, y)` is
+  `(x) == (y)`, but under the bridge two handles can name the SAME object (a
+  fresh borrow per crossing), so a pointer compare would read equal objects as
+  distinct. After a handle-equality shortcut it delegates to Brython's own `is`
+  (`$B.$is`: `===` plus the float value/NaN case); a null handle is identical to
+  nothing. A handle-identity READ — it does not touch the refcount/`tp_dealloc`
+  lifecycle. (+0 alone; pandas' khash identity fast path consumes it.)
 - **`PyFloat_CheckExact` recognizes Brython's Float box — NEP 50 weak-scalar
   promotion was dead for Python floats** (`src/wasthon.js`, also
   `wasthon_exacttype_of_builtin`). A Brython float is a `Float` box
