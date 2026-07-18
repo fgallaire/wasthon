@@ -1005,7 +1005,8 @@ mergeInto(LibraryManager.library, {
         lastCall: null,
         trace: function(name, info) {
             this.lastCall = name + (info ? '(' + info + ')' : '');
-            // Uncomment for verbose: console.log('[wasthon trace]', this.lastCall);
+            (this._traceRing = this._traceRing || []).push(this.lastCall);
+            if (this._traceRing.length > 40) this._traceRing.shift();
         },
         /* The tp_new body behind Brython-class type structs. `owner` is the
          * class whose struct carries the slot; `typeHandle` is the type being
@@ -5278,6 +5279,7 @@ mergeInto(LibraryManager.library, {
             var membersPtr = HEAP32[(typePtr + 164) >> 2];   /* tp_members    */
 
             var fullName  = namePtr ? UTF8ToString(namePtr) : '<wasthon type>';
+            rt._lastReadyName = fullName;
             var dotIdx    = fullName.lastIndexOf('.');
             var shortName = dotIdx >= 0 ? fullName.slice(dotIdx + 1) : fullName;
 
@@ -6124,7 +6126,15 @@ mergeInto(LibraryManager.library, {
                 try { rt.$B.make_getattr(cls); } catch (e) {}
             }
             return 0;
-        } catch (e) { rt.forwardError(e, rt._b_.RuntimeError); return -1; }
+        } catch (e) {
+            /* debug aid: a raw JS failure here (not a Python exception)
+             * keeps its JS stack in the message — the only way to locate
+             * the faulting site once forwarded to Python. */
+            if (e && e.stack && !e.__class__) {
+                try { e.message += ' | JSSTACK: ' + e.stack.split('\n').slice(0, 8).join(' << '); } catch (_) {}
+            }
+            rt.forwardError(e, rt._b_.RuntimeError); return -1;
+        }
     },
 
     PyErr_Fetch__deps: ['$WasthonRT'],
@@ -9115,8 +9125,20 @@ mergeInto(LibraryManager.library, {
         var name = UTF8ToString(namePtr);
         rt.trace('PyObject_GetAttrString', name);
         if (!obj) {
+            var hint = '';
+            try {
+                var w = [];
+                for (var o = 0; o <= 20; o += 4) w.push(HEAP32[(objHandle + o) >> 2]);
+                hint = ' mem=[' + w.join(',') + ']';
+                var tn = HEAP32[(objHandle + 12) >> 2];
+                if (tn > 0 && tn < HEAPU8.length) {
+                    var s = UTF8ToString(tn, 64);
+                    if (/^[A-Za-z_][\w.]*$/.test(s)) hint += ' tp_name?=' + s;
+                }
+            } catch (_) {}
+            if (rt._freedRing && rt._freedRing.indexOf(objHandle) !== -1) hint += ' [WAS DECREF-PURGED]';
             rt.setError(rt.wrap(rt._b_.SystemError),
-                "PyObject_GetAttrString: obj handle " + objHandle + " did not resolve (name=" + name + ")");
+                "PyObject_GetAttrString: obj handle " + objHandle + " did not resolve (name=" + name + ")" + hint);
             return 0;
         }
         try {
@@ -9652,6 +9674,9 @@ mergeInto(LibraryManager.library, {
     PyErr_SetString__deps: ['$WasthonRT'],
     PyErr_SetString: function(excHandle, msgPtr) {
         var msg = msgPtr === 0 ? "" : UTF8ToString(msgPtr);
+        if (msg.indexOf('error indicator not set') !== -1 && WasthonRT._lastNoErrStack) {
+            msg += ' | AT-THROW: ' + WasthonRT._lastNoErrStack;
+        }
         WasthonRT.setError(excHandle, msg);
     },
 
@@ -9795,7 +9820,12 @@ mergeInto(LibraryManager.library, {
 
     PyErr_Occurred__deps: ['$WasthonRT'],
     PyErr_Occurred: function() {
-        return WasthonRT.pendingException ? WasthonRT.pendingException.exc : 0;
+        var rt = WasthonRT;
+        if (!rt.pendingException) {
+            try { rt._lastNoErrStack = new Error().stack.split('\n').slice(1, 10).join(' << '); } catch (_) {}
+            return 0;
+        }
+        return rt.pendingException.exc;
     },
 
     PyErr_SetNone__deps: ['$WasthonRT'],
@@ -10068,10 +10098,11 @@ mergeInto(LibraryManager.library, {
         // CPython rejects more positional args than format slots; this
         // parser silently ignored the extras, so e.g.
         // zlib._ZlibDecompressor(-15, b"x", 5) succeeded instead of raising.
-        if (posArgs.length > totalSlots) {
+        var maxPosSlots = (dollarSlot >= 0) ? dollarSlot : totalSlots;
+        if (posArgs.length > maxPosSlots) {
             rt.setError(rt.wrap(rt._b_.TypeError),
-                (fname || 'function') + "() takes at most " + totalSlots +
-                " arguments (" + posArgs.length + " given)");
+                (fname || 'function') + "() takes at most " + maxPosSlots +
+                " positional arguments (" + posArgs.length + " given)");
             return 0;
         }
 
@@ -10288,8 +10319,10 @@ mergeInto(LibraryManager.library, {
                          * 'U#' also writes the UTF-8 byte length to the second
                          * out slot. */
                         if (rt.asJSStr(value) === null) {
+                            var uCls;
+                            try { uCls = rt.$B.class_name(value); } catch (_) { uCls = '?'; }
                             rt.setError(rt.wrap(rt._b_.TypeError),
-                                "argument must be str");
+                                "argument must be str, not " + uCls);
                             return 0;
                         }
                         HEAP32[outPtr >> 2] = rt.wrap(value);
@@ -10326,14 +10359,23 @@ mergeInto(LibraryManager.library, {
                          * PyTypeObject mirror, no longer callable directly.) */
                         HEAP32[outPtr >> 2] = rt._b_.bool.$factory(value) ? 1 : 0;
                     } else if (c === 'C') {
-                        /* single Python str char as C int (codepoint) */
+                        /* single Python str char as C int (codepoint). One
+                         * CODEPOINT, not one UTF-16 unit: an astral char
+                         * (surrogate pair, s.length 2) is a single character
+                         * — datetime.isoformat(sep='🐍') is valid CPython. */
                         var s = rt.asJSStr(value);
-                        if (s === null || s.length !== 1) {
+                        var cCp = -1;
+                        if (s !== null) {
+                            if (s.length === 1) cCp = s.codePointAt(0);
+                            else if (s.length === 2 && s.codePointAt(0) > 0xFFFF)
+                                cCp = s.codePointAt(0);
+                        }
+                        if (cCp < 0) {
                             rt.setError(rt.wrap(rt._b_.TypeError),
                                 "expected a single character str");
                             return 0;
                         }
-                        HEAP32[outPtr >> 2] = s.codePointAt(0) || s.charCodeAt(0);
+                        HEAP32[outPtr >> 2] = cCp;
                     } else if (c === 's' || c === 'z') {
                         /* str -> C UTF-8 string (reuses PyUnicode_AsUTF8: cached
                          * and kept alive with the str). 'z' accepts None->NULL.
@@ -10726,7 +10768,10 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try { return rt.wrapNewRef(String(rt._b_.repr(rt.unwrap(handle)))); }
         catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), "repr failed: " + (e.message || String(e)));
+            var det = e.message || String(e);
+            try { if (e.args) det += ' pyargs=' + e.args[0]; } catch (_) {}
+            try { if (e.stack) det += ' | ' + e.stack.split('\n').slice(0, 4).join(' << '); } catch (_) {}
+            rt.setError(rt.wrap(rt._b_.TypeError), "repr failed: " + det);
             return 0;
         }
     },
@@ -11424,7 +11469,26 @@ mergeInto(LibraryManager.library, {
         if (!chunks) return -1;
         var s = rt.asJSStr(rt.unwrap(strH));
         if (s === null) return -1;
-        var sub = s.slice(start, end);
+        var sub;
+        if (!/[\uD800-\uDFFF]/.test(s)) {
+            sub = s.slice(start, end);
+        } else {
+            /* start/end are CODEPOINT indices (CPython contract, matching
+             * PyUnicode_GET_LENGTH/READ) — convert to UTF-16 offsets, one
+             * pass. A UTF-16 slice truncated e.g. datetime's wrap_strftime
+             * output after any astral char in the format. */
+            var u16s = 0, cp = 0;
+            while (cp < start && u16s < s.length) {
+                u16s += s.codePointAt(u16s) > 0xFFFF ? 2 : 1;
+                cp++;
+            }
+            var u16e = u16s;
+            while (cp < end && u16e < s.length) {
+                u16e += s.codePointAt(u16e) > 0xFFFF ? 2 : 1;
+                cp++;
+            }
+            sub = s.slice(u16s, u16e);
+        }
         chunks.push(sub);
         HEAP32[writerPtr >> 2] += sub.length;
         return 0;
@@ -16669,6 +16733,10 @@ mergeInto(LibraryManager.library, {
         // Each entry is 16 bytes: name(4) + meth(4) + flags(4) + doc(4)
         for (var mp = methodsPtr; ; mp += 16) {
             var namePtr = HEAP32[ mp        >> 2];
+            if (namePtr === undefined) {
+                throw new Error('install_methods out-of-bounds: methodsPtr=' + methodsPtr
+                    + ' mp=' + mp + ' type=' + rt._lastReadyName);
+            }
             if (namePtr === 0) break;
             var fnPtr   = HEAP32[(mp +  4)  >> 2];
             var flags   = HEAP32[(mp +  8)  >> 2];
