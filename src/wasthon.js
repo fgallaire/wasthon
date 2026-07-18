@@ -12930,6 +12930,27 @@ mergeInto(LibraryManager.library, {
     PyUnicode_WriteChar: function(uH, index, ch) {
         var rt = WasthonRT;
         var u = rt.unwrap(uH);
+        if (typeof u === 'string') {
+            /* JS-string-backed unicode. CPython's contract restricts
+             * WriteChar to freshly created, single-owner strings (datetime's
+             * _sanitize_isoformat_str edits the _PyUnicode_Copy it just made
+             * to swap a surrogate separator for 'T') — strings are immutable
+             * here, so rebind the handle to the edited string. index is a
+             * CODEPOINT index. */
+            var off = 0, cpw = 0;
+            while (cpw < index && off < u.length) {
+                off += u.codePointAt(off) > 0xFFFF ? 2 : 1;
+                cpw++;
+            }
+            if (index < 0 || off >= u.length) {
+                rt.setError(rt.wrap(rt._b_.IndexError), "string index out of range");
+                return -1;
+            }
+            var w = u.codePointAt(off) > 0xFFFF ? 2 : 1;
+            rt.handles.set(uH, u.slice(0, off) +
+                String.fromCodePoint(ch >>> 0) + u.slice(off + w));
+            return 0;
+        }
         if (!u || u.__wasthon_unicode_buf__ === undefined) {
             rt.setError(rt.wrap(rt._b_.SystemError),
                 "PyUnicode_WriteChar: not a writable unicode buffer");
