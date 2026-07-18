@@ -3685,6 +3685,53 @@ StopIteration                     # before
 AttributeError: boom              # after
 ```
 
+## f-string literal parts: \UXXXXXXXX, \N{NAME}, octal and unknown escapes are not decoded
+
+The literal segments of an f-string keep their escape sequences textually
+(plain strings are decoded by `prepare_string`, but the FSTRING_MIDDLE
+tokens go through `_PyPegen.constant_from_token` and `joined_str` with no
+decoding). The generated JS embeds the raw text in a JS string literal, so
+only the escapes whose syntax JavaScript happens to share (`\n`, `\xHH`,
+`\uHHHH`...) come out right. Everything JS lacks is corrupted:
+
+```python
+>>> f"\U0001F40D"      # expected '🐍'
+'U0001F40D'
+>>> f"\N{BULLET}"      # expected '•'
+'N{BULLET}'
+>>> f"\101"            # expected 'A'
+'101'                  # (and octal escapes are SyntaxErrors in strict-mode JS)
+>>> f"\q"              # expected '\\q' (unknown escape keeps the backslash)
+'q'
+```
+
+Suggested fix (mirrors CPython's `_PyPegen_decode_string` on fstring parts):
+either decode the escapes when building the Constant, or — matching the
+"JS-source-ready" convention the tokenizer already uses — transpose the
+non-JS escapes in `$B._PyPegen.joined_str`: `\UXXXXXXXX` → `\u{XXXXXXXX}`,
+`\N{NAME}` → `\u{codepoint}` (unicodedb lookup), `\ooo` → `\u{hex}`,
+`\a` → `\x07`, unknown escape `\q` → `\\q`; leave literal `\\` pairs and the
+JS-shared escapes untouched. Raw f-strings (`rf'...'`) skip the transform.
+
+## class attribute `__setattr__ = dict.__setitem__` breaks attribute assignment
+
+`$B.$setattr` calls `klass.tp_setattro` as a raw JS function. When a class
+assigns a non-function callable as `__setattr__` — the standard "attribute
+dict" idiom used by scipy's `OptimizeResult`, sklearn's `Bunch`, etc. —
+`tp_setattro` is a wrapper_descriptor OBJECT and the call throws.
+
+```python
+>>> class R(dict):
+...     __setattr__ = dict.__setitem__
+>>> r = R()
+>>> r.x = 1
+JavascriptError: setattr is not a function     # expected: r['x'] == 1
+```
+
+(Inside scipy the same root surfaced as a ~25 s "InternalError: allocation
+size overflow".) Suggested fix: in `$B.$setattr`, when `tp_setattro` is not a
+JS function, dispatch through `$B.$call(setattr, obj, attr, value)`.
+
 ## typing.ParamSpec is broken: `super().__init__(bound, covariant, contravariant)` reaches object.__init__
 
 In `_typing.py`, `ParamSpec.__init__` still calls

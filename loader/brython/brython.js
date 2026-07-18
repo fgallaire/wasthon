@@ -5366,6 +5366,12 @@ var klass=$B.get_class(obj)
 var setattr=klass.tp_setattro
 if(test){console.log('seattr',obj,attr,value,'setattr func',setattr)}
 if(setattr===$B.NULL){$B.RAISE(_b_.AttributeError,'no setattr')}
+if(typeof setattr!=='function'){
+// a class can set __setattr__ to a NON-function callable — e.g. scipy's
+// OptimizeResult does `__setattr__ = dict.__setitem__` (a wrapper_descriptor
+// object). Calling it as a raw JS function threw "setattr is not a function".
+$B.$call(setattr,obj,attr,value)
+return _b_.None}
 setattr(obj,attr,value)
 return _b_.None}
 _b_.sorted=function(){var $=$B.args('sorted',1,{iterable:null},arguments,null,null,'kw')
@@ -10166,8 +10172,9 @@ var y=toBigInt(other)
 if(y===$B.NULL){return _b_.NotImplemented}
 if(y==0n){$B.RAISE(_b_.ZeroDivisionError,"integer division or modulo by zero")}
 var x=toBigInt(self)
+if(x===$B.NULL){return _b_.NotImplemented}
 return int_or_long((x % y+y)% y)}
-_b_.int.nb_divmod=function(self,other){if(toBigInt(other)===$B.NULL){return _b_.NotImplemented}
+_b_.int.nb_divmod=function(self,other){if(toBigInt(self)===$B.NULL ||toBigInt(other)===$B.NULL){return _b_.NotImplemented}
 try{return $B.fast_tuple([int.nb_floor_divide(self,other),int.nb_remainder(self,other)])}
 catch(err){if(err && err.__class__){throw err}return _b_.NotImplemented}}
 _b_.int.nb_power=function(self,other,z){var[x,y]=[self,other].map(toBigInt)
@@ -14750,7 +14757,7 @@ $B.$getattr($.category,"__name__"):_b_.None}
 )}
 modules._warnings={_acquire_lock:function(){},_defaultaction:"default",_filters_mutated:function(){},_filters_mutated_lock_held:function(){},_onceregistry:$B.empty_dict(),_release_lock:function(){},_warnings_context:{},filters:$B.$list([$B.fast_tuple(['default',_b_.None,_b_.DeprecationWarning,'__main__',0]),$B.fast_tuple(['ignore',_b_.None,_b_.DeprecationWarning,_b_.None,0]),$B.fast_tuple(['ignore',_b_.None,_b_.PendingDeprecationWarning,_b_.None,0]),$B.fast_tuple(['ignore',_b_.None,_b_.ImportWarning,_b_.None,0]),$B.fast_tuple(['ignore',_b_.None,_b_.ResourceWarning,_b_.None,0])
 ]),warn:function(){
-var $=$B.args('warn',4,{message:null,category:null,stacklevel:null,source:null},arguments,{category:_b_.UserWarning,stacklevel:1,source:_b_.None})
+var $=$B.args('warn',5,{message:null,category:null,stacklevel:null,source:null,skip_file_prefixes:null},arguments,{category:_b_.UserWarning,stacklevel:1,source:_b_.None,skip_file_prefixes:$B.fast_tuple([])})
 var message=$.message,category=$.category,stacklevel=$.stacklevel
 if($B.$isinstance(message,_b_.Warning)){category=$B.get_class(message)}else{message=$B.$call(category,message)}
 var filters
@@ -14771,6 +14778,12 @@ warning_message={ob_type:WarningMessage}
 $B.assign_dict(warning_message,{message:message,category,filename,lineno,file:_b_.None,line,source:_b_.None,_category_name:category.__name__}
 )}else{let frame_rank=Math.max(0,$B.count_frames()-stacklevel)
 var frame=$B.get_frame_at(frame_rank)
+var _sfp=$.skip_file_prefixes
+if(_sfp && _sfp.length){while(frame_rank>0){var _ff=frame.__file__||'',_skip=false
+for(var _pi=0;_pi<_sfp.length;_pi++){if(_ff.startsWith(_sfp[_pi])){_skip=true;break}}
+if(!_skip){break}
+frame_rank-=1
+frame=$B.get_frame_at(frame_rank)}}
 file=frame.__file__
 let f_code=$B.$getattr(frame,'f_code'),src=$B.file_cache[file]
 var co_filename=$B.$getattr(f_code,'co_filename')
@@ -18624,7 +18637,34 @@ $B._PyPegen.decode_fstring_part=function(p,is_raw,constant,token){var bstr=const
 var len;
 if(bstr=="{{" ||bstr=="}}"){len=1}else{len=bstr.length}
 is_raw=is_raw ||! bstr.includes('\\')
-var str=bstr 
+var str=bstr
+if(!is_raw){
+// CPython decodes every escape in f-string literal parts
+// (_PyPegen_decode_string); this passthrough only "worked" because the
+// value is later emitted inside a JS string literal, where \n/\x/\uXXXX
+// happen to share Python's syntax. Escapes JS lacks were corrupted:
+// \U0001F40D became "U0001F40D", \N{BULLET} became "N{BULLET}", octal
+// and unknown escapes lost their backslash. Keep the value JS-source-ready
+// (like prepare_string does) by transposing to JS-legal equivalents.
+str=bstr.replace(/\\(U[0-9A-Fa-f]{8}|N\{[-A-Za-z0-9 ]+\}|[0-7]{1,3}|.)/g,function(m,g){
+var c=g[0]
+if(c=='U'){return '\\u{'+g.substr(1)+'}'}
+if(c=='N' && g.length>1){
+if($B.unicodedb===undefined){var xhr=new XMLHttpRequest
+xhr.open("GET",$B.brython_path+"unicode.txt",false)
+xhr.onreadystatechange=function(){if(this.readyState==4 && this.status==200){$B.unicodedb=this.responseText}}
+xhr.send()}
+if($B.unicodedb!==undefined){var desc=g.slice(2,-1).toUpperCase()
+var re=new RegExp("^([0-9A-F]+);"+desc+";.*$","m")
+var search=re.exec($B.unicodedb)
+if(search){return '\\u{'+search[1]+'}'}}
+return m}
+if(c>='0' && c<='7'){return '\\u{'+parseInt(g,8).toString(16)+'}'}
+if(c=='a'){return '\\x07'}
+if('ntrbfv\\\'"xu'.indexOf(c)>-1 || c=='\n'){return m}
+return '\\\\'+g})
+}
+ 
 if(str==NULL){_Pypegen_raise_decode_error(p);
 return NULL;}
 p.arena.a_objects.push(str)
@@ -18661,7 +18701,36 @@ $B._PyPegen.template_str=function(p,a,raw_expressions,b){var resized_exprs=_get_
 var ast_obj=new $B.ast.TemplateStr(resized_exprs)
 set_position_from_list(ast_obj,[a.lineno,a.col_offset,b.end_lineno,b.end_col_offset])
 return ast_obj}
-$B._PyPegen.joined_str=function(p,a,items,c){var ast_obj=new $B.ast.JoinedStr(items)
+$B._PyPegen.transpose_fstring_escapes=function(v){
+// f-string literal parts keep their escape sequences textually (unlike
+// plain strings, decoded in prepare_string) and are later emitted inside
+// a JS string literal. That only decodes the escapes whose syntax JS
+// shares (\n, \xHH, \uHHHH...): \UHHHHHHHH, \N{NAME}, octal and unknown
+// escapes were corrupted (f"\U0001F40D" gave "U0001F40D"). Transpose them
+// to JS-legal equivalents; leave literal \\ pairs untouched.
+return v.replace(/\\\\|\\U([0-9A-Fa-f]{8})|\\N\{([-A-Za-z0-9 ]+)\}|\\([0-7]{1,3})|\\(.)/g,function(m,u8,nname,oct,other){
+if(m=='\\\\'){return m}
+if(u8!==undefined){return '\\u{'+u8+'}'}
+if(nname!==undefined){
+if($B.unicodedb===undefined){var xhr=new XMLHttpRequest
+xhr.open("GET",$B.brython_path+"unicode.txt",false)
+xhr.onreadystatechange=function(){if(this.readyState==4 && this.status==200){$B.unicodedb=this.responseText}}
+xhr.send()}
+if($B.unicodedb!==undefined){var re=new RegExp("^([0-9A-F]+);"+nname.toUpperCase()+";.*$","m")
+var search=re.exec($B.unicodedb)
+if(search){return '\\u{'+search[1]+'}'}}
+return m}
+if(oct!==undefined){return '\\u{'+parseInt(oct,8).toString(16)+'}'}
+if(other=='a'){return '\\x07'}
+if(other=='\n' || 'ntrbfv\'"xu'.indexOf(other)>-1){return m}
+return '\\\\'+other})
+}
+$B._PyPegen.joined_str=function(p,a,items,c){
+if(!((a.string||'').toLowerCase().includes('r'))){
+for(var _fi=0;_fi<items.length;_fi++){var _it=items[_fi]
+if(_it instanceof $B.ast.Constant && typeof _it.value=='string' && _it.value.includes('\\')){
+_it.value=$B._PyPegen.transpose_fstring_escapes(_it.value)}}}
+var ast_obj=new $B.ast.JoinedStr(items)
 ast_obj.lineno=a.lineno
 ast_obj.col_offset=a.col_offset
 ast_obj.end_lineno=c.end_lineno
