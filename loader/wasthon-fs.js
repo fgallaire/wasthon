@@ -237,6 +237,18 @@
                 return makeStat(FS.lstat(path));
             };
             posix.access = function (path) { return exists(path); };
+            posix.utime = function (path, times) {
+                path = toPath(path);
+                if (!exists(path)) raise(_b_.FileNotFoundError,
+                    "No such file or directory: '" + path + "'");
+                let at, mt;
+                if (times === undefined || times === _b_.None) {
+                    at = mt = Date.now();
+                } else {   // (atime, mtime) in seconds
+                    at = Number(times[0]) * 1000; mt = Number(times[1]) * 1000;
+                }
+                FS.utime(path, at, mt); return _b_.None;
+            };
             posix.listdir = function (path) {
                 path = toPath(path);
                 if (!exists(path)) raise(_b_.FileNotFoundError,

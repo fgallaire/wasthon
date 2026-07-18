@@ -2981,3 +2981,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
       the conftest fixtures resolved), test_timezones +31; numpy grand
       total and the five sentinel suites at baseline, `test_direct`
       bit-exact.
+
+- [x] posix.utime lands on the MEMFS-backed posix: FS.utime under the
+      hood, FileNotFoundError on a missing path, None → "now", else the
+      (atime, mtime) seconds pair (ms-converted). +1 pandas test_lib
+      with the numbry FS wiring.
