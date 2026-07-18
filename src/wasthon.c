@@ -846,11 +846,21 @@ static double wasthon_time_round(double x, _PyTime_round_t round) {
 
 int _PyTime_ObjectToTimeval(PyObject *obj, time_t *sec, long *usec,
                             _PyTime_round_t round) {
-    if (PyFloat_Check(obj)) {
+    /* Take the float path for anything that is not an exact int:
+     * PyFloat_Check can miss a boxed Brython float, and the int path
+     * then wrapped 1e200 silently into a bogus time_t (year-1 dates)
+     * instead of CPython's OverflowError. */
+    if (!PyLong_Check(obj)) {
         double d = PyFloat_AsDouble(obj);
         if (d == -1.0 && PyErr_Occurred()) return -1;
         if (isnan(d)) {
             PyErr_SetString(PyExc_ValueError, "Invalid value NaN (not a number)");
+            return -1;
+        }
+        /* Explicit time_t bounds — a double->int64 cast out of range is
+         * not trustworthy (saturating or trapping depending on codegen). */
+        if (d < -9223372036854775808.0 || d >= 9223372036854775808.0) {
+            PyErr_SetString(PyExc_OverflowError, "timestamp out of range for platform time_t");
             return -1;
         }
         double intpart;
