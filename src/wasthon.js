@@ -10002,9 +10002,15 @@ mergeInto(LibraryManager.library, {
         // Count ARGUMENT slots: '|' separates, '&'/'!' are suffixes of the
         // preceding code (O&/O!), and a '(...)' group is ONE argument.
         var totalSlots = 0;
+        /* '$' marks the keyword-only boundary (CPython 3.3+): params after
+         * it can never be filled positionally — record how many slots
+         * precede it. It is NOT itself a slot (counting it also over-read
+         * kwlist by one entry). */
+        var dollarSlot = -1;
         for (var i = 0; i < format.length; i++) {
             var ch = format[i];
             if (ch === '|' || ch === '&' || ch === '!' || ch === '*') continue;
+            if (ch === '$') { if (dollarSlot < 0) dollarSlot = totalSlots; continue; }
             if (ch === '(') {
                 totalSlots++;
                 var d = 1;
