@@ -7822,7 +7822,11 @@ mergeInto(LibraryManager.library, {
             var m = rt.$B.$getattr(self, name);
             return rt.wrapNewRef(rt.$B.$call(m, arg));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.AttributeError), name + ": " + (e.message || e));
+            // Forward the REAL exception (CPython propagates the getattr
+            // AttributeError or the call's own error) — collapsing everything
+            // into AttributeError buried a TypeError from date.today()'s
+            // fromtimestamp delegation as "fromtimestamp: [object Object]".
+            rt.forwardError(e, rt._b_.AttributeError);
             return 0;
         }
     },
