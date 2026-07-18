@@ -14569,6 +14569,30 @@ mergeInto(LibraryManager.library, {
         cls.tp_subclasses = cls.tp_subclasses || [];
         rt.$B.init_dict(cls);
 
+        // Honour the bases argument (CPython's PyType_FromSpecWithBases: a
+        // single type or a tuple of types). Each element unwraps to a real
+        // Brython class (bound builtin structs resolve via the handle
+        // table). It was silently IGNORED: datetime's IsoCalendarDate is
+        // created with bases=&PyTuple_Type and lost it — its instances had
+        // no len()/[i]/iter/unpack and never compared equal to tuples.
+        if (basesHandle) {
+            var basesObj = rt.unwrap(basesHandle);
+            var blist = Array.isArray(basesObj) ? basesObj : (basesObj ? [basesObj] : []);
+            var resolved = [];
+            for (var bidx = 0; bidx < blist.length; bidx++) {
+                var bcls = blist[bidx];
+                if (bcls && rt.builtinClassForStruct && typeof bcls === 'number') {
+                    bcls = rt.builtinClassForStruct.get(bcls) || rt.unwrap(bcls);
+                }
+                if (bcls && resolved.indexOf(bcls) === -1) resolved.push(bcls);
+            }
+            if (resolved.length) {
+                cls.tp_bases = resolved;
+                cls.tp_base = resolved[0];
+                cls.tp_mro = rt.$B.make_mro(cls);
+            }
+        }
+
         // gc.collect() finalization opt-in. Unlike the compression File types
         // (freed deterministically at close()/with-exit, see wasthon-dealloc.js),
         // sqlite3's resource-holding C types have no such hook: a deleted Cursor
