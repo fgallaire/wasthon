@@ -16227,6 +16227,26 @@ mergeInto(LibraryManager.library, {
         }
         var size = bs + n * (typeInfo.itemsize || 0);
         var ptr = _malloc(size);
+        /* A C subtype of TUPLE: the Brython-side instance IS a tagged JS
+           Array (ob_type = the subclass) — PyTuple_SET_ITEM/GET_ITEM and the
+           whole Brython tuple protocol (len/iter/unpack/compare/pickle) then
+           work unchanged. datetime's IsoCalendarDate (a var-size tuple
+           subclass built via tp_alloc(tp, 3) + SET_ITEM) came out as an
+           opaque struct wrapper: no len(), no [i], no *unpack. */
+        if (ptr !== 0) {
+            var tcls = typeInfo.brythonClass;
+            if (tcls && tcls.tp_mro && tcls.tp_mro.indexOf(rt._b_.tuple) > -1) {
+                HEAPU8.fill(0, ptr, ptr + size);
+                var arrT = new Array(n | 0);
+                for (var ai = 0; ai < (n | 0); ai++) arrT[ai] = rt._b_.None;
+                arrT.ob_type = tcls;
+                arrT.__wasthon_ptr__ = ptr;
+                arrT.__wasthon_type__ = typeHandle;
+                rt.bindInstance(ptr, arrT);
+                rt.refcounts.set(ptr, 1);
+                return ptr;
+            }
+        }
         if (ptr === 0) {
             rt.setError(rt.wrap(rt._b_.MemoryError), "PyObject_GC_NewVar");
             return 0;
