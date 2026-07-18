@@ -908,6 +908,50 @@ script_helper.assert_python_failure = _assert_python_failure
 def _requires_subprocess(*a, **k):
     return unittest.skip('subprocess not available in browser')
 support.requires_subprocess = _requires_subprocess
+# @support.run_with_tz('EST+05EDT,...') needs time.tzset to swap the process
+# timezone; the browser has no tzset (the local zone is fixed by the host).
+# CPython itself raises SkipTest("tzset required") on such platforms — do the
+# same instead of silently running under the browser's zone (the _Flex
+# fallback made e.g. datetimetester expect EDT and see the local zone).
+def _run_with_tz(tz):
+    def _decorator(func):
+        def _inner(*a, **k):
+            raise unittest.SkipTest('tzset required')
+        _inner.__name__ = getattr(func, '__name__', '_inner')
+        return _inner
+    return _decorator
+support.run_with_tz = _run_with_tz
+# Real ALWAYS_EQ/LARGEST/SMALLEST (CPython test.support): the _Flex fallback
+# has no __eq__/__lt__, so mixed-comparison tests that rely on the reflected
+# operand (me == ALWAYS_EQ must be True) failed on identity instead.
+class _ALWAYS_EQ:
+    def __eq__(self, other): return True
+    def __ne__(self, other): return False
+support.ALWAYS_EQ = _ALWAYS_EQ()
+import functools as _ft
+@_ft.total_ordering
+class _LARGEST:
+    def __eq__(self, other): return isinstance(other, _LARGEST)
+    def __lt__(self, other): return False
+support.LARGEST = _LARGEST()
+@_ft.total_ordering
+class _SMALLEST:
+    def __eq__(self, other): return isinstance(other, _SMALLEST)
+    def __gt__(self, other): return False
+support.SMALLEST = _SMALLEST()
+# time.sleep: Brython raises NotImplementedError (no blocking on the main
+# thread) — but CPython on Emscripten busy-waits, and short retry-loop sleeps
+# (datetimetester test_today's sleep(0.1) between clock reads) are part of
+# normal suite behavior. Faithful bounded busy-wait for the test env; long
+# sleeps stay in the known-hang skip lists.
+import time as _time_mod
+def _busy_sleep(secs):
+    if secs < 0:
+        raise ValueError('sleep length must be non-negative')
+    _deadline = _time_mod.monotonic() + min(float(secs), 5.0)
+    while _time_mod.monotonic() < _deadline:
+        pass
+_time_mod.sleep = _busy_sleep
 
 for n, m in [('test.support.import_helper', import_helper),
              ('test.support.os_helper', os_helper),
@@ -1400,9 +1444,18 @@ try:
     # ship (we use the self-contained HACL builtins) — so they have no path
     # and should be skips, not failures. Intercept at TestCase.run (the only
     # choke-point that reliably produces a skip under Brython).
-    _SKIP_CLASS_SUBSTR = {'test_hmac': ['OpenSSL']}.get(test_name, [])
+    _SKIP_CLASS_RULES = {
+        'test_hmac': (['OpenSSL'],
+            'OpenSSL _hashlib backend not shipped (wasthon uses HACL builtins)'),
+        # CPython guards CapiTest with skipIf(_testcapi is None); the vendored
+        # _testcapi is a constants stub (struct/sqlite3 limits) so the import
+        # succeeds but none of the datetime C-API helpers exist. Same platform
+        # truth as a build without _testcapi: the class is a skip.
+        'datetimetester': (['CapiTest'],
+            'need the _testcapi datetime C-API helpers (vendored _testcapi is a constants stub)'),
+    }
+    _SKIP_CLASS_SUBSTR, _skip_why = _SKIP_CLASS_RULES.get(test_name, ([], ''))
     if _SKIP_CLASS_SUBSTR:
-        _skip_why = 'OpenSSL _hashlib backend not shipped (wasthon uses HACL builtins)'
         # Mark matching classes skipped so their setUpClass is never run
         # (a failing setUpClass bypasses the per-test TestCase.run hook below).
         try:
@@ -1422,7 +1475,7 @@ try:
             if any(_s in _cn for _s in _SKIP_CLASS_SUBSTR):
                 if result is None: result = self.defaultTestResult()
                 result.startTest(self)
-                result.addSkip(self, 'OpenSSL _hashlib backend not shipped (wasthon uses HACL builtins)')
+                result.addSkip(self, _skip_why)
                 result.stopTest(self)
                 return result
             return _orig_tc_run_cls(self, result)
@@ -1433,6 +1486,13 @@ except Exception as e:
     log(traceback.format_exc()[-800:])
     log('\\n=== done ===')
     raise
+
+# Old pickles in test_compat_unpickle name classes as
+# test.datetimetester.…; the module is loaded top-level here, so register the
+# dotted alias (the import system checks sys.modules['test.datetimetester']
+# first and never needs 'test' to be a real package).
+if test_name == 'datetimetester' and test_name in sys.modules:
+    sys.modules['test.datetimetester'] = sys.modules[test_name]
 
 from browser import console as _console, window as _window
 _hang_set = set(_KNOWN_HANGS.get(test_name, []))
