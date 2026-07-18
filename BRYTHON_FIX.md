@@ -4037,3 +4037,57 @@ None ≡ NoneType, typing unions included). torch's config system checks
 
 Fix: set-wise `__eq__` on $B.UnionType (None normalized to NoneType,
 `__args__` consulted on the other operand for typing unions).
+
+## non-heap type repr drops the module prefix — HEAPTYPE gate removed
+
+`_b_.type.tp_repr` only consulted `__module__` when `tp_flags & HEAPTYPE`; a
+static (non-heap) extension type printed its bare short name. CPython consults
+the module for EVERY type (a static type derives it from its dotted tp_name):
+`repr(np.ndarray)` is `<class 'numpy.ndarray'>`. Brython's own builtins carry
+`__module__ == 'builtins'` so their repr is unchanged.
+
+```python
+str(type(np.array([1])))   # was "<class 'ndarray'>"; CPython: "<class 'numpy.ndarray'>"
+```
+
+Fix: drop the HEAPTYPE condition — `__module__` (NULL, empty or 'builtins'
+kept short) prefixes the name for heap and non-heap types alike. (+1 pandas
+test_timedeltas: a TypeError message built from `str(type(obj))` is matched
+against "<class 'numpy.ndarray'>".)
+
+## struct.unpack treats an explicit 0 repeat count as "no count"
+
+`_struct.unpack`'s repeat-count default uses `if not num: num = 1` — an
+explicit `0` count (falsy) is indistinguishable from "no digit" (`None`), so
+every 0-count field yields one spurious item AND consumes its size, shifting
+every later read. `pack` and `calcsize` use the correct `== None` test.
+CPython: a 0-count field produces nothing and consumes nothing.
+
+```python
+unpack('>0l 0B lBB 4s', b'\x00\x01\x02\x03\x04\x05ABCD')
+# Brython: 6 items, trailing 4s reads b''  — CPython: (66051, 4, 5, b'ABCD')
+```
+
+Fix (one line): `if num is None: num = 1`. Hit in the wild by pytz's TZif
+parser on transition-less zones (GMT: timecnt=0 → `assert len(data) == …`
+fails): pandas test_timezones' pytz/dateutil cache-key test. (+1 pandas
+timezones)
+
+## `is` value-compares floats — two distinct NaN objects are "identical"
+
+`$B.$is` special-cases floats (`.value ==` plus a NaN/NaN branch returning
+True), so `is` is an equality test for floats and two distinct `float("nan")`
+objects are `is`-identical. CPython's `is` is object identity.
+
+```python
+float("nan") is float("nan")     # was True; CPython: False
+float("nan") in [float("nan")]   # was True; CPython: False (is-or-eq, both fail)
+x = float("nan"); x in [x]       # True both (identity hit)
+```
+
+The branch guards against float re-boxing — measured stable on 3.14 across
+every access path (variable re-read, list/tuple/dict element, call
+round-trip, instance attribute, math.nan): `x is x` holds with plain `===`
+everywhere. Fix: drop the float branch, `is` = object identity. (+2 pandas
+test_hashtable `nan1 is not nan2` asserts; NaN membership becomes
+CPython-exact as a side effect.)

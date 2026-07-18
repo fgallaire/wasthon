@@ -1820,8 +1820,6 @@ case "string":
 case "number":
 case "boolean":
 return a===b}
-if($B.get_class(a)===_b_.float && $B.get_class(b)===_b_.float){if(isNaN(a.value)&& isNaN(b.value)){return true}
-return a.value==b.value}
 return a===b}
 $B.is_or_equals=function(x,y){
 return $B.$is(x,y)||$B.rich_comp('__eq__',x,y)}
@@ -2905,10 +2903,13 @@ var cls=$.cls,other=$.other
 if(other !==_b_.None && ! $B.$isinstance(other,[type,$B.GenericAlias,$B.UnionType])){return _b_.NotImplemented}
 return $B.UnionType.$factory([cls,other])}
 _b_.type.tp_repr=function(kls){var name=$B.get_name(kls)
+// CPython consults __module__ for EVERY type (a static extension type gets
+// it from its dotted tp_name): repr(np.ndarray) is "<class 'numpy.ndarray'>".
+// Gating on HEAPTYPE printed the bare short name for non-heap types.
 var qualname
-if(kls.hasOwnProperty('tp_flags')&&(kls.tp_flags & TPFLAGS.HEAPTYPE)){var module=$B.$getattr(kls,'__module__',$B.NULL)
-qualname=(module===$B.NULL ||module=='builtins')? name :
-module+"."+name}else{qualname=name}
+var module=$B.$getattr(kls,'__module__',$B.NULL)
+qualname=(module===$B.NULL ||module==='' ||module=='builtins')? name :
+module+"."+name
 return "<class '"+qualname+"'>"}
 _b_.type.tp_call=function(cls){try{var $=$B.args('__call__',1,{cls:null},arguments,null,'args','kw')}catch(err){
 // name the callable like CPython (functools.partial() argument after **
