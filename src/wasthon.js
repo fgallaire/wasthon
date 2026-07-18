@@ -3866,14 +3866,19 @@ mergeInto(LibraryManager.library, {
         // breaks any C-side caller (array.__contains__, list.remove,
         // PyDict key lookup, etc.). Identity shortcut still applies for
         // eq/ne since Brython does it internally too.
+        // The result goes through PYTHON truthiness ($B.$bool ==
+        // PyObject_IsTrue), not JS truthiness: `NA == x` returns the
+        // JS-truthy NA object (its __bool__ RAISES -> -1, like CPython),
+        // and an ndarray result must raise "ambiguous", not read as 1.
+        var asBool = function(r) { return rt.$B.$bool(r) ? 1 : 0; };
         try {
             switch (op) {
-                case 0: return rt.$B.rich_comp('__lt__', a, b) ? 1 : 0;
-                case 1: return rt.$B.rich_comp('__le__', a, b) ? 1 : 0;
-                case 2: return (a === b || rt.$B.rich_comp('__eq__', a, b)) ? 1 : 0;
-                case 3: return (a !== b && !rt.$B.rich_comp('__eq__', a, b)) ? 1 : 0;
-                case 4: return rt.$B.rich_comp('__gt__', a, b) ? 1 : 0;
-                case 5: return rt.$B.rich_comp('__ge__', a, b) ? 1 : 0;
+                case 0: return asBool(rt.$B.rich_comp('__lt__', a, b));
+                case 1: return asBool(rt.$B.rich_comp('__le__', a, b));
+                case 2: return (a === b) ? 1 : asBool(rt.$B.rich_comp('__eq__', a, b));
+                case 3: return (a === b) ? 0 : (asBool(rt.$B.rich_comp('__eq__', a, b)) ? 0 : 1);
+                case 4: return asBool(rt.$B.rich_comp('__gt__', a, b));
+                case 5: return asBool(rt.$B.rich_comp('__ge__', a, b));
                 default: return -1;
             }
         } catch (e) {

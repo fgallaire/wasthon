@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_RichCompareBool` coerces each result through PYTHON truthiness,
+  not JS truthiness** (`src/wasthon.js`). The six comparison results went into a
+  bare JS `? 1 : 0`, so a result whose `__bool__` should decide (or raise) was
+  misread: `NA == x` returned the NA object as "equal" (CPython's `NA.__bool__`
+  raises, so the C caller sees -1), and an ndarray comparison read as 1 instead
+  of raising "ambiguous". Each result now passes through `$B.$bool`
+  (== `PyObject_IsTrue`); the `a === b` identity shortcut for eq/ne is kept.
+  (+1 pandas hashtable.)
 - **`Py_Is` — real object identity, not a raw pointer compare**
   (`src/wasthon.js`, decl in `src/wasthon.h`). Upstream `Py_Is(x, y)` is
   `(x) == (y)`, but under the bridge two handles can name the SAME object (a
