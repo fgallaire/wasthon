@@ -8859,17 +8859,37 @@ mergeInto(LibraryManager.library, {
     _PyTime_ObjectToTime_t: function(objH, secOutPtr, _round) {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
-        var sec;
-        if (typeof obj === 'number') sec = Math.floor(obj);
-        else if (typeof obj === 'bigint') sec = Number(obj);
+        var num;
+        if (typeof obj === 'number') num = obj;
+        else if (typeof obj === 'bigint') {
+            if (obj < -(1n << 63n) || obj >= (1n << 63n)) {
+                rt.setError(rt.wrap(rt._b_.OverflowError),
+                    "timestamp out of range for platform time_t");
+                return -1;
+            }
+            num = Number(obj);
+        }
         // Brython float is a Float box carrying ob_type + value (same story
         // as PyFloat_CheckExact): date.fromtimestamp(time.time()) hands a
         // boxed float here.
         else if (obj && typeof obj.value === 'number' &&
                  (obj.ob_type === rt._b_.float || obj.__class__ === rt._b_.float)) {
-            sec = Math.floor(obj.value);
+            num = obj.value;
         }
         else { rt.setError(rt.wrap(rt._b_.TypeError), "expected number"); return -1; }
+        if (Number.isNaN(num)) {
+            rt.setError(rt.wrap(rt._b_.ValueError),
+                "Invalid value NaN (not a number)");
+            return -1;
+        }
+        // CPython raises before ever calling localtime: a double beyond
+        // time_t (int64) is an OverflowError, not a wrapped year-1900 date.
+        if (num < -9223372036854775808.0 || num >= 9223372036854775808.0) {
+            rt.setError(rt.wrap(rt._b_.OverflowError),
+                "timestamp out of range for platform time_t");
+            return -1;
+        }
+        var sec = Math.floor(num);
         // time_t is 8 bytes on wasm32 (it's typedef'd to int64_t in emscripten).
         var asU = sec < 0 ? (BigInt(sec) + 0x10000000000000000n) : BigInt(sec);
         HEAP32[ secOutPtr      >> 2] = Number(asU & 0xFFFFFFFFn) | 0;
@@ -8885,6 +8905,14 @@ mergeInto(LibraryManager.library, {
         if (typeof t_lo === 'bigint') { sec = Number(t_lo); tmPtr = t_hi; }
         else sec = (t_hi * 0x100000000) + (t_lo >>> 0);
         var d = new Date(sec * 1000);
+        // beyond the JS Date range (±8.64e15 ms) every getter is NaN and the
+        // caller would build a bogus year-1900 tm — fail like C localtime
+        // does on EOVERFLOW instead.
+        if (Number.isNaN(d.getTime())) {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.OverflowError),
+                "timestamp out of range for platform localtime()");
+            return -1;
+        }
         // struct tm layout (per emscripten):
         //   +0  tm_sec     int
         //   +4  tm_min     int
