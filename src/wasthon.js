@@ -16947,7 +16947,11 @@ mergeInto(LibraryManager.library, {
                     resultHandle = fn(selfHandle, rt.wrap(argsTuple),
                                       kwDict ? rt.wrap(kwDict) : 0);
                 } else {
-                    // METH_VARARGS plain — fn(self, args_tuple)
+                    // METH_VARARGS plain — fn(self, args_tuple). CPython's
+                    // cfunction_call rejects keywords for it; dropping them
+                    // silently let utcfromtimestamp(ts, tz=...) succeed.
+                    if (kwNames.length > 0) throw rt.$B.$call(rt._b_.TypeError,
+                        methName + "() takes no keyword arguments");
                     resultHandle = fn(selfHandle, rt.wrap(posArgs));
                 }
             } finally {
