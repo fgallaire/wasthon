@@ -3883,8 +3883,12 @@ mergeInto(LibraryManager.library, {
     /* Internal helpers exposed via pycore_*.h headers. _sre needs these. */
     _PyUnicode_Copy__deps: ['$WasthonRT'],
     _PyUnicode_Copy: function(handle) {
+        /* Returns a NEW reference to a distinct object. wrap() of a
+         * primitive always allocates a fresh handle slot (no interning), so
+         * the copy is independently rebindable by PyUnicode_WriteChar;
+         * wrapNewRef also gives the caller the reference it will DECREF. */
         var obj = WasthonRT.unwrap(handle);
-        return (typeof obj === 'string') ? WasthonRT.wrap(obj) : 0;
+        return (typeof obj === 'string') ? WasthonRT.wrapNewRef(obj) : 0;
     },
 
     _PyUnicode_JoinArray__deps: ['$WasthonRT'],
