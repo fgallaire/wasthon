@@ -3426,11 +3426,20 @@ $B.set_func_names($B.UnionType,"types")})(__BRYTHON__);
 ;
 (function($B){var _b_=$B.builtins
 var method_wrapper=$B.method_wrapper
-$B.method_wrapper.tp_richcompare=function(self){}
+$B.method_wrapper.tp_richcompare=function(self,other,op){
+if(op!=='__eq__' && op!=='__ne__'){return _b_.NotImplemented}
+var eq=$B.get_class(other)===$B.method_wrapper && $B.$is(self.self,other.self)&& self.wrapped===other.wrapped
+return op==='__eq__' ? eq :! eq}
 $B.method_wrapper.tp_repr=function(self){var name=self.d_name
 var class_name=self.self.ob_type.tp_name
 return `<method-wrapper '${name}' of ${class_name} object>`}
-$B.method_wrapper.tp_hash=function(self){}
+$B.method_wrapper.tp_hash=function(self){
+// CPython: hash(bound method-wrapper) combines the receiver's hash
+// with the wrapped slot's identity (must return an int; the empty
+// body made every method-wrapper unusable in sets/dicts)
+var wid=self.wrapped.$hash_id
+if(wid===undefined){wid=self.wrapped.$hash_id=($B.$wasthon_mw_seq=($B.$wasthon_mw_seq||0)+1)}
+return((_b_.hash(self.self)^(wid*1000003))&0x7fffffff)}
 $B.method_wrapper.tp_call=function(self,...args){return self.wrapped(self.self,...args)}
 var method_wrapper_funcs=$B.method_wrapper.tp_funcs={}
 method_wrapper_funcs.__name___get=function(self){return self.d_name}
@@ -11932,7 +11941,12 @@ if(int_key < 0){pos=items.length+pos}
 if(pos >=0 && pos < items.length){return items[pos]}
 $B.RAISE(_b_.IndexError,$B.class_name(self)+
 " index out of range")}
-function sq_concat(self,other){if($B.get_class(self)!==$B.get_class(other)){return _b_.NotImplemented}
+function sq_concat(self,other){if($B.get_class(self)!==$B.get_class(other)){
+// CPython list_concat/tuple_concat check PyList_Check/PyTuple_Check on the
+// OTHER operand (subclass instances included), not exact class equality:
+// Sub(tuple)(...) + (a, b) must concatenate (torch _dispatch_dtypes).
+var _sqbase=$B.$isinstance(self,[_b_.tuple])? _b_.tuple :_b_.list
+if(! $B.$isinstance(other,[_sqbase])){return _b_.NotImplemented}}
 var res=self.slice()
 for(const item of other){res.push(item)}
 if($B.$isinstance(self,tuple)){return tuple.$factory(res)}else{return $B.$list(res)}}

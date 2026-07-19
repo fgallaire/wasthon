@@ -4091,3 +4091,58 @@ round-trip, instance attribute, math.nan): `x is x` holds with plain `===`
 everywhere. Fix: drop the float branch, `is` = object identity. (+2 pandas
 test_hashtable `nan1 is not nan2` asserts; NaN membership becomes
 CPython-exact as a side effect.)
+
+## tuple/list `+` rejects subclass operands — sq_concat wants exact class equality
+
+The shared `sq_concat` (py_list) returns NotImplemented whenever
+`$B.get_class(self) !== $B.get_class(other)`. CPython's tuple_concat/
+list_concat check `PyTuple_Check`/`PyList_Check` on the OTHER operand —
+subclass instances included. A tuple subclass therefore cannot concatenate
+with a plain tuple (torch's `torch.testing._internal.common_dtype`
+`_dispatch_dtypes(tuple)` does exactly this at import).
+
+```python
+class T(tuple): pass
+tuple.__add__(T((1,)), (2,))   # was NotImplemented; CPython: (1, 2)
+T((1,)) + (2,)                 # was TypeError; CPython: (1, 2)
+```
+
+Fix: keep the fast path (equal classes proceed), on mismatch accept when
+`other` isinstance of the slot's base (tuple or list); result stays the base
+type, as in CPython.
+
+## copy/deepcopy of a JS function pickles it — TypeError instead of identity
+
+`copy.copy`/`copy.deepcopy` fall through to `__reduce_ex__(4)` for objects
+whose class has no dispatch entry. A JS-backed callable (class
+`JavascriptFunction`) cannot be pickled, so any structure holding one dies —
+CPython treats every function type as atomic (`_deepcopy_atomic`: identity).
+torch's OpInfo `__post_init__` (`dataclasses.asdict` → `copy.deepcopy`)
+tripped it on 25k lines of common_methods_invocations.
+
+```python
+import copy
+from browser import window
+copy.deepcopy(window.console.log)   # was TypeError; CPython-equivalent: identity
+```
+
+Fix (stdlib copy.py): before the reductor fallback, return the object itself
+when its class is JavascriptFunction, in both copy() and deepcopy().
+
+## method-wrapper: empty tp_hash and tp_richcompare — unusable in sets, undefined comparisons
+
+`$B.method_wrapper.tp_hash` and `tp_richcompare` are EMPTY function bodies:
+hash returns undefined ("__hash__ method should return an int" on any
+set/dict use) and every rich comparison silently yields undefined. CPython
+bound methods hash and compare by (receiver identity, wrapped function).
+
+```python
+t = 3.5
+s = {t.is_integer}          # was TypeError; CPython: ok
+t.is_integer == t.is_integer  # was undefined-ish; CPython: True
+```
+
+Fix: tp_hash combines hash(self.self) with a per-wrapped-slot sequence id
+(bounded to int32); tp_richcompare implements __eq__/__ne__ by receiver
+`is` + wrapped identity, NotImplemented otherwise. (torch's gradcheck puts
+bound methods in sets — the x22 failure cluster in test_autograd.)
