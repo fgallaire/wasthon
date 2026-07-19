@@ -47,6 +47,13 @@ mergeInto(LibraryManager.library, {
         //     in this map so JS can retrieve the Brython wrapper.
         handles: null,           // Map<int, object>
         sentinelByObj: null,     // WeakMap<object, int> — identity interning (reverse of handles)
+        // Type-struct stamp key, unique PER RUNTIME: canonical type handles
+        // are stamped onto SHARED Brython class objects (int, tuple, type…),
+        // and two bridge wasms in one page (brytorch + NumBry) must each
+        // read their own stamp — a handle only resolves in its own table.
+        // Single-runtime behaviour is unchanged (one key, same flow).
+        _thKey: '__wasthon_type_handle__' +
+            (globalThis.__wasthon_rt_seq = (globalThis.__wasthon_rt_seq || 0) + 1),
         nextHandleId: 15,        // 11-14 reserved for sentinels (see below)
         freeList: [],
 
@@ -503,7 +510,7 @@ mergeInto(LibraryManager.library, {
                         var c = chain[i];
                         if (c && c.__wasthon_basicsize__ > 0) {
                             size = c.__wasthon_basicsize__;
-                            typeStructForInst = c.__wasthon_type_handle__ || 0;
+                            typeStructForInst = c[WasthonRT._thKey] || 0;
                             foundIdx = i;
                             break;
                         }
@@ -515,7 +522,7 @@ mergeInto(LibraryManager.library, {
                         __class__: brythonCls,
                         ob_type: brythonCls,
                         __wasthon_ptr__: instancePtr,
-                        __wasthon_type__: brythonCls.__wasthon_type_handle__ ||
+                        __wasthon_type__: brythonCls[WasthonRT._thKey] ||
                                           _rtNI.ensureTypeStruct(brythonCls) ||
                                           typeStructForInst,
                     };
@@ -763,7 +770,7 @@ mergeInto(LibraryManager.library, {
             // object — e.g. _pickle's __newobj__ (`obj_class != cls`) and
             // save_global (`actual != global`) identity checks. The metaclass
             // test is one ref compare, instantly false for non-type wraps.
-            if (obj.__wasthon_type_handle__) return obj.__wasthon_type_handle__;
+            if (obj[WasthonRT._thKey]) return obj[WasthonRT._thKey];
             if (obj.ob_type === this._b_.type) return this.ensureTypeStruct(obj);
             // Other Brython objects (functions, ptr-less instances): intern by
             // identity so re-wrapping the same object yields the same handle.
@@ -1105,7 +1112,7 @@ mergeInto(LibraryManager.library, {
          * __wasthon_type_handle__. Returns the handle (struct pointer). */
         ensureTypeStruct: function(cls) {
             if (!cls) return 0;
-            if (cls.__wasthon_type_handle__) return cls.__wasthon_type_handle__;
+            if (cls[WasthonRT._thKey]) return cls[WasthonRT._thKey];
             // int's canonical &PyLong_Type struct (wired by
             // wasthon_bind_builtin_type, and what Py_TYPE already returns for
             // int instances) IS its handle — so wrap(int) == &PyLong_Type, which
@@ -1126,7 +1133,8 @@ mergeInto(LibraryManager.library, {
                          cls === this.$B.ellipsis || cls === this.$B.NotImplementedType) &&
                         this.builtinTypeForClass && this.builtinTypeForClass.get(cls);
             if (canon) {
-                cls.__wasthon_type_handle__ = canon;
+                cls[WasthonRT._thKey] = canon;
+                cls.__wasthon_type_handle__ = canon;  /* plain-literal MARKER: vendored brython's object.tp_new checks it before $wasthon_new_instance — tables key off _thKey only */
                 if (!this.types.has(canon)) {
                     if (!this._defaultTpAlloc) this._defaultTpAlloc = _wasthon_get_default_tp_alloc();
                     if (!this._builtinTpIter)  this._builtinTpIter  = _wasthon_get_builtin_tp_iter();
@@ -1183,7 +1191,7 @@ mergeInto(LibraryManager.library, {
                  * Resolve the first MRO base to its C struct if it has one
                  * (C types carry __wasthon_type_handle__; builtins map). */
                 var b0 = mroFull[1];
-                var b0Ptr = b0 ? (b0.__wasthon_type_handle__ ||
+                var b0Ptr = b0 ? (b0[WasthonRT._thKey] ||
                     (this.builtinTypeForClass && this.builtinTypeForClass.get(b0)) || 0) : 0;
                 if (b0Ptr) HEAP32[(typeStructPtr + 140) >> 2] = b0Ptr;
                 /* tp_bases (offset 144): pybind11's all_type_info walks
@@ -1235,7 +1243,8 @@ mergeInto(LibraryManager.library, {
             // __new__ when C copies the pointer into a subtype's struct
             // (brythonTpNew's owner contract).
             HEAP32[(typeStructPtr + 60) >> 2] = this.tpNewForOwner(cls); // tp_new
-            cls.__wasthon_type_handle__ = typeStructPtr;
+            cls[WasthonRT._thKey] = typeStructPtr;
+            cls.__wasthon_type_handle__ = typeStructPtr;  /* marker for the vendored tp_new hook */
             this.handles.set(typeStructPtr, cls);
             // Register a minimal types-map entry so callers that look up
             // via rt.types.get(handle) (PyModule_AddType, etc.) succeed.
@@ -1293,6 +1302,7 @@ mergeInto(LibraryManager.library, {
             HEAP32[(sub + 8) >> 2] = this.wrapPinned(dictObj);  // tp_dict
             this.handles.set(sub, subCls);
             subCls.__wasthon_subtype_handle__ = sub;
+            subCls[WasthonRT._thKey] = subCls[WasthonRT._thKey] || sub;
             subCls.__wasthon_type_handle__ = subCls.__wasthon_type_handle__ || sub;
             this.types.set(sub, {
                 basicsize: pinfo.basicsize, itemsize: pinfo.itemsize,
@@ -3103,18 +3113,18 @@ mergeInto(LibraryManager.library, {
         if (mro) {
             // Include cls itself first.
             if (cls.__wasthon_type_token__ === token) {
-                if (resultPtr !== 0) HEAP32[resultPtr >> 2] = cls.__wasthon_type_handle__ || 0;
+                if (resultPtr !== 0) HEAP32[resultPtr >> 2] = cls[WasthonRT._thKey] || 0;
                 return 1;
             }
             for (var i = 0; i < mro.length; i++) {
                 var base = mro[i];
                 if (base && base.__wasthon_type_token__ === token) {
-                    if (resultPtr !== 0) HEAP32[resultPtr >> 2] = base.__wasthon_type_handle__ || 0;
+                    if (resultPtr !== 0) HEAP32[resultPtr >> 2] = base[WasthonRT._thKey] || 0;
                     return 1;
                 }
             }
         } else if (cls.__wasthon_type_token__ === token) {
-            if (resultPtr !== 0) HEAP32[resultPtr >> 2] = cls.__wasthon_type_handle__ || 0;
+            if (resultPtr !== 0) HEAP32[resultPtr >> 2] = cls[WasthonRT._thKey] || 0;
             return 1;
         }
         if (resultPtr !== 0) HEAP32[resultPtr >> 2] = 0;
@@ -5441,7 +5451,8 @@ mergeInto(LibraryManager.library, {
 
             /* the STATIC struct pointer IS the type handle */
             rt.bindInstance(typePtr, cls);
-            cls.__wasthon_type_handle__ = typePtr;
+            cls[WasthonRT._thKey] = typePtr;
+            cls.__wasthon_type_handle__ = typePtr;  /* marker for the vendored tp_new hook */
             rt.types.set(typePtr, {
                 basicsize: basicsize, itemsize: itemsize, flags: flags,
                 brythonClass: cls, shortName: shortName, fullName: fullName,
@@ -13962,7 +13973,7 @@ mergeInto(LibraryManager.library, {
         if (mro) chain = chain.concat(mro);
         for (var i = 0; i < chain.length; i++) {
             var c = chain[i];
-            var h = c && c.__wasthon_type_handle__;
+            var h = c && c[WasthonRT._thKey];
             if (!h) continue;
             var ti = rt.types.get(h);
             var p = ti && ti.slots && ti.slots[1 /* Py_bf_getbuffer */];
@@ -14288,7 +14299,7 @@ mergeInto(LibraryManager.library, {
                     var _cls = WasthonRT.$B.get_class(obj);
                     var _chain = _cls ? [_cls].concat(_cls.tp_mro || []) : [];
                     for (var _ci = 0; _ci < _chain.length; _ci++) {
-                        var _h = _chain[_ci] && _chain[_ci].__wasthon_type_handle__;
+                        var _h = _chain[_ci] && _chain[_ci][WasthonRT._thKey];
                         var _ti = _h && WasthonRT.types.get(_h);
                         if (_ti && _ti.slots && _ti.slots[1 /* Py_bf_getbuffer */]) {
                             cSlotted = true; break;
@@ -14458,7 +14469,7 @@ mergeInto(LibraryManager.library, {
                 // them into "buffers" broke pandas merge/pivot (int(b'…')).
                 if (c === bb.bytes || c === bb.str || c === bb.int ||
                     c === bb.float || c === bb.complex || c === bb.bool) { slot = false; break; }
-                var th = c && c.__wasthon_type_handle__;
+                var th = c && c[WasthonRT._thKey];
                 if (!th) continue;
                 var ti = WasthonRT.types.get(th);
                 // Only STATIC PyType_Ready'd exporters (matplotlib's FT2Font/
@@ -14907,7 +14918,8 @@ mergeInto(LibraryManager.library, {
         if (!slotMap[44 /* Py_tp_alloc */]) slotMap[44] = rt._defaultTpAlloc;
         var typeHandle = typeStructPtr;
         rt.bindInstance(typeHandle, cls);
-        cls.__wasthon_type_handle__ = typeHandle;
+        cls[WasthonRT._thKey] = typeHandle;
+        cls.__wasthon_type_handle__ = typeHandle;  /* marker for the vendored tp_new hook */
         // The type object's C handle IS its type-struct pointer, so a C caller
         // that reads the class as a PyTypeObject* (Cython's `base->tp_new`,
         // `Py_TYPE(x)->tp_flags`, …) resolves fields at the right addresses.
@@ -15176,7 +15188,7 @@ mergeInto(LibraryManager.library, {
                     var c = chain[i];
                     if (c && c.__wasthon_basicsize__ > 0) {
                         size = c.__wasthon_basicsize__;
-                        typeStructForInst = c.__wasthon_type_handle__ || 0;
+                        typeStructForInst = c[WasthonRT._thKey] || 0;
                         break;
                     }
                 }
@@ -15201,7 +15213,7 @@ mergeInto(LibraryManager.library, {
                     __class__: brythonCls,
                     ob_type: brythonCls,
                     __wasthon_ptr__: instancePtr,
-                    __wasthon_type__: brythonCls.__wasthon_type_handle__ ||
+                    __wasthon_type__: brythonCls[WasthonRT._thKey] ||
                                       rt.ensureTypeStruct(brythonCls) ||
                                       typeStructForInst || typeHandle,
                 };
@@ -16789,8 +16801,8 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         /* For class methods, capture the class handle so trampoline can
          * pass it as the `cls` arg when METH_METHOD is set. */
-        var classHandle = (!moduleScope && target.__wasthon_type_handle__)
-            ? target.__wasthon_type_handle__ : 0;
+        var classHandle = (!moduleScope && target[WasthonRT._thKey])
+            ? target[WasthonRT._thKey] : 0;
         // Each entry is 16 bytes: name(4) + meth(4) + flags(4) + doc(4)
         for (var mp = methodsPtr; ; mp += 16) {
             var namePtr = HEAP32[ mp        >> 2];
@@ -17197,7 +17209,7 @@ mergeInto(LibraryManager.library, {
                  * Brython-defined subclasses need the swap — there the C side
                  * saw the parent struct. */
                 if (subcls && rself.__wasthon_type__ &&
-                        subcls.__wasthon_type_handle__ === rself.__wasthon_type__) {
+                        subcls[WasthonRT._thKey] === rself.__wasthon_type__) {
                     subcls = null;
                 }
                 if (subcls && typeof result.length === 'number' && result.length >= 2) {

@@ -3013,3 +3013,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
       (string build + array push/shift on ten C-API entry points,
       PyObject_GetAttrString / PyDict_SetItemString among them) —
       reverted to the lastCall-only form.
+
+- [x] The canonical type-struct handle was stamped on SHARED Brython
+      class objects (int, tuple, type…) under one global key — with two
+      bridge wasms in one page (brytorch npth + NumBry nprnd) the second
+      runtime read the first one's stamp and resolved a handle that only
+      exists in the other runtime's table (numpy's Cython module inits
+      died on garbage lookups). The stamp key is now per-runtime
+      (`__wasthon_type_handle__<seq>`, 24 sites); single-runtime flow
+      unchanged. Necessary for dual-runtime pages, not yet sufficient
+      (numpy.random still fails when initialized second — remaining
+      shared $B state under investigation). The plain literal survives
+      as a truthy MARKER at the five stamp sites: the VENDORED brython
+      object.tp_new hook checks `cls.__wasthon_type_handle__` before
+      delegating instance creation to `$B.$wasthon_new_instance` —
+      renaming it blind broke every Python-level instantiation of a C
+      class (caught by sqlite3's uninitialised-connection test,
+      bisected; the rename audit had missed the vendored file).
