@@ -16875,6 +16875,22 @@ mergeInto(LibraryManager.library, {
                         });
                     }
                 } catch (_) {}
+            } else if (flags & 0x0020 /* METH_STATIC */) {
+                // C staticmethod (torch's Tensor._make_subclass and every
+                // _VariableFunctions entry): CPython wraps the PyCFunction in
+                // a staticmethod descriptor (type_add_method) so no receiver
+                // is ever bound. Bridge equivalent: store the trampoline
+                // ITSELF, tagged builtin_function_or_method — no tp_descr_get,
+                // so neither class nor instance access binds one (the proven
+                // moduleScope non-binding shape; Brython's own staticmethod
+                // descriptor is not consulted on C-class dict lookups). No
+                // tp_funcs entry — the call_attr fast path would inject the
+                // instance as a first argument.
+                trampoline.ob_type = rt.$B.builtin_function_or_method;
+                try {
+                    var smDict = rt.$B.get_dict(target);
+                    if (smDict) rt.$B.str_dict_set(smDict, name, trampoline);
+                } catch (_) {}
             } else {
                 target.tp_funcs = target.tp_funcs || {};
                 target.tp_funcs[name] = trampoline;
@@ -16962,6 +16978,12 @@ mergeInto(LibraryManager.library, {
             var selfHandle, posArgs;
             if (moduleScope) {
                 selfHandle = moduleHandle;
+                posArgs = jsArgs;
+            } else if (flags & METH_STATIC) {
+                /* METH_STATIC: no receiver — CPython passes self=NULL and
+                 * every caller argument stays positional (the staticmethod
+                 * descriptor installed below never binds one). */
+                selfHandle = 0;
                 posArgs = jsArgs;
             } else {
                 var self = jsArgs[0];

@@ -2995,3 +2995,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
       for slice instances, interned like the generic object path (same
       leak-per-materialization trade-off as wasthon_tuple_view; slices
       rarely cross). +1 brytorch smoke (tensor slicing).
+
+- [x] METH_STATIC was stripped in install_methods: the trampoline
+      consumed the first caller arg as `self`, and the class dict got a
+      binding method_descriptor — `Tensor._make_subclass(cls, data,
+      requires_grad)` reached C as `(data, requires_grad)` ("argument
+      'data' must be Tensor, not bool"; torch carries 1910 METH_STATIC
+      defs, every `_VariableFunctions` op included). The trampoline now
+      passes self=NULL with every caller arg positional, and the dict
+      gets the bare trampoline tagged builtin_function_or_method — the
+      proven non-binding moduleScope shape (Brython's staticmethod
+      descriptor is not consulted on C-class dict lookups). No tp_funcs
+      entry: the call_attr fast path would re-inject the instance.
+      +1 brytorch smoke (nn.Parameter via Tensor._make_subclass).
