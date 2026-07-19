@@ -776,6 +776,27 @@ mergeInto(LibraryManager.library, {
                 // `actual != global` identity fails (the lookup and the arg
                 // would carry two different handles).
                 if (obj.tp_name !== undefined) return this.ensureTypeStruct(obj);
+                // Slices: C code dereferences PySliceObject fields directly
+                // (torch's __PySlice_Unpack reads ->start/stop/step), so the
+                // handle must BE a pointer to a real struct: ob_refcnt @0,
+                // start/stop/step handles @4/8/12 (wasthon PyObject_HEAD is
+                // 4 bytes). Same leak-per-materialization trade-off as
+                // wasthon_tuple_view; slices crossing the bridge are rare.
+                if (obj.ob_type === this._b_.slice) {
+                    var sx = this.sentinelByObj.get(obj);
+                    if (sx !== undefined && this.handles.get(sx) === obj) return sx;
+                    var sp = _malloc(16);
+                    if (sp) {
+                        HEAP32[sp >> 2] = 1;
+                        HEAP32[(sp >> 2) + 1] = this.wrap(obj.start);
+                        HEAP32[(sp >> 2) + 2] = this.wrap(obj.stop);
+                        HEAP32[(sp >> 2) + 3] = this.wrap(obj.step);
+                        this.handles.set(sp, obj);
+                        this.sentinelByObj.set(obj, sp);
+                        this._scopeTrack(sp);
+                        return sp;
+                    }
+                }
                 var ex = this.sentinelByObj.get(obj);
                 if (ex !== undefined && this.handles.get(ex) === obj) return ex;
                 var nid = this._allocSentinelId();

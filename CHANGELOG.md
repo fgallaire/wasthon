@@ -2986,3 +2986,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
       hood, FileNotFoundError on a missing path, None → "now", else the
       (atime, mtime) seconds pair (ms-converted). +1 pandas test_lib
       with the numbry FS wiring.
+- [x] Slice handles had no linear-memory struct behind them — torch's
+      `__PySlice_Unpack` (python_variable_indexing) casts the PyObject*
+      and reads `->start/stop/step` raw, so every `t[1:3]` parsed
+      garbage ("slice indices must be integers or None or have an
+      __index__ method"). `wrap()` now materializes a 16-byte
+      PySliceObject (ob_refcnt, then start/stop/step handles @4/8/12)
+      for slice instances, interned like the generic object path (same
+      leak-per-materialization trade-off as wasthon_tuple_view; slices
+      rarely cross). +1 brytorch smoke (tensor slicing).
