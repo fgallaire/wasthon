@@ -3041,3 +3041,20 @@ Module ports and the bridge-surface inventory live in `README.md`.
       calling it ("'bool' object is not callable", x22 in
       test_autograd's grad family). Method names are recorded per class
       at install time and colliding getsets skipped.
+
+- [x] Demoted instances were unreclaimable in practice: the
+      FinalizationRegistry path never fires in Firefox (measured — a
+      sacrificial witness object's callback stayed silent through GC
+      pressure), so every wrapper-owned C instance leaked its struct
+      (brytorch: +1 handle +1 refcount per tensor, ~100-400 MB per
+      suite, the wasm heap hit the 2 GB ceiling by suite 8). New
+      `$B.$wasthon_reclaim_demoted()` — a between-batches pass that
+      mark-scans frames AND every imported module graph (depth 6, so
+      module-level test data stays live, unlike the bounded in-test
+      heuristic) and hands unreached demoted instances to _reclaimDead
+      (refcount==1 guard: anything C references is untouchable).
+      Dealloc dispatch resolves through the mro (subtype_dealloc
+      semantics): a Python subclass of a C type (torch.Tensor →
+      TensorBase) carries a slot-less struct, the base owns tp_dealloc.
+      Measured flat: 133 MB across repeated 2000-tensor rounds (was
+      +32-46 MB per round).

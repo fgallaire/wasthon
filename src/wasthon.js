@@ -682,6 +682,103 @@ mergeInto(LibraryManager.library, {
                 };
             }
 
+            if (!B.$wasthon_reclaim_demoted) {
+                var _rtRD = this;
+                // Between-batches reclamation of DEMOTED instances (the
+                // FinalizationRegistry path is unreliable — Firefox may
+                // never run finalizers even under allocation pressure;
+                // measured: a sacrificial witness object's callback never
+                // fired). Unlike $wasthon_gc_collect's bounded in-test
+                // heuristic, this pass walks frames AND every imported
+                // module dict (depth 6): module-level test data stays
+                // live. Only wrapper-owned instances (refcount exactly 1)
+                // are eligible — anything C references is protected by
+                // the _reclaimDead guard. Call it between test batches,
+                // not mid-computation.
+                B.$wasthon_reclaim_demoted = function() {
+                    var rt = _rtRD;
+                    if (!rt.demoted || rt.demoted.size === 0) return 0;
+                    var live = new Set(), seen = new Set();
+                    var scan = function(v, depth) {
+                        if (v === null || v === undefined) return;
+                        var t = typeof v;
+                        if (t !== 'object' && t !== 'function') return;
+                        if (v === rt || v === rt.handles || v === rt.refcounts ||
+                            v === rt.gcRegistry || v === rt.scopeOf ||
+                            v === rt.sentinelByObj || v === rt.demoted) return;
+                        if (seen.has(v)) return;
+                        seen.add(v);
+                        if (seen.size > 400000) return;         // backstop
+                        var d;
+                        try { d = Object.getOwnPropertyDescriptor(v, '__wasthon_ptr__'); }
+                        catch (e) { d = null; }
+                        if (d && typeof d.value === 'number') live.add(d.value);
+                        if (depth <= 0 || t === 'function') return;
+                        if (B.DICT) {
+                            var idict;
+                            try { idict = v[B.DICT]; } catch (e) { idict = undefined; }
+                            if (idict && typeof idict === 'object') scan(idict, depth - 1);
+                        }
+                        if (Array.isArray(v)) {
+                            for (var i = 0; i < v.length; i++) scan(v[i], depth - 1);
+                            return;
+                        }
+                        if (v instanceof Map) { v.forEach(function(x) { scan(x, depth - 1); }); return; }
+                        if (v instanceof Set) { v.forEach(function(x) { scan(x, depth - 1); }); return; }
+                        var nm;
+                        try { nm = Object.getOwnPropertyNames(v); }
+                        catch (e) { return; }
+                        for (var n = 0; n < nm.length; n++) {
+                            var pd;
+                            try { pd = Object.getOwnPropertyDescriptor(v, nm[n]); }
+                            catch (e) { continue; }
+                            if (pd && 'value' in pd) scan(pd.value, depth - 1);
+                        }
+                    };
+                    var fo = B.frame_obj;
+                    while (fo) {
+                        var f = fo.frame;
+                        if (f) { scan(f[1], 6); scan(f[3], 6); }
+                        fo = fo.prev;
+                    }
+                    try {
+                        var imp = B.imported, ik = Object.getOwnPropertyNames(imp);
+                        for (var ii = 0; ii < ik.length; ii++) {
+                            var mv;
+                            try { mv = Object.getOwnPropertyDescriptor(imp, ik[ii]); }
+                            catch (e) { continue; }
+                            if (mv && mv.value) scan(mv.value, 6);
+                        }
+                    } catch (e) {}
+                    // A Python subclass of a C type (torch.Tensor(TensorBase))
+                    // carries the SUBCLASS's slot-less struct in
+                    // __wasthon_type__ — the real tp_dealloc lives on a base.
+                    // Mirror subtype_dealloc: walk the mro for the first
+                    // type-struct with a non-null dealloc slot.
+                    var deallocTypeH = function(w) {
+                        var th = w.__wasthon_type__ || 0;
+                        if (th && HEAP32[(th + 40) >> 2]) return th;
+                        var mro = w.ob_type && w.ob_type.tp_mro;
+                        if (mro) for (var mi = 0; mi < mro.length; mi++) {
+                            var bh = mro[mi].__wasthon_type_handle__;
+                            if (bh && HEAP32[(bh + 40) >> 2]) return bh;
+                        }
+                        return th;
+                    };
+                    var toReclaim = [];
+                    rt.demoted.forEach(function(wr, ptr) {
+                        if (live.has(ptr)) return;
+                        var w = wr.deref();
+                        if (w === undefined) { toReclaim.push([ptr, 0]); return; }
+                        toReclaim.push([ptr, deallocTypeH(w)]);
+                    });
+                    for (var r = 0; r < toReclaim.length; r++) {
+                        rt._reclaimDead({ ptr: toReclaim[r][0], typeH: toReclaim[r][1] });
+                    }
+                    return toReclaim.length;
+                };
+            }
+
             // Expose CPython's real Unicode case/predicate tables to Brython
             // (linked from unicodectype.o in bundles that ship `unicodedata`),
             // so Brython's str methods can be CPython-exact — its own tables

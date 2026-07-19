@@ -1000,6 +1000,32 @@ Infrastructure work that pays back on existing modules:
       table stays flat and per-call cost stays at its ~72 µs floor:
       `test_cython_special` 167/54 → **221 passed / 0 failed** (was killed by
       the watchdog). Details in `CHANGELOG.md`.
+
+      **2026-07-19 amendment — the oracle is real but mute.** Measured under
+      Firefox (brytorch, 8 official pytorch suites in one page): the
+      `FinalizationRegistry` callbacks simply never ran — not for demoted
+      wrappers, not even for a sacrificial witness object dropped on the spot,
+      through allocation pressure and multi-second idles. The proof-based path
+      stays sound but fires at the engine's discretion, which can be *never*
+      within a session; `demoted` then grows without bound (~100-400 MB of
+      native tensors per suite, the 2 GB wasm ceiling by suite 8). The
+      complement is `$B.$wasthon_reclaim_demoted()`: a **driver-invoked,
+      between-batches** pass that substitutes the missing proof with a mark
+      from every live frame *and every imported module's full graph* (depth 6
+      — module-level data stays live, unlike the bounded in-test heuristic
+      above). Candidates are the demoted, refcount-1 population only —
+      everything C references is untouchable by the existing `_reclaimDead`
+      guard, and between batches no expression is in flight, so the May
+      objection (a mid-expression temporary reachable from neither frame nor
+      arguments) does not arise. Dealloc dispatch resolves through the mro
+      (`subtype_dealloc` semantics): a Python subclass of a C type carries a
+      slot-less struct, the base owns `tp_dealloc` — without that walk the
+      shell was freed but the native payload (torch's `TensorImpl`) leaked.
+      Residual risk, stated plainly: a refcount-1 wrapper reachable *only*
+      through a JS-side structure the scan cannot see would be reclaimed
+      early; narrower exposure than the rejected global mark-sweep, and the
+      21-suite sweep plus the brytorch full run show no such class. Measured:
+      flat 133 MB across repeated 2000-tensor rounds (was +32-46 MB/round).
 - [ ] Explicit-contract residual — a C instance held by a Python local that is
       dropped or reassigned without a `close()`/`with` (and with no
       `gc.collect()` call, and on a page that does not opt into
