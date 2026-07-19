@@ -2986,6 +2986,7 @@ Module ports and the bridge-surface inventory live in `README.md`.
       hood, FileNotFoundError on a missing path, None → "now", else the
       (atime, mtime) seconds pair (ms-converted). +1 pandas test_lib
       with the numbry FS wiring.
+
 - [x] Slice handles had no linear-memory struct behind them — torch's
       `__PySlice_Unpack` (python_variable_indexing) casts the PyObject*
       and reads `->start/stop/step` raw, so every `t[1:3]` parsed
@@ -3030,3 +3031,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
       renaming it blind broke every Python-level instantiation of a C
       class (caught by sqlite3's uninitialised-connection test,
       bisected; the rename audit had missed the vendored file).
+
+- [x] install_getsets overwrote class-dict entries installed by
+      tp_methods — CPython's type_add_getsets SKIPS names already in
+      tp_dict, so when a type carries a method AND a getset of the same
+      name the METHOD wins. torch's Tensor has both for `is_complex`
+      (python_variable.cpp getset + generated METH_NOARGS method): the
+      overwrite made `t.is_complex` a plain bool and gradcheck died
+      calling it ("'bool' object is not callable", x22 in
+      test_autograd's grad family). Method names are recorded per class
+      at install time and colliding getsets skipped.

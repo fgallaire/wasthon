@@ -16469,6 +16469,11 @@ mergeInto(LibraryManager.library, {
             var closurePtr = HEAP32[(gp + 16) >> 2];
             var name      = UTF8ToString(namePtr);
 
+            /* CPython's type_add_getsets skips names already in tp_dict —
+             * tp_methods installed first win (Tensor.is_complex: method AND
+             * getset in python_variable.cpp; the method must survive). */
+            if (cls.$wasthon_meth_names && cls.$wasthon_meth_names[name]) continue;
+
             var capGet = getPtr, capSet = setPtr, capClosure = closurePtr;
 
             var fget = capGet ? (function(getP, closP) {
@@ -16822,6 +16827,14 @@ mergeInto(LibraryManager.library, {
 
             var trampoline = __wasthon_make_trampoline(fnPtr, flags, moduleHandle, name, moduleScope, classHandle);
             if (textSig) trampoline.$text_signature = textSig;
+            if (!moduleScope) {
+                /* record method names so install_getsets can honor CPython's
+                 * type_add_getsets rule: an existing dict entry wins (torch's
+                 * Tensor has BOTH an is_complex METHOD and getset — CPython
+                 * keeps the method; overwriting made t.is_complex a bool). */
+                target.$wasthon_meth_names = target.$wasthon_meth_names || {};
+                target.$wasthon_meth_names[name] = 1;
+            }
             /* Materialize the C-side function object so code that casts the
              * handle (torch's _add_docstr: PyCFunctionObject->m_ml,
              * PyMethodDescrObject->d_method) reads the REAL PyMethodDef
