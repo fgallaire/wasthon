@@ -1026,8 +1026,7 @@ mergeInto(LibraryManager.library, {
         lastCall: null,
         trace: function(name, info) {
             this.lastCall = name + (info ? '(' + info + ')' : '');
-            (this._traceRing = this._traceRing || []).push(this.lastCall);
-            if (this._traceRing.length > 40) this._traceRing.shift();
+            // Uncomment for verbose: console.log('[wasthon trace]', this.lastCall);
         },
         /* The tp_new body behind Brython-class type structs. `owner` is the
          * class whose struct carries the slot; `typeHandle` is the type being

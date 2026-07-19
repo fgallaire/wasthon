@@ -3008,3 +3008,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
       descriptor is not consulted on C-class dict lookups). No tp_funcs
       entry: the call_attr fast path would re-inject the instance.
       +1 brytorch smoke (nn.Parameter via Tensor._make_subclass).
+
+- [x] trace() still carried a debug ring from the torch bring-up night
+      (string build + array push/shift on ten C-API entry points,
+      PyObject_GetAttrString / PyDict_SetItemString among them) —
+      reverted to the lastCall-only form.
