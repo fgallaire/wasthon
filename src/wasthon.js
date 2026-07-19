@@ -998,6 +998,28 @@ mergeInto(LibraryManager.library, {
             }
         },
 
+        // Re-sync a type's construction slot after a C-side setattr of the
+        // matching dunder — CPython's type.__setattr__ runs update_one_slot
+        // so a `__init__`/`__new__` installed AFTER PyType_Ready takes effect.
+        // pybind11 relies on this: it sets its new-style ctor factory into the
+        // class dict by setattr, well after the type was made ready (the slot
+        // then still holds the wrapper_descriptor the bridge installed, whose
+        // C tp_init is pybind's no-op base — so `Cls(args)` allocated but never
+        // constructed the C++ object: PyTorchFileWriter came out with an empty
+        // archive name and torch.save asserted). Scoped to the construction
+        // dunders (the ones whose slot the type-call reads); other dunders keep
+        // their existing wiring. Only acts on a class target.
+        __wasthon_resync_slot: function(cls, name) {
+            if (name !== '__init__' && name !== '__new__') return;
+            if (!cls || cls.tp_name === undefined) return;   // not a class
+            var slot = this.$B.dunder2slot && this.$B.dunder2slot[name];
+            if (!slot) return;
+            try {
+                var v = this.$B.get_from_dict(cls, name, this.$B.NULL);
+                if (v !== this.$B.NULL && v !== undefined) cls[slot] = v;
+            } catch (e) {}
+        },
+
         // Finalize one gc-collected C instance: run its tp_dealloc (resets a
         // cursor's pending statement / closes & ResourceWarns an unclosed
         // connection), exactly as a refcount-0 DECREF would. tp_dealloc's
@@ -9347,7 +9369,9 @@ mergeInto(LibraryManager.library, {
             return -1;
         }
         try {
-            rt._b_.setattr(obj, name, rt.unwrap(valueHandle));
+            var _v = rt.unwrap(valueHandle);
+            rt._b_.setattr(obj, name, _v);
+            rt.__wasthon_resync_slot(obj, name);
             rt.incref(valueHandle);  // no-steal: attribute slot takes its own ref
             return 0;
         } catch (e) {
@@ -9426,6 +9450,7 @@ mergeInto(LibraryManager.library, {
         }
         try {
             rt._b_.setattr(obj, name, rt.unwrap(valueH));
+            rt.__wasthon_resync_slot(obj, name);
             rt.incref(valueH);  // no-steal: attribute slot takes its own ref
             return 0;
         } catch (e) {

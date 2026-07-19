@@ -3058,3 +3058,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
       TensorBase) carries a slot-less struct, the base owns tp_dealloc.
       Measured flat: 133 MB across repeated 2000-tensor rounds (was
       +32-46 MB per round).
+
+- [x] A Python-level `__init__`/`__new__` installed on a class by setattr
+      AFTER PyType_Ready never took effect: `Cls(args)` allocated the
+      instance but ran the type struct's original tp_init slot, not the
+      new dict method. pybind11 relies on the CPython behaviour where
+      `type.__setattr__` re-wires the slot (update_one_slot) — it sets its
+      new-style constructor factory into the class dict well after the type
+      is ready, and the bridge left tp_init pointing at pybind's no-op base
+      init, so the C++ object was never constructed (torch.save's
+      PyTorchFileWriter came out with an empty archive name → assert
+      `!archive_name_plus_slash_.empty()`; torch.save dead). PyObject_SetAttr
+      / SetAttrString now resync the construction slot from the dict after a
+      dunder is set on a class (`__wasthon_resync_slot`, scoped to
+      __init__/__new__). torch.save(tensor, BytesIO) writes a valid zip;
+      +17 brytorch test_serialization (was import-dead).
