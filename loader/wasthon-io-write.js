@@ -237,10 +237,19 @@
             if (!self.$wfs) return origReadinto.call(this, self, buffer);
             checkOpen(self);
             ensureReadable(self);
+            /* readinto's argument may be a memoryview (torch's
+             * BufferAdapter hands one over for every checkpoint read):
+             * its bytes live on the backing object, not on the view. */
+            const dst = buffer.source !== undefined ? buffer
+                      : (buffer.obj && buffer.obj.source !== undefined ? buffer.obj
+                      : null);
+            if (dst === null) {
+                B.RAISE(_b_.TypeError, 'readinto: argument has no writable buffer');
+            }
             const data = sys().read(self.$wfd, _b_.len(buffer));
             const src = data.source || [];
-            for (let i = 0; i < src.length; i++) buffer.source[i] = src[i];
-            buffer.source.length = src.length;
+            for (let i = 0; i < src.length; i++) dst.source[i] = src[i];
+            dst.source.length = src.length;
             return src.length;
         };
         F.readline = function (self, size) {
