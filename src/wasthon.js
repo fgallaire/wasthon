@@ -16534,6 +16534,22 @@ mergeInto(LibraryManager.library, {
             return 0;
         }
         HEAPU8.fill(0, ptr, ptr + size);
+        /* C subtype of tuple allocated with nitems=0 (tp_alloc(tp, 0) —
+         * torch's empty Size): same tagged-JS-Array representation as the
+         * gc_new_var path, or the instance is opaque to the whole Brython
+         * tuple protocol (iteration crashed, () comparison was False). */
+        {
+            var tcls0 = typeInfo.brythonClass;
+            if (tcls0 && tcls0.tp_mro && tcls0.tp_mro.indexOf(rt._b_.tuple) > -1) {
+                var arrT0 = [];
+                arrT0.ob_type = tcls0;
+                arrT0.__wasthon_ptr__ = ptr;
+                arrT0.__wasthon_type__ = typeHandle;
+                rt.bindInstance(ptr, arrT0);
+                rt.refcounts.set(ptr, 1);
+                return ptr;
+            }
+        }
         var instance = {
             ob_type: typeInfo.brythonClass,
             __class__: typeInfo.brythonClass,
