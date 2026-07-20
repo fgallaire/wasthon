@@ -4146,3 +4146,336 @@ Fix: tp_hash combines hash(self.self) with a per-wrapped-slot sequence id
 (bounded to int32); tp_richcompare implements __eq__/__ne__ by receiver
 `is` + wrapped identity, NotImplemented otherwise. (torch's gradcheck puts
 bound methods in sets — the x22 failure cluster in test_autograd.)
+
+## types.MemberDescriptorType is getset_descriptor, not member_descriptor
+
+`types.py` computes `MemberDescriptorType = type(FunctionType.__globals__)`,
+which is a `member_descriptor` in CPython but a **getset_descriptor** in
+Brython (Brython implements `function.__globals__` as a getset). So
+`types.MemberDescriptorType` is bound to the wrong class, and any
+`isinstance(x, types.MemberDescriptorType)` test for a real slot descriptor
+returns False.
+
+```python
+import types
+class A: __slots__ = ('y',)
+isinstance(A.__dict__['y'], types.MemberDescriptorType)   # was False; CPython: True
+```
+
+This broke `@dataclass` on a class with `__slots__`: dataclasses guards
+against treating a slot descriptor as a field default
+(`if isinstance(default, types.MemberDescriptorType): default = MISSING`),
+but the guard never fired, so the slot member was taken as a default value —
+a later non-default field then "follows a default argument" and dataclass
+creation raised (torch's test_serialization
+`ClassThatUsesBuildInstructionSomeSlots`).
+
+Fix (vendored types.py): derive the type from a real `__slots__` member
+instead of `FunctionType.__globals__` —
+`MemberDescriptorType = type(type('_MDT', (), {'__slots__': ('_m',)})._m)`.
+GetSetDescriptorType (`type(FunctionType.__code__)`) stays correct.
+
+## ~True crashes: bool.nb_invert calls a nonexistent int_funcs.__invert__
+
+`_b_.bool.nb_invert` delegates to `int_funcs.__invert__(self)` — but
+`int.tp_funcs` never defines `__invert__` (int's invert lives in
+`_b_.int.nb_invert`). Any `~bool` raises
+`JavascriptError: int_funcs.__invert__ is not a function`.
+
+```python
+~True    # CPython: -2 ; Brython: JavascriptError
+```
+
+Hit by torch's test_stable_sort_against_numpy (bool dtype: `neg_inf = ~inf`).
+Fix (vendored brython.js): delegate to `_b_.int.nb_invert(self)`.
+
+## ImportError has no .msg attribute
+
+CPython's ImportError carries `msg` (the message), alongside `name` and
+`path`. Brython's `ImportError.tp_init` sets only `name`/`path`, so
+`exc.msg` raises AttributeError.
+
+```python
+try:
+    import nonexistent
+except ImportError as e:
+    e.msg          # CPython: "No module named 'nonexistent'" ; Brython: AttributeError
+```
+
+numpy's `numpy/_core/__init__.py` reads `exc.msg` in its ImportError
+handler when the C extension fails to load; the AttributeError replaced
+numpy's real diagnostic and killed the whole `import numpy`. Fix
+(vendored brython.js): `ImportError.tp_init` sets `self.msg` to the single
+positional arg (None otherwise), matching CPython.
+
+## io.BytesIO.seek breaks when called through *args/**kwargs forwarding
+
+`BytesIO_funcs.seek` is declared with a raw JS signature
+(`function(_self, pos, whence=0)`) instead of going through `$B.args` like
+its siblings (`read`, `truncate`, ...). A call carrying `**kwargs` appends a
+`{$kw: ...}` marker object as the last positional argument; with no arg
+parser to strip it, that object lands in `whence`, matches none of
+0/1/2, and the seek raises.
+
+```python
+import io
+b = io.BytesIO(b'abcdef')
+def fwd(*a, **k):
+    return b.seek(*a, **k)
+b.seek(0)   # 0
+fwd(0)      # ValueError: unsupported whence value   (CPython: 0)
+```
+
+Any wrapper/decorator that forwards `*args, **kwargs` to a file-like hits
+this — torch's own test suite wraps BytesIO exactly that way
+(`FilelikeMock`). Fix (vendored brython_stdlib.js): parse the arguments with
+`$B.args('seek', 3, {self: null, pos: null, whence: null}, arguments,
+{whence: 0})`, matching the sibling methods.
+
+## Relative star-import ignores __all__
+
+`$B.$import_from` has two star-import paths. The absolute one
+(`from numpy._core.umath import *`) honours the module's `__all__`. The
+RELATIVE one (`from .umath import *`, level > 0) does not — it copies every
+attribute not starting with `_`:
+
+```js
+if(names.length > 0 && names[0]=='*'){
+  for(var item of $B.module_items(current_module)){
+    if(item.key.startsWith('$')||item.key.startsWith('_')){continue}
+    locals[item.key]=item.value}}
+```
+
+numpy relies on the CPython semantics to keep its namespaces clean:
+`numpy._core.numeric` does `from .umath import *`, and umath's `__all__`
+deliberately excludes `clip` (the raw ufunc) so that the Python-level
+`clip` from `fromnumeric` (the one accepting `a_min=`/`a_max=` keywords)
+is what `numpy` re-exports. Under Brython the raw ufunc leaked through
+the relative star, shadowed the dispatcher all the way up
+(`numeric` → `_core` → `np.clip`), and every keyword call died:
+
+```python
+import numpy as np
+np.clip(np.array([1., 5., 9.]), a_min=2, a_max=8)
+# Brython: TypeError: clip() takes from 3 to 4 positional arguments but 1 was given
+# CPython: array([2., 5., 8.])
+```
+
+(A dozen more umath names leaked the same way: BUFSIZE, ALLOW_THREADS,
+CLIP, the FPE_* constants...)
+
+Fix (vendored brython.js): when the star target has `__all__`, substitute
+it for the name list — the existing named-import loop (getattr with the
+submodule fallback) then applies, matching the absolute path's semantics.
+
+## frame.f_locals of a plain function is a raw JS object
+
+`$B.obj_dict` is the identity function, so `f_locals_get`'s fallback hands
+the function's raw JS namespace straight to Python. It has no dict API:
+
+```python
+import sys
+def f():
+    return sys._getframe().f_locals
+type(f())        # Brython: <class 'Javascript Object'> ; CPython: dict
+f().items()      # AttributeError: 'Javascript Object' object has no attribute 'items'
+```
+
+Module frames were fine (their namespace IS a Brython dict) and method
+frames were already snapshot (the `__class__`-carrying case). torch's jit
+tracer walks every interpreted frame doing `f_locals.items()`
+(`_get_interpreter_name_for_var`) and died on the first plain-function
+frame. Fix (vendored brython.js): serve the plain-dict snapshot for ANY
+namespace that is not a Brython dict — CPython's function-frame f_locals
+is a snapshot too.
+
+## complex() rejects "nan" / "inf" strings
+
+The string parser's regex only knows digit mantissas, so every special
+value CPython accepts is "malformed":
+
+```python
+complex("nan")       # CPython: (nan+0j) ; Brython: ValueError
+complex("-inf")      # CPython: (-inf+0j) ; Brython: ValueError
+complex("infinity")  # CPython: (inf+0j) ; Brython: ValueError
+complex("nan+nanj")  # CPython: (nan+nanj) ; Brython: ValueError
+```
+
+torch's test data generator does `x[mask] = complex("nan")` for every
+complex-dtype extremal case, so entire parametrized families died on the
+first line. Fix (vendored brython.js): add `nan|inf(?:inity)?` to both
+mantissa alternations — FIRST in the alternation, because the digit
+branch matches the empty string and would otherwise win at position 0
+and push "nan" into the imaginary group (`complex("nanj")` came out as
+`1j`) — and teach `to_num` the special values with their signs.
+Malformed strings are still rejected.
+
+## struct format may be bytes
+
+CPython's struct module accepts the format as `str` OR `bytes` — zipfile
+relies on it (`structEndArchive = b"<4s4H2LH"`, `struct.unpack` on every
+archive open). Brython's `_struct._normalize` runs `re.search(r"\d\s+", fmt)`
+with a str pattern, so any bytes format dies before parsing:
+
+```python
+import struct
+struct.unpack(b'<H', b'\x01\x00')
+# CPython: (1,) ; Brython: TypeError: not the same type for string and pattern
+import zipfile, io
+zipfile.ZipFile(io.BytesIO(b'not a zip'))
+# CPython: BadZipFile ; Brython: the same TypeError from _EndRecData
+```
+
+Every zipfile open was broken (torch.save containers are zip archives).
+Fix (vendored brython_stdlib.js): `_normalize` decodes a bytes/bytearray
+format with latin-1 first — the single choke point calcsize/pack/unpack
+all flow through.
+
+## os.scandir raises, os.walk and os.makedirs are missing
+
+Brython's os.py hardcodes `scandir` to NotImplementedError and defines no
+`walk`/`makedirs` at all, even when the host provides a real filesystem
+(posix.listdir/stat/mkdir exist — wasthon-fs patches them over Emscripten
+MEMFS):
+
+```python
+import os
+os.makedirs('/x/y', exist_ok=True)   # CPython: ok ; Brython: AttributeError
+list(os.walk('/x'))                  # CPython: ok ; Brython: AttributeError
+list(os.scandir('/x'))               # CPython: ok ; Brython: NotImplementedError
+```
+
+Fix (vendored brython_stdlib.js): scandir builds CPython-shaped DirEntry
+objects over listdir+stat (guarded — when posix has no listdir the
+original NotImplementedError is preserved, so stock Brython behaviour is
+unchanged); walk and makedirs are the CPython pure-Python implementations
+on top. DirEntry carries is_dir/is_file/is_symlink/is_junction/stat.
+
+
+## Special-method dispatch mishandles @staticmethod dunders
+
+CPython's operator/builtin machinery uses LookupSpecial: the dunder found
+on the TYPE is bound (`descr.__get__(x, cls)`) and the result invoked.
+A `@staticmethod` dunder therefore runs with NO self — sympy relies on
+this for every singleton number (`sympy/core/numbers.py`):
+
+```python
+class One(...):
+    __slots__ = ()
+    @staticmethod
+    def __neg__():
+        return S.NegativeOne
+    @staticmethod
+    def __abs__():
+        return S.One
+
+-S.One       # CPython: -1 ; Brython: TypeError: __neg__() takes 0
+             #                positional arguments but 1 was given
+abs(S.One)   # same TypeError from the abs() builtin
+```
+
+Brython resolves the dunder on the type and passes the instance
+explicitly — `$B.$getattr($B.get_class(x), name)` then
+`$B.$call(method, x, ...)`. `$getattr` on the type runs the staticmethod
+descriptor (`tp_descr_get` → `sm_callable`), so the instance is handed to
+a self-less function. Three dispatch sites share the pattern: `-x/+x/~x`
+(UnaryOp codegen), the `abs()` builtin, and same-type binary operators
+(`rich_op1`). `import sympy` died on `-S.One` at a class body.
+
+Fix (vendored brython.js): a helper `$B.$static_dunder(x, name)` reads the
+RAW MRO entry via `search_in_mro` (which does not run `tp_descr_get`) and
+returns its underlying callable when it is a staticmethod, else null.
+Each dispatch site keeps its original type-level path unchanged and only
+diverges when a staticmethod is detected, calling it without self. An
+earlier attempt to resolve the dunder on the instance instead broke on
+builtin types whose instance-level getattr yields an UNBOUND descriptor
+(`int | type` during unrelated code), so type-level resolution is
+preserved. (The different-type binary path is left as-is — no observed
+consumer defines a binary operator dunder as a staticmethod.)
+
+
+## Class-body `__module__` assignments are ignored
+
+CPython's compiler begins every class body with `__module__ = __name__` —
+a runtime LOAD_NAME against the enclosing globals with the builtins dict
+as last resort (the builtins module carries `__name__ = 'builtins'`, hence
+the classic quirk `exec("class A: pass", {})` → `A.__module__ ==
+'builtins'`). Two behaviours follow:
+
+1. an explicit class-body `__module__ = "..."` overwrites the injected
+   value and survives class creation — PyTorch does exactly this
+   (`torch/_tensor.py`: `class Tensor: __module__ = "torch"`), so
+   `repr(torch.Tensor)` is `<class 'torch.Tensor'>`;
+2. a module that reassigns `__name__` before its class definitions renames
+   the classes below — `_pydecimal.py` line 54 does `__name__ = 'decimal'
+   # For pickling`, so its classes pickle as `decimal.*`, which
+   test_decimal's C/Py interchangeability tests depend on.
+
+```python
+class A:
+    __module__ = "somewhere"
+print(A.__module__)   # CPython: somewhere ; Brython: the defining module
+print(A)              # CPython: <class 'somewhere.A'> ; Brython: <class '<mod>.A'>
+```
+
+Brython codegens the injection as a compile-time constant
+(`locals.__module__ = '<module>'` in the ClassDef emit) and then
+compensates in `$B.$class_constructor` with an unconditional runtime
+overwrite (`frame[1].__name__` if present else `frame[2]`). The overwrite
+is what keeps `_pydecimal` working — but it also destroys every explicit
+class-body `__module__` (behaviour 1): `repr(torch.Tensor)` came out
+`<class 'torch._tensor.Tensor'>` and `torch.testing.assert_close`'s
+doctests failed on the error-message text. Making the overwrite
+conditional instead exposes the stale static injection ('_pydecimal'
+baked into the generated code) and breaks decimal pickling — the two
+sites must be fixed together.
+
+Fix (vendored brython.js): emit the injection as the runtime lookup
+CPython performs — `locals.__module__ = <globals>.__name__ ?? 'builtins'`
+in the ClassDef codegen — and delete the `$class_constructor` overwrite
+(`type.tp_new` already sets `__module__` only when absent, matching
+CPython's `type_new`). The `?? 'builtins'` fallback reproduces the
+LOAD_NAME builtins step for exec-in-a-bare-dict namespaces.
+
+
+## compile() caches the raw bytes source
+
+`compile(b"x=1\n", fn, "exec")` stores the still-encoded bytes in
+`$B.file_cache[fn]` before decoding them; everything that later reads the
+cache for source positions gets bytes. Fix (vendored brython.js): populate
+the cache after the bytes decode.
+
+## exec(code) hands the code object to the compiler as its source
+
+In the exec path for a code object, `_ast` is extracted but the CODE OBJECT
+itself is forwarded as `src` — `scopes.src.split is not a function` as soon
+as the codegen needs source text (importlib's
+`spec_from_file_location(...).loader.exec_module(m)` dies there).
+Fix (vendored brython.js): forward `src.source` (the decoded text kept by
+compile), falling back to the file cache.
+
+## A class subscript never consults the metaclass __getitem__
+
+```python
+from enum import Enum
+class Color(Enum):
+    RED = 1
+Color['RED']    # CPython: <Color.RED: 1> ; Brython: TypeError:
+                # type 'Color' is not subscriptable
+```
+
+CPython's `PyObject_GetItem` uses the METAtype's `mp_subscript` first and
+only falls back to `__class_getitem__` for types whose metaclass has none.
+Brython's `$B.$getitem1` goes straight to `__class_getitem__`. Fix
+(vendored brython.js): look up `__getitem__` on the metaclass MRO first,
+called with the raw item (no tuple wrapping), preserving the
+`__class_getitem__` fallback unchanged.
+
+## JS-module functions get a module-prefixed __qualname__
+
+`posix.execv.__qualname__` is `'posix.execv'` instead of CPython's bare
+`'execv'` — `add_function_infos` defaults the qualname to
+`module + '.' + attr`. Pickle's `whichmodule` then looks up
+`posix.posix.execv` and every module-level builtin is unpicklable by
+reference. Fix (vendored brython.js): the JS-module import fixup passes the
+bare attribute name as qualname.

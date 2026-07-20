@@ -1720,7 +1720,10 @@ throw err}}
 $B.$getitem1=function(obj,item){var is_list=Array.isArray(obj)&& $B.get_class(obj)===_b_.list,is_dict=$B.get_class(obj)===_b_.dict && ! obj[$B.JSOBJ]
 if(typeof item=="number"){if(is_list ||typeof obj=="string"){item=item >=0 ? item :obj.length+item
 if(obj[item]!==undefined){return obj[item]}else{throw index_error(obj)}}}else if(item.valueOf && typeof item.valueOf()=="string" && is_dict){return _b_.dict.$getitem(obj,item)}
-if($B.is_type(obj)){if(! Array.isArray(item)){item=$B.fast_tuple([item])}
+if($B.is_type(obj)){
+if(obj!==_b_.type){var meta_gi=$B.search_in_mro($B.get_class(obj),"__getitem__",$B.NULL)
+if(meta_gi!==$B.NULL){return $B.$call(meta_gi,obj,item)}}
+if(! Array.isArray(item)){item=$B.fast_tuple([item])}
 if(obj===_b_.type){return $B.$class_getitem(obj,item)}
 var class_gi=$B.type_getattribute(obj,"__class_getitem__",$B.NULL)
 if(class_gi !==$B.NULL){return $B.$call(class_gi,item)}else{var qualname=$B.$getattr(obj,'__qualname__')
@@ -2055,6 +2058,22 @@ var opname2opsign={__sub__:"-",__xor__:"^",__mul__:"*",__and__:'&',__or__:'|'}
 $B.get_position_from_inum=function(inum){
 if($B.frame_obj !==null){var frame=$B.frame_obj.frame
 if(frame.positions){return frame.positions[Math.floor(inum/2)]}}}
+// wasthon: a special-method dunder may be a @staticmethod — sympy's singleton
+// numbers define `@staticmethod def __neg__()/__abs__()`. CPython's
+// LookupSpecial binds the type-level descriptor: descr.__get__(x, cls)(), so a
+// staticmethod runs WITHOUT self. Brython's operator/builtin dispatch resolves
+// the dunder on the type then passes the instance explicitly ($getattr(cls,op)
+// + $call(m, x, ...)), which for a staticmethod hands an extra arg to a
+// self-less function ("__neg__() takes 0 positional arguments but 1 was
+// given"). $B.$static_dunder inspects the RAW MRO entry (search_in_mro does
+// not run tp_descr_get) and returns the underlying callable when it is a
+// staticmethod, else null — callers keep their original type-level path.
+$B.$static_dunder=function(x,name){
+var raw=$B.search_in_mro($B.get_class(x),name,$B.NULL)
+return(raw!==$B.NULL && raw.ob_type===_b_.staticmethod)?raw.sm_callable:null}
+$B.$unary_op=function(x,name){var sm=$B.$static_dunder(x,name)
+if(sm!==null){return $B.$call(sm)}
+return $B.$call($B.$getattr($B.get_class(x),name),x)}
 $B.rich_op=function(op,x,y,inum){try{return $B.rich_op1(op,x,y)}catch(exc){$B.set_inum(inum)
 throw exc}}
 $B.rich_op1=function(op,x,y){
@@ -2087,12 +2106,15 @@ if(z){if(res_is_int && Number.isSafeInteger(z)){return z}else if(res_is_float){r
 var x_type=$B.get_class(x),y_type=$B.get_class(y)
 var rop='__r'+op.substr(2),method
 if(x_type===y_type){
+var sm=$B.$static_dunder(x,op)
 method=$B.$getattr(x_type,op,$B.NULL)
 if(method===$B.NULL){var kl_name=$B.class_name(x)
 $B.RAISE(_b_.TypeError,"unsupported operand type(s) "+
 "for "+opname2opsign[op]+": '"+kl_name+"' and '"+
 kl_name+"'")}
-var same_res=$B.$call(method,x,y)
+// wasthon: staticmethod operator dunder — call without self (method is the
+// already-unwrapped sm_callable); every other type keeps the original path
+var same_res=sm!==null?$B.$call(method,y):$B.$call(method,x,y)
 if(same_res===_b_.NotImplemented){
 if(op=='__mul__' && x_type.$is_sequence){
 $B.RAISE(_b_.TypeError,"can't multiply sequence by "+
@@ -2502,10 +2524,6 @@ for(var base of bases){if(base.tp_flags !==undefined &&
 !(base.tp_flags & TPFLAGS.BASETYPE)){$B.RAISE(_b_.TypeError,`type '${$B.$getattr(base, '__qualname__')}' `+
 `is not an acceptable base type`)}}
 delete extra_kwargs.metaclass
-var classdef_frame=$B.frame_obj.prev.frame
-var module=classdef_frame[2]
-if(Object.hasOwn(classdef_frame[1],'__name__')){module=classdef_frame[1].__name__}
-$B.str_dict_set(dict,'__module__',module)
 if($B.str_dict_get(dict,'__qualname__',$B.NULL)===$B.NULL){var stack=[]
 var frame_obj=$B.frame_obj.prev
 while(frame_obj.prev){var frame=frame_obj.frame
@@ -4628,6 +4646,9 @@ var None=_b_.None={ob_type:NoneType}
 None.__doc__=None
 _b_.__build_class__=function(){$B.RAISE(_b_.NotImplementedError,'__build_class__')}
 _b_.abs=function(obj){check_nb_args_no_kw('abs',1,arguments)
+// wasthon: a @staticmethod __abs__ (sympy singletons) is called without self
+var sm=$B.$static_dunder(obj,"__abs__")
+if(sm!==null){return $B.$call(sm)}
 var klass=$B.get_class(obj)
 try{var method=$B.$getattr(klass,"__abs__")}catch(err){if($B.is_exc(err,[_b_.AttributeError])){$B.RAISE(_b_.TypeError,"Bad operand type for abs(): '"+
 $B.class_name(obj)+"'")}
@@ -4699,7 +4720,6 @@ var infos={co_flags:$.flags,co_name:"<module>",co_filename:$.filename}
 for(var key in infos){$[key]=infos[key]}
 var filename=$.filename
 var interactive=$.mode=="single" &&($.flags & 0x200)
-$B.file_cache[filename]=$.source
 $B.url2name[filename]=module_name
 if($.flags & $B.PyCF_TYPE_COMMENTS){}
 if($B.is_bytes($.source)){var encoding='utf-8',lfpos=$.source.source.indexOf(10),first_line,second_line
@@ -4715,6 +4735,7 @@ second_line=$B.bytes_decode(second_line,'latin-1')
 mo=second_line.match(encoding_re)
 if(mo){encoding=mo[1]}}
 $.source=$B.bytes_decode($.source,encoding)}
+$B.file_cache[filename]=$.source
 if(! $B.$isinstance(filename,[_b_.bytes,_b_.str])){
 $B.warn(_b_.DeprecationWarning,`path should be string, bytes, or os.PathLike, `+
 `not ${$B.class_name(filename)}`)}
@@ -5635,7 +5656,7 @@ _ast=new $B.ast.Module([assign])}}
 try{if(! _ast){var _mode=mode=='eval' ? 'eval' :'file'
 var parser=new $B.Parser(src,filename,_mode)
 _ast=$B._PyPegen.run_parser(parser)}
-var future=$B.future_features(_ast,filename),symtable=$B._PySymtable_Build(_ast,filename,future),js_obj=$B.js_from_root({ast:_ast,symtable,filename,src,namespaces:{local_name,exec_locals,global_name,exec_globals}}),js=js_obj.js}catch(err){if(err.args){if(err.args[1]){exec_locals.$lineno=err.args[1][1]}}else{console.log('JS Error',err.message)
+var future=$B.future_features(_ast,filename),symtable=$B._PySymtable_Build(_ast,filename,future),js_obj=$B.js_from_root({ast:_ast,symtable,filename,src:(typeof src==='string' ? src :src.source ?? $B.file_cache[filename] ?? src),namespaces:{local_name,exec_locals,global_name,exec_globals}}),js=js_obj.js}catch(err){if(err.args){if(err.args[1]){exec_locals.$lineno=err.args[1][1]}}else{console.log('JS Error',err.message)
 console.log(err)}
 $B.frame_obj=save_frame_obj
 throw err}
@@ -6091,7 +6112,12 @@ if(self.f_locals){return self.f_locals}else if(self.f_globals && self[1]==self[3
 // the caller's f_locals). Serve a plain-dict snapshot without the
 // compiler-internal keys, like CPython's function-frame f_locals.
 var ns=self[1]
-if(ns &&(ns.__class__!==undefined ||(ns.ob_type!==undefined && ns.ob_type!==_b_.dict))){var d=$B.empty_dict()
+// $B.obj_dict is the identity: a plain-JS function namespace leaked
+// through f_locals as a raw 'Javascript Object' (no .items() — torch's
+// jit trace reads f_locals.items() of every interpreted frame). Serve
+// the plain-dict snapshot for ANY non-dict namespace; a real Brython
+// dict (module frame) still passes through unchanged.
+if(ns && ns.ob_type!==_b_.dict){var d=$B.empty_dict()
 for(var k in ns){if(k!=='__class__' && k!=='ob_type' && k.charAt(0)!=='$'){_b_.dict.$setitem(d,k,ns[k])}}
 return self.f_locals=d}
 return self.f_locals=$B.obj_dict(ns)}}
@@ -6227,7 +6253,8 @@ _b_.StopIteration.tp_members=[["value",$B.TYPES.OBJECT,"value",0]
 $B.set_func_names(_b_.StopIteration,'builtins')
 _b_.ImportError.tp_init=function(){var $=$B.args("ImportError",1,{self:null},arguments,null,'args','kw')
 _b_.BaseException.tp_init($.self,...$.args)
-$B.set_expected_kwargs($.self,['name','path'],$.kw)}
+$B.set_expected_kwargs($.self,['name','path'],$.kw)
+$.self.msg=$.args.length==1 ? $.args[0] :_b_.None}
 $B.set_func_names(_b_.ImportError,'builtins')
 _b_.SyntaxError.tp_init=function(){var $=$B.args('SyntaxError',1,{self:null},arguments,null,'args','kw')
 var _self=$.self,args=$.args,kw=$.kw
@@ -10419,7 +10446,7 @@ if(!$B.$isinstance(cls,_b_.type)){$B.RAISE(_b_.TypeError,`bool.__new__(X): X is 
 $B.RAISE(_b_.TypeError,`bool.__new__(${class_name}): ${class_name} is not a subtype of bool`)}
 return bool.$factory(value)}
 _b_.bool.nb_invert=function(self){$B.warn(_b_.DeprecationWarning,`Bitwise inversion '~' on bool is deprecated.This returns the bitwise inversion of the underlying int object and is usually not what you expect from negating a bool.Use the 'not' operator for boolean negation or ~int(x) if you really want the bitwise inversion of the underlying int.`)
-return int_funcs.__invert__(self)}
+return _b_.int.nb_invert(self)}
 var bool_funcs=_b_.bool.tp_funcs={}
 _b_.bool.functions_or_methods=["__new__"]
 $B.set_func_names(bool,"builtins")})(__BRYTHON__);
@@ -11124,9 +11151,12 @@ if(typeof first=="string"){if(second !==$B.NULL){$B.RAISE(_b_.TypeError,"complex
 first=first.trim()
 if(first.startsWith("(")&& first.endsWith(")")){first=first.substr(1)
 first=first.substr(0,first.length-1)}
-var complex_re=/^\s*([+-]*[0-9_]*\.?[0-9_]*(e[+-]*[0-9_]*)?)([+-]?)([0-9_]*\.?[0-9_]*(e[+-]*[0-9_]*)?)(j?)\s*$/i
+var complex_re=/^\s*([+-]*(?:nan|inf(?:inity)?|[0-9_]*\.?[0-9_]*(e[+-]*[0-9_]*)?))([+-]?)((?:nan|inf(?:inity)?|[0-9_]*\.?[0-9_]*(e[+-]*[0-9_]*)?)?)(j?)\s*$/i
 var parts=complex_re.exec(first)
-function to_num(s){var res=parseFloat(s.charAt(0)+s.substr(1).replace(/_/g,""))
+function to_num(s){var _low=s.toLowerCase().replace(/_/g,""),_m=_low.match(/^([+-]*)(nan|infinity|inf)$/)
+if(_m){var _neg=(_m[1].split('-').length-1)%2==1
+return _m[2]=="nan" ? NaN :(_neg ?-Infinity :Infinity)}
+var res=parseFloat(s.charAt(0)+s.substr(1).replace(/_/g,""))
 if(isNaN(res)){$B.RAISE(_b_.ValueError,"could not convert string "+
 "to complex: '"+arg+"'")}
 return res}
@@ -13962,7 +13992,7 @@ for(var attr in modobj){if(typeof modobj[attr]=="function" && ! modobj[attr].$in
 modobj[attr].$in_js_module=true
 modobj[attr].ob_type=$B.function
 $B.init_dict(modobj[attr])
-$B.add_function_infos(modobj,attr,name)}else if($B.$isinstance(modobj[attr],_b_.type)){if($B.get_dict(modobj[attr])){if($B.get_from_dict(modobj[attr],'__module__',$B.NULL)===
+$B.add_function_infos(modobj,attr,name,attr)}else if($B.$isinstance(modobj[attr],_b_.type)){if($B.get_dict(modobj[attr])){if($B.get_from_dict(modobj[attr],'__module__',$B.NULL)===
 $B.NULL){$B.set_to_dict(modobj[attr],'__module__',name)}}}
 $B.module_setattr(module,attr,modobj[attr])}}
 function run_js(module_contents,path,_module){var mod_name=$B.module_getattr(_module,'__name__')
@@ -14464,6 +14494,9 @@ var submodule=$B.module_getattr(current_module,'__name__')+
 '.'+module
 $B.$import(submodule,[],{},{},inum)
 current_module=$B.imported[submodule]}
+if(names.length > 0 && names[0]=='*'){
+var _all_star=$B.module_getattr(current_module,'__all__')
+if(_all_star!==$B.NULL&&_all_star!==undefined&&_all_star!==null){names=Array.from(_all_star)}}
 if(names.length > 0 && names[0]=='*'){
 for(var item of $B.module_items(current_module)){if(item.key.startsWith('$')||item.key.startsWith('_')){continue}
 locals[item.key]=item.value}}else{var $seen_imp={};for(var name of names){var ns,alias
@@ -16287,7 +16320,7 @@ indent(2)
 js+=prefix+`locals = ${locals_name}\n`
 dedent(2)
 js+=prefix+`locals.__doc__ = ${docstring}\n`+
-prefix+`locals.__module__ = '${glob}'\n`+
+prefix+`locals.__module__ = ${globals_name}.__name__ ?? 'builtins'\n`+
 prefix+`locals.__firstlineno__ = ${this.lineno}\n`
 js+=prefix+`var frame = [name, locals, '${glob}', ${globals_name}]\n`+
 prefix+`$B.enter_frame(frame, __file__, ${this.lineno})\n`+
@@ -17340,7 +17373,10 @@ $B.ast.UnaryOp.prototype.to_js=function(scopes){var operand=$B.js_from_ast(this.
 if(this.op instanceof $B.ast.Not){return `! $B.$bool(${operand})`}
 if(typeof operand=="number" ||operand instanceof Number){if(this.op instanceof $B.ast.UAdd){return operand+''}else if(this.op instanceof $B.ast.USub){return-operand+''}}
 var method=opclass2dunder[this.op.constructor.$name]
-return `$B.$call($B.$getattr($B.get_class(locals.$result = ${operand}), '${method}'), locals.$result)`}
+// wasthon: route through $B.$unary_op so a @staticmethod __neg__/__pos__/
+// __invert__ (sympy singletons) is called without self; normal types keep the
+// type-level resolution that passes the operand. operand is evaluated once.
+return `$B.$unary_op(${operand}, '${method}')`}
 $B.ast.While.prototype.to_js=function(scopes){var id=make_id()
 var scope=$B.last(scopes),new_scope=copy_scope(scope,this,id)
 scopes.push(new_scope)

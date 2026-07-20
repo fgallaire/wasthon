@@ -3073,3 +3073,193 @@ Module ports and the bridge-surface inventory live in `README.md`.
       dunder is set on a class (`__wasthon_resync_slot`, scoped to
       __init__/__new__). torch.save(tensor, BytesIO) writes a valid zip;
       +17 brytorch test_serialization (was import-dead).
+
+- [x] The builtin type singletons' slot tables were wired in wasthon_init()
+      — which JS calls AFTER module instantiation, i.e. after
+      __wasm_call_ctors has already run every C++ namespace-scope
+      initializer. Extension code that CAPTURES those pointers at static
+      init read NULLs: torch's THPSize grabs PyTuple_Type.tp_as_mapping->
+      mp_subscript and ->sq_repeat into namespace statics, so every
+      Size[i] was an indirect call through a null pointer (a wasm trap
+      Brython surfaces as "indirect call to null"). The wiring now lives
+      in a priority-101 constructor (pure pointer stores, ahead of every
+      default-priority C++ initializer), and the singletons gained a RAW
+      sequence table (sq_concat/sq_repeat/sq_item) and tuple tp_hash.
+      RAW slots dispatch on a PLAIN tuple copy of the receiver — virtual
+      dispatch on self re-enters the subclass's own C slot (Size[0:1] and
+      hash(Size) recursed to death: THPSize_hash itself delegates back to
+      PyTuple_Type.tp_hash). brytorch: test_sort_and_select +18,
+      test_indexing +29, test_type_promotion closed (420/420).
+
+- [x] tp_alloc(tp, 0) of a C tuple subclass went through the fixed-size
+      allocator and produced an opaque struct wrapper — only nitems > 0
+      took the tagged-JS-Array path. torch's empty Size (THPSize_New(0))
+      was invisible to the whole Brython tuple protocol: iteration threw
+      "self[Symbol.iterator] is not a function", == () compared False, so
+      test guards like `tensor.size() != torch.Size([])` misrouted 0-d
+      tensors into numpy branches (test_msort AxisError x9). nitems == 0
+      now materializes the same tagged empty Array.
+
+- [x] wrap() of a stamped class returned the canonical handle WITHOUT
+      re-registering it in the handle table. The stamp lives on the class
+      forever, but a DECREF-to-zero purges the table entry (a failed
+      Cython module init Py_DECREFs its cached builtins on the error
+      path) — after that the class is a ghost: wrap() keeps handing out
+      the number, unwrap() gives null. PyErr_ExceptionMatches then
+      compared null vs null and returned no-match, so Cython's
+      create-on-missing ABI bootstrap (getattr 'generator' /
+      'cython_function_or_method' → AttributeError → PyErr_Clear →
+      PyType_FromSpec) never ran: every numpy.random extension died at
+      init in the dual-runtime brytorch page (standalone numbry never
+      hit the refcount zero). wrap()'s stamped-class path now re-binds
+      like the __wasthon_ptr__ path always has. The singleton getters
+      (PyExc_*, exception classes cached in C extern statics for the
+      process lifetime) also switched from wrap() to wrapPinned().
+      brytorch: numpy.random alive in the dual page — test_indexing
+      +36 (176/197), test_sort_and_select +3.
+
+- [x] PyObject_CallMethod did not fold PyBUF_WRITE from-memory views back
+      into linear memory — only PyObject_CallOneArg did. Brython cannot
+      alias wasm memory, so PyMemoryView_FromMemory(..., PyBUF_WRITE)
+      hands out a tagged bytearray and the CALLER must copy what the
+      callee wrote back to the C region. torch's BufferAdapter reads
+      every byte of a checkpoint through
+      PyObject_CallMethod(buffer, "readinto", "O", memview): the bytes
+      landed in the bytearray and never reached miniz, which saw a
+      zero-filled buffer ("failed finding central directory" — torch.load
+      from any file-like was dead). brytorch test_serialization 17 -> 51.
+
+- [x] wasthon-fs.js `lseek` treated the whence argument as `how || 0`. When
+      Python omits it (`f.seek(0)` — the single most common seek there is),
+      Brython hands the syscall layer a sentinel OBJECT, which is truthy:
+      the object went straight to MEMFS, which rejected it with EINVAL.
+      The raw Emscripten ErrnoError then escaped as a JavascriptError whose
+      own str() fails, so the failure read "<exception str() failed>" with
+      no clue. whence is now coerced to a number (defaulting to SEEK_SET)
+      and MEMFS errors are translated to OSError with the errno.
+
+- [x] FileIO.readinto read its destination straight off `buffer.source`,
+      which only exists on a bytearray — a memoryview keeps its bytes on
+      the backing object (`.obj`). Any `f.readinto(memoryview(...))` on a
+      real file died with "can't access property 0, buffer.source is
+      undefined". torch's BufferAdapter hands a memoryview to readinto for
+      EVERY checkpoint read, so torch.load from a real file (or a
+      NamedTemporaryFile) could not read one byte and reported a corrupt
+      archive ("failed finding central directory"). readinto now resolves
+      the writable buffer through the view. brytorch test_serialization
+      63 -> 123.
+
+- [x] PySequence_Fast_ITEMS returned a FRESH malloc on every call. CPython
+      hands back a pointer into the sequence's own storage, and pybind11's
+      tuple/list iterator depends on that: it calls the function once for
+      begin() and AGAIN for end(), then compares the two pointers to detect
+      the end of the loop (sequence_fast_readonly::equal). With two
+      different blocks the comparison never matched where it should, so
+      `for (auto &arg : args)` ran past the end of the array and handed
+      neighbouring heap to the callee as extra arguments. Every
+      torch.ops.<ns>.<op>(...) call failed on it, with an error that read
+      like a contradiction — "aten::add() takes 2 positional argument(s)
+      but 2 was/were given" (the loop reached arg_idx 2 on a 2-tuple) — or
+      surfaced a phantom trailing argument holding unrelated memory (a
+      BaseException class dict). The buffer is now kept per sequence and
+      refilled in place, so the pointer is stable; it is reallocated only
+      when the length changes. brytorch test_indexing 176 -> 179 (the whole
+      torch.ops dispatch path).
+
+- [x] C-side setattr of `__repr__`/`__str__` on a class now re-syncs the
+      matching Brython slot, like `__init__`/`__new__` already did
+      (CPython's type.__setattr__ runs fixup_slot_dispatchers). pybind11
+      installs `def("__repr__")` methods by setattr after the type is
+      ready, but Brython's str() on a non-HEAPTYPE class reads
+      builtin_slot('tp_str'/'tp_repr') and never consults the dict — so
+      str(graph) on a TorchScript Graph fell back to the default
+      "<torch.Graph object at 0x…>", and jit._check_trace's graph
+      sanity diff compared two ADDRESSES, always unequal: every checked
+      torch.jit.trace raised TracingCheckError "Graphs differed across
+      invocations!". brytorch test_shape_ops 90 -> 91 (suite green).
+
+- [x] **Metatype ABI: PyTypeObject gains a tail `ob_type` field (offset 176)
+      and PyVarObject_HEAD_INIT stores its first argument there** (`src/
+      wasthon.h`, `src/wasthon.js`, `docs/BRIDGE.md`). The macro used to
+      discard the metatype (`{0}, (size),`), so torch's static
+      `PyVarObject_HEAD_INIT(&metaclass, 0)` (python_tensor.cpp — the
+      metaclass carries __instancecheck__ and the dtype/layout/is_cuda
+      getsets; the per-dtype legacy types are memcpy'd from a prototype
+      naming it) lost its metatype: isinstance(t, torch.FloatTensor) was
+      False for every tensor, type(torch.FloatTensor) was `type`, and
+      FloatTensor.dtype returned TensorBase's raw instance descriptor.
+      Design: the field is APPENDED so no historical offset moves, and the
+      macro writes it with an out-of-order designated initializer — legal
+      C99 for the C modules, accepted by em++ in C++ with the same
+      -Wc99-designator/-Wreorder-init-list warnings torch's existing
+      initializers already produce (measured before adoption). A positional
+      initializer following the macro would now fail to compile; the corpus
+      has none (it could not have compiled against the reordered struct
+      anyway). PyType_Ready honours the field only when it names an
+      already-readied type: torch readies its metatypes first, and modules
+      compiled before the field existed carry arbitrary bytes past their
+      shorter struct — the registry check filters both. Application
+      mirrors _wasthon_Py_SET_TYPE (`__class__` + `ob_type` + _cType).
+      PyObject_HEAD_INIT (static INSTANCES, e.g. datetime's zero_delta)
+      is deliberately untouched: instances have no ob_type field and the
+      _cType side-table already covers them. brytorch test_serialization
+      125 -> 133; type_promotion/sort/indexing/view_ops/shape_ops stay
+      green; 21-suite sweep 4459/4746, 0 fail.
+
+- [x] Vendored `_struct.py`: `_normalize` accepts a bytes/bytearray format
+      (decoded latin-1) — CPython's struct takes both, and zipfile's
+      `_EndRecData` unpacks with `b"<4s4H2LH"`, so EVERY archive open died
+      on "not the same type for string and pattern" before parsing a
+      single byte. torch.save containers are zip archives: six
+      test_serialization tests (crc32 options, weights_only rejection
+      paths) failed opening what they had just written, and BadZipFile
+      never fired. brytorch test_serialization 142 -> 148 (with chmod).
+
+- [x] Vendored `os.py`: real `scandir` (CPython-shaped DirEntry over
+      listdir+stat, the NotImplementedError preserved when posix has no
+      listdir — stock Brython unchanged), plus CPython's `walk` and
+      `makedirs` on top, `DirEntry.is_junction` included (3.12 API,
+      shutil.rmtree consults it). torch.serialization's
+      mirror-and-reload helpers walk checkpoint directories; testing's
+      test_circular_dependencies walks the torch tree. Repros in
+      BRYTHON_FIX.md for both entries.
+
+
+- [x] `wasthon-fs.js`: `posix.chmod` over MEMFS FS.chmod —
+      torch.serialization chmod's saved checkpoints; four
+      test_serialization tests raised NotImplementedError after the
+      fixture cache landed.
+
+- [x] `wasthon-io-write.js`: FileIO.read() with an OMITTED size read zero
+      bytes — the missing-arg sentinel OBJECT (same family as lseek's
+      whence, one commit earlier) is neither undefined nor None and
+      `< 0` is false on it, so it flowed into sys().read(fd, <object>)
+      as a zero-length request. Every parameterless f.read() on a real
+      file returned b'' since the FileIO port. brytorch
+      test_serialization 148 -> 151 (zipfile CRC checks, fake-zip
+      sniffing, gzip copyfileobj all read whole files).
+
+- [x] `wasthon-io-write.js`: FileIO.readline() with an omitted size
+      returned b'' — third member of the missing-arg sentinel family
+      (lseek whence, read size): `out.length < <sentinel object>` is
+      false so the byte loop never ran. Only file-LIKE delegation paths
+      exercised it (pickle on a plain file goes through Brython's
+      buffered readline), which is why every isolated probe passed while
+      torch.load through the tests' wrappers died on GLOBAL reads with
+      "Empty module name". brytorch test_serialization 151 -> 161 (the
+      whole Empty-module cluster + 5 weights_only variants).
+
+- [x] Vendored brython.js: special-method dispatch honours @staticmethod
+      dunders. CPython's LookupSpecial binds the type-level descriptor and
+      calls it, so a @staticmethod `__neg__`/`__abs__` runs without self —
+      sympy's singleton numbers rely on this. Brython resolved the dunder
+      on the type and passed the instance explicitly, handing the extra
+      arg to a self-less function ("__neg__() takes 0 positional arguments
+      but 1 was given"): `import sympy` died on `-S.One`. New helper
+      `$B.$static_dunder(x, name)` reads the raw MRO entry (search_in_mro,
+      no tp_descr_get) and returns the underlying callable for a
+      staticmethod; the three dispatch sites (unary +/-/~ codegen, the
+      abs() builtin, same-type binary operators) keep their original
+      type-level path and only diverge on a staticmethod. Real sympy (in
+      numbry's VFS) then imports and runs expand/diff. CPython sweep
+      4459/0, numpy dashboard 3250/0/48 unchanged. Repro in BRYTHON_FIX.md.
