@@ -1019,11 +1019,16 @@ mergeInto(LibraryManager.library, {
         // then still holds the wrapper_descriptor the bridge installed, whose
         // C tp_init is pybind's no-op base — so `Cls(args)` allocated but never
         // constructed the C++ object: PyTorchFileWriter came out with an empty
-        // archive name and torch.save asserted). Scoped to the construction
-        // dunders (the ones whose slot the type-call reads); other dunders keep
+        // archive name and torch.save asserted). Same for `__repr__`/`__str__`:
+        // pybind def("__repr__") lands by setattr, but str() on a non-HEAPTYPE
+        // class reads builtin_slot('tp_str'/'tp_repr') and never consults the
+        // dict — str(graph) fell back to "<torch.Graph object at 0x…>" and
+        // jit._check_trace's graph diff compared addresses. Scoped to the
+        // dunders whose slot Brython's dispatch reads; other dunders keep
         // their existing wiring. Only acts on a class target.
         __wasthon_resync_slot: function(cls, name) {
-            if (name !== '__init__' && name !== '__new__') return;
+            if (name !== '__init__' && name !== '__new__' &&
+                name !== '__repr__' && name !== '__str__') return;
             if (!cls || cls.tp_name === undefined) return;   // not a class
             var slot = this.$B.dunder2slot && this.$B.dunder2slot[name];
             if (!slot) return;
