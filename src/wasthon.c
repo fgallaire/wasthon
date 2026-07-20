@@ -301,6 +301,65 @@ static PyMappingMethods wasthon_builtin_as_mapping = {
     0,
 };
 
+/* Shared sequence table + hash: torch's THPSize captures
+ * PyTuple_Type.tp_as_sequence->sq_repeat / mp_subscript into namespace-scope
+ * statics and calls PyTuple_Type.tp_hash at runtime. RAW semantics
+ * (no virtual re-dispatch), same rule as the mapping table. */
+extern PyObject *wasthon_builtin_sq_concat(PyObject *, PyObject *);
+extern PyObject *wasthon_builtin_sq_repeat(PyObject *, Py_ssize_t);
+extern PyObject *wasthon_builtin_sq_item(PyObject *, Py_ssize_t);
+extern Py_hash_t wasthon_builtin_tp_hash(PyObject *);
+static PySequenceMethods wasthon_builtin_as_sequence = {
+    .sq_length = wasthon_builtin_mp_length,
+    .sq_concat = wasthon_builtin_sq_concat,
+    .sq_repeat = wasthon_builtin_sq_repeat,
+    .sq_item   = wasthon_builtin_sq_item,
+};
+
+/* Slot/table wiring for the built-in type singletons. MUST run before C++
+ * static initializers: extension code captures these pointers at
+ * namespace-scope init (torch THPSize: mp_subscript = PyTuple_Type.
+ * tp_as_mapping->mp_subscript, sq_repeat likewise; pybind11 reads
+ * PyType_Type.tp_alloc). Priority 101 orders this ctor ahead of every
+ * default-priority (C++) initializer in __wasm_call_ctors. Pure pointer
+ * stores only — no JS calls are legal this early. */
+__attribute__((constructor(101)))
+static void wasthon_prime_builtin_slot_tables(void) {
+    PyType_Type.tp_iter    = wasthon_builtin_tp_iter;
+    /* pybind11's get_internals() calls PyType_Type.tp_alloc(&PyType_Type, 0)
+     * to build its 3 internal heap types by hand; hand back raw
+     * PyHeapTypeObject memory (see wasthon_type_tp_alloc). */
+    { extern PyObject *wasthon_type_tp_alloc(PyTypeObject *, Py_ssize_t);
+      PyType_Type.tp_alloc = wasthon_type_tp_alloc; }
+    PyTuple_Type.tp_iter   = wasthon_builtin_tp_iter;
+    PyDict_Type.tp_iter    = wasthon_builtin_tp_iter;
+    PyList_Type.tp_iter    = wasthon_builtin_tp_iter;
+    PyLong_Type.tp_iter    = wasthon_builtin_tp_iter;
+    PyFloat_Type.tp_iter   = wasthon_builtin_tp_iter;
+    PyFloat_Type.tp_new    = wasthon_builtin_float_tp_new;
+    PyUnicode_Type.tp_iter = wasthon_builtin_tp_iter;
+    PyUnicode_Type.tp_new  = wasthon_builtin_unicode_tp_new;
+    PyBytes_Type.tp_iter   = wasthon_builtin_tp_iter;
+    PyBytes_Type.tp_new    = wasthon_builtin_bytes_tp_new;
+    PyByteArray_Type.tp_iter = wasthon_builtin_tp_iter;
+    PySet_Type.tp_iter       = wasthon_builtin_tp_iter;
+    PyFrozenSet_Type.tp_iter = wasthon_builtin_tp_iter;
+    PyBool_Type.tp_iter    = wasthon_builtin_tp_iter;
+
+    /* Protocol tables + tp_new on the sequence/mapping singletons: C code
+     * delegates to them directly (pygame's ScancodeWrapper subscript and
+     * tp_new go through PyTuple_Type) — NULL fields were indirect calls
+     * to null. Generic shims dispatch to Brython. */
+    PyTuple_Type.tp_as_mapping   = &wasthon_builtin_as_mapping;
+    PyList_Type.tp_as_mapping    = &wasthon_builtin_as_mapping;
+    PyDict_Type.tp_as_mapping    = &wasthon_builtin_as_mapping;
+    PyUnicode_Type.tp_as_mapping = &wasthon_builtin_as_mapping;
+    PyTuple_Type.tp_new = wasthon_builtin_tuple_tp_new;
+    PyTuple_Type.tp_as_sequence = &wasthon_builtin_as_sequence;
+    PyList_Type.tp_as_sequence  = &wasthon_builtin_as_sequence;
+    PyTuple_Type.tp_hash = wasthon_builtin_tp_hash;
+}
+
 #define BT_TYPE     0
 #define BT_TUPLE    1
 #define BT_DICT     2
@@ -389,41 +448,13 @@ void wasthon_init(void) {
     PyExc_FloatingPointError    = wasthon_get_PyExc_FloatingPointError();
     PyExc_ImportWarning         = wasthon_get_PyExc_ImportWarning();
 
-    /* Bind each built-in type singleton's address to its Brython class,
-     * and wire tp_iter so member access works (e.g. _decimal calls
-     * PyTuple_Type.tp_iter(t) directly). All built-ins share the same
-     * generic tp_iter that dispatches to Brython's iter(). */
-    PyType_Type.tp_iter    = wasthon_builtin_tp_iter;
-    /* pybind11's get_internals() calls PyType_Type.tp_alloc(&PyType_Type, 0)
-     * to build its 3 internal heap types by hand; hand back raw
-     * PyHeapTypeObject memory (see wasthon_type_tp_alloc). */
-    { extern PyObject *wasthon_type_tp_alloc(PyTypeObject *, Py_ssize_t);
-      PyType_Type.tp_alloc = wasthon_type_tp_alloc; }
-    PyTuple_Type.tp_iter   = wasthon_builtin_tp_iter;
-    PyDict_Type.tp_iter    = wasthon_builtin_tp_iter;
-    PyList_Type.tp_iter    = wasthon_builtin_tp_iter;
-    PyLong_Type.tp_iter    = wasthon_builtin_tp_iter;
-    PyFloat_Type.tp_iter   = wasthon_builtin_tp_iter;
-    PyFloat_Type.tp_new    = wasthon_builtin_float_tp_new;
-    PyUnicode_Type.tp_iter = wasthon_builtin_tp_iter;
-    PyUnicode_Type.tp_new  = wasthon_builtin_unicode_tp_new;
-    PyBytes_Type.tp_iter   = wasthon_builtin_tp_iter;
-    PyBytes_Type.tp_new    = wasthon_builtin_bytes_tp_new;
-    PyByteArray_Type.tp_iter = wasthon_builtin_tp_iter;
-    PySet_Type.tp_iter       = wasthon_builtin_tp_iter;
-    PyFrozenSet_Type.tp_iter = wasthon_builtin_tp_iter;
-    PyBool_Type.tp_iter    = wasthon_builtin_tp_iter;
-
-    /* Protocol tables + tp_new on the sequence/mapping singletons: C code
-     * delegates to them directly (pygame's ScancodeWrapper subscript and
-     * tp_new go through PyTuple_Type) — NULL fields were indirect calls
-     * to null. Generic shims dispatch to Brython. */
-    PyTuple_Type.tp_as_mapping   = &wasthon_builtin_as_mapping;
-    PyList_Type.tp_as_mapping    = &wasthon_builtin_as_mapping;
-    PyDict_Type.tp_as_mapping    = &wasthon_builtin_as_mapping;
-    PyUnicode_Type.tp_as_mapping = &wasthon_builtin_as_mapping;
-    PyTuple_Type.tp_new = wasthon_builtin_tuple_tp_new;
-
+    /* Bind each built-in type singleton's address to its Brython class.
+     * The slot/table wiring itself lives in
+     * wasthon_prime_builtin_slot_tables() — a ctor, NOT here: C++
+     * namespace-scope initializers run during __wasm_call_ctors, before
+     * any JS-driven init, and they CAPTURE these pointers (torch THPSize:
+     * mp_subscript/sq_repeat grabbed at static init were still NULL →
+     * every Size[i] was an indirect call to null). */
     wasthon_bind_builtin_type(BT_TYPE,    &PyType_Type);
     wasthon_bind_builtin_type(BT_RANGE,   &PyRange_Type);
     wasthon_bind_builtin_type(BT_TUPLE,   &PyTuple_Type);

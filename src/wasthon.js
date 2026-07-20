@@ -12208,6 +12208,11 @@ mergeInto(LibraryManager.library, {
                     }
                     return rt.wrapNewRef(self[i | 0]);
                 }
+                /* slice (or other) key: dispatch on a PLAIN tuple copy —
+                 * virtual getitem on self would re-enter the subclass's
+                 * C __getitem__ (torch Size[0:1] recursed to death). */
+                return rt.wrapNewRef(
+                    rt.$B.$getitem(rt._b_.tuple.$factory(self), key));
             }
             return rt.wrapNewRef(rt.$B.$getitem(self, key));
         }
@@ -12217,6 +12222,79 @@ mergeInto(LibraryManager.library, {
     wasthon_builtin_mp_length: function(selfH) {
         var rt = WasthonRT;
         try { return rt._b_.len(rt.unwrap(selfH)) | 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
+    },
+    /* RAW sequence slots (same no-virtual-dispatch rule as mp_subscript:
+     * a subclass's own slot delegates here AS the base tuple's — routing
+     * through __add__/__mul__/__getitem__ would recurse into the subclass). */
+    wasthon_builtin_sq_concat__deps: ['$WasthonRT'],
+    wasthon_builtin_sq_concat: function(aH, bH) {
+        var rt = WasthonRT;
+        try {
+            var a = rt.unwrap(aH), b = rt.unwrap(bH);
+            if (Array.isArray(a) && Array.isArray(b))
+                return rt.wrapNewRef(rt._b_.tuple.$factory(a.concat(b)));
+            if (typeof a === 'string' && typeof b === 'string')
+                return rt.wrapNewRef(a + b);
+            rt.setError(rt.wrap(rt._b_.TypeError), "unsupported concat");
+            return 0;
+        }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+    },
+    wasthon_builtin_sq_repeat__deps: ['$WasthonRT'],
+    wasthon_builtin_sq_repeat: function(selfH, n) {
+        var rt = WasthonRT;
+        try {
+            var self = rt.unwrap(selfH);
+            if (n < 0) n = 0;
+            if (Array.isArray(self)) {
+                var out = [];
+                for (var i = 0; i < n; i++) out = out.concat(self);
+                return rt.wrapNewRef(rt._b_.tuple.$factory(out));
+            }
+            if (typeof self === 'string') return rt.wrapNewRef(self.repeat(n));
+            rt.setError(rt.wrap(rt._b_.TypeError), "unsupported repeat");
+            return 0;
+        }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+    },
+    wasthon_builtin_sq_item__deps: ['$WasthonRT'],
+    wasthon_builtin_sq_item: function(selfH, i) {
+        var rt = WasthonRT;
+        try {
+            var self = rt.unwrap(selfH);
+            /* CPython's tuple sq_item: no negative adjustment (PySequence_
+             * GetItem adjusts before the slot); plain bounds check. */
+            if (Array.isArray(self)) {
+                if (i < 0 || i >= self.length) {
+                    rt.setError(rt.wrap(rt._b_.IndexError), "index out of range");
+                    return 0;
+                }
+                return rt.wrapNewRef(self[i | 0]);
+            }
+            if (typeof self === 'string') {
+                if (i < 0 || i >= self.length) {
+                    rt.setError(rt.wrap(rt._b_.IndexError), "index out of range");
+                    return 0;
+                }
+                return rt.wrapNewRef(self[i | 0]);
+            }
+            return rt.wrapNewRef(rt.$B.$getitem(self, i | 0));
+        }
+        catch (e) { rt.forwardError(e, rt._b_.IndexError); return 0; }
+    },
+    wasthon_builtin_tp_hash__deps: ['$WasthonRT'],
+    wasthon_builtin_tp_hash: function(selfH) {
+        var rt = WasthonRT;
+        try {
+            var self = rt.unwrap(selfH);
+            /* hash a PLAIN tuple copy: virtual hash(self) re-enters the
+             * subclass's C __hash__ (torch THPSize_hash delegates back to
+             * PyTuple_Type.tp_hash — hash(Size) recursed to death). */
+            if (Array.isArray(self)) self = rt._b_.tuple.$factory(self);
+            var h = rt._b_.hash(self) | 0;
+            return h === -1 ? -2 : h;  // CPython: -1 is the error sentinel
+        }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
     },
     /* tuple tp_new honoring a subtype: build a REAL Brython tuple from
