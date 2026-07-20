@@ -169,7 +169,25 @@
                 return FS.write(FS.getStream(fd), u8, 0, u8.length);
             },
             lseek: function (fd, pos, how) {
-                return FS.llseek(FS.getStream(fd), pos, how || 0);
+                const st = FS.getStream(fd);
+                if (!st) raise(_b_.OSError, 'bad file descriptor: ' + fd);
+                /* `how` arrives as a sentinel OBJECT when Python omitted the
+                 * whence argument (f.seek(0)) — `how || 0` kept the object
+                 * (truthy) and MEMFS rejected it with EINVAL, so the single
+                 * most common seek in existence failed. Coerce to a number,
+                 * defaulting to SEEK_SET. */
+                let w = typeof how === 'number' ? how : Number(how);
+                if (!Number.isFinite(w)) w = 0;
+                try {
+                    return FS.llseek(st, pos, w);
+                } catch (e) {
+                    /* Emscripten throws a bare ErrnoError object; letting it
+                     * escape surfaces as a JavascriptError whose own str()
+                     * fails ("<exception str() failed>"). Translate. */
+                    raise(_b_.OSError, 'lseek(fd=' + fd + ', pos=' + pos +
+                          ', whence=' + w + ') failed: errno=' +
+                          (e && e.errno) + ' ' + (e && (e.message || e.name || e)));
+                }
             },
             ftruncate: function (fd, len) { FS.ftruncate(fd, len); return _b_.None; },
             // dup: a fresh fd on the same node at the same position — numpy's
