@@ -240,6 +240,9 @@
                 FS.mkdir(toPath(path), mode === undefined ? 0o777 : mode); return _b_.None;
             };
             posix.rmdir = function (path) { FS.rmdir(toPath(path)); return _b_.None; };
+            // torch.serialization chmod's saved checkpoints (mirror_to_file);
+            // MEMFS tracks modes natively
+            posix.chmod = function (path, mode) { FS.chmod(toPath(path), mode); return _b_.None; };
             posix.rename = function (src, dst) { FS.rename(toPath(src), toPath(dst)); return _b_.None; };
             posix.replace = posix.rename;
             posix.stat = function (path) {
