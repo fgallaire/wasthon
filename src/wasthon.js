@@ -867,7 +867,20 @@ mergeInto(LibraryManager.library, {
             // object — e.g. _pickle's __newobj__ (`obj_class != cls`) and
             // save_global (`actual != global`) identity checks. The metaclass
             // test is one ref compare, instantly false for non-type wraps.
-            if (obj[WasthonRT._thKey]) return obj[WasthonRT._thKey];
+            if (obj[WasthonRT._thKey]) {
+                // Same re-bind rule as the __wasthon_ptr__ path above: the
+                // stamped canonical handle survives on the class forever, but
+                // a DECREF-to-zero can purge the table entry (a failed Cython
+                // module init releases its cached builtins). Returning the
+                // number without re-registering makes the class a ghost —
+                // wrap() hands out 47527416, unwrap() gives null, and
+                // PyErr_ExceptionMatches(AttributeError) compares null vs
+                // null: the create-on-missing bootstrap of every
+                // numpy.random extension died there in the dual-runtime page.
+                var th = obj[WasthonRT._thKey];
+                if (!this.handles.has(th)) this.handles.set(th, obj);
+                return th;
+            }
             if (obj.ob_type === this._b_.type) return this.ensureTypeStruct(obj);
             // Other Brython objects (functions, ptr-less instances): intern by
             // identity so re-wrapping the same object yields the same handle.
@@ -10722,89 +10735,89 @@ mergeInto(LibraryManager.library, {
     wasthon_get_Py_NotImplemented__deps: ['$WasthonRT'],
     wasthon_get_Py_NotImplemented: function() { return WasthonRT.SLOT_NOTIMPLEMENTED; },
     wasthon_get_Py_Ellipsis__deps: ['$WasthonRT'],
-    wasthon_get_Py_Ellipsis: function() { return WasthonRT.wrap(WasthonRT._b_.Ellipsis); },
+    wasthon_get_Py_Ellipsis: function() { return WasthonRT.wrapPinned(WasthonRT._b_.Ellipsis); },
 
     /* ---- Exception classes ---- */
     wasthon_get_PyExc_TypeError__deps:      ['$WasthonRT'],
-    wasthon_get_PyExc_TypeError:            function() { return WasthonRT.wrap(WasthonRT._b_.TypeError); },
+    wasthon_get_PyExc_TypeError:            function() { return WasthonRT.wrapPinned(WasthonRT._b_.TypeError); },
     wasthon_get_PyExc_ValueError__deps:     ['$WasthonRT'],
-    wasthon_get_PyExc_ValueError:           function() { return WasthonRT.wrap(WasthonRT._b_.ValueError); },
+    wasthon_get_PyExc_ValueError:           function() { return WasthonRT.wrapPinned(WasthonRT._b_.ValueError); },
     wasthon_get_PyExc_OverflowError__deps:  ['$WasthonRT'],
-    wasthon_get_PyExc_OverflowError:        function() { return WasthonRT.wrap(WasthonRT._b_.OverflowError); },
+    wasthon_get_PyExc_OverflowError:        function() { return WasthonRT.wrapPinned(WasthonRT._b_.OverflowError); },
     wasthon_get_PyExc_RuntimeError__deps:   ['$WasthonRT'],
-    wasthon_get_PyExc_RuntimeError:         function() { return WasthonRT.wrap(WasthonRT._b_.RuntimeError); },
+    wasthon_get_PyExc_RuntimeError:         function() { return WasthonRT.wrapPinned(WasthonRT._b_.RuntimeError); },
     wasthon_get_PyExc_MemoryError__deps:    ['$WasthonRT'],
-    wasthon_get_PyExc_MemoryError:          function() { return WasthonRT.wrap(WasthonRT._b_.MemoryError); },
+    wasthon_get_PyExc_MemoryError:          function() { return WasthonRT.wrapPinned(WasthonRT._b_.MemoryError); },
     wasthon_get_PyExc_SystemError__deps:    ['$WasthonRT'],
-    wasthon_get_PyExc_SystemError:          function() { return WasthonRT.wrap(WasthonRT._b_.SystemError); },
+    wasthon_get_PyExc_SystemError:          function() { return WasthonRT.wrapPinned(WasthonRT._b_.SystemError); },
     wasthon_get_PyExc_IndexError__deps:     ['$WasthonRT'],
-    wasthon_get_PyExc_IndexError:           function() { return WasthonRT.wrap(WasthonRT._b_.IndexError); },
+    wasthon_get_PyExc_IndexError:           function() { return WasthonRT.wrapPinned(WasthonRT._b_.IndexError); },
     wasthon_get_PyExc_RecursionError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_RecursionError:       function() { return WasthonRT.wrap(WasthonRT._b_.RecursionError); },
+    wasthon_get_PyExc_RecursionError:       function() { return WasthonRT.wrapPinned(WasthonRT._b_.RecursionError); },
     wasthon_get_PyExc_EOFError__deps:       ['$WasthonRT'],
-    wasthon_get_PyExc_EOFError:             function() { return WasthonRT.wrap(WasthonRT._b_.EOFError); },
+    wasthon_get_PyExc_EOFError:             function() { return WasthonRT.wrapPinned(WasthonRT._b_.EOFError); },
     wasthon_get_PyExc_StopIteration__deps:  ['$WasthonRT'],
-    wasthon_get_PyExc_StopIteration:        function() { return WasthonRT.wrap(WasthonRT._b_.StopIteration); },
+    wasthon_get_PyExc_StopIteration:        function() { return WasthonRT.wrapPinned(WasthonRT._b_.StopIteration); },
     wasthon_get_PyExc_BufferError__deps:    ['$WasthonRT'],
-    wasthon_get_PyExc_BufferError:          function() { return WasthonRT.wrap(WasthonRT._b_.BufferError); },
+    wasthon_get_PyExc_BufferError:          function() { return WasthonRT.wrapPinned(WasthonRT._b_.BufferError); },
     wasthon_get_PyExc_BaseException__deps:     ['$WasthonRT'],
-    wasthon_get_PyExc_BaseException:           function() { return WasthonRT.wrap(WasthonRT._b_.BaseException); },
+    wasthon_get_PyExc_BaseException:           function() { return WasthonRT.wrapPinned(WasthonRT._b_.BaseException); },
     wasthon_get_PyExc_SyntaxError__deps:       ['$WasthonRT'],
-    wasthon_get_PyExc_SyntaxError:             function() { return WasthonRT.wrap(WasthonRT._b_.SyntaxError); },
+    wasthon_get_PyExc_SyntaxError:             function() { return WasthonRT.wrapPinned(WasthonRT._b_.SyntaxError); },
     wasthon_get_PyExc_RuntimeWarning__deps:    ['$WasthonRT'],
-    wasthon_get_PyExc_RuntimeWarning:          function() { return WasthonRT.wrap(WasthonRT._b_.RuntimeWarning); },
+    wasthon_get_PyExc_RuntimeWarning:          function() { return WasthonRT.wrapPinned(WasthonRT._b_.RuntimeWarning); },
     wasthon_get_PyExc_FutureWarning__deps:     ['$WasthonRT'],
-    wasthon_get_PyExc_FutureWarning:           function() { return WasthonRT.wrap(WasthonRT._b_.FutureWarning); },
+    wasthon_get_PyExc_FutureWarning:           function() { return WasthonRT.wrapPinned(WasthonRT._b_.FutureWarning); },
     wasthon_get_PyExc_FileNotFoundError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_FileNotFoundError:       function() { return WasthonRT.wrap(WasthonRT._b_.FileNotFoundError); },
+    wasthon_get_PyExc_FileNotFoundError:       function() { return WasthonRT.wrapPinned(WasthonRT._b_.FileNotFoundError); },
     wasthon_get_PyExc_IOError__deps:           ['$WasthonRT'],
-    wasthon_get_PyExc_IOError:                 function() { return WasthonRT.wrap(WasthonRT._b_.IOError || WasthonRT._b_.OSError); },
+    wasthon_get_PyExc_IOError:                 function() { return WasthonRT.wrapPinned(WasthonRT._b_.IOError || WasthonRT._b_.OSError); },
     wasthon_get_PyExc_KeyError__deps:       ['$WasthonRT'],
-    wasthon_get_PyExc_KeyError:             function() { return WasthonRT.wrap(WasthonRT._b_.KeyError); },
+    wasthon_get_PyExc_KeyError:             function() { return WasthonRT.wrapPinned(WasthonRT._b_.KeyError); },
     wasthon_get_PyExc_AssertionError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_AssertionError:       function() { return WasthonRT.wrap(WasthonRT._b_.AssertionError); },
+    wasthon_get_PyExc_AssertionError:       function() { return WasthonRT.wrapPinned(WasthonRT._b_.AssertionError); },
     wasthon_get_PyExc_LookupError__deps:    ['$WasthonRT'],
-    wasthon_get_PyExc_LookupError:          function() { return WasthonRT.wrap(WasthonRT._b_.LookupError); },
+    wasthon_get_PyExc_LookupError:          function() { return WasthonRT.wrapPinned(WasthonRT._b_.LookupError); },
     wasthon_get_PyExc_NotImplementedError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_NotImplementedError:  function() { return WasthonRT.wrap(WasthonRT._b_.NotImplementedError); },
+    wasthon_get_PyExc_NotImplementedError:  function() { return WasthonRT.wrapPinned(WasthonRT._b_.NotImplementedError); },
     wasthon_get_PyExc_UnicodeError__deps:   ['$WasthonRT'],
-    wasthon_get_PyExc_UnicodeError:         function() { return WasthonRT.wrap(WasthonRT._b_.UnicodeError); },
+    wasthon_get_PyExc_UnicodeError:         function() { return WasthonRT.wrapPinned(WasthonRT._b_.UnicodeError); },
     wasthon_get_PyExc_UnicodeDecodeError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_UnicodeDecodeError:   function() { return WasthonRT.wrap(WasthonRT._b_.UnicodeDecodeError); },
+    wasthon_get_PyExc_UnicodeDecodeError:   function() { return WasthonRT.wrapPinned(WasthonRT._b_.UnicodeDecodeError); },
     wasthon_get_PyExc_UnicodeEncodeError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_UnicodeEncodeError:   function() { return WasthonRT.wrap(WasthonRT._b_.UnicodeEncodeError); },
+    wasthon_get_PyExc_UnicodeEncodeError:   function() { return WasthonRT.wrapPinned(WasthonRT._b_.UnicodeEncodeError); },
     wasthon_get_PyExc_ImportError__deps:    ['$WasthonRT'],
-    wasthon_get_PyExc_ImportError:          function() { return WasthonRT.wrap(WasthonRT._b_.ImportError); },
+    wasthon_get_PyExc_ImportError:          function() { return WasthonRT.wrapPinned(WasthonRT._b_.ImportError); },
     wasthon_get_PyExc_ModuleNotFoundError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_ModuleNotFoundError:  function() { return WasthonRT.wrap(WasthonRT._b_.ModuleNotFoundError); },
+    wasthon_get_PyExc_ModuleNotFoundError:  function() { return WasthonRT.wrapPinned(WasthonRT._b_.ModuleNotFoundError); },
     wasthon_get_PyExc_GeneratorExit__deps:  ['$WasthonRT'],
-    wasthon_get_PyExc_GeneratorExit:        function() { return WasthonRT.wrap(WasthonRT._b_.GeneratorExit); },
+    wasthon_get_PyExc_GeneratorExit:        function() { return WasthonRT.wrapPinned(WasthonRT._b_.GeneratorExit); },
     wasthon_get_PyExc_UnboundLocalError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_UnboundLocalError:    function() { return WasthonRT.wrap(WasthonRT._b_.UnboundLocalError); },
+    wasthon_get_PyExc_UnboundLocalError:    function() { return WasthonRT.wrapPinned(WasthonRT._b_.UnboundLocalError); },
     wasthon_get_PyExc_Exception__deps:      ['$WasthonRT'],
-    wasthon_get_PyExc_Exception:            function() { return WasthonRT.wrap(WasthonRT._b_.Exception); },
+    wasthon_get_PyExc_Exception:            function() { return WasthonRT.wrapPinned(WasthonRT._b_.Exception); },
     wasthon_get_PyExc_OSError__deps:        ['$WasthonRT'],
-    wasthon_get_PyExc_OSError:              function() { return WasthonRT.wrap(WasthonRT._b_.OSError); },
+    wasthon_get_PyExc_OSError:              function() { return WasthonRT.wrapPinned(WasthonRT._b_.OSError); },
     wasthon_get_PyExc_AttributeError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_AttributeError:       function() { return WasthonRT.wrap(WasthonRT._b_.AttributeError); },
+    wasthon_get_PyExc_AttributeError:       function() { return WasthonRT.wrapPinned(WasthonRT._b_.AttributeError); },
     wasthon_get_PyExc_ArithmeticError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_ArithmeticError:      function() { return WasthonRT.wrap(WasthonRT._b_.ArithmeticError); },
+    wasthon_get_PyExc_ArithmeticError:      function() { return WasthonRT.wrapPinned(WasthonRT._b_.ArithmeticError); },
     wasthon_get_PyExc_DeprecationWarning__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_DeprecationWarning:   function() { return WasthonRT.wrap(WasthonRT._b_.DeprecationWarning); },
+    wasthon_get_PyExc_DeprecationWarning:   function() { return WasthonRT.wrapPinned(WasthonRT._b_.DeprecationWarning); },
     wasthon_get_PyExc_Warning__deps:        ['$WasthonRT'],
-    wasthon_get_PyExc_Warning:              function() { return WasthonRT.wrap(WasthonRT._b_.Warning); },
+    wasthon_get_PyExc_Warning:              function() { return WasthonRT.wrapPinned(WasthonRT._b_.Warning); },
     wasthon_get_PyExc_ResourceWarning__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_ResourceWarning:      function() { return WasthonRT.wrap(WasthonRT._b_.ResourceWarning); },
+    wasthon_get_PyExc_ResourceWarning:      function() { return WasthonRT.wrapPinned(WasthonRT._b_.ResourceWarning); },
     wasthon_get_PyExc_ZeroDivisionError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_ZeroDivisionError:    function() { return WasthonRT.wrap(WasthonRT._b_.ZeroDivisionError); },
+    wasthon_get_PyExc_ZeroDivisionError:    function() { return WasthonRT.wrapPinned(WasthonRT._b_.ZeroDivisionError); },
     wasthon_get_PyExc_NameError__deps:          ['$WasthonRT'],
-    wasthon_get_PyExc_NameError:            function() { return WasthonRT.wrap(WasthonRT._b_.NameError); },
+    wasthon_get_PyExc_NameError:            function() { return WasthonRT.wrapPinned(WasthonRT._b_.NameError); },
     wasthon_get_PyExc_UserWarning__deps:        ['$WasthonRT'],
-    wasthon_get_PyExc_UserWarning:          function() { return WasthonRT.wrap(WasthonRT._b_.UserWarning); },
+    wasthon_get_PyExc_UserWarning:          function() { return WasthonRT.wrapPinned(WasthonRT._b_.UserWarning); },
     wasthon_get_PyExc_FloatingPointError__deps: ['$WasthonRT'],
-    wasthon_get_PyExc_FloatingPointError:   function() { return WasthonRT.wrap(WasthonRT._b_.FloatingPointError); },
+    wasthon_get_PyExc_FloatingPointError:   function() { return WasthonRT.wrapPinned(WasthonRT._b_.FloatingPointError); },
     wasthon_get_PyExc_ImportWarning__deps:      ['$WasthonRT'],
-    wasthon_get_PyExc_ImportWarning:        function() { return WasthonRT.wrap(WasthonRT._b_.ImportWarning); },
+    wasthon_get_PyExc_ImportWarning:        function() { return WasthonRT.wrapPinned(WasthonRT._b_.ImportWarning); },
 
     /* PyType_FromSpec — like PyType_FromModuleAndSpec but no module. The
      * __deps clause keeps PyType_FromModuleAndSpec preserved so Emscripten
@@ -13352,7 +13365,13 @@ mergeInto(LibraryManager.library, {
         var target = resolve(rt.unwrap(excHandle));
         if (typeof process !== 'undefined' && process.env && process.env.EXCDBG) {
             var nm = function(c) { return c && (c.__name__ || (c.$infos && c.$infos.__name__) || c.tp_name || String(c).slice(0, 20)); };
-            console.log('[EXC]', nm(current), 'vs', nm(target), '=> same:', current === target);
+            var st = function(h) {
+                return 'has=' + rt.handles.has(h) + ' dem=' + (rt.demoted ? rt.demoted.has(h) : '-') +
+                       ' ctype=' + (rt._cType ? rt._cType.has(h) : '-');
+            };
+            console.log('[EXC ' + rt._thKey.slice(24) + '] h=' + rt.pendingException.exc + '->' + nm(current) +
+                        ' (' + st(rt.pendingException.exc) + ') vs t=' + excHandle + '->' + nm(target) +
+                        ' (' + st(excHandle) + ') => same: ' + (current === target));
         }
         if (!current || !target) return 0;
         if (current === target) return 1;
