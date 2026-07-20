@@ -6410,9 +6410,33 @@ mergeInto(LibraryManager.library, {
         if (seq === null) return 0;
         try {
             var n = rt._b_.len(seq) | 0;
-            var ptr = _malloc(Math.max(1, n) * 4);
+            /* The pointer must be STABLE across calls on the same sequence.
+             * CPython hands back the sequence's own storage, so pybind's
+             * tuple/list iterator — which calls this once for begin() and
+             * AGAIN for end(), then compares the two pointers to stop the
+             * loop (sequence_fast_readonly::equal) — sees one array. A fresh
+             * malloc per call put begin() and end() in DIFFERENT blocks: the
+             * comparison never matched at the right place and the loop ran
+             * off the end, feeding neighbouring heap to the callee. Every
+             * torch.ops.* call died that way ("takes 2 positional argument(s)
+             * but 2 was/were given", a phantom trailing dict). Keep one
+             * buffer per sequence, refilled in place; realloc only when the
+             * length changes. */
+            var slot = seq.__wasthon_fast_items__;
+            var ptr;
+            if (slot !== undefined && slot.n === n) {
+                ptr = slot.ptr;
+            } else {
+                ptr = _malloc(Math.max(1, n) * 4);
+                try {
+                    Object.defineProperty(seq, '__wasthon_fast_items__', {
+                        value: { ptr: ptr, n: n },
+                        writable: true, configurable: true, enumerable: false,
+                    });
+                } catch (e) { /* frozen/primitive: fall back to per-call */ }
+            }
             for (var i = 0; i < n; i++) HEAP32[(ptr >> 2) + i] = rt.wrap(rt.$B.$getitem(seq, i));
-            return ptr;   /* array of borrowed handles; leaked (per-call) */
+            return ptr;   /* array of borrowed handles */
         } catch (e) { return 0; }
     },
 
