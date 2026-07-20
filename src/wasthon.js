@@ -7451,7 +7451,15 @@ mergeInto(LibraryManager.library, {
                 p += 8;
             }
         }
-        try { return rt.wrapMaybeType(rt.$B.$call.apply(null, [method].concat(args))); }
+        try {
+            var res = rt.wrapMaybeType(rt.$B.$call.apply(null, [method].concat(args)));
+            // Same PyBUF_WRITE fold as PyObject_CallOneArg: an 'O' arg may
+            // be a from-memory view whose writes must land back in the C
+            // region — torch's BufferAdapter calls readinto through HERE
+            // (miniz read every zip byte as zeros; torch.load was dead).
+            for (var fi = 0; fi < args.length; fi++) rt.syncFromMemView(args[fi]);
+            return res;
+        }
         catch (e) {
             rt.forwardError(e, rt._b_.RuntimeError);
             return 0;
