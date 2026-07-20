@@ -101,6 +101,16 @@ C extensions create types with `PyType_FromModuleAndSpec` / `PyType_FromSpec`
   Brython classes that never went through FromSpec get one lazily
   (`ensureTypeStruct`).
 
+Static `PyTypeObject` definitions (torch, pygame) go through `PyType_Ready`
+instead; same wiring, read from the struct at the `wasthon.h` offsets.
+**Metatypes**: `PyVarObject_HEAD_INIT(&meta, 0)` stores its first argument
+in the tail `ob_type` field (offset 176, appended — no historical offset
+moved) and `PyType_Ready` sets the class's `__class__` to the readied
+metatype, so `__instancecheck__` and metaclass getsets dispatch exactly as
+CPython (`isinstance(t, torch.FloatTensor)`, `torch.FloatTensor.dtype`).
+The value is honoured only if it names an already-readied type — modules
+compiled before the field existed carry arbitrary trailing bytes.
+
 Slots are wired **by ID, not by struct offset** — `Py_tp_call`,
 `Py_nb_add`, `Py_bf_getbuffer` etc. map to Brython dunders and to the
 protocol dispatchers. Making a method visible to Brython requires three

@@ -193,6 +193,16 @@ struct _typeobject {
     /* appended (numpy) — keep at the END: JS-side readers use the offsets
      * of the fields above */
     int         (*tp_is_gc)(PyObject *);
+    /* appended (metatype ABI) — the type of the type. CPython's
+     * PyVarObject_HEAD_INIT stores its first argument here; wasthon's macro
+     * used to discard it, so a static metatype (torch python_tensor.cpp:
+     * `PyVarObject_HEAD_INIT(&metaclass, 0)` carrying __instancecheck__ and
+     * the dtype/layout getsets) was lost and isinstance(t, torch.FloatTensor)
+     * could never dispatch. Appended at the END so no historical offset
+     * shifts; modules compiled against the older header simply lack the
+     * field — PyType_Ready validates the value against the readied-type
+     * registry before honouring it. */
+    struct _typeobject *ob_type;                                  /* offset 176 */
 };
 typedef struct _typeobject PyTypeObject;
 
@@ -1265,9 +1275,17 @@ double    PyLong_AsDouble(PyObject *o);
 /* Static-type init macros. Bridge doesn't use static PyTypeObject
  * definitions (we go through PyType_FromModuleAndSpec) but _datetime
  * has at least one static instance — these macros expand to a minimal
- * brace-init that produces a struct of the right shape. */
+ * brace-init that produces a struct of the right shape.
+ * PyVarObject_HEAD_INIT keeps CPython's semantics for its first argument:
+ * the METATYPE is stored in the tail ob_type field via an out-of-order
+ * designator (legal C99; em++ accepts it in C++ with -Wc99-designator /
+ * -Wreorder-init-list warnings — same class of warning the existing
+ * positional-then-designated torch initializers already produce). Any
+ * positional initializer FOLLOWING the macro would now resume past
+ * ob_type and fail to compile — the corpus has none (a positional list
+ * could not have compiled against the reordered struct anyway). */
 #define PyObject_HEAD_INIT(type)    {0},
-#define PyVarObject_HEAD_INIT(type, size)  {0}, (size),
+#define PyVarObject_HEAD_INIT(type, size)  {0}, (size), .ob_type = (struct _typeobject *)(type),
 
 /* FT_ATOMIC_*_SSIZE_* — free-threading atomic ops; no-op on WASM. */
 #define FT_ATOMIC_LOAD_SSIZE_RELAXED(p)    (p)

@@ -5459,6 +5459,7 @@ mergeInto(LibraryManager.library, {
             var basicsize  = HEAP32[(typePtr +  64) >> 2];   /* tp_basicsize  */
             var itemsize   = HEAP32[(typePtr +  68) >> 2];   /* tp_itemsize   */
             var flags      = HEAPU32[(typePtr + 120) >> 2];  /* tp_flags      */
+            var metaPtr    = HEAP32[(typePtr + 176) >> 2];   /* ob_type (metatype) */
             var getsetPtr  = HEAP32[(typePtr + 136) >> 2];   /* tp_getset     */
             var basePtr    = HEAP32[(typePtr + 140) >> 2];   /* tp_base       */
             var membersPtr = HEAP32[(typePtr + 164) >> 2];   /* tp_members    */
@@ -5596,6 +5597,25 @@ mergeInto(LibraryManager.library, {
             });
             /* wire the struct's tp_dict (offset 8) to the class dict */
             HEAP32[(typePtr + 8) >> 2] = rt.wrapPinned(rt.$B.get_dict(cls));
+
+            /* ob_type@176 — the static METATYPE captured by
+             * PyVarObject_HEAD_INIT (torch python_tensor.cpp's `metaclass`
+             * carrying __instancecheck__ + the dtype/layout getsets; the
+             * per-dtype legacy types are memcpy'd from a prototype that
+             * names it). Honour it ONLY if it is an already-readied type:
+             * torch readies its metatypes before the types that use them,
+             * and modules compiled before the field existed carry arbitrary
+             * bytes past their (shorter) struct — the registry check filters
+             * both. Application mirrors _wasthon_Py_SET_TYPE. */
+            if (metaPtr && metaPtr !== typePtr && rt.types.has(metaPtr)) {
+                var metaCls = rt.types.get(metaPtr).brythonClass;
+                if (metaCls && metaCls !== rt._b_.type) {
+                    cls.__class__ = metaCls;
+                    cls.ob_type = metaCls;
+                    if (!rt._cType) rt._cType = new Map();
+                    rt._cType.set(typePtr, metaPtr);
+                }
+            }
 
             if (methodsPtr) __wasthon_install_methods(cls, methodsPtr, 0, /*moduleScope=*/false);
             if (getsetPtr)  __wasthon_install_getsets(cls, getsetPtr);
