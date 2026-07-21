@@ -257,8 +257,11 @@
             // C Unpickler requires the attribute on its file argument)
             checkOpen(self);
             const out = [];
-            const lim = (size === undefined || size === _b_.None || size < 0)
-                ? Infinity : size;
+            // omitted size = Brython's missing-arg sentinel OBJECT (the
+            // lseek-whence / FileIO.read family): `out.length < <object>`
+            // is false so the loop never ran — readline() returned b''
+            let lim = (size === undefined || size === _b_.None) ? Infinity : Number(size);
+            if (Number.isNaN(lim) || lim < 0) lim = Infinity;
             while (out.length < lim) {
                 const chunk = F.read(self, 1);
                 const src = chunk.source || [];
