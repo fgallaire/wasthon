@@ -277,14 +277,21 @@
             ensureReadable(self);
             const fd = self.$wfd;
             let n;
-            if (size === undefined || size === _b_.None || size < 0) {
+            // an omitted size arrives as Brython's missing-arg sentinel
+            // OBJECT (same family as lseek's whence, 5b0dbd7): it is not
+            // undefined, not None and `< 0` is false on it, so it fell
+            // through to sys().read(fd, <object>) which read 0 bytes —
+            // f.read() on a real file ALWAYS returned b''
+            let sz = (size === undefined || size === _b_.None) ? -1 : Number(size);
+            if (!Number.isFinite(sz)) sz = -1;
+            if (sz < 0) {
                 // remaining = end - cur, via lseek (works on unlinked-but-open
                 // fds, the TemporaryFile case)
                 const cur = sys().lseek(fd, 0, 1);
                 const end = sys().lseek(fd, 0, 2);
                 sys().lseek(fd, cur, 0);
                 n = end - cur;
-            } else { n = size; }
+            } else { n = sz; }
             if (n < 0) n = 0;
             return sys().read(fd, n);
         };
