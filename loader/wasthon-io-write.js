@@ -132,21 +132,38 @@
         // that goes raw FileIO → text wrapper directly (no buffered middle).
         // io/_io are imported lazily; in every file flow os.open() fires before
         // io.open(), so the posix shim triggers this on the first open (below).
-        let openPatched = false;
+        // io and _io import at different times (io on the first file flow,
+        // _io later via importlib's bootstrap) — patch each as it appears and
+        // only stop probing once BOTH are done, else the late one keeps the
+        // stock URL-fetching open/open_code.
+        const patchedMods = new Set();
         function ensureOpenPatched() {
-            if (openPatched) return;
+            if (patchedMods.size >= 2) return;
             const imp = B.imported;
             if (!imp) return;
-            const targets = [imp.io, imp._io].filter(Boolean);
+            const targets = [imp.io, imp._io]
+                .filter((m) => m && !patchedMods.has(m));
             if (targets.length === 0) return;
-            openPatched = true;
+            for (const m of targets) patchedMods.add(m);
             const getO = (m) => { try { return B.$getattr(m, 'open'); } catch (e) { return m.open; } };
             const setO = (m, fn) => {
                 try { B.$setattr(m, 'open', fn); } catch (e) {}
                 m.open = fn;
                 if (m.$dict) m.$dict.open = fn;
             };
-            for (const mod of targets) setO(mod, makeDispatch(getO(mod)));
+            for (const mod of targets) {
+                const dispatch = makeDispatch(getO(mod));
+                setO(mod, dispatch);
+                // CPython's open_code(path) is open(path, 'rb') plus the audit
+                // hook; Brython's routes to the URL-fetching BUILTIN open,
+                // bypassing this layer entirely — importlib's
+                // FileLoader.get_data (spec_from_file_location flow) never
+                // sees MEMFS files and 404s on the page URL instead.
+                const openCode = function (file) { return dispatch(file, 'rb'); };
+                try { B.$setattr(mod, 'open_code', openCode); } catch (e) {}
+                mod.open_code = openCode;
+                if (mod.$dict) mod.$dict.open_code = openCode;
+            }
             // Also builtins.open: bz2/lzma do builtins.open(name, mode); its
             // native _io.open wraps a READ in $B._BufferedReader, which slices
             // raw.$bytes (the whole-file model) — undefined for our fd-backed
