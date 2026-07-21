@@ -209,6 +209,11 @@
             captureStatType(posix.stat);   // grab stat_result type before override
 
             posix.open = sys.open;
+            // Brython's getcwd returns $B.brython_path (a page URL), so
+            // os.path.abspath turns every relative filename into a URL and
+            // importlib's spec_from_file_location bypasses MEMFS entirely.
+            // With a real FS mounted the honest cwd is the FS one ('/').
+            posix.getcwd = function () { return FS.cwd(); };
             posix.close = sys.close;
             posix.read = sys.read;
             posix.write = sys.write;
