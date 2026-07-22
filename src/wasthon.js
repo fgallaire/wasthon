@@ -13510,9 +13510,20 @@ mergeInto(LibraryManager.library, {
     },
 
     PyModule_Check__deps: ['$WasthonRT'],
+    /* _b_.module does not exist, so the old `obj.__class__ === _b_.module`
+     * compared undefined === undefined and answered yes for every
+     * __class__-less object (e.g. pybind11 functions — TorchScript sugared
+     * F.linear as a module and exported it as a PythonOp). The module class
+     * is the class of any real module; include subclasses like CPython. */
     PyModule_Check: function(handle) {
-        var obj = WasthonRT.unwrap(handle);
-        return (obj && obj.__class__ === WasthonRT._b_.module) ? 1 : 0;
+        var rt = WasthonRT;
+        var obj = rt.unwrap(handle);
+        if (!obj) return 0;
+        var cls = rt.$B.get_class(obj);
+        var modCls = rt.$B.get_class(rt.$B.imported.builtins);
+        if (cls === modCls) return 1;
+        var mro = cls.tp_mro || cls.__mro__ || [];
+        return mro.indexOf(modCls) >= 0 ? 1 : 0;
     },
 
     /* PyCapsule — opaque C-pointer wrapper. unicodedata uses it for its

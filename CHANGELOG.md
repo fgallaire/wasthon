@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyModule_Check` compares against the real module class**
+  (`src/wasthon.js`). The old check was `obj.__class__ === _b_.module`, but
+  `_b_.module` does not exist — `undefined === undefined` answered "module"
+  for every object without a `__class__` property, which is every
+  bridge-created pybind11 function. TorchScript's `toSugaredValue` then took
+  its `py::isinstance<py::module>` branch for `F.linear`, sugared it as a
+  module (a `PythonValue` subclass) and emitted a `^linear` PythonOp that
+  `torch.jit.save` refuses ("Could not export Python function call
+  'linear'") — `_find_builtin`, which knows `aten::linear`, was never
+  consulted. Now `$B.get_class(obj)` is compared against the class of a
+  real module (`builtins`), mro-inclusive like CPython's subclass-accepting
+  `PyModule_Check`. (+1 serialization.)
 - **`PyObject_GenericGetDict` reads the instance dict directly**
   (`src/wasthon.js`). It fetched `__dict__` via `$getattr(o, '__dict__')`,
   which resolves through the type's getset table — on a pybind11 type the
