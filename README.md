@@ -1026,6 +1026,52 @@ Infrastructure work that pays back on existing modules:
       early; narrower exposure than the rejected global mark-sweep, and the
       21-suite sweep plus the brytorch full run show no such class. Measured:
       flat 133 MB across repeated 2000-tensor rounds (was +32-46 MB/round).
+
+      **2026-07-22 amendment — the pass is now BILATERAL.** The 07-19 mark
+      substituted the missing proof from one side only, and volume falsified
+      it two ways (measured on brytorch): candidates whose types wire no
+      dealloc slot (`torch.device` ×8378 per suite, `Size`, `finfo`) took a
+      destructor-less `_free`, recycling structs under C-side borrowed
+      pointers; and every demoted pybind11 instance's own real dealloc
+      raises pybind11's `!types->empty()` registry assert (1 566/1 566 on
+      one suite). The pass now demands evidence from **both** GC models
+      before freeing: `{safe:true}` frees through a real `tp_dealloc` or
+      not at all, skips tensors the C++ side still shares (TensorImpl
+      `use_count > 1`, read through read-only census helpers the embedding
+      module exports) and pybind11 instances wholesale, and frees
+      collected wrappers through the type stamped at demotion
+      (`demotedType`). `{dry:true}` runs the same walk as a pure census;
+      `$B.$wasthon_census_live()` maps who owns the heap (bound vs
+      demoted, storages deduped by StorageImpl). Instrument rule learned
+      the hard way: `unwrap` of a demoted ptr RE-BINDS it, so every census
+      call temp-binds by hand — a measurement must not mutate the bridge.
+      Measured (brytorch 7-suite page, all green, corruption canary 0):
+      page high-water 1390 vs 1870 MB, one suite pass returning 387 MB.
+
+      **And the honest limit, measured the same day: the reachability half
+      is not a proof, so the pass is NOT safe at scale.** Adding torch's
+      own suite to that page (407 039 demoted candidates instead of ~34 000)
+      frees 304 697 instances and returns 1165 MB — then the next suite
+      collapses and later ones die on `bad Table get address` /
+      `UnicodeDecodeError: invalid start byte`: the wasm function table and
+      the linear heap are corrupted, i.e. live objects were freed. The
+      census says why: the depth-6 mark from the frames plus the module
+      graphs marks **998** objects live out of 407 039, having visited
+      68 085 objects — its visit budget (400 000) was never even reached,
+      so the depth bound alone accounts for it. "Not reached" means "not
+      searched", not "dead". The C++ half
+      cannot compensate: `use_count == 1` says the C++ side does not share
+      the tensor, never that a Python variable stopped holding it. So the
+      green 7-suite result above reflects a graph the bounded mark happens
+      to cover — a property of those suites, not a safety property. The
+      pass stays opt-in and off by default. The only sound proof of
+      Python-side death here remains a collected wrapper, which Firefox
+      does not deliver during a synchronous run (54 of 407 039), which is
+      why the substitute existed in the first place. Making per-object
+      reclamation sound needs a real refcount on the wrapper (the
+      wasthonc / WasmGC pivot), not a better heuristic; for a driver that
+      merely needs the memory back, throwing the whole context away
+      (iframe isolation) proves nothing and therefore cannot be wrong.
 - [ ] Explicit-contract residual — a C instance held by a Python local that is
       dropped or reassigned without a `close()`/`with` (and with no
       `gc.collect()` call, and on a page that does not opt into

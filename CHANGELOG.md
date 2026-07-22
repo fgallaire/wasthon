@@ -7,6 +7,39 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **The demoted-instance reclaim is bilateral — evidence from both GC
+  models, or nothing is freed** (`src/wasthon.js`; read-only census
+  helpers live in the embedding module's tree, brytorch
+  `wasthon_census.cpp`). The 07-19 driver-invoked pass freed on
+  Brython-side evidence alone (refcount 1 + mark-scan unreachability);
+  volume falsified it two ways, measured on brytorch: candidates whose
+  types wire no dealloc slot (`torch.device` ×8378/suite, `Size`,
+  `finfo`) took a destructor-less `_free` — structs recycled under
+  C-side borrowed pointers — and every demoted pybind11 instance's own
+  dealloc raises pybind11's `!types->empty()` registry assert
+  (1 566/1 566 on one suite). `$wasthon_reclaim_demoted` now takes
+  modes: `{dry:true}` = census (kind, TensorImpl + Storage use counts,
+  dealloc-slot resolution, allocator state) freeing nothing;
+  `{safe:true}` = the bilateral free — a real `tp_dealloc` or a skip
+  (never a bare `_free`), tensors the C++ side still shares
+  (`use_count > 1`) and pybind11 instances stay demoted, collected
+  wrappers free through the type stamped at demotion (`demotedType`,
+  new). `$wasthon_census_live` maps who owns the heap (bound vs
+  demoted, storages deduped by StorageImpl). Instrument rule paid in
+  full: `unwrap` of a demoted ptr RE-BINDS it — every census call
+  temp-binds by hand so the measurement cannot mutate the bridge.
+  Opt-in as ever (`reclaimResults` default false; nothing calls the
+  pass unless a driver does). Measured on the brytorch 7-suite page,
+  all green, corruption canary 0, dealloc errors 0: page high-water
+  −480 MB (1390 vs 1870), a single sort_and_select pass returns
+  387 MB. **Known limit, measured the same day:** the Brython half of
+  the predicate is a bounded mark, not a proof — on torch's own suite
+  (407 039 candidates) it marks 998 live, frees 304 697, returns
+  1165 MB and corrupts the runtime (live objects freed; the wasm
+  function table goes with them). The 400 000-visit budget is not even
+  reached — the depth bound alone accounts for it, and `use_count == 1`
+  cannot compensate. Sound per-object reclamation needs a real wrapper
+  refcount. (+0 suites.)
 - **`PyModule_Check` compares against the real module class**
   (`src/wasthon.js`). The old check was `obj.__class__ === _b_.module`, but
   `_b_.module` does not exist — `undefined === undefined` answered "module"

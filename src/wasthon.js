@@ -109,6 +109,10 @@ mergeInto(LibraryManager.library, {
         // boundary — harmless, since the GC can only collect between jobs
         // anyway (that is when reclamation happens at all).
         demoted: null,
+        // Map<ptr, typeH> stamped at demotion — the type survives the
+        // wrapper, so a collected-wrapper reclaim can still run the REAL
+        // tp_dealloc instead of a destructor-less _free (the v1 hole).
+        demotedType: null,
         _born: [],               // instance ptrs bound during the current C entry
 
         // Sentinel handle IDs (filled at init). NOT 1-4: pybind11's
@@ -304,6 +308,7 @@ mergeInto(LibraryManager.library, {
                 if (w === undefined || w.__wasthon_ptr__ !== p) continue;
                 this.handles.delete(p);
                 this.demoted.set(p, new WeakRef(w));
+                this.demotedType.set(p, w.__wasthon_type__ || 0);
                 if (w.$wasthon_finreg === undefined) {
                     w.$wasthon_finreg = 1;
                     this.resultReg.register(w, {
@@ -321,6 +326,7 @@ mergeInto(LibraryManager.library, {
         _reclaimDead: function(info) {
             var ptr = info.ptr;
             if (!this.demoted.delete(ptr)) return;       // re-bound since, or stale
+            this.demotedType.delete(ptr);
             if (this.refcounts.get(ptr) !== 1) return;   // ownership moved
             this.refcounts.delete(ptr);
             var typeH = info.typeH;
@@ -338,7 +344,8 @@ mergeInto(LibraryManager.library, {
             var savedExc = this.pendingException;
             this.pushScope();
             try { getWasmTableEntry(tp_dealloc)(ptr); }
-            catch (e) { /* defensive */ }
+            catch (e) { this._deallocErr = (this._deallocErr || 0) + 1;
+                        this._deallocErrLast = String(e && e.message || e); }
             finally {
                 this.popScope();
                 this.pendingException = savedExc;
@@ -479,6 +486,7 @@ mergeInto(LibraryManager.library, {
             this.scopeOf = new Map();
             this.internPool = new Map();
             this.demoted = new Map();
+            this.demotedType = new Map();
             this._born = [];
             var _rtFR = this;
             this.resultReg = (typeof FinalizationRegistry !== 'undefined')
@@ -682,6 +690,71 @@ mergeInto(LibraryManager.library, {
                 };
             }
 
+
+            if (!B.$wasthon_census_live) {
+                var _rtCL = this;
+                // "Who owns the heap": classify every BOUND instance (the
+                // handles map — C-side pinned or in active use) and every
+                // DEMOTED one; for tensors, dedup storages by StorageImpl
+                // address and split their bytes by owner class. Read-only.
+                B.$wasthon_census_live = function() {
+                    var rt = _rtCL;
+                    var ck = typeof Module !== 'undefined' && Module['_wasthon_census_kind'];
+                    var ct = typeof Module !== 'undefined' && Module['_wasthon_census_tensor'];
+                    var cm = typeof Module !== 'undefined' && Module['_wasthon_census_mallinfo'];
+                    if (!ck) return { err: 'no census helpers' };
+                    var st = { bound_inst: 0, bound_tensor: 0, demoted_tensor: 0,
+                               rc1: 0, rc2: 0, rc3plus: 0,
+                               bound_storage_mb: 0, demoted_only_storage_mb: 0,
+                               storages_bound: 0, storages_demoted_only: 0,
+                               used_mb: cm ? Math.round(cm(1) / 1048576) : -1 };
+                    var savedExc = rt.pendingException;
+                    var sb = new Map();      // storagePtr -> bytes (bound owners)
+                    var sd = new Map();      // storagePtr -> bytes (demoted-only)
+                    rt.handles.forEach(function(v, h) {
+                        if (!v || v.__wasthon_type__ === undefined) return;
+                        if (typeof h !== 'number' || !rt.refcounts.has(h)) return;
+                        st.bound_inst++;
+                        var kind = -1;
+                        try { kind = ck(h); } catch (e) {}
+                        if (kind !== 1) return;
+                        st.bound_tensor++;
+                        var rc = rt.refcounts.get(h);
+                        if (rc === 1) st.rc1++;
+                        else if (rc === 2) st.rc2++;
+                        else st.rc3plus++;
+                        try {
+                            var sp = ct(h, 4), nb = ct(h, 2);
+                            if (sp) sb.set(sp, nb);
+                        } catch (e) {}
+                    });
+                    rt.demoted.forEach(function(wr, ptr) {
+                        var w = wr.deref();
+                        if (w === undefined) return;
+                        var tb2 = rt.handles.has(ptr);
+                        if (!tb2) rt.handles.set(ptr, w);
+                        var kind = -1;
+                        try { kind = ck(ptr); } catch (e) {}
+                        if (kind === 1) {
+                            st.demoted_tensor++;
+                            try {
+                                var sp = ct(ptr, 4), nb = ct(ptr, 2);
+                                if (sp && !sb.has(sp)) sd.set(sp, nb);
+                            } catch (e) {}
+                        }
+                        if (!tb2) rt.handles.delete(ptr);
+                    });
+                    var bb = 0; sb.forEach(function(nb) { bb += nb; });
+                    var db = 0; sd.forEach(function(nb) { db += nb; });
+                    st.storages_bound = sb.size;
+                    st.storages_demoted_only = sd.size;
+                    st.bound_storage_mb = Math.round(bb / 1048576);
+                    st.demoted_only_storage_mb = Math.round(db / 1048576);
+                    rt.pendingException = savedExc;
+                    return st;
+                };
+            }
+
             if (!B.$wasthon_reclaim_demoted) {
                 var _rtRD = this;
                 // Between-batches reclamation of DEMOTED instances (the
@@ -695,9 +768,16 @@ mergeInto(LibraryManager.library, {
                 // are eligible — anything C references is protected by
                 // the _reclaimDead guard. Call it between test batches,
                 // not mid-computation.
-                B.$wasthon_reclaim_demoted = function() {
+                // opts.dry: census only — apply the BILATERAL death test
+                // (Brython-side unreachability from the scan below, plus the
+                // C side's own truth via the census helpers when the wasm
+                // exports them) and report, freeing NOTHING. The evidence
+                // pass for a sound reclaim: nothing may be freed unless both
+                // GC models agree the object is dead.
+                B.$wasthon_reclaim_demoted = function(opts) {
+                    var dry = opts && opts.dry;
                     var rt = _rtRD;
-                    if (!rt.demoted || rt.demoted.size === 0) return 0;
+                    if (!rt.demoted || rt.demoted.size === 0) return dry ? { demoted: 0 } : 0;
                     var live = new Set(), seen = new Set();
                     var scan = function(v, depth) {
                         if (v === null || v === undefined) return;
@@ -769,9 +849,133 @@ mergeInto(LibraryManager.library, {
                     rt.demoted.forEach(function(wr, ptr) {
                         if (live.has(ptr)) return;
                         var w = wr.deref();
-                        if (w === undefined) { toReclaim.push([ptr, 0]); return; }
-                        toReclaim.push([ptr, deallocTypeH(w)]);
+                        if (w === undefined) { toReclaim.push([ptr, 0, null]); return; }
+                        toReclaim.push([ptr, deallocTypeH(w), w]);
                     });
+                    var ck = typeof Module !== 'undefined' && Module['_wasthon_census_kind'];
+                    var ct = typeof Module !== 'undefined' && Module['_wasthon_census_tensor'];
+                    var cm = typeof Module !== 'undefined' && Module['_wasthon_census_mallinfo'];
+                    if (dry) {
+                        var st = { demoted: rt.demoted.size,
+                                   candidates: toReclaim.length,
+                                   live_marked: rt.demoted.size - toReclaim.length,
+                                   collected_wrapper: 0, collected_typed: 0,
+                                   no_dealloc_slot: 0,
+                                   noslot_kinds: { tensor: 0, type: 0, pybind: 0, other: 0 },
+                                   noslot_top: {},
+                                   kinds: { tensor: 0, type: 0, pybind: 0, other: 0 },
+                                   uc1: 0, uc2: 0, ucmore: 0, uc1_mb: 0,
+                                   free_mb: cm ? Math.round(cm(0) / 1048576) : -1,
+                                   used_mb: cm ? Math.round(cm(1) / 1048576) : -1 };
+                        var savedExc = rt.pendingException;
+                        var uc1b = 0, s1b = 0;
+                        st.s1 = 0; st.smore = 0; st.s1_mb = 0;
+                        for (var c = 0; c < toReclaim.length; c++) {
+                            var ptr = toReclaim[c][0], typeH = toReclaim[c][1],
+                                w = toReclaim[c][2];
+                            if (w === null) {
+                                st.collected_wrapper++;
+                                var sth = rt.demotedType.get(ptr) || 0;
+                                if (sth && HEAP32[(sth + 40) >> 2]) st.collected_typed++;
+                                continue;
+                            }
+                            var noslot = !typeH || !HEAP32[(typeH + 40) >> 2];
+                            if (noslot) st.no_dealloc_slot++;
+                            if (!ck) continue;
+                            // temp-bind: unwrap of a demoted ptr goes through
+                            // the miss path, which REBINDS it (deletes from
+                            // demoted) — the census must not mutate what it
+                            // measures, so bind manually around the C calls.
+                            var tb0 = rt.handles.has(ptr);
+                            if (!tb0) rt.handles.set(ptr, w);
+                            var kind = -1;
+                            try { kind = ck(ptr); } catch (e) {}
+                            var kn = kind === 1 ? 'tensor' : kind === 2 ? 'type' :
+                                     kind === 3 ? 'pybind' : 'other';
+                            st.kinds[kn]++;
+                            if (noslot) {
+                                st.noslot_kinds[kn]++;
+                                var tn = '?';
+                                try { tn = (w.ob_type && (w.ob_type.__name__ ||
+                                            w.ob_type.tp_name)) || '?'; } catch (e) {}
+                                st.noslot_top[tn] = (st.noslot_top[tn] || 0) + 1;
+                            }
+                            if (kind === 1) {
+                                var uc = -1, nb = 0, suc = -1;
+                                try { uc = ct(ptr, 0); nb = ct(ptr, 2);
+                                      suc = ct(ptr, 3); } catch (e) {}
+                                if (uc === 1) { st.uc1++; uc1b += nb; }
+                                else if (uc === 2) st.uc2++;
+                                else st.ucmore++;
+                                if (uc === 1 && suc === 1) {
+                                    st.s1++; s1b += nb;
+                                } else if (uc === 1) st.smore++;
+                            }
+                            if (!tb0) rt.handles.delete(ptr);
+                        }
+                        st.uc1_mb = Math.round(uc1b / 1048576);
+                        st.s1_mb = Math.round(s1b / 1048576);
+                        var top = Object.entries(st.noslot_top)
+                            .sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
+                        st.noslot_top = {};
+                        for (var t = 0; t < top.length; t++) st.noslot_top[top[t][0]] = top[t][1];
+                        rt.pendingException = savedExc;
+                        return st;
+                    }
+                    if (opts && opts.safe) {
+                        // SAFE free: the bilateral rules. Real tp_dealloc or
+                        // nothing (a destructor-less _free was v1's registry
+                        // corruption); a tensor the C++ side still shares
+                        // (use_count > 1) stays demoted; a collected wrapper
+                        // frees through the type stamped at demotion — the
+                        // FR-proof path.
+                        var ss = { demoted: rt.demoted.size,
+                                   candidates: toReclaim.length,
+                                   freed: 0, freed_collected: 0,
+                                   skip_noslot: 0, skip_ucgt1: 0, skip_pybind: 0,
+                                   tensor_mb: 0,
+                                   used_before_mb: cm ? Math.round(cm(1) / 1048576) : -1,
+                                   used_after_mb: -1 };
+                        var savedExc2 = rt.pendingException;
+                        var tb = 0;
+                        for (var s2 = 0; s2 < toReclaim.length; s2++) {
+                            var p2 = toReclaim[s2][0], th2 = toReclaim[s2][1],
+                                w2 = toReclaim[s2][2];
+                            var collected = w2 === null;
+                            if (collected) th2 = rt.demotedType.get(p2) || 0;
+                            if (!th2 || !HEAP32[(th2 + 40) >> 2]) { ss.skip_noslot++; continue; }
+                            if (!collected && ck) {
+                                var tb1 = rt.handles.has(p2);
+                                if (!tb1) rt.handles.set(p2, w2);
+                                var k2 = -1;
+                                try { k2 = ck(p2); } catch (e) {}
+                                var uc2 = -1, nb2 = 0;
+                                if (k2 === 1) {
+                                    try { uc2 = ct(p2, 0); nb2 = ct(p2, 2); } catch (e) {}
+                                }
+                                if (!tb1) rt.handles.delete(p2);
+                                // pybind11 instance deallocs raise the
+                                // !types->empty() registry assert on demoted
+                                // objects (the v1 storm, reproduced 1566/1566
+                                // on serialization) — excluded until the
+                                // registry lifecycle is understood.
+                                if (k2 === 3) { ss.skip_pybind++; continue; }
+                                if (k2 === 1) {
+                                    if (uc2 > 1) { ss.skip_ucgt1++; continue; }
+                                    tb += nb2;
+                                }
+                            }
+                            rt._reclaimDead({ ptr: p2, typeH: th2 });
+                            ss.freed++;
+                            if (collected) ss.freed_collected++;
+                        }
+                        ss.tensor_mb = Math.round(tb / 1048576);
+                        ss.used_after_mb = cm ? Math.round(cm(1) / 1048576) : -1;
+                        ss.dealloc_err = rt._deallocErr || 0;
+                        if (rt._deallocErrLast) ss.dealloc_err_last = String(rt._deallocErrLast).slice(0, 120);
+                        rt.pendingException = savedExc2;
+                        return ss;
+                    }
                     for (var r = 0; r < toReclaim.length; r++) {
                         rt._reclaimDead({ ptr: toReclaim[r][0], typeH: toReclaim[r][1] });
                     }
@@ -856,6 +1060,7 @@ mergeInto(LibraryManager.library, {
                     // A watched wrapper re-entering C: re-track it so the
                     // outermost pop unbinds it again (else it re-pins).
                     if (this.demoted.delete(obj.__wasthon_ptr__)) {
+                        this.demotedType.delete(obj.__wasthon_ptr__);
                         this._bornTrack(obj.__wasthon_ptr__);
                     }
                 }
@@ -945,6 +1150,7 @@ mergeInto(LibraryManager.library, {
                     var w = wr.deref();
                     if (w !== undefined) {
                         this.demoted.delete(handle);
+                        this.demotedType.delete(handle);
                         this.handles.set(handle, w);
                         this._bornTrack(handle);
                         return w;
