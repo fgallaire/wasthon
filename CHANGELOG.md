@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_GenericGetDict` reads the instance dict directly**
+  (`src/wasthon.js`). It fetched `__dict__` via `$getattr(o, '__dict__')`,
+  which resolves through the type's getset table — on a pybind11 type the
+  getter behind that entry is `PyObject_GenericGetDict` itself — so the
+  first `__dict__` read on a pybind11 ScriptMethod recursed until the JS
+  stack blew ("too much recursion" out of `functools.update_wrapper` inside
+  `torch.jit.script`). Now it reads Brython's dict slot itself
+  (`init_dict`/`get_dict`), which is what the generic getter means. (+0
+  alone; unblocks TorchScript module compilation, pairs with the
+  `PyModule_Check` fix for the serialization zipfile-jit test.)
 - **`PyTraceMalloc_Track`/`Untrack` do real per-`(domain, ptr)` size
   bookkeeping while tracing** (`src/wasthon.js`). Both were no-op stubs
   returning `0`, so `tracemalloc` saw zero traced memory and pandas' khash

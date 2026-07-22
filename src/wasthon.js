@@ -8503,7 +8503,16 @@ mergeInto(LibraryManager.library, {
         return 0; },
     PyObject_GenericGetDict__deps: ['$WasthonRT'],
     PyObject_GenericGetDict: function(oH, ctx) { var rt = WasthonRT; var o = rt.unwrap(oH);
-        try { return rt.wrapNewRef(rt.$B.$getattr(o, '__dict__')); }
+        /* read the instance dict DIRECTLY (create on first read, like CPython's
+         * tp_dictoffset) — NOT via $getattr(o,'__dict__'). On an object whose
+         * __dict__ getset IS this very slot (a pybind11 ScriptMethod), $getattr
+         * re-enters this getter and recurses to a stack overflow — hit by
+         * functools.update_wrapper reading script_method.__dict__ in
+         * torch.jit.script. */
+        try {
+            if (o[rt.$B.DICT] === undefined) rt.$B.init_dict(o);
+            return rt.wrapNewRef(rt.$B.get_dict(o));
+        }
         catch (e) { rt.forwardError(e, rt._b_.AttributeError); return 0; } },
     /* PyObject_Init(op, type) — op is a freshly-malloc'd struct ptr (e.g.
        numpy's PyArray_IterNew mallocs a PyArrayIterObject then PyObject_Inits
