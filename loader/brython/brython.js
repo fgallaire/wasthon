@@ -2125,8 +2125,18 @@ $B.RAISE(_b_.TypeError,"unsupported operand type(s) "+
 return same_res}
 if(_b_.issubclass(y_type,x_type)){
 var reflected_left=$B.$getattr(x_type,rop,false),reflected_right=$B.$getattr(y_type,rop,false)
-if(reflected_right && reflected_left &&
-reflected_right !==reflected_left){return $B.$call(reflected_right,y,x)}}
+// wasthon: CPython tries the right operand's reflected op first when its
+// type is a subclass that OVERRIDES it — which includes the case where the
+// base has no reflected op at all (tuple has no __radd__, torch.Size adds
+// one). The old `reflected_left &&` required the base to have it too, so
+// `() + torch.Size(...)` never reached Size.__radd__ and stayed a tuple.
+// But if that reflected op returns NotImplemented, fall through to the
+// normal resolution instead of returning it — CPython does (numpy: chararray
+// has __rmod__ yet `object() % chararray` must raise TypeError; np.bytes_ has
+// __radd__ yet `b'x' + np.bytes_(...)` must use bytes.__add__).
+if(reflected_right &&
+reflected_right !==reflected_left){var _rres=$B.$call(reflected_right,y,x)
+if(_rres!==_b_.NotImplemented){return _rres}}}
 if(op=='__mul__'){if(x_type.$is_sequence && $B.$isinstance(y,[_b_.float,_b_.complex])){$B.RAISE(_b_.TypeError,"can't multiply sequence by "+
 `non-int of type '${$B.class_name(y)}'`)}
 if(y_type.$is_sequence && $B.$isinstance(x,[_b_.float,_b_.complex])){$B.RAISE(_b_.TypeError,"can't multiply sequence by "+
@@ -2501,9 +2511,13 @@ object_funcs.__sizeof__=function(self){
 // BRYTHON_FIX (wasthon): CPython's object.__sizeof__ is
 // _PyObject_SIZE(Py_TYPE(self)). For a wasthon C instance the wasm struct
 // basicsize lives on the class (spec value; add the ob_type pointer the
-// bridge keeps JS-side). Non-wasthon objects keep the old behaviour.
+// bridge keeps JS-side). Otherwise return the bare object header size, not
+// undefined: super().__sizeof__() feeds arithmetic (torch storage's
+// __sizeof__ = super().__sizeof__() + nbytes()), and undefined crashed with
+// "ob_type of undefined" the moment it hit the +.
 var cls=$B.get_class(self)
 if(cls&&cls.__wasthon_basicsize__>0){return cls.__wasthon_basicsize__+4}
+return 16
 }
 object_funcs.__subclasshook__=function(self){return _b_.NotImplemented}
 _b_.object.functions_or_methods=["__new__"]
@@ -2521,8 +2535,8 @@ if(test){console.log('class constructor',class_name,'dict',dict)
 console.log('metaclass',metaclass)}
 if(metaclass.tp_mro===undefined){console.log('no mro in metaclass',metaclass)}
 for(var base of bases){if(base.tp_flags !==undefined &&
-!(base.tp_flags & TPFLAGS.BASETYPE)){$B.RAISE(_b_.TypeError,`type '${$B.$getattr(base, '__qualname__')}' `+
-`is not an acceptable base type`)}}
+!(base.tp_flags & TPFLAGS.BASETYPE)){var _bnm=$B.$getattr(base,'__name__'),_bn=(base.__module__ && base.__module__!=='builtins')?base.__module__+'.'+_bnm:_bnm
+$B.RAISE(_b_.TypeError,`type '${_bn}' is not an acceptable base type`)}}
 delete extra_kwargs.metaclass
 if($B.str_dict_get(dict,'__qualname__',$B.NULL)===$B.NULL){var stack=[]
 var frame_obj=$B.frame_obj.prev
@@ -2604,7 +2618,8 @@ var n=bases.length
 var base,winner,candidate
 for(let base_i of bases){if(! $B.is_type(base_i)){$B.RAISE(_b_.TypeError,"bases must be types")}
 if(base_i.tp_flags !==undefined &&
-!(base_i.tp_flags & TPFLAGS.BASETYPE)){$B.RAISE(_b_.TypeError,`type '${base.__name__}' is not an acceptable base type`)}
+!(base_i.tp_flags & TPFLAGS.BASETYPE)){var _bnm=$B.$getattr(base_i,'__name__'),_bn=(base_i.__module__ && base_i.__module__!=='builtins')?base_i.__module__+'.'+_bnm:_bnm
+$B.RAISE(_b_.TypeError,`type '${_bn}' is not an acceptable base type`)}
 candidate=solid_base(base_i)
 if(test){console.log('base_i',base_i,'candidate',candidate,'winner',winner,'base',base)}
 if(winner==undefined){winner=candidate
@@ -4795,17 +4810,40 @@ $B.$delete=function(name,locals_id,inum){
 function del(obj){if($B.get_class(obj)===$B.generator){
 obj.js_gen.return()}
 var del_method=$B.search_in_mro($B.get_class(obj),'__del__')
-if(del_method){$B.$call(del_method,obj)}}
+if(del_method){
+// wasthon: `del name` only UNBINDS in CPython - __del__ runs when the last
+// reference goes, never while a container still holds the object. With no
+// refcount here the bridge answers from reachability; absent (plain Brython)
+// the old unconditional call stands.
+var _wsf=$B.$wasthon_should_finalize
+if(_wsf && !_wsf(obj)){return}
+$B.$call(del_method,obj)
+// and it is gone now, so what IT held died with it - same cascade as the
+// branch below, which only ever ran for objects without a __del__ of their
+// own. CPython does both, in this order: __del__ first, then the references
+// the object was holding are released.
+var _wau0=$B.$wasthon_after_unbind
+if(_wau0){_wau0(obj)}
+return}
+// no __del__ of its own: if THIS object just died, what it held died with
+// it (CPython cascades the decrefs) - let the bridge drain what that frees
+var _wau=$B.$wasthon_after_unbind
+if(_wau){_wau(obj)}}
 var found=false
 if(locals_id==='local'){var frame=$B.frame_obj.frame
 if(frame[1].hasOwnProperty(name)){found=true
-del(frame[1][name])
-delete frame[1][name]}}else if(locals_id==='global'){var frame=$B.frame_obj.frame
+// unbind BEFORE finalizing (CPython drops the name, then the reference):
+// the reachability answer must not see the binding being deleted
+var _o=frame[1][name]
+delete frame[1][name]
+del(_o)}}else if(locals_id==='global'){var frame=$B.frame_obj.frame
 if(frame[3].hasOwnProperty(name)){found=true
-del(frame[3][name])
-delete frame[3][name]}}else if(locals_id !==null && locals_id[name]!==undefined){found=true
-del(locals_id[name])
-delete locals_id[name]}
+var _o=frame[3][name]
+delete frame[3][name]
+del(_o)}}else if(locals_id !==null && locals_id[name]!==undefined){found=true
+var _o=locals_id[name]
+delete locals_id[name]
+del(_o)}
 if(! found){$B.set_inum(inum)
 if(locals_id=='local'){$B.RAISE(_b_.UnboundLocalError,`cannot access local variable '${name}' `+
 'where it is not associated with a value')}else{throw $B.name_error(name)}}}
@@ -4924,7 +4962,8 @@ $B.$getattr=function(obj,attr,_default){
 var test=false 
 if(test){console.log('$getattr',obj,attr)}
 var res
-if(obj===undefined ||obj===null){console.log('getting attribute',attr)
+if(obj===undefined ||obj===null){
+if(_default!==undefined){return _default}
 $B.RAISE_ATTRIBUTE_ERROR("Javascript object '"+obj+
 "' has no attribute",obj,attr)}
 var rawname=attr
@@ -6100,7 +6139,8 @@ frame_funcs.f_generator_get=function(self){}
 frame_funcs.f_generator_set=_b_.None
 frame_funcs.f_globals_get=function(self){if(self.f_globals){return self.f_globals}else if(self.f_locals && self[1]==self[3]){return self.f_globals=self.f_locals}else{return self.f_globals=$B.obj_dict(self[3])}}
 frame_funcs.f_globals_set=_b_.None
-frame_funcs.f_lasti_get=function(self){return 0}
+frame_funcs.f_lasti_get=function(self){// no bytecode instruction index here: a fabricated 0 makes inspect._get_code_position read positions[0] -- the frame's FIRST recorded position -- and getframeinfo then overrides the correct f_lineno with it. -1 is CPython's 'unavailable', which _get_code_position answers with (None,)*4 so f_lineno stands (same idiom as tb_lasti).
+return -1}
 frame_funcs.f_lasti_set=_b_.None
 frame_funcs.f_lineno_get=function(self){return self.$lineno}
 frame_funcs.f_lineno_set=function(self,value){$B.RAISE(_b_.ValueError,'f_lineno can only be set in a trace function')}
@@ -10504,6 +10544,9 @@ if(fmt.type=="%"){value*=100}
 if(fmt.type=="e"){let res=value.toExponential(fmt.precision),exp=parseInt(res.substr(res.search("e")+1))
 if(Math.abs(exp)< 10){res=res.substr(0,res.length-1)+"0"+
 res.charAt(res.length-1)}
+// JS toExponential canonicalizes -0 to "0"; CPython keeps the sign
+// (the fmt.z handling in $format strips it only when z is set).
+if(Object.is(value,-0)){res='-'+res}
 return res}
 var res
 if(fmt.precision !==undefined){
@@ -14805,12 +14848,24 @@ $B.$getattr($.category,"__name__"):_b_.None}
 )}
 modules._warnings={_acquire_lock:function(){},_defaultaction:"default",_filters_mutated:function(){},_filters_mutated_lock_held:function(){},_onceregistry:$B.empty_dict(),_release_lock:function(){},_warnings_context:{},filters:$B.$list([$B.fast_tuple(['default',_b_.None,_b_.DeprecationWarning,'__main__',0]),$B.fast_tuple(['ignore',_b_.None,_b_.DeprecationWarning,_b_.None,0]),$B.fast_tuple(['ignore',_b_.None,_b_.PendingDeprecationWarning,_b_.None,0]),$B.fast_tuple(['ignore',_b_.None,_b_.ImportWarning,_b_.None,0]),$B.fast_tuple(['ignore',_b_.None,_b_.ResourceWarning,_b_.None,0])
 ]),warn:function(){
+/* This fast path never walked the filter list -- it only special-cased
+   filters[0] being 'error' -- so filterwarnings("ignore", category=X) and
+   simplefilter("ignore") were inert and every warning was shown/recorded.
+   warnings.py is a facade over _py_warnings, which carries CPython's complete
+   warn/warn_explicit (filters, actions, __warningregistry__); delegate to it
+   as soon as it is importable. The built-in path stays for the compile-time
+   SyntaxWarning, which $B.warn raises with its own filename/lineno before the
+   stdlib is up and which has no frame to resolve. */
+var _first=arguments[0]
+if($B.imported._py_warnings && $B.imported.warnings &&
+   !(_first !== undefined && $B.$isinstance(_first,_b_.SyntaxWarning))){
+return $B.$call.apply(null,[$B.module_getattr($B.imported._py_warnings,'warn')].concat(Array.prototype.slice.call(arguments)))}
 var $=$B.args('warn',5,{message:null,category:null,stacklevel:null,source:null,skip_file_prefixes:null},arguments,{category:_b_.UserWarning,stacklevel:1,source:_b_.None,skip_file_prefixes:$B.fast_tuple([])})
 var message=$.message,category=$.category,stacklevel=$.stacklevel
 if($B.$isinstance(message,_b_.Warning)){category=$B.get_class(message)}else{message=$B.$call(category,message)}
 var filters
 if($B.imported.warnings){filters=$B.module_getattr($B.imported.warnings,'filters')}else{filters=$B.module_getattr(modules._warnings,'filters')}
-if(filters[0][0]=='error'){if($B.$isinstance(message,_b_.SyntaxWarning)){var syntax_error=$B.EXC(_b_.SyntaxError,message.args[0])
+if(filters.length && filters[0][0]=='error'){if($B.$isinstance(message,_b_.SyntaxWarning)){var syntax_error=$B.EXC(_b_.SyntaxError,message.args[0])
 syntax_error.args[1]=[message.filename,message.lineno,message.offset,message.line]
 syntax_error.filename=message.filename
 syntax_error.lineno=message.lineno
@@ -14850,7 +14905,11 @@ $B.$call($B.$getattr(stderr,'write'),trace+'\n')
 var flush=$B.$getattr(stderr,'flush',_b_.None)
 if(flush !==_b_.None){$B.$call(flush)}}
 return _b_.None},warn_explicit:function(){
-console.log("warn_explicit",arguments)}}
+/* was a console.log stub: warnings.warn_explicit() silently did nothing.
+   _py_warnings has the real one (see warn above). */
+if($B.imported._py_warnings){
+return $B.$call.apply(null,[$B.module_getattr($B.imported._py_warnings,'warn_explicit')].concat(Array.prototype.slice.call(arguments)))}
+return _b_.None}}
 var MAX_CANDIDATE_ITEMS=750,MOVE_COST=2,CASE_COST=1,SIZE_MAX=65535
 function LEAST_FIVE_BITS(n){return((n)& 31)}
 function levenshtein_distance(a,b,max_cost){

@@ -18,6 +18,251 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+- [x] **`frame.f_lasti` is a fabricated `0`, which makes `inspect.getframeinfo()`
+  report the wrong line** (`frame_funcs.f_lasti_get`). Brython has no bytecode
+  instruction index, and answering `0` is not neutral: `inspect` reads
+  `lineno = frame.f_lineno` (correct) and then *overrides* it with
+  `_get_code_position(frame.f_code, frame.f_lasti)`, which for index 0 returns
+  the frame's FIRST recorded position.
+
+  ```python
+  import inspect
+  def f():
+      return inspect.getframeinfo(inspect.currentframe()).lineno
+  print(f.__code__.co_firstlineno + 1, f())   # CPython: 3 3 — Brython: 3 2
+  ```
+
+  `-1` is CPython's "no instruction index available", and
+  `_get_code_position` already answers it with `(None,)*4` so `f_lineno`
+  stands. Brython uses that same idiom for `tb_lasti` (`_frame.inum ?? -1`).
+  `f_lasti` has exactly one consumer in the shipped stdlib, so the change is
+  contained. **+1 assertion in torch's `test_cpp_warnings_have_python_context`.**
+
+- [x] **`warnings` filters are never applied: `filterwarnings("ignore", …)` and
+  `simplefilter("ignore")` are both inert** (`modules._warnings` in
+  `brython.js`, plus `_check_matched` in `Lib/_py_warnings.py`). The built-in
+  `_warnings.warn` looked at `filters[0][0] == 'error'` and nothing else, then
+  went straight to `_showwarnmsg`; `_warnings.warn_explicit` was a
+  `console.log` stub, so `warnings.warn_explicit()` silently did nothing.
+
+  ```python
+  import warnings
+  with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("ignore")
+      warnings.warn("nope")
+  print(len(w))          # CPython: 0 — Brython: 1
+  ```
+
+  `warnings.py` is a facade over `_py_warnings`, which already carries
+  CPython's complete `warn` / `warn_explicit` (filter walk, actions,
+  `__warningregistry__`); both built-ins now delegate to it. The built-in path
+  stays for the compile-time `SyntaxWarning`, which `$B.warn` raises with its
+  own filename/lineno before the stdlib is up and which has no frame to
+  resolve.
+
+  One coupling has to move with it. `_warnings.filters` ships CPython's
+  default entries, including `('default', None, DeprecationWarning,
+  '__main__', 0)` whose module is a **bare string** — faithful to CPython,
+  whose C `check_matched` documents exactly that case ("an internal plain text
+  default filter must match exactly"). The pure-Python `warn_explicit` calls
+  `mod.match(module)` unconditionally, because in a build without the C
+  accelerator `_setup_defaults()` compiles those patterns. Pairing the two
+  therefore raised `AttributeError: 'str' object has no attribute 'match'` on
+  the first `DeprecationWarning` (caught by `test_re.test_empty_array`, whose
+  `array.array('u')` is deprecated). `_py_warnings` gets CPython's
+  `check_matched` so a plain string matches exactly, which makes the two
+  halves coherent whichever way the filters were built.
+  **CPython sweep unchanged at 4459/4746 0 fail; +2 assertions in torch's
+  `test_cpp_warnings_have_python_context`.**
+
+- [x] **`del name` runs `__del__` even when the object is still referenced, and
+  runs it BEFORE unbinding** (`$B.$delete`). CPython's `del` only removes the
+  binding; `__del__` runs when the LAST reference goes — never while a container
+  still holds the object, and after the name is gone:
+
+  ```python
+  class T:
+      def __del__(self): print("dead")
+  t = T(); box = []; box.append(t)
+  del t          # CPython: silent (box still holds it) — Brython: "dead"
+  del box        # CPython: "dead"
+  ```
+
+  Two changes. (1) Unbind first, then finalize — the object's liveness must be
+  judged with the deleted name already gone, and CPython drops the name before
+  the reference. (2) Consult `$B.$wasthon_should_finalize` when it exists (the
+  same hook pattern `Lib/_weakref.py` already uses for
+  `$wasthon_weakref_track`): with no refcount in Brython, wasthon answers from
+  reachability and defers the call when something still holds the object. A
+  second hook, `$B.$wasthon_after_unbind`, lets it cascade when the deleted
+  object itself just died. Plain Brython (no hooks) keeps today's behaviour
+  exactly. (test_torch's dealloc/lifetime family; bridge side in `CHANGELOG.md`.)
+
+  (3) That cascade hook now also fires **after `__del__` has run**, not only on
+  the branch for objects that have none. An object with its own `__del__` was
+  finalized and then simply dropped, so whatever it held was never released:
+  `s._tracker = t; del s` ran `s.__del__` and left `t` alive forever. CPython
+  does both, in this order — `__del__` first, then the references the object was
+  holding. One guarded line; without the hook nothing changes.
+
+- [x] **`weakref.getweakrefs` returns the OBJECT and `getweakrefcount` returns a
+  hardcoded 1** (`Lib/_weakref.py`). Both are stubs: `getweakrefs(obj)` should
+  return the list of live weak references to `obj` (empty when there are none)
+  and `getweakrefcount` its length. Returning `obj` itself is actively harmful
+  for the documented "does anything hold a weakref to this?" idiom — the caller
+  iterates the result, so it walks the OBJECT's own elements and concludes it is
+  weakly referenced:
+
+  ```python
+  import weakref
+  class C: pass
+  c = C()
+  weakref.getweakrefs(c)      # CPython: []  — Brython: <C object> (itself)
+  weakref.getweakrefcount(c)  # CPython: 0   — Brython: 1
+  r = weakref.ref(c)
+  weakref.getweakrefs(c)[0] is r   # CPython: True — Brython: TypeError
+  ```
+
+  torch's `swap_tensors` guards with
+  `any(not isinstance(wr, _TensorWeakRef) for wr in weakref.getweakrefs(t))`, so
+  every swap of a weakref-free tensor raised "Cannot swap t1 because it has
+  weakref associated with it". Fix: `ref.__init__` records itself in a module
+  registry keyed by `id(obj)` (and `_clear` removes it); `getweakrefs` returns
+  the live refs whose referent **is** `obj` (the identity re-check makes a
+  recycled `id` harmless), `getweakrefcount` returns their count. (test_torch
+  `test_swap_allows_tensor_weakref`; unblocks the weakref guard in
+  `test_swap_basic` / `test_swap_fail_slots`, which then hit unrelated roots.)
+
+- [x] **`weakref.ref.__eq__` assumes the other operand is a ref, and compares
+  dead refs by referent instead of by identity** (`Lib/_weakref.py`, the `ref`
+  class). Brython's implementation is a bare
+  `return self.obj.obj == other.obj.obj`: `other.obj` raises `AttributeError`
+  for anything that is not a `ref`, where CPython's `weakref_richcompare`
+  returns `NotImplemented` (so Python falls back to the reflected op, then to
+  identity). CPython also compares two refs whose referents are already dead by
+  IDENTITY, never by referent.
+
+  ```python
+  import weakref
+  class C: pass
+  class Wrapper:                       # anything holding a ref, e.g. torch's
+      def __init__(self, o):           # TensorWeakRef
+          self.ref = weakref.ref(o)
+  c = C()
+  weakref.ref(c) == Wrapper(c)   # CPython: False — Brython: AttributeError:
+                                 # 'Wrapper' object has no attribute 'obj'
+  ```
+
+  torch's `TensorWeakRef` is exactly such a wrapper, so
+  `tensor_ref == plain_ref` died instead of answering False. Fix: guard with
+  `isinstance(other, ref)` → `NotImplemented`, and return `self is other` when
+  either referent is dead. (test_torch `test_tensor_weakref_bc_behavior`.)
+
+- [x] **`a + b` skips the right operand's reflected op when the base lacks
+  it** (`rich_op1`, the `issubclass(y_type, x_type)` branch). CPython tries
+  `type(b).__radd__(b, a)` first when `type(b)` is a subclass of `type(a)`
+  that OVERRIDES the reflected op — which includes a subclass ADDING one the
+  base doesn't have. Brython's guard was `reflected_right && reflected_left &&
+  reflected_right !== reflected_left`, requiring the base to have it too:
+
+  ```python
+  class S(tuple):
+      def __radd__(self, other): return S(other + tuple(self))
+  type(() + S([1, 2]))   # CPython: S — Brython: tuple (S.__radd__ skipped)
+  ```
+
+  `tuple` has no `__radd__`, so `() + torch.Size(...)` never reached
+  `Size.__radd__` and stayed a plain tuple. Fix, two parts: (1) drop the
+  `reflected_left &&` requirement so `reflected_right && reflected_right !==
+  reflected_left` fires (a `false` base op differs from a real subclass op);
+  (2) if that reflected op returns `NotImplemented`, FALL THROUGH to the normal
+  resolution instead of returning it — CPython does. Part (2) is required
+  because the branch also catches `object() % chararray` (every type is a
+  subclass of `object`): numpy's `chararray` HAS `__rmod__` but returns
+  `NotImplemented` for a non-string left operand, and `np.bytes_` HAS
+  `__radd__` but returns `NotImplemented`, so without the fall-through
+  `object() % A` swallowed the `TypeError` and `b'x' + np.bytes_(...)` returned
+  `NotImplemented` instead of using `bytes.__add__`.
+
+  ```python
+  object() % np.char.array('abc')     # CPython & fixed Brython: TypeError
+  b'def' + np.bytes_('abc')           # CPython & fixed Brython: b'defabc'
+  ```
+
+  (test_torch `test_Size`; numpy `test_defchararray::test_rmod`,
+  `test_scalarinherit::test_char_radd`. CPython sweep 4459/4746 unchanged.)
+
+- [x] **`'{:e}'.format(-0.0)` drops the negative-zero sign** (`preformat`,
+  the float `e`/`E` branch). It builds the string with
+  `value.toExponential(precision)`, and JS canonicalizes `-0` to `"0"` there,
+  so the sign is lost. The `%`-path (`'%e' % -0.0`) keeps it, and the
+  `fmt.z` handling in `float.$format` even assumes `preformat` returns the
+  sign (it strips it only when `z` is set) — so both the default output was
+  wrong and `z` was a no-op.
+
+  ```python
+  '{:.4e}'.format(-0.0)   # CPython: '-0.0000e+00' — Brython: '0.0000e+00'
+  '%e' % -0.0             # '-0.000000e+00' (this path was already correct)
+  ```
+
+  Fix: after the `toExponential` build, `if (Object.is(value, -0)) res = '-' + res`.
+  (test_torch `test_print` — a complex tensor whose real part is `-0.0`
+  prints `-0.0000e+00`. CPython sweep 4459/4746 unchanged.)
+
+- [x] **"type 'X' is not an acceptable base type" names the type wrong**
+  (`$class_constructor` and `best_base`). Two sites: `$class_constructor`
+  interpolated `$B.$getattr(base, '__qualname__')` and `best_base` used
+  `base.__name__` on the wrong loop variable (`base`, not `base_i`) as a raw
+  JS property (`undefined` for wasthon C types whose `__name__` is a getset).
+  CPython uses the type's `tp_name`, which is module-qualified for a C type:
+  `torch.FloatTensor`, not `Tensor`/`undefined`.
+
+  ```python
+  class S(torch.FloatTensor): pass
+  # CPython: TypeError: type 'torch.FloatTensor' is not an acceptable base type
+  # Brython: ...type 'Tensor'...  (or 'torch.undefined')
+  ```
+
+  Fix: read `$B.$getattr(base, '__name__')` and prefix `__module__` unless it
+  is `builtins` (so `bool` stays `bool`, `torch.FloatTensor` becomes dotted).
+  (test_torch `test_subclass_tensors`. CPython sweep 4459/4746 unchanged.)
+
+- [x] **`object.__sizeof__` returns `undefined` for any non-wasthon object**
+  (`object_funcs.__sizeof__`, the `object` builtin). CPython's
+  `object.__sizeof__(self)` is `_PyObject_SIZE(Py_TYPE(self))` — always an
+  int. Brython's version only returned a value for a wasthon C instance
+  (with a `__wasthon_basicsize__`) and fell off the end otherwise, yielding
+  `undefined`. Any `super().__sizeof__()` on a plain Python object then fed
+  `undefined` into arithmetic and crashed the moment it was used:
+
+  ```python
+  class S:
+      def __sizeof__(self):
+          return super().__sizeof__() + 40   # torch.storage.TypedStorage does this
+  S().__sizeof__()   # CPython: 56 — Brython: "can't access property ob_type of undefined"
+  ```
+
+  Fix: return the bare object header size (16) when the class carries no
+  wasthon basicsize. (test_torch `test_sizeof`; the header constant cancels
+  in the suite's size-delta assertions. CPython sweep 4459/4746 unchanged.)
+
+- [x] **`_warnings.warn` crashes on an empty `filters` list** (the
+  `_warnings` builtin module, `warn`). It reads `filters[0][0] == 'error'`
+  without guarding an empty list, so after `warnings.resetwarnings()` (which
+  sets `filters = []`) the next warning dies on `filters[0] is undefined`:
+
+  ```python
+  import warnings
+  with warnings.catch_warnings(record=True) as w:
+      warnings.resetwarnings()
+      warnings.warn("x")          # CPython: recorded — Brython: filters[0] undefined
+  ```
+
+  Fix: `if (filters.length && filters[0][0] == 'error')`. With no filters the
+  warning proceeds to `_showwarnmsg` and is recorded, as CPython's default
+  action does. (test_torch `test_typed_storage_deprecation_warning`. CPython
+  sweep 4459/4746 unchanged.)
+
 - [x] **`memoryview` ignores `format`/`itemsize` for every standard format
   except a hardcoded `"I"`** (`www/src/py_memoryview.js` — `mp_subscript`,
   `sq_ass_item`, `tp_iter`, `tolist`, `cast`). Element access read raw
