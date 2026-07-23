@@ -5993,14 +5993,29 @@ mergeInto(LibraryManager.library, {
                         throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);
                     }
                     var inst = rt.unwrapResult(resultH);
-                    if (inst && isSubclass) {
-                        inst.ob_type = brythonCls; inst.__class__ = brythonCls;
-                        /* init_dict only when the instance has none yet:
-                           it unconditionally installs a fresh empty dict,
-                           which wiped attributes the C tp_new already set
-                           through __array_finalize__ (np.matrix._getitem). */
-                        if (inst[rt.$B.DICT] === undefined &&
-                                rt.$B.get_from_dict(brythonCls, '__slots__', rt.$B.NULL) === rt.$B.NULL) rt.$B.init_dict(inst);
+                    if (inst) {
+                        /* Re-stamp to the constructed class when the C tp_new
+                           returned a BASE-typed (or bare) instance that isn't
+                           already it — numpy's array_new returns an ndarray to
+                           finalize as np.matrix; torch.Size's THPSize delegates
+                           to tuple and comes back a plain tuple. When it
+                           returned a FOREIGN type (Variable's
+                           _LegacyVariableBase makes a Tensor, not in Size/
+                           Variable's mro), CPython keeps that type: don't
+                           re-stamp, or the Tensor became a method-less shell.
+                           Applies to a direct call too (Size([...])), not just
+                           the subclass path. */
+                        var it = inst.ob_type;
+                        var mro = brythonCls.tp_mro || brythonCls.__mro__ || [];
+                        if (it !== brythonCls && (it === undefined || mro.indexOf(it) >= 0)) {
+                            inst.ob_type = brythonCls; inst.__class__ = brythonCls;
+                            /* init_dict only when the instance has none yet:
+                               it unconditionally installs a fresh empty dict,
+                               which wiped attributes the C tp_new already set
+                               through __array_finalize__ (np.matrix._getitem). */
+                            if (inst[rt.$B.DICT] === undefined &&
+                                    rt.$B.get_from_dict(brythonCls, '__slots__', rt.$B.NULL) === rt.$B.NULL) rt.$B.init_dict(inst);
+                        }
                     }
                     return inst;
                 });
