@@ -11679,8 +11679,20 @@ mergeInto(LibraryManager.library, {
         // a user value of True bound or returned via sqlite3 (PyLong_AsLong-
         // LongAndOverflow in _sqlite/util.c) became 0 instead of 1.
         var n = rt.coerceInt(obj);
-        var bi = (n === undefined) ? 0n :
-                 (typeof n === 'bigint') ? n : BigInt(Math.trunc(n));
+        if (n === undefined) {
+            /* Not an integer at all: CPython raises TypeError and returns -1
+             * (overflow stays 0), and callers test exactly that pair —
+             * torch's THPUtils_unpackLong does
+             * `if (value == -1 && PyErr_Occurred()) throw`. Returning a silent
+             * 0 made every bad value store as zero instead of raising:
+             * `int_tensor.apply_(lambda k: "str")` filled the tensor with 0s
+             * (the float path already raised through PyFloat_AsDouble). */
+            rt.setError(rt.wrap(rt._b_.TypeError),
+                "'" + rt.$B.class_name(obj) + "' object cannot be interpreted as an integer");
+            if (overflowPtr) HEAP32[overflowPtr >> 2] = 0;
+            return -1n;
+        }
+        var bi = (typeof n === 'bigint') ? n : BigInt(Math.trunc(n));
         var max = 9223372036854775807n, min = -9223372036854775808n;
         if (bi > max) {
             if (overflowPtr) HEAP32[overflowPtr >> 2] = 1;

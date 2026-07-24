@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyLong_AsLongLongAndOverflow` returned a silent 0 for a non-integer**
+  (`src/wasthon.js`). When the coercion failed the bridge returned `0n` with
+  `*overflow = 0` and no exception set, where CPython returns -1 AND raises
+  TypeError. Callers test exactly that pair — torch's `THPUtils_unpackLong` does
+  `if (value == -1 && PyErr_Occurred()) throw` — so a bad value was stored as
+  zero instead of raising: `int_tensor.apply_(lambda k: "str")` filled the
+  tensor with 0s and returned normally (the float path already raised through
+  `PyFloat_AsDouble`, and the 32-bit twin `PyLong_AsLongAndOverflow` already had
+  the guard). **+1 test_torch (test_apply).**
+
 - **A `_malloc`'d pointer cached on a shared Brython object is heap-local:
   `PySequence_Fast_ITEMS` reused one module's pointer inside another
   module's smaller heap** (`src/wasthon.js`). `test_advancedindex_cpu_float64`
