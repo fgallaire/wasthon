@@ -179,6 +179,32 @@ module's `.mjs` at link time**. Consequences:
 `PyType_Type`, …); `wasthon_init()` must run once per module instance to
 populate them via JS accessors before any ported code executes.
 
+## Co-resident modules: pointers are heap-local
+
+A page can load several extension modules at once — the brytorch dashboard
+runs torch (`npth`) and NumBry numpy (`nprnd`) side by side. Each is a
+separate Emscripten module with its **own linear memory and its own
+`_malloc`**; `wasthon.js` is inlined into each, so a bridge call runs against
+the *calling* module's heap. What is shared across modules is the JS side:
+the `WasthonRT` handle map and the Brython objects themselves. What is **not**
+shared is linear memory — **a raw pointer is only valid in the heap that
+allocated it**, and the heaps can differ wildly in size (torch's reaches
+~1.6 GB, numpy's stays tens of MB).
+
+The hazard this creates: any bridge function that caches a `_malloc`'d
+pointer **on a Brython object** (for reuse across calls) must key that cache
+by the owning module, or a second module will read the first's pointer into
+its own, smaller heap and run off the end. `PySequence_Fast_ITEMS` hit
+exactly this — it caches its items buffer on the shared sequence object (so
+pybind11's list iterator gets one stable pointer); a list indexed first by
+torch then by numpy reused torch's large-heap pointer inside numpy's small
+heap, an out-of-bounds read numpy reported as `index out of bounds`. Every
+single-heap page (the numpy/scipy/pandas dashboards) is immune because the
+cached reuse is always in-bounds; only two co-resident, differently-sized
+heaps open the hole. The fix tags the slot with its module (`_malloc`
+identity) and reuses only within it (`CHANGELOG.md`). **Rule of thumb: a
+pointer cached on a shared object needs a module tag.**
+
 ## Beyond the stdlib: Cython and pybind11
 
 The bridge surface above carries 25 stdlib modules. Two support layers

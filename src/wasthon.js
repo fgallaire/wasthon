@@ -6656,6 +6656,18 @@ mergeInto(LibraryManager.library, {
         if (seq === null) return 0;
         try {
             var n = rt._b_.len(seq) | 0;
+            /* Wrap every item FIRST, into a plain JS array. $getitem / wrap can
+             * run arbitrary Python and allocate, which under -sALLOW_MEMORY_GROWTH
+             * grows the wasm heap and DETACHES the HEAP32 typed view. Doing it
+             * inline in the store loop below is a trap: `HEAP32[idx] = rhs`
+             * evaluates the HEAP32 object reference BEFORE evaluating rhs, so if
+             * rhs grows the heap the store lands in the now-detached buffer (a
+             * silent no-op) and objects[i] keeps its uninitialised malloc value —
+             * numpy then dereferences that garbage pointer, "index out of bounds"
+             * (the advancedindex / reductions OOB). Materialise the handles up
+             * front so no allocation happens between the malloc and the stores. */
+            var vals = new Array(n);
+            for (var i = 0; i < n; i++) vals[i] = rt.wrap(rt.$B.$getitem(seq, i)) | 0;
             /* The pointer must be STABLE across calls on the same sequence.
              * CPython hands back the sequence's own storage, so pybind's
              * tuple/list iterator — which calls this once for begin() and
@@ -6667,21 +6679,35 @@ mergeInto(LibraryManager.library, {
              * torch.ops.* call died that way ("takes 2 positional argument(s)
              * but 2 was/were given", a phantom trailing dict). Keep one
              * buffer per sequence, refilled in place; realloc only when the
-             * length changes. */
+             * length changes.
+             *
+             * The cache lives on the SHARED Brython object, but the malloc'd
+             * pointer belongs to ONE wasm heap: npth (torch) and nprnd (numpy)
+             * are separate modules with separate memories and separate mallocs.
+             * A list flowing through both (torch reads `t[idx]`, then numpy
+             * reads `npt[idx]` with the SAME index list) would otherwise reuse
+             * npth's pointer inside nprnd's smaller heap — a stray cross-heap
+             * address numpy dereferences out of bounds ("index out of bounds",
+             * the advancedindex / reductions OOB). Tag the slot with its owning
+             * module (each module's `_malloc` is a distinct function object,
+             * stable across heap growth) and only reuse it in that module. */
             var slot = seq.__wasthon_fast_items__;
             var ptr;
-            if (slot !== undefined && slot.n === n) {
+            if (slot !== undefined && slot.n === n && slot.owner === _malloc) {
                 ptr = slot.ptr;
             } else {
                 ptr = _malloc(Math.max(1, n) * 4);
                 try {
                     Object.defineProperty(seq, '__wasthon_fast_items__', {
-                        value: { ptr: ptr, n: n },
+                        value: { ptr: ptr, n: n, owner: _malloc },
                         writable: true, configurable: true, enumerable: false,
                     });
                 } catch (e) { /* frozen/primitive: fall back to per-call */ }
             }
-            for (var i = 0; i < n; i++) HEAP32[(ptr >> 2) + i] = rt.wrap(rt.$B.$getitem(seq, i));
+            /* Re-read HEAP32 AFTER the malloc (growth there may have detached the
+             * old view) and store with no allocation in between. */
+            var H = HEAP32, base = ptr >> 2;
+            for (var j = 0; j < n; j++) H[base + j] = vals[j];
             return ptr;   /* array of borrowed handles */
         } catch (e) { return 0; }
     },

@@ -7,6 +7,39 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A `_malloc`'d pointer cached on a shared Brython object is heap-local:
+  `PySequence_Fast_ITEMS` reused one module's pointer inside another
+  module's smaller heap** (`src/wasthon.js`). `test_advancedindex_cpu_float64`
+  trapped with a raw wasm `index out of bounds` (no Python traceback) — only
+  on the brytorch dashboard, flaky and layout-dependent, never on the
+  single-module numpy/scipy/pandas pages. `PySequence_Fast_ITEMS` caches the
+  malloc'd items array **on the sequence object itself** (`__wasthon_fast_items__`,
+  keyed by length) so pybind11's list iterator sees a stable pointer for its
+  begin()/end() comparison. But brytorch is the first page with **two
+  co-resident extension heaps** — torch (`npth`, ~1.6 GB high-water) and
+  NumBry numpy (`nprnd`, ~18 MB) are separate Emscripten modules with separate
+  linear memories and separate `_malloc`s, while the Brython objects (and the
+  cache stored on them) are **shared**. The test comparison feeds the *same*
+  index list to both engines: torch's `PySequence_Fast_ITEMS` caches its
+  high pointer (valid in npth's large heap) on the list, then numpy's call
+  finds `slot.n === n`, reuses that pointer inside nprnd's 18 MB heap, and
+  numpy's `objects[0]` read runs off the end (a JS-instrumented run caught
+  `ptr=0x3853220` cached while `nprnd` heap was 18 808 832 bytes). Every other
+  dashboard is single-heap, so the cached reuse was always in-bounds — the
+  hole only opens when two differently-sized heaps share one object. The slot
+  now carries its owning module (`owner: _malloc`; each module's `_malloc` is
+  a distinct function object, stable across heap growth) and is reused only
+  when `slot.owner === _malloc`, so nprnd rejects npth's slot and re-mallocs
+  in its own heap while the pybind11 begin()/end() invariant still holds
+  within a module; the item handles are also materialised into a JS array
+  *before* the malloc so no heap growth can detach the `HEAP32` view between
+  the malloc and the stores. **+1 test_indexing (advancedindex, now 179/0/18)
+  and +1 test_reductions** — the one reduction comparison that deterministically
+  hit the cross-heap trap (advancedindex's twin). The many others it aborted
+  mid-test now run to completion, surfacing a separate, pre-existing `argminmax`
+  int32/int64 dtype gap underneath (a distinct front). See `docs/BRIDGE.md`
+  "Co-resident modules".
+
 - **The demoted-instance reclaim is bilateral — evidence from both GC
   models, or nothing is freed** (`src/wasthon.js`; read-only census
   helpers live in the embedding module's tree, brytorch
