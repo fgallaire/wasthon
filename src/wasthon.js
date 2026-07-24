@@ -5681,6 +5681,19 @@ mergeInto(LibraryManager.library, {
             var moduleName = dotIdx >= 0 ? fullName.slice(0, dotIdx) : '';
             cls.__module__ = moduleName;
             rt.$B.set_to_dict(cls, '__module__', moduleName);
+            /* __qualname__ in the type's OWN dict. In CPython a class never
+             * stores it there — `type.__qualname__` is a getset, i.e. a DATA
+             * descriptor, so it wins over anything the metatype holds and a
+             * static type answers with the short tp_name. Brython instead keeps
+             * a plain string in each class dict, so a C type whose metaclass is
+             * swapped for a Python one (torch does
+             * `_set_generator_metaclass(CustomClassBaseMeta)`) inherited the
+             * METACLASS's name: torch._C.Generator.__qualname__ read
+             * 'CustomClassBaseMeta' and pickle looked the class up under that
+             * name ("it's not found as torch._C.CustomClassBaseMeta"). Upstream
+             * re-seeds __module__ in tp_dict for the same shadowing reason —
+             * this is the __qualname__ half. */
+            rt.$B.set_to_dict(cls, '__qualname__', shortName);
 
             if (basePtr) {
                 /* A static type whose tp_base is a BOUND BUILTIN struct

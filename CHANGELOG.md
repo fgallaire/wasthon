@@ -7,6 +7,23 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A C type carries `__qualname__` in its own dict, so a swapped metaclass
+  cannot shadow it** (`src/wasthon.js`, `PyType_Ready`). In CPython no class
+  stores `__qualname__` in `tp_dict` — `type.__qualname__` is a getset, i.e. a
+  DATA descriptor, which always beats whatever the metatype holds, and a static
+  type answers with the short `tp_name`. Brython instead keeps a plain string in
+  every class dict, so as soon as a C type's metaclass is replaced by a Python
+  one the metaclass's own name won the lookup: torch calls
+  `torch._C._set_generator_metaclass(CustomClassBaseMeta)` at import, after
+  which `torch._C.Generator.__qualname__` read `'CustomClassBaseMeta'`. Pickle
+  saves a class by qualname, so pickling a `torch.Generator` died with "Can't
+  pickle <class 'torch._C.Generator'>: it's not found as
+  torch._C.CustomClassBaseMeta". `PyType_Ready` now seeds `__qualname__` (the
+  part of `tp_name` after the last dot) next to the `__module__` it already
+  seeds — upstream re-seeds `__module__` in `tp_dict` for exactly this shadowing
+  reason (`THPGenerator_pySetMetaclass`), this is the other half.
+  **+1 test_torch (test_pickle_generator).**
+
 - **`PyLong_AsLongLongAndOverflow` returned a silent 0 for a non-integer**
   (`src/wasthon.js`). When the coercion failed the bridge returned `0n` with
   `*overflow = 0` and no exception set, where CPython returns -1 AND raises
