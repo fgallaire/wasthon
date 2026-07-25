@@ -1026,9 +1026,7 @@ Infrastructure work that pays back on existing modules:
       left `t` alive forever. CPython does both, in that order. **+1
       test_torch**, and the suite got *faster* (373.7 s → 345.2 s) because the
       pending sets now empty sooner. Vendored side in `BRYTHON_FIX.md`.
-      The family is down to **two** failures, and both are the same one:
-      **releasing**. Nothing else in it is unexplained.
-      One prerequisite for that step is in place: `decref` reads `tp_dealloc`
+      One prerequisite for the step below is in place: `decref` reads `tp_dealloc`
       through the **base chain**. It used to read the slot straight off the
       instance's own type, and a Python class over a C type gets a struct minted
       here with no slots of its own where CPython inherits them — so for every
@@ -1051,20 +1049,36 @@ Infrastructure work that pays back on existing modules:
       `_use_count` **3 → 1**, where neither `del` nor `gc.collect()` used to
       move it. **+0 test_torch at no cost** (334.2 s against 332.1 s) — the gate
       is one Map lookup and only a sole-owned C instance buys the walk.
-      **The limit, stated plainly:** it is no longer *seeing*, *deciding*, or
-      the release *mechanism*. What is left is the **trigger** and the
-      remaining excess references. `del` covers a named object; a temporary that
-      dies with its Brython frame has none to hang on, and there is no sound
-      predicate for frame exit — `refcount === 1` is not proof of death (a
-      Brython assignment does not increment) and a walk per function return
-      would be ruinous. That is the wrapper-refcount option, a different order
-      of work. Alongside it, individual paths still take one reference too many:
-      building an `AccumulateGrad` node moves `_use_count` 1 → 3 where CPython
-      goes 1 → 2, which is why `test_swap_basic` still fails. And
-      `gc.get_objects()` still has no honest answer while unnamed objects
-      survive, which is what `test_tensor_cycle_via_slots` asks for.
-      None of this touches the reclaim-scale question either — deciding among
-      hundreds of thousands of candidates at once stays a different problem.
+      `gc.collect()` releases too: `del` covers what dies acyclically, the
+      collector covers what a cycle keeps above zero, which is exactly CPython's
+      split. And `gc.get_objects()` is wired at last — it returns the C
+      instances the bridge holds, where a Brython stub used to return `None`,
+      which is why the cycle tests died on *"'NoneType' object is not iterable"*
+      instead of on what they meant to check. **+0 test_torch**, suite *faster*
+      (320.9 s against 334.2 s), 42 932 objects enumerated in 0.08 s.
+      Releasing also drops the **binding**: once `tp_dealloc` has run the object
+      is logically dead, and while the bridge still held it `gc.get_objects()`
+      truthfully listed something the user had every reason to believe
+      collected. Only the binding — the struct memory stays. Freeing it is what
+      `tp_free` would do, and inheriting that slot onto a minted subclass struct
+      was tried and **reverted**: it hands the bytes back while torch's
+      `pyobj_slot` still holds the raw pointer, and the next load reads garbage
+      (`test_serialization` 175/0 → 72/103, every one `Unknown ScalarType`).
+      Forgetting is safe where freeing is not, and it is what the semantics
+      need. **+1 test_torch.**
+      **The limit, stated plainly:** one failure is left in the family, and it is
+      no longer about *seeing*, *deciding*, or the release *mechanism*. What
+      remains is the **trigger**. `del` covers a named object; the temporaries a
+      torch workload lives on have no name at all — `_get_grad_fn_or_grad_acc`
+      does `t.view_as(t).grad_fn…`, and that view dies with the expression, which
+      is the whole of the last failure. Reachability cannot answer at frame exit
+      (a frame always pops in the middle of an enclosing expression, where the
+      return value and the compiled-JS intermediates are invisible to any walk),
+      so that leaves the wrapper-refcount option — a different order of work.
+      One sharp edge to remember: both the weak-cell and release paths *act* on
+      "unreachable", and the walk is bounded (depth 7, 60 000 nodes). Binding a
+      large `gc.get_objects()` result in a live frame is enough to exhaust it and
+      make a live object look dead. Seen while probing, not in any suite.
       None of this touches the reclaim-scale question — deciding among hundreds
       of thousands of candidates at once is a different problem, and still open.
       Full dossier: brytorch `BUG_torch_dealloc_cluster.md`.

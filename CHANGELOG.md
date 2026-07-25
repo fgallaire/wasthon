@@ -72,6 +72,37 @@ Module ports and the bridge-surface inventory live in `README.md`.
   `PyFloat_AsDouble`, and the 32-bit twin `PyLong_AsLongAndOverflow` already had
   the guard). **+1 test_torch (test_apply).**
 
+- **`gc.collect()` finishes the job for cyclic garbage, and `gc.get_objects()`
+  answers at last** (`src/wasthon.js`). `del` releases what dies acyclically,
+  which is CPython's refcount half; what a cycle keeps above zero dies at a
+  collection, which is the collector's half and was missing — the drain fired
+  `__del__` and stopped there. It now releases too, on the same verdict that
+  licenses firing the finalizer (and firing `__del__` on a live object would be
+  the worse of the two mistakes), in CPython's order: finalize, then free. The
+  release logic moved into one `_release` helper both paths share, so the guards
+  cannot drift apart. `gc.get_objects()` is wired to return the C instances the
+  bridge holds; it was a Brython stub returning `None`, which is why the cycle
+  tests died on *"'NoneType' object is not iterable"* instead of on what they
+  meant to check.
+  The suite also got *faster* — 320.9 s against 334.2 s, since releasing keeps
+  the walks smaller; 42 932 objects enumerated in 0.08 s.
+  Releasing also **drops the binding**: once `tp_dealloc` has run the object is
+  logically dead, and while the bridge still held it `gc.get_objects()`
+  truthfully listed something the user had every reason to believe collected.
+  Only the binding goes — the struct memory stays. Freeing it is what `tp_free`
+  would do, and inheriting that slot onto a minted subclass struct (CPython's
+  `inherit_slots`) was tried and **reverted**: it hands the bytes back while
+  torch's `pyobj_slot` still holds the raw pointer, and the next load reads
+  garbage — `test_serialization` 175/0 → 72/103, every one `RuntimeError:
+  Unknown ScalarType`. Forgetting is safe where freeing is not, and it is what
+  the semantics actually need. **+1 test_torch (2 -> 1 fail, 911/912,
+  `test_tensor_cycle_via_slots`)**.
+  ⚠ One hazard the work surfaced: binding a large `gc.get_objects()` result in
+  a live frame exhausts `_reach`'s 60 000-node budget, and a walk that gives up
+  reports "unreachable" — which on the weak-cell and release paths means
+  *acting*. Seen while probing, not in the suite, but it is the sharp edge of
+  the bounded walk.
+
 - **`del` on a C instance the bridge alone holds RELEASES it** (`src/wasthon.js`)
   — the first place in this whole chapter that *acts* on the C++ side instead of
   deciding. Everything before it is clear-only, which is why the heap figure had

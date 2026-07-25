@@ -1092,6 +1092,57 @@ mergeInto(LibraryManager.library, {
                     } catch (e) { return true; }   /* never break `del` */
                 };
 
+                /* RELEASE — the only thing in this chapter that ACTS on the C++
+                 * side instead of deciding; everything else is clear-only.
+                 * The CALLER owns the death verdict (that is the whole design:
+                 * the question stays narrow and the trigger observed), this
+                 * only checks that releasing is safe:
+                 *   - the bridge is sole owner: refcount 1 means C kept no
+                 *     reference of its own;
+                 *   - a real destructor exists THROUGH THE BASE CHAIN, since
+                 *     without one dropping the handle leaks the struct instead
+                 *     of freeing it;
+                 *   - pybind11 instances are excluded: their registry is walked
+                 *     at teardown and a freed entry asserts (GC doc §4).
+                 * Returns whether it released, for the caller's accounting. */
+                var _release = function(obj) {
+                    var ptr = 0;
+                    try {
+                        var rp = Object.getOwnPropertyDescriptor(obj, '__wasthon_ptr__');
+                        ptr = rp && typeof rp.value === 'number' ? rp.value : 0;
+                    } catch (e) { return false; }
+                    if (!ptr || !_rtDF.refcounts || _rtDF.refcounts.get(ptr) !== 1) return false;
+                    var rd = 0, rw = obj.__wasthon_type__, rg = 16;
+                    while (rw && rg-- > 0) {
+                        rd = HEAP32[(rw + 40) >> 2];
+                        if (rd) break;
+                        rw = HEAP32[(rw + 140) >> 2];      /* tp_base */
+                    }
+                    if (!rd) return false;
+                    var kindFn = (typeof Module !== 'undefined') &&
+                                 Module['_wasthon_census_kind'];
+                    if (kindFn) {
+                        try { if (kindFn(ptr) === 3) return false; }
+                        catch (e) { return false; }
+                    }
+                    try { _rtDF.decref(ptr); } catch (e) { return false; }
+                    /* tp_dealloc has run, so the object is logically dead: its C
+                     * state is torn down and nothing may use it again. The
+                     * BINDING is what must go now — while the bridge still
+                     * holds it, `gc.get_objects()` truthfully lists an object
+                     * the user has every reason to believe collected.
+                     * Only the binding: the struct memory stays. Freeing it is
+                     * what `tp_free` would do, and inheriting that slot onto a
+                     * minted subclass struct was tried and reverted — it hands
+                     * the bytes back while torch's `pyobj_slot` still holds the
+                     * raw pointer, and the next load reads garbage
+                     * (`test_serialization` 175/0 -> 72/103, all "Unknown
+                     * ScalarType"). Forgetting is safe where freeing is not. */
+                    if (_rtDF.handles.get(ptr) === obj) _rtDF.handles.delete(ptr);
+                    return true;
+                };
+                _rtDF._release = _release;
+
                 /* Fire __del__ on every deferred object that has since become
                  * unreachable. This is what CPython's cycle collector does for
                  * the cyclic case, so it is called from gc.collect(). */
@@ -1112,6 +1163,16 @@ mergeInto(LibraryManager.library, {
                             var m = B.search_in_mro(B.get_class(dead[i]), '__del__');
                             if (m) { B.$call(m, dead[i]); n++; }
                         } catch (e) {}
+                        /* …and then it goes. This is the CYCLIC half of the
+                         * collector's job: `del` releases what dies acyclically
+                         * on the spot, and what a cycle kept above zero dies
+                         * here, which is exactly CPython's split. The mark
+                         * above already proved these unreachable from the live
+                         * frames and the C++ edges — the verdict is the same
+                         * one that licenses firing __del__, and firing __del__
+                         * on a live object would be the worse mistake of the
+                         * two. Order matches CPython: finalize, then free. */
+                        try { _release(dead[i]); } catch (e) {}
                     }
                     return n;
                 };
@@ -1281,36 +1342,17 @@ mergeInto(LibraryManager.library, {
                             }
                         }
                         if (rt.pendingDel && rt.pendingDel.size) B.$wasthon_drain_pending();
-                        /* RELEASE — the only place in the whole chapter that
-                         * ACTS on the C++ side instead of deciding. Everything
-                         * above is clear-only; this drops the reference, runs
-                         * the destructor and gives the bytes back.
-                         * It is allowed here and refused at reclaim scale for
-                         * the reason stated throughout: the question is narrow
-                         * ("is THIS one held") and the trigger is OBSERVED (the
-                         * user wrote `del x`), and the walk that answered it
-                         * reads BOTH sides — the earlier attempt at this freed a
-                         * live object precisely because it did not.
-                         * Guards, in order: the bridge must be sole owner
-                         * (refcount 1 — C kept no reference of its own); a real
-                         * destructor must exist through the base chain, since
-                         * without one dropping the handle leaks the struct
-                         * rather than freeing it; and pybind11 instances are
-                         * excluded, their registry being walked at teardown
-                         * where a freed entry asserts. */
-                        if (ptr && rt.refcounts && rt.refcounts.get(ptr) === 1) {
-                            var rd = 0, rw = obj.__wasthon_type__, rg = 16;
-                            while (rw && rg-- > 0) {
-                                rd = HEAP32[(rw + 40) >> 2];
-                                if (rd) break;
-                                rw = HEAP32[(rw + 140) >> 2];   /* tp_base */
-                            }
-                            var kindFn = (typeof Module !== 'undefined') &&
-                                         Module['_wasthon_census_kind'];
-                            var pb = false;
-                            if (kindFn) { try { pb = kindFn(ptr) === 3; } catch (e) { pb = true; } }
-                            if (rd && !pb) { try { rt.decref(ptr); } catch (e) {} }
-                        }
+                        /* RELEASE. The acyclic half of the collector's job: this
+                         * object was just proven unreachable AND acyclic, which
+                         * is precisely when CPython's refcount would hit zero
+                         * and free it on the spot. Cyclic garbage is the drain's
+                         * business instead, at the next gc.collect().
+                         * Allowed here and refused at reclaim scale for the
+                         * reason stated throughout: the question is narrow ("is
+                         * THIS one held") and the trigger is OBSERVED. The
+                         * earlier attempt at this freed a LIVE object because
+                         * its walk could not see C++ edges; this one's can. */
+                        _release(obj);
                     } catch (e) {}
                 };
 
@@ -1337,6 +1379,26 @@ mergeInto(LibraryManager.library, {
                             try { if (B.$wasthon_gc_collect) B.$wasthon_gc_collect(); } catch (e) {}
                             try { if (B.$wasthon_drain_pending) freed = B.$wasthon_drain_pending(true); } catch (e) {}
                             return freed;
+                        });
+                        /* gc.get_objects() — also a stub returning None, which
+                         * is why torch's cycle tests died on "'NoneType' object
+                         * is not iterable" rather than on what they meant to
+                         * check. What this collector tracks is the C instances
+                         * the bridge holds, so that is what it returns: an
+                         * object that has been released is out of `handles` and
+                         * genuinely absent from the answer. Only honest now
+                         * that `del` and the drain actually free — while
+                         * everything was clear-only, the truthful answer would
+                         * have listed objects the user had every reason to
+                         * believe collected. Brython lists ARE JS arrays. */
+                        B.str_dict_set(B.get_dict(_gcmod), 'get_objects', function() {
+                            var out = [];
+                            try {
+                                _rtDF.handles.forEach(function(inst) {
+                                    if (inst && typeof inst === 'object') out.push(inst);
+                                });
+                            } catch (e) {}
+                            return out;
                         });
                     } catch (e) {}
                 };
