@@ -1005,6 +1005,29 @@ Infrastructure work that pays back on existing modules:
       piece. C++ identity through `pyobj_slot` already worked (`del s` then
       `a.untyped_storage()` returns *that* object, `_tracker` intact); only the
       edge was absent. **+5 test_torch**, again at unchanged wall time.
+      Last of the family, weak cells learned to die with their **holder**. They
+      were cleared only for the object whose own name was deleted, and only when
+      the bridge held it alone (`refcount === 1`) — another proxy from the blind
+      days, dropped in favour of the reachability answer. And an object still
+      held when its name went was left alone, correctly, but nothing ever came
+      back to it: the `del` that ends its life is its holder's. Those park in
+      `pendingWeak`, the shape of `pendingDel`, drained by the same cascade.
+      **+2 test_torch**, this one at a real price — **13% suite wall time**,
+      because the gate is no longer a cheap refcount test.
+      One asymmetry to keep in mind on that path: for `pendingDel` a missed
+      referrer only *defers*, which is safe; for a weak cell it *clears*, so a
+      walk that gives up early would kill a live object's cell. The walk is the
+      same one `gc.collect()`'s sweep already uses, and it now reads both sides
+      — but it is bounded (depth 7, 60 000 nodes), and that is where the
+      remaining risk sits.
+      Finally, the cascade fires **after `__del__`** as well, not only for
+      objects that have none: one with its own finalizer used to be finalized
+      and then simply dropped, so `s._tracker = t; del s` ran `s.__del__` and
+      left `t` alive forever. CPython does both, in that order. **+1
+      test_torch**, and the suite got *faster* (373.7 s → 345.2 s) because the
+      pending sets now empty sooner. Vendored side in `BRYTHON_FIX.md`.
+      The family is down to **two** failures, and both are the same one:
+      **releasing**. Nothing else in it is unexplained.
       **The limit, stated plainly:** what remains is no longer about *seeing* or
       *deciding* but about *releasing*. Nothing drops the C++ reference itself —
       a temporary view still pins its base (`_use_count` climbs 2 → 3 → 4 and

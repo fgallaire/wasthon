@@ -819,6 +819,12 @@ mergeInto(LibraryManager.library, {
                  * deleted. Held strongly, exactly as CPython's refcount holds
                  * them; drained when they become unreachable. */
                 _rtDF.pendingDel = new Set();
+                /* Weak-referenced C instances whose name was deleted while
+                 * something still held them. Their cells must stay live, but
+                 * nothing would ever come back to them: the `del` that ends
+                 * their life is the HOLDER's, and that one is judged on the
+                 * holder. Same shape as pendingDel, drained the same way. */
+                _rtDF.pendingWeak = new Set();
                 /* The walls that keep either walk from wandering into the whole
                  * interpreter: the bridge's own strong-ref bookkeeping (it pins
                  * EVERY instance), the module graphs, and the weak cells (a weak
@@ -1153,26 +1159,46 @@ mergeInto(LibraryManager.library, {
                     if (!B.$wasthon_gc_wired) B.$wasthon_wire_gc();
                     /* A C instance can be observed dying even with nothing
                      * deferred: a weakref on it must read None and its callback
-                     * must fire, which is refcount-0 behaviour in CPython. Only
-                     * consider one the bridge alone still holds (refcount 1 = C
-                     * kept no reference of its own). */
+                     * must fire, which is refcount-0 behaviour in CPython.
+                     * This used to also require refcount 1 — "the bridge alone
+                     * holds it, so C kept no reference of its own". That was a
+                     * proxy from the days when the walk could not see C++
+                     * edges, and it is the same kind of blanket the root set
+                     * shed: the reachability test three lines below answers the
+                     * real question, and answers it on both sides now. It cost
+                     * `test_tensor_dead_weak_ref`, where reading the weakref
+                     * (`x = w_x()`) leaves the count at 2 and the cell never
+                     * cleared even though nothing referenced the tensor. */
                     var ptr;
                     try {
                         var d = Object.getOwnPropertyDescriptor(obj, '__wasthon_ptr__');
                         ptr = d && typeof d.value === 'number' ? d.value : 0;
                     } catch (e) { ptr = 0; }
-                    var weakOwner = ptr && rt.weakRegistry && rt.weakRegistry.has(ptr) &&
-                                    rt.refcounts && rt.refcounts.get(ptr) === 1;
-                    if (!weakOwner && (!rt.pendingDel || !rt.pendingDel.size)) return;
+                    var weakHere = !!(ptr && rt.weakRegistry && rt.weakRegistry.has(ptr));
+                    /* Fast path, and it must stay fast: this runs on EVERY
+                     * `del name`. Gating on "any weakref exists anywhere" was
+                     * measured ruinous — one live weakref made every delete in
+                     * the page pay two walks. Only the object's own cells, or
+                     * an actual pending set, buy the work. */
+                    if (!weakHere && (!rt.pendingDel || !rt.pendingDel.size) &&
+                                     (!rt.pendingWeak || !rt.pendingWeak.size)) return;
                     try {
-                        if (_reach(obj)) return;
-                        if (_inCycle(obj)) return;
+                        if (_reach(obj) || _inCycle(obj)) {
+                            /* Still held, so its cells stay live — but its name
+                             * is gone and nothing would ever revisit it. Park
+                             * it, exactly as pendingDel parks a finalizable. */
+                            if (weakHere) rt.pendingWeak.add(obj);
+                            return;
+                        }
                         /* CLEAR-ONLY, never a free: the weak cells go dead (and
                          * their callbacks run) while the struct stays put. The
                          * bytes are the bulk reclaim's job, and freeing here
                          * would re-open exactly the failure mode
                          * GC_BILATERAL_RECLAIM.md §3bis measured. */
-                        if (weakOwner) { try { rt.clearWeakRefs(ptr); } catch (e) {} }
+                        if (weakHere) {
+                            rt.pendingWeak.delete(obj);
+                            try { rt.clearWeakRefs(ptr); } catch (e) {}
+                        }
                         /* The cascade only carries where a refcount would:
                          * what the dying object held dies WITH it, unless that
                          * something sits in a reference cycle — CPython drops
@@ -1181,9 +1207,9 @@ mergeInto(LibraryManager.library, {
                          * measures exactly that step: `z.grad = x` with x in a
                          * cycle, `del z` must NOT finalize x's tracker, the
                          * following gc.collect() must. */
-                        var cyclic = false;
+                        var cyclic = false, outs = [];
                         try {
-                            var outs = [], od = B.DICT ? obj[B.DICT] : undefined;
+                            var od = B.DICT ? obj[B.DICT] : undefined;
                             if (od && typeof od === 'object') {
                                 var on = Object.getOwnPropertyNames(od);
                                 for (var oi = 0; oi < on.length; oi++) {
@@ -1198,7 +1224,33 @@ mergeInto(LibraryManager.library, {
                                 if (ov && typeof ov === 'object' && _inCycle(ov)) cyclic = true;
                             }
                         } catch (e) {}
-                        if (!cyclic && rt.pendingDel && rt.pendingDel.size) B.$wasthon_drain_pending();
+                        if (cyclic) return;
+                        /* The cascade carries the weak cells too. A parked
+                         * object dies when its last holder does, and that death
+                         * is the event we are standing on: `del x` leaves the
+                         * storage alive under the tensor, `del y` is the moment
+                         * it goes (`test_storage_dead_weak_ref`). */
+                        if (rt.pendingWeak && rt.pendingWeak.size) {
+                            var wdead = [];
+                            rt.pendingWeak.forEach(function(o) {
+                                var wd, wp = 0;
+                                try {
+                                    wd = Object.getOwnPropertyDescriptor(o, '__wasthon_ptr__');
+                                    wp = wd && typeof wd.value === 'number' ? wd.value : 0;
+                                } catch (e) {}
+                                /* Already cleared elsewhere (the sweep does it
+                                 * wholesale) — stop tracking it. */
+                                if (!wp || !rt.weakRegistry.has(wp)) { wdead.push([o, 0]); return; }
+                                if (!_reach(o) && !_inCycle(o)) wdead.push([o, wp]);
+                            });
+                            for (var wi = 0; wi < wdead.length; wi++) {
+                                rt.pendingWeak.delete(wdead[wi][0]);
+                                if (wdead[wi][1]) {
+                                    try { rt.clearWeakRefs(wdead[wi][1]); } catch (e) {}
+                                }
+                            }
+                        }
+                        if (rt.pendingDel && rt.pendingDel.size) B.$wasthon_drain_pending();
                     } catch (e) {}
                 };
 

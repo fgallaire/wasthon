@@ -72,6 +72,30 @@ Module ports and the bridge-surface inventory live in `README.md`.
   `PyFloat_AsDouble`, and the 32-bit twin `PyLong_AsLongAndOverflow` already had
   the guard). **+1 test_torch (test_apply).**
 
+- **A weak cell dies with its holder, not only with its own name**
+  (`src/wasthon.js`). Two gaps, both in `$wasthon_after_unbind`. First, clearing
+  a C instance's cells also required `refcount === 1` — "the bridge alone holds
+  it, so C kept no reference of its own". That was a proxy from the days when
+  the walk could not see C++ edges, the same kind of blanket the root set shed;
+  the reachability test two lines below answers the real question and answers it
+  on both sides now. It cost `test_tensor_dead_weak_ref`, where reading the
+  weakref (`x = w_x()`) leaves the count at 2 and the cell never cleared though
+  nothing referenced the tensor. Second, an object whose name went while
+  something still held it was left alone — correctly — and then **nothing ever
+  came back to it**: the `del` that ends its life is its *holder's*, and that one
+  was judged only on the holder. Such objects now park in `pendingWeak`, the
+  exact shape of `pendingDel`, and the cascade that already drains deferred
+  finalizables drains them too. That is `test_storage_dead_weak_ref`: `del x`
+  leaves the storage alive under the tensor, `del y` is the moment it goes.
+  **+2 test_torch (5 -> 3 fails)**, at a **cost of 13% suite wall time**
+  (373.7 s against 330.9 s): more deletes now buy a walk, since the gate is no
+  longer the refcount. CPython sweep 4459/4746 0 fail, numpy 3250/3250.
+  One asymmetry worth stating: for `pendingDel` a missed referrer only defers,
+  which is safe, while for a weak cell it *clears* — so a walk that gave up
+  early would kill a live object's cell. Same walk `gc.collect()`'s sweep uses,
+  and it now reads both sides, but it is bounded (depth 7, 60 000 nodes) and
+  that is where the residual risk sits.
+
 - **A tensor's storage is an edge, and it is the one the dealloc family turns
   on** (`src/wasthon.js`). `a.untyped_storage()` is an accessor, and the wrapper
   it hands back is remembered in the `StorageImpl`'s `pyobj_slot` — nowhere in
