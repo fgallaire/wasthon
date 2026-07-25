@@ -72,6 +72,42 @@ Module ports and the bridge-surface inventory live in `README.md`.
   `PyFloat_AsDouble`, and the 32-bit twin `PyLong_AsLongAndOverflow` already had
   the guard). **+1 test_torch (test_apply).**
 
+- **Reachability learns to read the C++ side, and the root set stops being
+  "everything ever allocated"** (`src/wasthon.js`, `src/wasthon.h`). Two
+  changes that are worth nothing apart — the first, measured on its own, traded
+  one failing assertion for another and scored exactly 0.
+
+  *Seeing the edges.* Three things were silently in the way. `Py_VISIT` was
+  defined as `((void)(op))`, with a comment saying so, so every `tp_traverse`
+  body in every C module compiled and reported nothing; it is now CPython's.
+  A tensor's type struct has no `tp_traverse` of its own — `torch.Tensor` is a
+  *Python* class over `torch._C.TensorBase` and the bridge does not inherit the
+  slot, where CPython does — so `rt.cTraverse` walks `tp_base` until a type
+  states its edges, which is what `subtype_traverse` does. And torch's traverse
+  deliberately does **not** report `grad` (there is a NOTE about it): in CPython
+  that liveness comes from the refcount, not the collector, so tp_traverse alone
+  can never answer the case the suite tests. The edge is read from the C++ state
+  through an optional embedder helper (`wasthon_census_edge`, brytorch),
+  guarded exactly like the existing census lookups.
+
+  *Deciding.* The bilateral half took every instance in `rt.handles` as a root.
+  That map holds each wrapper for its whole life, so a `z` whose last name is
+  gone stayed a root, and with the grad edge added it would have kept its
+  operand alive forever. That blanket only existed **because the walk could not
+  see C++ edges**. Now `_liveCRoots()` marks forward from the live frames,
+  through the Brython graph and the C++ edges, and returns the C instances it
+  actually reaches — computed once per drain, where the old code paid a full
+  walk per deferred object. Two refcount behaviours follow from it: the cascade
+  after `del` no longer carries into a **cycle** (a refcount drops when the
+  holder dies, but a cycle keeps it above zero and CPython defers to the
+  collector), and `$wasthon_should_finalize` defers an unreachable-but-cyclic
+  object instead of finalizing it on the spot. **+3 test_torch (14 -> 11
+  fails)**; CPython sweep 4459/4746 0 fail, numpy 3250/3250.
+
+  This does not touch `GC_BILATERAL_RECLAIM.md` §3bis: deciding among 406 041
+  candidates at reclaim scale is still open. The question answered here is the
+  narrow one — is THIS deferred object still held, given the frames.
+
 - **`Py_TYPE` read the stale half of the dual identity after a `__class__`
   assignment** (`src/wasthon.js`). `torch.utils.swap_tensors(t1, t2)` swaps the
   two objects' `__class__`; afterwards the one Python reports as a plain

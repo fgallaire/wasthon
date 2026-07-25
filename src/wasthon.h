@@ -384,10 +384,21 @@ static inline PyObject *_wasthon_newref(PyObject *op)  { if (op) wasthon_incref(
 } while (0)
 #define Py_XSETREF(op, op2) Py_SETREF(op, op2)
 
-/* Py_VISIT — for tp_traverse cycle walking. No-op until a cycle GC
- * is wired; tp_traverse bodies still compile, their `visit` and `arg`
- * parameters just go unused. */
-#define Py_VISIT(op)        ((void)(op))
+/* Py_VISIT — CPython's, verbatim in effect: report the edge to the caller's
+ * visit(), and propagate a non-zero answer. A tp_traverse body is the only
+ * place a C type states the references it holds, and some of them exist
+ * nowhere else — torch's `z.grad = x` is an accessor over autograd metadata,
+ * invisible to any walk of z's __dict__. The bridge asks for those edges from
+ * `rt.cTraverse` so its reachability answer covers the C++ side too.
+ * (This was a no-op while nothing called tp_traverse; a traverse body must be
+ * COMPILED against the real macro to say anything.) */
+#define Py_VISIT(op)                                                    \
+    do {                                                                \
+        if (op) {                                                       \
+            int _wasthon_vret = visit((PyObject *)(op), arg);           \
+            if (_wasthon_vret) return _wasthon_vret;                    \
+        }                                                               \
+    } while (0)
 
 /* GC tracking macros: no-ops, JS GC handles it */
 #define PyObject_GC_Track(op)    ((void)(op))

@@ -952,14 +952,46 @@ Infrastructure work that pays back on existing modules:
       `fix_weakref_no_leak`, `storage_dealloc`), and `gc.collect()` itself went
       **84 s → 0.0 s** once both walks stopped stepping into the DOM `window`
       that `from browser import window` leaves in the frame globals.
-      **The limit, stated plainly:** the rest of that family
-      (`cycle_via_dict/_slots`, `dead_weak_ref`, the resurrection/zombie pair)
-      hangs on edges this side cannot see. `z.grad = x` is an **accessor** into
-      autograd metadata, not a stored property; torch's own test says so
-      (*"C++ reference should keep the cycle live! This exercises
-      THPVariable_subtype_traverse"*). No JS walk can follow it, and following
-      accessors would run C++ inside a liveness predicate. Closing those needs
-      the C++ half to declare its edges, the way `tp_traverse` does for CPython.
+- [x] The walk can read the **C++ side**, and the root set became the instances
+      it can actually reach. Until then this chapter ended on a limit: the rest
+      of the family (`cycle_via_*`, `dead_weak_ref`, resurrection/zombie) hung
+      on edges the Brython side cannot see — `z.grad = x` is an **accessor**
+      into autograd metadata, not a stored property, and torch's own test says
+      so out loud (*"C++ reference should keep the cycle live!"*).
+      Three things had to give way, and each was a silent no-op rather than a
+      hard problem. `Py_VISIT` was defined as `((void)(op))` — with a comment
+      saying so — so every `tp_traverse` body in every C module compiled and
+      reported nothing. A Python subclass of a C type gets a struct minted here
+      with no traverse slot, where CPython inherits one, so `rt.cTraverse` walks
+      `tp_base` until a type states its edges, exactly as `subtype_traverse`
+      does. And torch's traverse deliberately **skips** `grad` (there is a NOTE
+      about it) because CPython gets that liveness from the refcount, not from
+      the collector — so tp_traverse alone could never answer the case the suite
+      tests; the edge is read from the C++ state through an optional embedder
+      helper, guarded like the census lookups next to it.
+      Seeing the edges is only half of it, and on its own it measured **zero**:
+      it made the deferred objects survive collection, then never let them die.
+      The reason is the root set. The bilateral half took every instance in
+      `rt.handles` — a map that holds each wrapper for its whole life, so an
+      object whose last name was gone stayed a root forever. That blanket only
+      ever existed **because the walk was blind to C++ edges**; with them
+      visible, `_liveCRoots()` marks forward from the live frames, through the
+      Brython graph and the C++ edges, and returns what it actually reaches —
+      once per drain, where the old code paid a full walk per deferred object.
+      Two refcount behaviours fall out of it: the `del` cascade no longer
+      carries into a **cycle** (a refcount drops when the holder dies, but a
+      cycle keeps it above zero and CPython defers to the collector), and `del`
+      itself defers an unreachable-but-**cyclic** object instead of finalizing
+      it on the spot. **+3 test_torch.**
+      **The limit, stated plainly:** what remains is no longer about *seeing* or
+      *deciding* but about *releasing*. `__del__` resurrection semantics are not
+      implemented (the zombie/resurrected tests), and nothing drops the C++
+      reference itself — a temporary view still pins its base
+      (`_use_count` climbs 2 → 3 → 4 and neither `del` nor `gc.collect()` brings
+      it back), which is why `test_swap_basic` fails and why `gc.get_objects()`
+      has no honest answer to give: the objects really are still there.
+      None of this touches the reclaim-scale question — deciding among hundreds
+      of thousands of candidates at once is a different problem, and still open.
       Full dossier: brytorch `BUG_torch_dealloc_cluster.md`.
 - [x] Container-boundary reference discipline + scope-owned `GET_ITEM` buffers
       — the three memory roots behind pickle's "delayed-writer page poison"

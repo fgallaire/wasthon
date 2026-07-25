@@ -230,6 +230,88 @@ mergeInto(LibraryManager.library, {
             finally { this.popScope(); }
         },
 
+        /* ---- The C++ half of reachability: what does this instance hold? ----
+         * A C type declares its outgoing references in tp_traverse, which is
+         * how CPython's collector learns about edges no Python-level walk can
+         * see: torch's `z.grad = x` is an ACCESSOR over autograd metadata, not
+         * a stored attribute, so scanning z's __dict__ finds nothing while the
+         * C++ genuinely holds x. Running tp_traverse with a JS visit callback
+         * turns those edges into ordinary graph edges for the sweep.
+         * Read-only, and monotone in the safe direction: extra edges can only
+         * mark MORE objects live, never free one that is held. */
+        /* The visit callback lives in the wasm table, so creating it grows
+         * that table — do it ONCE, up front. Created lazily from inside the
+         * reachability walk it never came up, and the whole C++ half of the
+         * walk silently answered "no edges". */
+        ensureVisitFp: function() {
+            if (this._visitFp) return this._visitFp;
+            var rt = this;
+            try {
+                rt._visitFp = addFunction(function(op, arg) {
+                    if (op && rt._visitOut) {
+                        try {
+                            var v = rt.unwrap(op);
+                            if (v !== null && v !== undefined) rt._visitOut.push(v);
+                        } catch (e) {}
+                    }
+                    return 0;
+                }, 'iii');
+            } catch (e) {
+                /* addFunction grows the wasm table, which is not up yet at
+                 * runtime-init time; retry on the next call. */
+                rt._visitFp = 0;
+            }
+            return rt._visitFp;
+        },
+
+        cTraverse: function(obj) {
+            if (!obj || typeof obj !== 'object') return null;
+            var ptr = obj.__wasthon_ptr__, tH = obj.__wasthon_type__;
+            if (!ptr || !tH) return null;
+            /* Only this runtime's structs are dereferenceable here (a sibling
+             * wasm's address means nothing in our heap — see wasthon_get_type_of). */
+            if (obj.__wasthon_type_rt__ !== undefined &&
+                    obj.__wasthon_type_rt__ !== _malloc) return null;
+            /* A Python subclass of a C type gets a struct minted here, with no
+             * tp_traverse of its own; CPython inherits the slot instead, and
+             * its subtype_traverse runs the base's. torch.Tensor is exactly
+             * that (a Python class over torch._C.TensorBase), so walk tp_base
+             * until a type states its edges. */
+            var fp = 0, walk = tH, guard = 16;
+            while (walk && guard-- > 0) {
+                fp = HEAP32[(walk + 36) >> 2];
+                if (fp) break;
+                walk = HEAP32[(walk + 140) >> 2];   /* tp_base */
+            }
+            var rt = this, edges = [];
+            /* Second source: an embedder may hold references its tp_traverse
+             * does not report, because CPython gets that liveness from the
+             * refcount rather than from the collector. torch's `t.grad` is the
+             * case the suite asserts on. Optional, guarded like the census
+             * helpers; index selects a fixed slot, null = empty. */
+            var ce = (typeof Module !== 'undefined') && Module['_wasthon_census_edge'];
+            if (ce) {
+                for (var ei = 0; ei < 2; ei++) {
+                    var ep = 0;
+                    try { ep = ce(ptr, ei); } catch (e) { break; }
+                    if (!ep) continue;
+                    try {
+                        var ev = rt.unwrap(ep);
+                        if (ev !== null && ev !== undefined) edges.push(ev);
+                    } catch (e) {}
+                }
+            }
+            if (!fp) return edges;
+            if (!rt._visitFp && !rt.ensureVisitFp()) return edges;
+            var prev = rt._visitOut;
+            rt._visitOut = edges;
+            rt.pushScope();
+            try { getWasmTableEntry(fp)(ptr, rt._visitFp, 0); }
+            catch (e) { /* a traverse that throws tells us nothing; keep what we have */ }
+            finally { rt.popScope(); rt._visitOut = prev; }
+            return edges;
+        },
+
         /* ---- Handle scopes (see field comment above) ---- */
         pushScope: function() {
             var s = [];
@@ -769,6 +851,75 @@ mergeInto(LibraryManager.library, {
                     } catch (e) {}
                     return skip;
                 };
+                /* The C instances that are STILL REACHABLE, marked forward from
+                 * the live frames — the root set the bilateral half needs.
+                 * It used to take every instance in rt.handles, which holds
+                 * each one for the wrapper's whole life: a `z` whose last name
+                 * is gone stays in there, so `z.grad = x` kept x alive forever
+                 * and nothing cyclic was ever collectable. That blanket was
+                 * only there because the walk could not see C++ edges; now that
+                 * cTraverse reports them, an honest mark can answer instead.
+                 * Computed ONCE per drain (the caller passes the set down),
+                 * where the old code paid a full walk per deferred object. */
+                var _liveCRoots = function() {
+                    var rt = _rtDF, Bx = rt.$B;
+                    var out = new Set(), seen = new Set(), skip = _mkSkip();
+                    var budget = 40000;
+                    var _isCls = function(o) {
+                        try {
+                            return Object.getOwnPropertyDescriptor(o, '__mro__') !== undefined ||
+                                   Object.getOwnPropertyDescriptor(o, 'tp_mro') !== undefined;
+                        } catch (e) { return false; }
+                    };
+                    var scan = function(v, depth) {
+                        if (v === null || v === undefined || budget <= 0) return;
+                        var t = typeof v;
+                        if (t !== 'object' && t !== 'function') return;
+                        if (skip.has(v) || seen.has(v)) return;
+                        if (_isCls(v)) return;          /* classes reach all of torch */
+                        seen.add(v); budget--;
+                        var isC = false;
+                        try { isC = Object.getOwnPropertyDescriptor(v, '__wasthon_ptr__') !== undefined; }
+                        catch (e) {}
+                        if (isC) {
+                            out.add(v);
+                            /* Follow what the C++ holds, so a tensor reachable
+                             * ONLY through another one's grad is a root too. */
+                            var ce;
+                            try { ce = rt.cTraverse(v); } catch (e) { ce = null; }
+                            if (ce) for (var ci = 0; ci < ce.length; ci++) scan(ce[ci], depth - 1);
+                        }
+                        if (depth <= 0 || t === 'function') return;
+                        if (Bx.DICT) {
+                            var idict;
+                            try { idict = v[Bx.DICT]; } catch (e) { idict = undefined; }
+                            if (idict && typeof idict === 'object') scan(idict, depth - 1);
+                        }
+                        if (Array.isArray(v)) {
+                            for (var i = 0; i < v.length; i++) scan(v[i], depth - 1);
+                            return;
+                        }
+                        if (v instanceof Map) { v.forEach(function(x) { scan(x, depth - 1); }); return; }
+                        if (v instanceof Set) { v.forEach(function(x) { scan(x, depth - 1); }); return; }
+                        var nm;
+                        try { nm = Object.getOwnPropertyNames(v); } catch (e) { return; }
+                        for (var n = 0; n < nm.length; n++) {
+                            var pd;
+                            try { pd = Object.getOwnPropertyDescriptor(v, nm[n]); }
+                            catch (e) { continue; }
+                            if (pd && 'value' in pd) scan(pd.value, depth - 1);
+                        }
+                    };
+                    var fo = Bx.frame_obj;
+                    while (fo) {
+                        var f = fo.frame;
+                        if (f) { scan(f[1], 8); scan(f[3], 8); }
+                        fo = fo.prev;
+                    }
+                    return out;
+                };
+                _rtDF._liveCRoots = _liveCRoots;
+
                 var _reach = function(target, cRoots) {
                     var rt = _rtDF, Bx = rt.$B, found = false;
                     var seen = new Map(), skip = _mkSkip();
@@ -838,10 +989,15 @@ mergeInto(LibraryManager.library, {
                      * of them references is not provably dead. Their Python
                      * attributes are the $B.DICT walked at shallow depth; the
                      * wrapper's own JS properties are bridge bookkeeping. */
-                    if (!found && cRoots && rt.handles) {
+                    if (!found && cRoots) {
                         var budget = 60000;
                         seen = new Map();
-                        rt.handles.forEach(function(inst) {
+                        /* cRoots is the live-C-instance set computed once by the
+                         * caller (_liveCRoots); a bare `true` keeps the old
+                         * all-handles behaviour for any caller that has none. */
+                        var rootSet = (cRoots instanceof Set) ? cRoots : rt.handles;
+                        if (!rootSet) rootSet = new Set();
+                        rootSet.forEach(function(inst) {
                             if (found || budget-- <= 0) return;
                             if (!inst || typeof inst !== 'object') return;
                             if (inst === target) return;       /* itself is not a root */
@@ -849,11 +1005,25 @@ mergeInto(LibraryManager.library, {
                             try { idict = Bx.DICT ? inst[Bx.DICT] : undefined; }
                             catch (e) { idict = undefined; }
                             if (idict && typeof idict === 'object') scan(idict, 3);
+                            /* …and the references the C++ holds outside any
+                             * Python attribute: torch's `z.grad = x` is an
+                             * accessor over autograd metadata, so the dict
+                             * above sees nothing while the C++ holds x. */
+                            var ce;
+                            try { ce = rt.cTraverse(inst); } catch (e) { ce = null; }
+                            if (ce) {
+                                for (var ci = 0; ci < ce.length && !found; ci++) {
+                                    if (ce[ci] === target) { found = true; break; }
+                                    scan(ce[ci], 3);
+                                }
+                            }
                         });
                     }
                     return found;
                 };
                 _rtDF._reachFromFrames = _reach;
+
+                _rtDF.$B.__wtPending = function() { return _rtDF.pendingDel ? _rtDF.pendingDel.size : -1; };
 
                 /* Called by `del name` (brython.js) for an object whose class
                  * defines __del__, AFTER the name has been unbound. True = run
@@ -864,6 +1034,11 @@ mergeInto(LibraryManager.library, {
                     B.$wasthon_wire_gc();
                     try {
                         if (_reach(obj)) { rt.pendingDel.add(obj); return false; }
+                        /* Unreachable but CYCLIC is not refcount-0: the cycle
+                         * keeps the count above zero and CPython leaves the
+                         * object to the collector, so `del` stays silent and
+                         * the next gc.collect() finalizes it. */
+                        if (_inCycle(obj)) { rt.pendingDel.add(obj); return false; }
                         rt.pendingDel.delete(obj);
                         return true;
                     } catch (e) { return true; }   /* never break `del` */
@@ -876,7 +1051,12 @@ mergeInto(LibraryManager.library, {
                     var rt = _rtDF;
                     if (!rt.pendingDel || !rt.pendingDel.size) return 0;
                     var dead = [];
-                    rt.pendingDel.forEach(function(o) { if (!_reach(o, cRoots)) dead.push(o); });
+                    /* One mark for the whole batch: the root set does not change
+                     * while we decide, and the old code paid a full walk per
+                     * deferred object. */
+                    var roots = null;
+                    if (cRoots) { try { roots = _liveCRoots(); } catch (e) { roots = true; } }
+                    rt.pendingDel.forEach(function(o) { if (!_reach(o, roots)) dead.push(o); });
                     var n = 0;
                     for (var i = 0; i < dead.length; i++) {
                         rt.pendingDel.delete(dead[i]);
@@ -973,7 +1153,32 @@ mergeInto(LibraryManager.library, {
                          * would re-open exactly the failure mode
                          * GC_BILATERAL_RECLAIM.md §3bis measured. */
                         if (weakOwner) { try { rt.clearWeakRefs(ptr); } catch (e) {} }
-                        if (rt.pendingDel && rt.pendingDel.size) B.$wasthon_drain_pending();
+                        /* The cascade only carries where a refcount would:
+                         * what the dying object held dies WITH it, unless that
+                         * something sits in a reference cycle — CPython drops
+                         * the count but the cycle keeps it above zero, and it
+                         * dies at the next collection instead. torch's suite
+                         * measures exactly that step: `z.grad = x` with x in a
+                         * cycle, `del z` must NOT finalize x's tracker, the
+                         * following gc.collect() must. */
+                        var cyclic = false;
+                        try {
+                            var outs = [], od = B.DICT ? obj[B.DICT] : undefined;
+                            if (od && typeof od === 'object') {
+                                var on = Object.getOwnPropertyNames(od);
+                                for (var oi = 0; oi < on.length; oi++) {
+                                    var opd = Object.getOwnPropertyDescriptor(od, on[oi]);
+                                    if (opd && 'value' in opd) outs.push(opd.value);
+                                }
+                            }
+                            var oce = rt.cTraverse(obj);
+                            if (oce) for (var oj = 0; oj < oce.length; oj++) outs.push(oce[oj]);
+                            for (var ok = 0; ok < outs.length && !cyclic; ok++) {
+                                var ov = outs[ok];
+                                if (ov && typeof ov === 'object' && _inCycle(ov)) cyclic = true;
+                            }
+                        } catch (e) {}
+                        if (!cyclic && rt.pendingDel && rt.pendingDel.size) B.$wasthon_drain_pending();
                     } catch (e) {}
                 };
 
