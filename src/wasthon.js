@@ -47,6 +47,9 @@ mergeInto(LibraryManager.library, {
         //     in this map so JS can retrieve the Brython wrapper.
         handles: null,           // Map<int, object>
         sentinelByObj: null,     // WeakMap<object, int> — identity interning (reverse of handles)
+        foreignTypes: null,      // Map<Brython class, int> — local PyTypeObject minted for
+                                 // an instance a SIBLING bridge wasm allocated (see
+                                 // wasthon_get_type_of); never stamped on the shared class.
         // Type-struct stamp key, unique PER RUNTIME: canonical type handles
         // are stamped onto SHARED Brython class objects (int, tuple, type…),
         // and two bridge wasms in one page (brytorch + NumBry) must each
@@ -339,6 +342,7 @@ mergeInto(LibraryManager.library, {
             }
             var cls = this.handles.get(typeH);
             var tomb = { __wasthon_ptr__: ptr, __wasthon_type__: typeH,
+                         __wasthon_type_rt__: _malloc,
                          ob_type: cls, __class__: cls };
             this.handles.set(ptr, tomb);
             var savedExc = this.pendingException;
@@ -533,6 +537,7 @@ mergeInto(LibraryManager.library, {
                         __wasthon_type__: brythonCls[WasthonRT._thKey] ||
                                           _rtNI.ensureTypeStruct(brythonCls) ||
                                           typeStructForInst,
+                        __wasthon_type_rt__: _malloc,
                     };
                     _rtNI.bindInstance(instancePtr, inst);
                     // Subclass (basicsize inherited from an ancestor) with no
@@ -1485,7 +1490,8 @@ mergeInto(LibraryManager.library, {
             var typeH = this._cType.get(ptr);
             var cls = (this.handles && this.handles.has(typeH)) ? this.handles.get(typeH) : null;
             if (cls === null && typeH !== 0 && this._cType.has(typeH)) cls = this.materializeCType(typeH);
-            var inst = { __wasthon_ptr__: ptr, __wasthon_type__: typeH, ob_refcnt: 1 };
+            var inst = { __wasthon_ptr__: ptr, __wasthon_type__: typeH,
+                         __wasthon_type_rt__: _malloc, ob_refcnt: 1 };
             if (cls && typeof cls === 'object') { inst.ob_type = cls; inst.__class__ = cls; }
             this.handles.set(ptr, inst);   // bind for identity + future unwraps
             return inst;
@@ -1763,9 +1769,18 @@ mergeInto(LibraryManager.library, {
          * through PyType_FromModuleAndSpec, so they have no struct otherwise.
          * Idempotent: caches the struct pointer on the class as
          * __wasthon_type_handle__. Returns the handle (struct pointer). */
-        ensureTypeStruct: function(cls) {
+        /* `foreign` = the class belongs to a SIBLING bridge wasm sharing this
+         * page's Brython objects. Its __wasthon_type_handle__ stamp is an
+         * address in the sibling's heap, so the cache lives in a map owned by
+         * THIS runtime and the class is never re-stamped (that would corrupt
+         * the sibling's own Py_TYPE). See wasthon_get_type_of. */
+        ensureTypeStruct: function(cls, foreign) {
             if (!cls) return 0;
-            if (cls[WasthonRT._thKey]) return cls[WasthonRT._thKey];
+            if (foreign) {
+                if (!this.foreignTypes) this.foreignTypes = new Map();
+                var already = this.foreignTypes.get(cls);
+                if (already) return already;
+            } else if (cls[WasthonRT._thKey]) return cls[WasthonRT._thKey];
             // int's canonical &PyLong_Type struct (wired by
             // wasthon_bind_builtin_type, and what Py_TYPE already returns for
             // int instances) IS its handle — so wrap(int) == &PyLong_Type, which
@@ -1780,7 +1795,8 @@ mergeInto(LibraryManager.library, {
             // so wrap(type(None)) must be that extern (test_singleton_types, C path).
             // Safe to unify (unlike str/bytes/containers): their sole instances are
             // None/.../NotImplemented, never reconstructed via NEWOBJ.
-            var canon = (cls === this._b_.int || cls === this._b_.bool ||
+            var canon = !foreign &&
+                        (cls === this._b_.int || cls === this._b_.bool ||
                          cls === this._b_.float || cls === this._b_.complex ||
                          cls === this.$B.NoneType ||
                          cls === this.$B.ellipsis || cls === this.$B.NotImplementedType) &&
@@ -1846,7 +1862,12 @@ mergeInto(LibraryManager.library, {
                 var b0 = mroFull[1];
                 var b0Ptr = b0 ? (b0[WasthonRT._thKey] ||
                     (this.builtinTypeForClass && this.builtinTypeForClass.get(b0)) || 0) : 0;
-                if (b0Ptr) HEAP32[(typeStructPtr + 140) >> 2] = b0Ptr;
+                /* foreign: b0Ptr would be the SIBLING wasm's struct for the
+                 * base (its _thKey stamp), the very cross-heap pointer this
+                 * mode exists to keep out of C. Leaving tp_base NULL also
+                 * gives PyType_IsSubtype the right answer — a foreign class
+                 * is not a subtype of anything registered here. */
+                if (b0Ptr && !foreign) HEAP32[(typeStructPtr + 140) >> 2] = b0Ptr;
                 /* tp_bases (offset 144): pybind11's all_type_info walks
                  * this TUPLE to find its registered base — a Python
                  * subclass of a pybind11 type (torch's SourceContext
@@ -1896,8 +1917,12 @@ mergeInto(LibraryManager.library, {
             // __new__ when C copies the pointer into a subtype's struct
             // (brythonTpNew's owner contract).
             HEAP32[(typeStructPtr + 60) >> 2] = this.tpNewForOwner(cls); // tp_new
-            cls[WasthonRT._thKey] = typeStructPtr;
-            cls.__wasthon_type_handle__ = typeStructPtr;  /* marker for the vendored tp_new hook */
+            if (foreign) {
+                this.foreignTypes.set(cls, typeStructPtr);
+            } else {
+                cls[WasthonRT._thKey] = typeStructPtr;
+                cls.__wasthon_type_handle__ = typeStructPtr;  /* marker for the vendored tp_new hook */
+            }
             this.handles.set(typeStructPtr, cls);
             // Register a minimal types-map entry so callers that look up
             // via rt.types.get(handle) (PyModule_AddType, etc.) succeed.
@@ -9475,6 +9500,7 @@ mergeInto(LibraryManager.library, {
         obj.__class__ = cls;
         obj.ob_type = cls;
         obj.__wasthon_type__ = typeH;
+        obj.__wasthon_type_rt__ = _malloc;
     },
     Py_EnterRecursiveCall: function(wherePtr) { return 0; },
     Py_LeaveRecursiveCall: function() { },
@@ -13571,6 +13597,22 @@ mergeInto(LibraryManager.library, {
         if (rt._cType && rt._cType.has(handle)) return rt._cType.get(handle);
         var obj = rt.unwrap(handle);
         if (obj === null) return 0;
+        /* __wasthon_type__ is a struct address in the LINEAR MEMORY of the
+         * runtime that allocated the instance, but it rides on a Brython
+         * object the two co-resident bridge wasms SHARE (brytorch's npth +
+         * NumBry's nprnd). Handing torch's C an nprnd address to dereference
+         * as npth memory read another heap's bytes: every torch call that had
+         * to REJECT a numpy array died on "index out of bounds" in the arg
+         * parser's error path (Py_TYPE(obj)->tp_name) instead of raising the
+         * TypeError it owed. A foreign instance gets a struct minted HERE for
+         * its Brython class — from this runtime that IS its type, honestly.
+         * Only a stamp that positively names ANOTHER runtime diverts, so an
+         * unstamped instance keeps the original path unchanged. */
+        if (obj.__wasthon_type_rt__ !== undefined &&
+                obj.__wasthon_type_rt__ !== _malloc) {
+            var fcls = obj.__class__ || (rt.$B.get_class && rt.$B.get_class(obj));
+            if (fcls) return rt.ensureTypeStruct(fcls, /*foreign=*/true);
+        }
         if (obj.__wasthon_type__) {
             /* A Python subclass of a C type carries the PARENT struct in
              * __wasthon_type__ (TypeCheck/module-state contract), but CPython's
@@ -16094,6 +16136,7 @@ mergeInto(LibraryManager.library, {
                     __wasthon_type__: brythonCls[WasthonRT._thKey] ||
                                       rt.ensureTypeStruct(brythonCls) ||
                                       typeStructForInst || typeHandle,
+                    __wasthon_type_rt__: _malloc,
                 };
                 rt.bindInstance(instancePtr, inst);
                 /* A Python subclass of a C-type that ships NO Py_tp_new slot
@@ -17223,6 +17266,7 @@ mergeInto(LibraryManager.library, {
                 arrT0.ob_type = tcls0;
                 arrT0.__wasthon_ptr__ = ptr;
                 arrT0.__wasthon_type__ = typeHandle;
+                arrT0.__wasthon_type_rt__ = _malloc;
                 rt.bindInstance(ptr, arrT0);
                 rt.refcounts.set(ptr, 1);
                 return ptr;
@@ -17233,6 +17277,7 @@ mergeInto(LibraryManager.library, {
             __class__: typeInfo.brythonClass,
             __wasthon_ptr__: ptr,
             __wasthon_type__: typeHandle,
+            __wasthon_type_rt__: _malloc,
         };
         rt.maybeInitInstanceDict(typeInfo.brythonClass, instance);
         rt.bindInstance(ptr, instance);
@@ -17273,6 +17318,7 @@ mergeInto(LibraryManager.library, {
                 arrT.ob_type = tcls;
                 arrT.__wasthon_ptr__ = ptr;
                 arrT.__wasthon_type__ = typeHandle;
+                arrT.__wasthon_type_rt__ = _malloc;
                 rt.bindInstance(ptr, arrT);
                 rt.refcounts.set(ptr, 1);
                 return ptr;
@@ -17294,6 +17340,7 @@ mergeInto(LibraryManager.library, {
             __class__: typeInfo.brythonClass,
             __wasthon_ptr__: ptr,
             __wasthon_type__: typeHandle,
+            __wasthon_type_rt__: _malloc,
         };
         rt.maybeInitInstanceDict(typeInfo.brythonClass, instance);
         rt.bindInstance(ptr, instance);

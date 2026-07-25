@@ -72,6 +72,41 @@ Module ports and the bridge-surface inventory live in `README.md`.
   `PyFloat_AsDouble`, and the 32-bit twin `PyLong_AsLongAndOverflow` already had
   the guard). **+1 test_torch (test_apply).**
 
+- **`Py_TYPE` handed C a type-struct pointer belonging to the OTHER wasm**
+  (`src/wasthon.js`). Same family as the `PySequence_Fast_ITEMS` entry below —
+  a heap-local address riding on a Brython object the two co-resident bridges
+  share — but on the bridge's own bookkeeping rather than a cache. A C
+  instance stashes its type-struct address in `__wasthon_type__` on its
+  wrapper, as a **plain property**, and `wasthon_get_type_of` returned it
+  verbatim; so a numpy array reaching torch gave torch's arg parser an `nprnd`
+  address (measured: 1 101 464, inside numpy's ~18 MB heap) to dereference as
+  `npth` memory. The correlation was total and is what named the root: every
+  call that *succeeded* was fine (nothing reads the type on that path), while
+  every call that had to **reject** the array built its error message from a
+  fabricated `PyTypeObject` and died on a raw `index out of bounds`.
+  `torch.add(t, arr)`, `t.add(arr)`, `torch.mul`, `torch.reshape`,
+  `torch.stack`, `torch.cat`, `t + arr` and the two size-argument rejections
+  all trapped; all nine now raise upstream's exact `TypeError`, message
+  included (`add(): argument 'other' (position 2) must be Tensor, not
+  ndarray`), which also proves `tp_name` is being read honestly.
+  Instances now carry `__wasthon_type_rt__ = _malloc` (the same
+  distinct-function-object trick as the slot owner below), and an instance
+  whose stamp names *another* runtime gets a `PyTypeObject` minted **here**
+  for its Brython class: correct `tp_name`, and a NULL `tp_base` so
+  `PyType_IsSubtype` correctly answers that a foreign class subtypes nothing
+  registered locally. The check fires only on a stamp that positively names
+  another runtime, so any creation path that forgets to stamp degrades to the
+  previous behaviour instead of losing its identity. The foreign structs live
+  in a dedicated per-runtime map, **not** under `_thKey`: that key promises to
+  be unique per runtime but is built in the `$WasthonRT` object literal, which
+  Emscripten evaluates at build time, so both modules ship the same constant
+  `__wasthon_type_handle__1` (no observed breakage — instances use the tag
+  above and shared builtins resolve through the genuinely per-runtime
+  `builtinTypeForClass` — but the promise is not kept). **+0 on every test
+  count**: no suite asserts these rejections today. numpy 3250/3250, CPython
+  sweep 4459/4746 0 fail, test_torch unchanged at 17. See `docs/BRIDGE.md`
+  "Co-resident modules".
+
 - **A `_malloc`'d pointer cached on a shared Brython object is heap-local:
   `PySequence_Fast_ITEMS` reused one module's pointer inside another
   module's smaller heap** (`src/wasthon.js`). `test_advancedindex_cpu_float64`

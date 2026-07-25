@@ -205,6 +205,35 @@ heaps open the hole. The fix tags the slot with its module (`_malloc`
 identity) and reuses only within it (`CHANGELOG.md`). **Rule of thumb: a
 pointer cached on a shared object needs a module tag.**
 
+The rule applies to the bridge's *own* bookkeeping too, and there it bites
+harder. A C instance stores its type-struct address in `__wasthon_type__` on
+its Brython wrapper — a plain property, so the sibling module reads it as
+readily as the owner does, and `Py_TYPE` handed it straight to C. A numpy
+array reaching torch therefore gave torch's arg parser an `nprnd` address to
+dereference as `npth` memory: the calls that *succeeded* were fine (they never
+look at the type), but every call that had to **reject** the array read a
+fabricated `PyTypeObject` to build its message and died on `index out of
+bounds` where CPython raises `TypeError`. The tell was the perfect
+correlation — success paths clean, failure paths trapping.
+
+`Py_TYPE` now takes the same owner tag (`__wasthon_type_rt__ === _malloc`) and,
+for an instance another module allocated, mints a `PyTypeObject` **here** for
+the object's Brython class: from this module that genuinely is its type, its
+`tp_name` is honest, and a NULL `tp_base` gives `PyType_IsSubtype` the right
+answer (a foreign class subtypes nothing registered locally). The tag is
+checked only when it positively names *another* runtime, so an instance
+created down a path that forgets to stamp keeps the original behaviour rather
+than silently losing its identity.
+
+Note that `_thKey` — the per-runtime stamp key on *classes*, whose whole
+purpose is this scenario — does **not** currently deliver it: the key is built
+in the `$WasthonRT` object literal, which Emscripten evaluates at *build* time,
+so both modules ship the same constant (`__wasthon_type_handle__1`). It has not
+been observed to bite, because instances go through the tag above and the
+shared builtins resolve via `builtinTypeForClass`, a genuinely per-runtime map;
+the foreign-type cache above is deliberately kept in its own map rather than
+routed through `_thKey` for that reason.
+
 ## Beyond the stdlib: Cython and pybind11
 
 The bridge surface above carries 25 stdlib modules. Two support layers
