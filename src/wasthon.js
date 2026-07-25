@@ -291,7 +291,7 @@ mergeInto(LibraryManager.library, {
              * helpers; index selects a fixed slot, null = empty. */
             var ce = (typeof Module !== 'undefined') && Module['_wasthon_census_edge'];
             if (ce) {
-                for (var ei = 0; ei < 2; ei++) {
+                for (var ei = 0; ei < 3; ei++) {
                     var ep = 0;
                     try { ep = ce(ptr, ei); } catch (e) { break; }
                     if (!ep) continue;

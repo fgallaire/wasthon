@@ -995,13 +995,27 @@ Infrastructure work that pays back on existing modules:
       `__wasthon_ptr__` — own-property, since a plain read resolves through the
       class and would fire the wasm call for everything walked. **+1 test_torch**
       at unchanged wall time.
+      With the walks reading C++ edges, the family's biggest cluster turned out
+      to hang on **one more edge**: a tensor's storage. `a.untyped_storage()` is
+      an accessor and the wrapper it returns lives in the `StorageImpl`'s
+      `pyobj_slot`, not in `a`'s `__dict__` and not in `tp_traverse` either — so
+      putting a tracker on a storage and dropping its only Python name read as
+      death while the tensor was still alive and about to hand the same object
+      back. Worth recording: resurrection semantics were never the missing
+      piece. C++ identity through `pyobj_slot` already worked (`del s` then
+      `a.untyped_storage()` returns *that* object, `_tracker` intact); only the
+      edge was absent. **+5 test_torch**, again at unchanged wall time.
       **The limit, stated plainly:** what remains is no longer about *seeing* or
-      *deciding* but about *releasing*. `__del__` resurrection semantics are not
-      implemented (the zombie/resurrected tests), and nothing drops the C++
-      reference itself — a temporary view still pins its base
-      (`_use_count` climbs 2 → 3 → 4 and neither `del` nor `gc.collect()` brings
-      it back), which is why `test_swap_basic` fails and why `gc.get_objects()`
-      has no honest answer to give: the objects really are still there.
+      *deciding* but about *releasing*. Nothing drops the C++ reference itself —
+      a temporary view still pins its base (`_use_count` climbs 2 → 3 → 4 and
+      neither `del` nor `gc.collect()` brings it back), which is why
+      `test_swap_basic` fails and why `gc.get_objects()` has no honest answer to
+      give: the objects really are still there. Releasing needs a *trigger* more
+      than a mechanism, and `del` is not it: a temporary that dies with its
+      Brython frame has no `del` to hang on, `refcount === 1` is not proof of
+      death (a Brython assignment does not increment), and a reachability walk
+      per function return would be ruinous. That is the wrapper-refcount option,
+      a different order of work.
       None of this touches the reclaim-scale question — deciding among hundreds
       of thousands of candidates at once is a different problem, and still open.
       Full dossier: brytorch `BUG_torch_dealloc_cluster.md`.

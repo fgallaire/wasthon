@@ -72,6 +72,23 @@ Module ports and the bridge-surface inventory live in `README.md`.
   `PyFloat_AsDouble`, and the 32-bit twin `PyLong_AsLongAndOverflow` already had
   the guard). **+1 test_torch (test_apply).**
 
+- **A tensor's storage is an edge, and it is the one the dealloc family turns
+  on** (`src/wasthon.js`). `a.untyped_storage()` is an accessor, and the wrapper
+  it hands back is remembered in the `StorageImpl`'s `pyobj_slot` — nowhere in
+  `a`'s `__dict__`, and `tp_traverse` does not report it either. So the whole
+  storage half of the family read as death: put a tracker on the storage, drop
+  the only Python name, and the bridge finalized it while the tensor was still
+  alive and about to hand the very same object back. Measured before: `del s`
+  fired the tracker; `a.untyped_storage()` then returned that object with its
+  `_tracker` intact — resurrection was never the missing piece, C++ identity
+  through `pyobj_slot` already worked. `cTraverse` now walks a third
+  `wasthon_census_edge` slot (brytorch), which reports the storage.
+  **+5 test_torch (10 -> 5 fails)**: `storage_dealloc_resurrected`,
+  `storage_dealloc_subclass_zombie`, `storage_from_tensor_dealloc_resurrected`,
+  `storage_from_tensor_dealloc_zombie`,
+  `storage_preserve_nonhermetic_in_hermetic_context`; suite wall time 330.9 s
+  against a 333.3 s baseline. CPython sweep 3518/3749 0 fail, numpy 3250/3250.
+
 - **The two walks that decide `del` never actually read the C++ edges**
   (`src/wasthon.js`). `rt.cTraverse` was taught to state them, and
   `_liveCRoots` and the bilateral half of `_reach` both consult it — but those
