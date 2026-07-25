@@ -72,6 +72,34 @@ Module ports and the bridge-surface inventory live in `README.md`.
   `PyFloat_AsDouble`, and the 32-bit twin `PyLong_AsLongAndOverflow` already had
   the guard). **+1 test_torch (test_apply).**
 
+- **`Py_TYPE` read the stale half of the dual identity after a `__class__`
+  assignment** (`src/wasthon.js`). `torch.utils.swap_tensors(t1, t2)` swaps the
+  two objects' `__class__`; afterwards the one Python reports as a plain
+  `Tensor` was unusable — `fill_`, `add_`, `torch.add`, `_is_view`, everything
+  died with `Multiple dispatch failed … - tensor subclass <Javascript null>`.
+  Brython lands an assignment to `__class__` on **`ob_type`**, which is what
+  `$B.get_class` and Python's `type()` both read, while the raw `__class__`
+  property keeps the value the instance was created with. `wasthon_get_type_of`
+  consulted that raw property first, so it saw the *old* class, concluded "live
+  class == the struct's registered class" and handed back the subclass struct.
+  `THPVariable_CheckTypeExact` then said "subclass", every op dispatched to
+  `__torch_function__`, and `Tensor.__torch_function__` refused it —
+  `issubclass(Tensor, TwoTensor)` is False, so `NotImplemented`. Measured after
+  a swap: `t2.__class__` = TwoTensor, `t2.ob_type` = Tensor, `get_class` =
+  Tensor, `type(t2)` = Tensor. Reading through `get_class` first — which
+  `wasthon_is_exact_type`, twenty lines below, already did — is half the fix;
+  the other half is *what* the diverging branch returns. It wrapped the live
+  class as a fresh sentinel handle, and C compares `Py_TYPE(op)` against a
+  canonical address (`tp == THPVariableClass`) that a handle can never equal,
+  so it now returns the live class's own struct. Both halves are needed, which
+  is why three earlier attempts at the second one alone measured nothing: the
+  branch was never entered. **+1 test_torch (test_swap_fail_slots, 15 -> 14
+  fails).** The sibling `test_swap_basic` turns out not to be a swap bug at
+  all: `t.view_as(t)` inside `_get_grad_fn_or_grad_acc` leaves a temporary view
+  holding `t` in its `_base`, and each call bumps `_use_count` (2 -> 3 -> 4)
+  with neither `del` nor `gc.collect()` releasing it — the bilateral reclaim
+  cluster, `GC_BILATERAL_RECLAIM.md`.
+
 - **`PyErr_WarnExplicit` — a warning can now state its own source location**
   (`src/wasthon.js`, `src/wasthon.h`). The bridge only had `PyErr_WarnEx`,
   which lets the frame stack answer where a warning came from. That is the

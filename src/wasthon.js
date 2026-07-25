@@ -13652,11 +13652,29 @@ mergeInto(LibraryManager.library, {
              * live Brython class differs from the struct's registered class,
              * hand back the live class; base instances keep the struct. */
             var tH = obj.__wasthon_type__;
-            var live = obj.__class__ || (rt.$B.get_class && rt.$B.get_class(obj));
+            /* get_class FIRST, exactly as wasthon_is_exact_type does: an
+             * assignment to __class__ lands on ob_type (which get_class and
+             * Python's type() both read), while the raw __class__ property
+             * keeps the value it was created with. Reading it directly made
+             * torch.utils.swap_tensors leave a stale identity behind — the
+             * object Python now reports as a plain Tensor still answered with
+             * its old subclass struct, so THPVariable_CheckTypeExact said
+             * "subclass", every op dispatched to __torch_function__ and the
+             * default handler refused it (issubclass(Tensor, TwoTensor) is
+             * False) with "Multiple dispatch failed". */
+            var live = (rt.$B.get_class && rt.$B.get_class(obj)) || obj.__class__;
             if (live) {
                 var reg = (rt.builtinClassForStruct && rt.builtinClassForStruct.get(tH)) ||
                           (rt.types.get(tH) || {}).brythonClass;
-                if (reg && live !== reg) return rt.wrap(live);
+                if (reg && live !== reg) {
+                    /* The live class's OWN struct, not a fresh sentinel: C
+                     * compares Py_TYPE(op) against the canonical address
+                     * (`tp == THPVariableClass`), which a wrapped handle can
+                     * never equal. */
+                    return live[WasthonRT._thKey] ||
+                           (rt.builtinTypeForClass && rt.builtinTypeForClass.get(live)) ||
+                           rt.wrap(live);
+                }
             }
             return tH;
         }
