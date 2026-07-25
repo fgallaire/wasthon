@@ -983,6 +983,18 @@ Infrastructure work that pays back on existing modules:
       cycle keeps it above zero and CPython defers to the collector), and `del`
       itself defers an unreachable-but-**cyclic** object instead of finalizing
       it on the spot. **+3 test_torch.**
+      A third silent no-op of the same family sat one level down: reading the
+      edges had been wired into the *root-set* paths only. The walks that answer
+      the question itself — `_reach`'s forward scan out of the frames, and
+      `_inCycle` — still looked at `$B.DICT` and own properties alone, and the
+      two entry points that decide `del` call them with no root set, so a
+      reference held by C++ was invisible to the predicate that mattered
+      (`x._backward_hooks = y` goes through a torch setter, not into `__dict__`,
+      and `del x` finalized x's tracker while `y` still pointed at it). Both
+      walks now follow `cTraverse` on any value carrying an **own**
+      `__wasthon_ptr__` — own-property, since a plain read resolves through the
+      class and would fire the wasm call for everything walked. **+1 test_torch**
+      at unchanged wall time.
       **The limit, stated plainly:** what remains is no longer about *seeing* or
       *deciding* but about *releasing*. `__del__` resurrection semantics are not
       implemented (the zombie/resurrected tests), and nothing drops the C++

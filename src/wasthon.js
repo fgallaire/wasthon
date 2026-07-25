@@ -851,6 +851,21 @@ mergeInto(LibraryManager.library, {
                     } catch (e) {}
                     return skip;
                 };
+                /* The references a C instance holds that no JS property shows.
+                 * cTraverse can read them, but the two walks that decide `del`
+                 * only ever looked at $B.DICT and own properties, so a torch
+                 * accessor over C state — `t.grad`, `_backward_hooks`, the
+                 * storage behind a tensor — stayed invisible to them and their
+                 * holders read as dead. Gated on an OWN __wasthon_ptr__ so the
+                 * wasm call happens for C instances only (a plain read would
+                 * resolve through the class and call it for everything). */
+                var _cEdges = function(v) {
+                    var d;
+                    try { d = Object.getOwnPropertyDescriptor(v, '__wasthon_ptr__'); }
+                    catch (e) { return null; }
+                    if (!d || typeof d.value !== 'number' || !d.value) return null;
+                    try { return _rtDF.cTraverse(v); } catch (e) { return null; }
+                };
                 /* The C instances that are STILL REACHABLE, marked forward from
                  * the live frames — the root set the bilateral half needs.
                  * It used to take every instance in rt.handles, which holds
@@ -947,6 +962,9 @@ mergeInto(LibraryManager.library, {
                             try { idict = v[Bx.DICT]; } catch (e) { idict = undefined; }
                             if (idict && typeof idict === 'object') scan(idict, depth - 1);
                         }
+                        var ce = _cEdges(v);
+                        if (ce) for (var ci = 0; ci < ce.length && !found; ci++)
+                            scan(ce[ci], depth - 1);
                         if (Array.isArray(v)) {
                             for (var i = 0; i < v.length && !found; i++) scan(v[i], depth - 1);
                             return;
@@ -1104,6 +1122,8 @@ mergeInto(LibraryManager.library, {
                             try { idict = v[Bx.DICT]; } catch (e) { idict = undefined; }
                             if (idict && typeof idict === 'object') visit(idict);
                         }
+                        var ce = _cEdges(v);
+                        if (ce) for (var ci = 0; ci < ce.length && !found; ci++) visit(ce[ci]);
                         if (Array.isArray(v)) {
                             for (var i = 0; i < v.length && !found; i++) visit(v[i]);
                             return;

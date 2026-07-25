@@ -72,6 +72,24 @@ Module ports and the bridge-surface inventory live in `README.md`.
   `PyFloat_AsDouble`, and the 32-bit twin `PyLong_AsLongAndOverflow` already had
   the guard). **+1 test_torch (test_apply).**
 
+- **The two walks that decide `del` never actually read the C++ edges**
+  (`src/wasthon.js`). `rt.cTraverse` was taught to state them, and
+  `_liveCRoots` and the bilateral half of `_reach` both consult it — but those
+  are the *root-set* paths. The walks that answer the question itself,
+  `_reach`'s forward scan out of the frames and `_inCycle`, only ever looked at
+  `$B.DICT` and own JS properties, and `$wasthon_should_finalize` /
+  `$wasthon_after_unbind` call them with no root set at all. So a reference the
+  C++ holds was invisible to the predicate that mattered: `x._backward_hooks =
+  y` goes through a torch setter rather than into `__dict__`, and `del x`
+  finalized x's tracker on the spot while `y` still pointed at it.
+  Both walks now follow `cTraverse` on any value carrying an **own**
+  `__wasthon_ptr__` — an own-property test, because a plain read resolves
+  through the class and would fire the wasm call for every object walked.
+  Nothing else changes: the edges were already readable, they were simply not
+  read. **+1 test_torch (test_backward_hooks_traverse, 11 -> 10 fails)**, and
+  the suite's wall time is unmoved (354 s against 351 s) because the gate keeps
+  the call to C instances.
+
 - **Reachability learns to read the C++ side, and the root set stops being
   "everything ever allocated"** (`src/wasthon.js`, `src/wasthon.h`). Two
   changes that are worth nothing apart — the first, measured on its own, traded
