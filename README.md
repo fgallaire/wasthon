@@ -1028,6 +1028,14 @@ Infrastructure work that pays back on existing modules:
       pending sets now empty sooner. Vendored side in `BRYTHON_FIX.md`.
       The family is down to **two** failures, and both are the same one:
       **releasing**. Nothing else in it is unexplained.
+      One prerequisite for that step is in place: `decref` reads `tp_dealloc`
+      through the **base chain**. It used to read the slot straight off the
+      instance's own type, and a Python class over a C type gets a struct minted
+      here with no slots of its own where CPython inherits them — so for every
+      instance of that shape the count reached zero and **no destructor ran at
+      all**, silently, port-wide. Measured alone (that was the point: it wakes
+      destructors that had never run) it changes no result on any dashboard, but
+      nothing can be freed while the dispatcher cannot find the destructor.
       **The limit, stated plainly:** what remains is no longer about *seeing* or
       *deciding* but about *releasing*. Nothing drops the C++ reference itself —
       a temporary view still pins its base (`_use_count` climbs 2 → 3 → 4 and

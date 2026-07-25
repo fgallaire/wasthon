@@ -72,6 +72,23 @@ Module ports and the bridge-surface inventory live in `README.md`.
   `PyFloat_AsDouble`, and the 32-bit twin `PyLong_AsLongAndOverflow` already had
   the guard). **+1 test_torch (test_apply).**
 
+- **`decref` found no `tp_dealloc` for a Python subclass of a C type, so the
+  destructor ran nowhere for that whole shape** (`src/wasthon.js`). The slot was
+  read straight off the instance's own type struct. A Python class over a C type
+  gets a struct minted here with no slots of its own, where CPython **inherits**
+  them — so for every instance of that shape the count reached zero and nothing
+  ran: no `tp_dealloc`, silently, everywhere in the port. `torch.Tensor` over
+  `torch._C.TensorBase` is exactly that shape, and so is any user subclass of
+  `sqlite3.Connection` or `UntypedStorage`. Fixed by walking `tp_base` until a
+  type states the slot — the same correction `cTraverse` needed for
+  `tp_traverse`, and the general rule is now explicit: **any slot read directly
+  off a type struct is suspect, because CPython inherits.**
+  **+0 measured** (test_torch stays at 910/912, CPython 4459/4746, numpy
+  3250/3250) — which was the point of measuring it alone, since this wakes
+  destructors that had never run anywhere in the port and the blast radius was
+  the real question. It is a prerequisite for releasing a C++ reference at all:
+  nothing can be freed while the dispatcher cannot find the destructor.
+
 - **A weak cell dies with its holder, not only with its own name**
   (`src/wasthon.js`). Two gaps, both in `$wasthon_after_unbind`. First, clearing
   a C instance's cells also required `refcount === 1` — "the bridge alone holds

@@ -220,7 +220,20 @@ mergeInto(LibraryManager.library, {
                 }
                 return;
             }
-            var tp_dealloc = HEAP32[(inst.__wasthon_type__ + 40) >> 2];
+            /* Read through the base chain, not just this type. A Python
+             * subclass of a C type gets a struct minted here with no slot of
+             * its own, where CPython inherits one — so read straight off the
+             * instance's type, the count reached zero and the destructor ran
+             * for NO instance of that shape, silently, everywhere in the port.
+             * torch.Tensor over torch._C.TensorBase is exactly that shape.
+             * Same walk cTraverse does for tp_traverse: any slot read directly
+             * off a type struct is suspect for the same reason. */
+            var tp_dealloc = 0, tw = inst.__wasthon_type__, tg = 16;
+            while (tw && tg-- > 0) {
+                tp_dealloc = HEAP32[(tw + 40) >> 2];
+                if (tp_dealloc) break;
+                tw = HEAP32[(tw + 140) >> 2];      /* tp_base */
+            }
             if (!tp_dealloc) return;
             // The C dealloc body may create handles (Py_CLEAR recursion,
             // error formatting); scope them like any other C entry.
