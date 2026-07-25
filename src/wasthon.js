@@ -1061,6 +1061,17 @@ mergeInto(LibraryManager.library, {
                 _rtDF._reachFromFrames = _reach;
 
                 _rtDF.$B.__wtPending = function() { return _rtDF.pendingDel ? _rtDF.pendingDel.size : -1; };
+                /* Diagnostic hooks — a probe can ask the two predicates and the
+                 * refcount directly instead of inferring them from behaviour. */
+                _rtDF.$B.__wtReach = function(o) { try { return _reach(o); } catch (e) { return 'ERR'; } };
+                _rtDF.$B.__wtInCycle = function(o) { try { return _inCycle(o); } catch (e) { return 'ERR'; } };
+                _rtDF.$B.__wtRefcount = function(o) {
+                    try {
+                        var d = Object.getOwnPropertyDescriptor(o, '__wasthon_ptr__');
+                        var p = d && typeof d.value === 'number' ? d.value : 0;
+                        return p ? (_rtDF.refcounts.has(p) ? _rtDF.refcounts.get(p) : 'absent') : 'noptr';
+                    } catch (e) { return 'ERR'; }
+                };
 
                 /* Called by `del name` (brython.js) for an object whose class
                  * defines __del__, AFTER the name has been unbound. True = run
@@ -1193,7 +1204,13 @@ mergeInto(LibraryManager.library, {
                      * measured ruinous — one live weakref made every delete in
                      * the page pay two walks. Only the object's own cells, or
                      * an actual pending set, buy the work. */
-                    if (!weakHere && (!rt.pendingDel || !rt.pendingDel.size) &&
+                    /* …and a C instance the bridge alone still holds is a
+                     * release candidate even with nothing pending: `del v` on a
+                     * temporary is the whole point. Cheap to test (one Map
+                     * lookup); what it buys is the walk below. */
+                    var soleOwner = !!(ptr && rt.refcounts && rt.refcounts.get(ptr) === 1);
+                    if (!weakHere && !soleOwner &&
+                                     (!rt.pendingDel || !rt.pendingDel.size) &&
                                      (!rt.pendingWeak || !rt.pendingWeak.size)) return;
                     try {
                         if (_reach(obj) || _inCycle(obj)) {
@@ -1264,6 +1281,36 @@ mergeInto(LibraryManager.library, {
                             }
                         }
                         if (rt.pendingDel && rt.pendingDel.size) B.$wasthon_drain_pending();
+                        /* RELEASE — the only place in the whole chapter that
+                         * ACTS on the C++ side instead of deciding. Everything
+                         * above is clear-only; this drops the reference, runs
+                         * the destructor and gives the bytes back.
+                         * It is allowed here and refused at reclaim scale for
+                         * the reason stated throughout: the question is narrow
+                         * ("is THIS one held") and the trigger is OBSERVED (the
+                         * user wrote `del x`), and the walk that answered it
+                         * reads BOTH sides — the earlier attempt at this freed a
+                         * live object precisely because it did not.
+                         * Guards, in order: the bridge must be sole owner
+                         * (refcount 1 — C kept no reference of its own); a real
+                         * destructor must exist through the base chain, since
+                         * without one dropping the handle leaks the struct
+                         * rather than freeing it; and pybind11 instances are
+                         * excluded, their registry being walked at teardown
+                         * where a freed entry asserts. */
+                        if (ptr && rt.refcounts && rt.refcounts.get(ptr) === 1) {
+                            var rd = 0, rw = obj.__wasthon_type__, rg = 16;
+                            while (rw && rg-- > 0) {
+                                rd = HEAP32[(rw + 40) >> 2];
+                                if (rd) break;
+                                rw = HEAP32[(rw + 140) >> 2];   /* tp_base */
+                            }
+                            var kindFn = (typeof Module !== 'undefined') &&
+                                         Module['_wasthon_census_kind'];
+                            var pb = false;
+                            if (kindFn) { try { pb = kindFn(ptr) === 3; } catch (e) { pb = true; } }
+                            if (rd && !pb) { try { rt.decref(ptr); } catch (e) {} }
+                        }
                     } catch (e) {}
                 };
 

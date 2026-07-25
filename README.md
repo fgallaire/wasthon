@@ -1036,17 +1036,35 @@ Infrastructure work that pays back on existing modules:
       all**, silently, port-wide. Measured alone (that was the point: it wakes
       destructors that had never run) it changes no result on any dashboard, but
       nothing can be freed while the dispatcher cannot find the destructor.
-      **The limit, stated plainly:** what remains is no longer about *seeing* or
-      *deciding* but about *releasing*. Nothing drops the C++ reference itself —
-      a temporary view still pins its base (`_use_count` climbs 2 → 3 → 4 and
-      neither `del` nor `gc.collect()` brings it back), which is why
-      `test_swap_basic` fails and why `gc.get_objects()` has no honest answer to
-      give: the objects really are still there. Releasing needs a *trigger* more
-      than a mechanism, and `del` is not it: a temporary that dies with its
-      Brython frame has no `del` to hang on, `refcount === 1` is not proof of
-      death (a Brython assignment does not increment), and a reachability walk
-      per function return would be ruinous. That is the wrapper-refcount option,
-      a different order of work.
+- [x] **`del` finally RELEASES.** Everything above decides; this is the one
+      place that acts on the C++ side, and until it landed the heap figure had
+      not moved a byte across the whole family. A first attempt was withdrawn a
+      day earlier for a reason worth recording: at `del` time the walk ran blind
+      to C++ edges, so `z.grad = x` was invisible and it freed a **live**
+      object. Both of that attempt's roots are now gone — the walks read both
+      sides, and `decref` finds the destructor through the base chain, where
+      reading the slot straight off the instance's own type meant no destructor
+      ran at all for a Python subclass of a C type, silently, port-wide.
+      Guards: sole ownership (refcount 1), unreachable **and** acyclic by the
+      same predicate as the rest of the chapter, a real destructor, and
+      pybind11 instances excluded. Measured: `t.view_as(t); del v` takes
+      `_use_count` **3 → 1**, where neither `del` nor `gc.collect()` used to
+      move it. **+0 test_torch at no cost** (334.2 s against 332.1 s) — the gate
+      is one Map lookup and only a sole-owned C instance buys the walk.
+      **The limit, stated plainly:** it is no longer *seeing*, *deciding*, or
+      the release *mechanism*. What is left is the **trigger** and the
+      remaining excess references. `del` covers a named object; a temporary that
+      dies with its Brython frame has none to hang on, and there is no sound
+      predicate for frame exit — `refcount === 1` is not proof of death (a
+      Brython assignment does not increment) and a walk per function return
+      would be ruinous. That is the wrapper-refcount option, a different order
+      of work. Alongside it, individual paths still take one reference too many:
+      building an `AccumulateGrad` node moves `_use_count` 1 → 3 where CPython
+      goes 1 → 2, which is why `test_swap_basic` still fails. And
+      `gc.get_objects()` still has no honest answer while unnamed objects
+      survive, which is what `test_tensor_cycle_via_slots` asks for.
+      None of this touches the reclaim-scale question either — deciding among
+      hundreds of thousands of candidates at once stays a different problem.
       None of this touches the reclaim-scale question — deciding among hundreds
       of thousands of candidates at once is a different problem, and still open.
       Full dossier: brytorch `BUG_torch_dealloc_cluster.md`.

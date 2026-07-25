@@ -72,6 +72,26 @@ Module ports and the bridge-surface inventory live in `README.md`.
   `PyFloat_AsDouble`, and the 32-bit twin `PyLong_AsLongAndOverflow` already had
   the guard). **+1 test_torch (test_apply).**
 
+- **`del` on a C instance the bridge alone holds RELEASES it** (`src/wasthon.js`)
+  — the first place in this whole chapter that *acts* on the C++ side instead of
+  deciding. Everything before it is clear-only, which is why the heap figure had
+  not moved a byte across the family's fixes. An earlier attempt at this was
+  withdrawn: at `del` time the walk ran blind to C++ edges, so `z.grad = x` was
+  invisible and it freed a **live** object. That reason is gone — the walks read
+  both sides now — and the second one, `decref` finding no destructor for a
+  Python subclass of a C type, is fixed above. Guards, in order: the bridge is
+  sole owner (refcount 1), the object is unreachable **and** acyclic by the same
+  predicate the rest of the chapter uses, a real destructor exists through the
+  base chain, and pybind11 instances are excluded (their registry is walked at
+  teardown, where a freed entry asserts).
+  Measured: a temporary view stops pinning its base — `t.view_as(t); del v`
+  takes `_use_count` **3 → 1**, where before neither `del` nor `gc.collect()`
+  moved it. **+0 test_torch** and **no cost** (334.2 s against 332.1 s): the
+  gate is one Map lookup, and only a sole-owned C instance buys the walk.
+  `test_swap_basic` still fails, but its blocker moved — building an
+  `AccumulateGrad` node takes `_use_count` 1 → 3 where CPython goes 1 → 2, which
+  is a different excess reference on a different path.
+
 - **`decref` found no `tp_dealloc` for a Python subclass of a C type, so the
   destructor ran nowhere for that whole shape** (`src/wasthon.js`). The slot was
   read straight off the instance's own type struct. A Python class over a C type
