@@ -72,6 +72,23 @@ Module ports and the bridge-surface inventory live in `README.md`.
   `PyFloat_AsDouble`, and the 32-bit twin `PyLong_AsLongAndOverflow` already had
   the guard). **+1 test_torch (test_apply).**
 
+- **`PyErr_WarnExplicit` — a warning can now state its own source location**
+  (`src/wasthon.js`, `src/wasthon.h`). The bridge only had `PyErr_WarnEx`,
+  which lets the frame stack answer where a warning came from. That is the
+  wrong question for code running outside the frame that wrote it: a warning
+  raised inside a TorchScript-compiled function has no eager frame left to
+  point at, so torch hands over the line it recorded at compile time
+  (`torch/csrc/Exceptions.cpp` picks `PyErr_WarnExplicit` for exactly the
+  warnings it marks *verbatim*). brytorch had been shimming the call by
+  discarding filename and lineno and forwarding to `PyErr_WarnEx`, so the
+  warning was blamed on whatever frame happened to be current — 1083 instead
+  of 883, a line in an unrelated test. Implemented against
+  `warnings.warn_explicit`, so the filter list, the action and
+  `__warningregistry__` all still apply; this only became possible once
+  Brython's `warn_explicit` stopped being a `console.log` stub
+  (`BRYTHON_FIX.md`). Completes `test_cpp_warnings_have_python_context`,
+  **+1 test_torch (16 -> 15 fails)** with the two vendored fixes it rides on.
+
 - **`Py_TYPE` handed C a type-struct pointer belonging to the OTHER wasm**
   (`src/wasthon.js`). Same family as the `PySequence_Fast_ITEMS` entry below —
   a heap-local address riding on a Brython object the two co-resident bridges

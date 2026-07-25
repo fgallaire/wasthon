@@ -2949,6 +2949,35 @@ mergeInto(LibraryManager.library, {
         }
     },
 
+    /* PyErr_WarnExplicit — same warning machinery, but the CALLER states the
+     * source location. Code that runs outside the frame that wrote it needs
+     * this: a warning raised inside a TorchScript-compiled function has no
+     * eager frame left to point at, so torch hands over the line it recorded
+     * at compile time. Routed through warnings.warn_explicit so the filter
+     * list, the action and __warningregistry__ all still apply. */
+    PyErr_WarnExplicit__deps: ['$WasthonRT'],
+    PyErr_WarnExplicit: function(categoryH, msgPtr, filenamePtr, lineno,
+                                 modulePtr, registryH) {
+        var rt = WasthonRT;
+        try {
+            var msg = UTF8ToString(msgPtr);
+            var cat = categoryH ? rt.unwrap(categoryH) : rt._b_.RuntimeWarning;
+            var filename = filenamePtr ? UTF8ToString(filenamePtr) : '<unknown>';
+            var mod = modulePtr ? UTF8ToString(modulePtr) : rt._b_.None;
+            var reg = registryH ? rt.unwrap(registryH) : rt._b_.None;
+            var w = rt.$B.imported && rt.$B.imported.warnings;
+            if (!w) {
+                w = rt.$B.$call(rt._b_.__import__, 'warnings');
+            }
+            rt.$B.$call(rt.$B.$getattr(w, 'warn_explicit'),
+                        msg, cat, filename, lineno, mod, reg);
+            return 0;
+        } catch (e) {
+            rt.forwardError(e);
+            return -1;
+        }
+    },
+
     PyUnicode_FromString__deps: ['$WasthonRT'],
     /* PyUnicode_InternFromString — like FromString, but the result is
      * interned: a real content-keyed pool of pinned handles. Interned

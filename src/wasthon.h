@@ -1774,6 +1774,12 @@ PyObject *PyObject_CallMethod(PyObject *obj, const char *name, const char *fmt, 
 const char *PyUnicode_AsUTF8AndSize(PyObject *unicode, Py_ssize_t *size);
 PyObject *PyUnicode_DecodeUTF8(const char *str, Py_ssize_t size, const char *errors);
 int PyErr_WarnEx(PyObject *category, const char *msg, Py_ssize_t stacklevel);
+/* PyErr_WarnExplicit — the caller supplies the source location instead of
+ * letting the frame stack answer it, which is how a warning raised inside
+ * compiled or generated code still points at the line it was written on. */
+int PyErr_WarnExplicit(PyObject *category, const char *message,
+                       const char *filename, int lineno,
+                       const char *module, PyObject *registry);
 
 /* Old-style arg parsers (legacy non-clinic modules: _decimal, …). The
  * bridge implements just the 'O' / '|' subset. */
