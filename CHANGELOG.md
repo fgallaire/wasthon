@@ -7,6 +7,44 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`del name` gets CPython's meaning, and `gc.collect()` finally reaches the
+  sweep** (`src/wasthon.js`, plus two hook points in `$B.$delete` — see
+  `BRYTHON_FIX.md`). Brython called `__del__` on **every** `del name`, whether or
+  not anything still referenced the object, and called it *before* unbinding:
+  `x.arf = t; del t` finalized the tracker while the tensor still held it, where
+  CPython stays silent until the last reference goes. And Brython's `gc` module
+  is a stub (`def collect(*a, **k): pass`), so the bridge's sweep — this
+  project's explicit-collection contract — was reachable only through
+  `test-cpython.html`'s `support.gc_collect` shim; any suite calling plain
+  `gc.collect()` got a no-op.
+  With no refcount to consult, `del` now answers from reachability out of the
+  live Python frames: still held → the object joins `pendingDel` (held strongly,
+  exactly as a refcount would hold it) instead of being finalized; unreachable →
+  `__del__` runs. `$wasthon_drain_pending` fires the deferred ones once they
+  become unreachable — the cycle-collector half, now what `gc.collect()` calls —
+  and `$wasthon_after_unbind` cascades when the deleted object *itself* just
+  died, gated on it being unreachable **and acyclic**, which is how CPython
+  separates "freed at once" from "left to the collector". A C instance's weak
+  cells are cleared on its `del` when the bridge alone still holds it
+  (refcount 1): `weakref.ref()` reads None and its callback fires — refcount-0
+  behaviour, **clear-only, freeing nothing**, because the bytes are the bulk
+  reclaim's job and freeing here would re-open the failure mode that pass
+  measured.
+  The predicate is one-sided by construction: *found* always defers, and a miss
+  only reproduces the old eager behaviour, so this path can only be more
+  conservative than before. Two walks feed it and both skip the DOM `window`
+  that `from browser import window` leaves in the frame globals — stepping into
+  it cost **84 s for a single query** with no torch object in sight, and the
+  same guard took `gc.collect()` itself from 84 s to 0.0 s. Instance-vs-class is
+  told apart with `getOwnPropertyDescriptor`: a plain `o.__mro__` read resolves
+  through the class on an instance, which silently blinded an early version.
+  **+9 test_torch** (tensor and storage `dict_dealloc`, `slot_dealloc`,
+  `weakref_dealloc`, `fix_weakref_no_leak`, plus `storage_dealloc`). The rest of
+  that family needs edges only the C++ side can declare (`z.grad` is an accessor
+  into autograd metadata, not a stored property — torch's own test calls it
+  `THPVariable_subtype_traverse`); dossier in brytorch
+  `BUG_torch_dealloc_cluster.md`.
+
 - **A C type carries `__qualname__` in its own dict, so a swapped metaclass
   cannot shadow it** (`src/wasthon.js`, `PyType_Ready`). In CPython no class
   stores `__qualname__` in `tp_dict` — `type.__qualname__` is a getset, i.e. a

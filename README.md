@@ -915,6 +915,52 @@ Infrastructure work that pays back on existing modules:
       (`test_sqlite3` `test_table_lock_cursor_dealloc` /
       `test_table_lock_cursor_non_readonly_select` /
       `test_connection_resource_warning`). Details in `CHANGELOG.md`.
+- [x] `del name` means CPython's `del`, and `gc.collect()` finally reaches the
+      sweep above. Two gaps sat under the whole "GC that isn't one" chapter.
+      First, Brython's `del name` called `__del__` **unconditionally** and
+      *before* unbinding, so an object a container still held was finalized on
+      the spot — measured in the port: `x.arf = t; del t` fired `t.__del__`
+      where CPython stays silent. Second, Brython's `gc` module is a stub
+      (`def collect(*a, **k): pass`), so the explicit sweep documented here was
+      only ever reached through `test-cpython.html`'s `support.gc_collect`
+      shim; a suite calling plain `gc.collect()` got a no-op.
+      The bridge now answers `del` from **reachability out of the live Python
+      frames** (`$wasthon_should_finalize`, two hook points in
+      `$B.$delete` — the pattern `Lib/_weakref.py` already uses for
+      `$wasthon_weakref_track`): still held → the object joins `pendingDel`,
+      held strongly exactly as a refcount would hold it; unreachable → `__del__`
+      runs now. `$wasthon_drain_pending` fires the deferred ones once they
+      become unreachable (the cycle-collector half, called by `gc.collect()`),
+      and `$wasthon_after_unbind` cascades when the deleted object *itself*
+      just died — unreachable **and acyclic**, which is precisely how CPython
+      separates "freed at once" from "left to the collector". A C instance's
+      weak cells are cleared on its `del` when the bridge alone still holds it
+      (refcount 1): `weakref.ref()` reads None and its callback fires,
+      refcount-0 behaviour obtained **clear-only, without freeing a byte** —
+      the bytes remain the bulk reclaim's job, and freeing here would re-open
+      the failure mode that pass already measured.
+      Why this is sound where the bulk reclaim is not: the question is not
+      "which of 406 039 candidates are dead" but "is THIS one still held", on
+      an **observed** event (the user wrote `del x`) rather than an inferred
+      one. One object per answer buys iterative deepening (2, then 4, then 7)
+      and an early exit at the first referrer — affordable here, ruinous there.
+      And the predicate is one-sided by construction: *found* always defers, a
+      miss only reproduces the old eager behaviour, so the `del` path can only
+      become more conservative than it was.
+      **+9 test_torch** (the `Tracker`/dealloc family: tensor and storage
+      `dict_dealloc`, `slot_dealloc`, `weakref_dealloc`,
+      `fix_weakref_no_leak`, `storage_dealloc`), and `gc.collect()` itself went
+      **84 s → 0.0 s** once both walks stopped stepping into the DOM `window`
+      that `from browser import window` leaves in the frame globals.
+      **The limit, stated plainly:** the rest of that family
+      (`cycle_via_dict/_slots`, `dead_weak_ref`, the resurrection/zombie pair)
+      hangs on edges this side cannot see. `z.grad = x` is an **accessor** into
+      autograd metadata, not a stored property; torch's own test says so
+      (*"C++ reference should keep the cycle live! This exercises
+      THPVariable_subtype_traverse"*). No JS walk can follow it, and following
+      accessors would run C++ inside a liveness predicate. Closing those needs
+      the C++ half to declare its edges, the way `tp_traverse` does for CPython.
+      Full dossier: brytorch `BUG_torch_dealloc_cluster.md`.
 - [x] Container-boundary reference discipline + scope-owned `GET_ITEM` buffers
       — the three memory roots behind pickle's "delayed-writer page poison"
       (a 10k-object framed dump left ~300k pinned handles and a 1.6 GB heap,
