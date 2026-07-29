@@ -242,7 +242,13 @@
             };
             posix.remove = posix.unlink;
             posix.mkdir = function (path, mode) {
-                FS.mkdir(toPath(path), mode === undefined ? 0o777 : mode); return _b_.None;
+                path = toPath(path);
+                // CPython raises FileExistsError, and os.makedirs(exist_ok=True)
+                // catches OSError to honour the flag — the raw JS throw that
+                // Emscripten's FS.mkdir does goes straight past that except.
+                if (exists(path)) raise(_b_.FileExistsError,
+                    "File exists: '" + path + "'");
+                FS.mkdir(path, mode === undefined ? 0o777 : mode); return _b_.None;
             };
             posix.rmdir = function (path) { FS.rmdir(toPath(path)); return _b_.None; };
             // torch.serialization chmod's saved checkpoints (mirror_to_file);
