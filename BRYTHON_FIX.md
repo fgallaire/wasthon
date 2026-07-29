@@ -18,6 +18,72 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+- [x] **Formatting a traceback can throw a JS `TypeError` and take down the whole
+  module: `can't access property "length", pos is undefined`.** The formatter
+  reads `frame.positions[Math.floor(frame.inum/2)]` and hands the result to
+  `$B.decode_position`, which dereferences `.length` without checking. When the
+  index is out of range the result is `undefined` and the formatter throws -- as a
+  **JS** error, which no Python `except` catches. The exception the user was
+  supposed to read is replaced by this message, raised from wherever the
+  traceback was being built. In a test runner that means the whole module dies
+  with a message pointing at nothing; here it cost a day of bisection on a
+  suite that had run for five minutes before dying.
+
+  The out-of-range index is not hypothetical, and `__annotate__` produces it by
+  construction. Annotations are numbered with `add_to_positions` **after** the
+  function has emitted its own `frame.positions = [...]`, so their `inum` belongs
+  to the enclosing (class or module) scope's array, while the generated
+  `__annotate__` binds
+
+  ```js
+  frame.positions = $B.frame_obj.prev.frame.positions
+  frame.positions.push([lineno, end_lineno, col_offset, end_col_offset])
+  ```
+
+  -- the array of **whatever frame happens to call it**. `typing.get_type_hints`,
+  `inspect.signature` and `dataclasses` all call `__annotate__` from their own
+  code, so the two arrays are unrelated: the index is a class-scope ordinal read
+  against a stranger's array. Two consequences, both visible below -- a wrong
+  caret when the index happens to land, a crash when it does not:
+
+  ```python
+  class K:
+      p1 = len("aaa")
+      p2 = len("bbb")
+      p3 = len("ccc")
+      p4 = len("ddd")
+      p5 = len("eee")
+      p6 = len("fff")
+      p7 = len("ggg")
+      p8 = len("hhh")
+
+      def probe(self, x: Missing) -> Missing:
+          return x
+
+  def caller(fn):
+      return fn.__annotate__(1)
+
+  caller(K.probe)
+  ```
+
+  CPython reports `NameError: name 'Missing' is not defined`. Brython raises the
+  JS `TypeError` instead. Shrink the class body and the crash becomes a
+  mis-attributed position: the `__annotate__` frame is shown quoting
+  `caller`'s source line, because that is the array it borrowed.
+
+  `frame.positions.push(...)` also mutates the caller's array in place, so an
+  unrelated frame's position list grows by one entry per `__annotate__` call.
+
+  The fix applied here is the robustness half, which is worth having on its own --
+  a traceback formatter must degrade, never throw. `decode_position` answers
+  `undefined` for a missing entry (every caller already tests the result before
+  using it), and `f_code_get` maps a hole to `[0,0,0,0]` so `co_positions()`
+  stays a well-formed 4-tuple sequence the way CPython's is for an unknown
+  position. The numbering half is a compiler change: annotations should be
+  numbered in their own scope, and `__annotate__` should carry that array rather
+  than borrow its caller's. **Turns a module-killing JS error into the real
+  Python exception.**
+
 - [x] **`frame.f_lasti` is a fabricated `0`, which makes `inspect.getframeinfo()`
   report the wrong line** (`frame_funcs.f_lasti_get`). Brython has no bytecode
   instruction index, and answering `0` is not neutral: `inspect` reads
@@ -4724,3 +4790,81 @@ called with the raw item (no tuple wrapping), preserving the
 `posix.posix.execv` and every module-level builtin is unpicklable by
 reference. Fix (vendored brython.js): the JS-module import fixup passes the
 bare attribute name as qualname.
+
+## `X | None` keeps None instead of NoneType in `__args__`
+
+```python
+import typing
+typing.get_args(list[float] | None)   # CPython: (list[float], <class 'NoneType'>)
+                                      # Brython: (list[float], None)
+typing.get_args(typing.Optional[list[float]])   # correct in both
+```
+
+CPython's `union_new` normalises `None` to `type(None)` when it builds a
+`types.UnionType` (`is_unionable`), and `union_repr` prints it back as
+`None`. Brython's `$B.UnionType.$factory` stores the operand as given, so
+the very common CPython idiom `issubclass(get_args(ann)[1], type(None))`
+raises `TypeError: issubclass() arg 1 must be a class` — it is how
+TorchScript decides whether an annotation is optional
+(`torch/jit/annotations.py:436`). Fix (vendored brython.js): normalise in
+`$factory` (so every construction path is covered) and in `nb_or` before
+the dedup test, and print `NoneType` back as `None` in `tp_repr`.
+
+## hashlib constructors reject `usedforsecurity`
+
+```python
+import hashlib
+hashlib.sha1(usedforsecurity=False)   # CPython: a sha1 object
+                                      # Brython: TypeError: expected bytes,
+                                      #          got Javascript Object
+```
+
+CPython's signature is `sha1(data=b'', *, usedforsecurity=True)` since 3.9;
+Brython's `hashlib.sha1` takes one positional argument, so the keyword
+lands where the data is expected. The flag is advisory — it only matters
+where a security policy forbids an algorithm. Fix (vendored
+brython_stdlib.js): route the six constructors through `$B.args` with a
+`kw` catch-all, keeping the positional `data` behaviour unchanged.
+
+## A bound method reports `builtins` as its `__module__`
+
+```python
+import inspect, torch.nn as nn
+f = nn.Linear(1, 1).forward
+nn.Linear.forward.__module__   # 'torch.nn.modules.linear'  (correct)
+f.__module__                   # CPython: same ; Brython: 'builtins'
+inspect.getmodule(f)           # CPython: the linear module ; Brython: builtins
+```
+
+CPython's `method` type carries no `__module__`/`__name__`/`__qualname__` in
+its dict, so `method_getattro` finds nothing on the type and falls through to
+`im_func` — a bound method reports the function's. Brython's
+`$B.set_func_names(method, "builtins")` puts `__module__` on the type itself,
+and `method.tp_getattro` searches the MRO first, so the class attribute wins
+for every bound method ever created.
+
+The visible damage is in `inspect`: `getmodule` resolves a bound method to the
+builtins module, and `getsourcefile` then refuses a filename it could have
+returned through the real module's `__loader__` — which is exactly how
+TorchScript reads a method before compiling it
+(`torch/_sources.py:parse_def`). Fix (vendored brython.js): delegate those
+three names to `im_func`, as CPython effectively does.
+
+## `method-wrapper.__qualname__` returns JS `undefined`
+
+```python
+w = type(1).__dict__['real'].__get__      # <method-wrapper '__get__' ...>
+w.__qualname__      # CPython: 'getset_descriptor.__get__'
+                    # Brython: an `undefined` that is not a Python object
+```
+
+`method_wrapper_funcs.__qualname___get` is `function(self){}` — it returns
+nothing, so the getset hands JS `undefined` back to Python. It does not raise,
+so nothing signals it: the value travels until something dereferences it. In
+torch, `__torch_function__` implementations log
+`(func.__qualname__, types)`, which puts the `undefined` inside a tuple —
+`copy.deepcopy` then dies on `id(x)` and `torch.utils._pytree` on `leaves[0]`,
+both far from the cause.
+
+Fix (vendored brython.js): build it as CPython does, from the owning type and
+the method name, falling back to the bare name when there is no `__objclass__`.

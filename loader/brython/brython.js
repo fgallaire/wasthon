@@ -3426,8 +3426,15 @@ $B.GenericAlias.tp_members=[["__origin__",$B.TYPES.OBJECT,"origin",1],["__args__
 $B.GenericAlias.tp_getset=["__parameters__","__typing_unpacked_tuple_args__","__unpacked__"]
 $B.set_func_names($B.GenericAlias,"types")
 $B.UnionType=$B.make_builtin_class("UnionType")
+// CPython normalises None to NoneType in a union's __args__ (union_new ->
+// is_unionable) and prints it back as "None" (union_repr). Without it,
+// get_args(X | None)[1] is None instead of the class, and any CPython idiom
+// of the form issubclass(get_args(ann)[1], type(None)) raises TypeError.
+$B.UnionType.$norm=function(items){var out=[]
+for(var item of items){out.push(item===_b_.None ? $B.NoneType : item)}
+return out}
 $B.UnionType.$factory=function(items){return{
-ob_type:$B.UnionType,args:$B.fast_tuple(items)}}
+ob_type:$B.UnionType,args:$B.fast_tuple($B.UnionType.$norm(items))}}
 $B.UnionType.tp_richcompare=function(self,other,op){if(! $B.$isinstance(other,$B.UnionType)){return _b_.NotImplemented}
 switch(op){case '__eq__':
 return $B.list_eq(self.args,other.args)
@@ -3436,7 +3443,8 @@ return ! $B.list_eq(self.args,other.args)
 default:
 return _b_.NotImplemented}}
 $B.UnionType.tp_repr=function(self){var t=[]
-for(var item of self.args){if($B.is_type(item)){var s=$B.get_name(item)
+for(var item of self.args){if(item===$B.NoneType){t.push('None')}
+else if($B.is_type(item)){var s=$B.get_name(item)
 if($B.get_from_dict(item,'__module__')!=="builtins"){s=item.__module__+'.'+s}
 t.push(s)}else{t.push(_b_.repr(item))}}
 return t.join(' | ')}
@@ -3444,8 +3452,10 @@ $B.UnionType.nb_or=function(self,other){
 // the reflected path can hand a NON-union left operand (None | SomeUnion:
 // NoneType has no nb_or, and the fallback calls this slot with self=None)
 // — CPython's union___or__ accepts any unionable operand on either side
-var items=(self!==undefined && self!==null && self.args!==undefined)?self.args.slice():[self]
-if(! items.includes(other)){items.push(other)}
+var norm=$B.UnionType.$norm
+var items=(self!==undefined && self!==null && self.args!==undefined)?self.args.slice():norm([self])
+var arg=norm([other])[0]
+if(! items.includes(arg)){items.push(arg)}
 return $B.UnionType.$factory(items)}
 var UnionType_funcs=$B.UnionType.tp_funcs={}
 UnionType_funcs.__class_getitem__=function(cls,items){if($B.is_tuple(items)){return $B.UnionType.$factory(items)}else{return items}}
@@ -3479,7 +3489,16 @@ method_wrapper_funcs.__name___get=function(self){return self.d_name}
 method_wrapper_funcs.__name___set=function(self){}
 method_wrapper_funcs.__objclass___get=function(self){return self.self.__objclass__}
 method_wrapper_funcs.__objclass___set=function(self){}
-method_wrapper_funcs.__qualname___get=function(self){}
+method_wrapper_funcs.__qualname___get=function(self){
+// CPython builds it from the owning type and the method name
+// ('getset_descriptor.__get__'). Returning nothing handed JS `undefined`
+// straight to Python: torch's __torch_function__ logs
+// (func.__qualname__, types), so the undefined landed inside a tuple and
+// killed the first id() or deepcopy that walked it.
+var oc=self.self===undefined||self.self===null?null:self.self.__objclass__
+var tn=null
+if(oc){try{tn=$B.get_name(oc)}catch(err){tn=oc.__name__||oc.tp_name||null}}
+return tn?tn+'.'+self.d_name:self.d_name}
 method_wrapper_funcs.__qualname___set=function(self){}
 method_wrapper_funcs.__reduce__=function(self){return $B.fast_tuple([_b_.getattr,$B.fast_tuple([self.self,self.d_name])])}
 method_wrapper_funcs.__text_signature___get=function(self){return self.$text_signature===undefined?_b_.None:self.$text_signature}
@@ -3537,6 +3556,15 @@ return "<bound method "+name+
 $B.method.tp_hash=function(self){return($B.$hash(self.im_self)^$B.$hash(self.im_func))&0x7FFFFFFF}
 $B.method.tp_call=function(self,...args){return $B.$call(self.im_func,self.im_self,...args)}
 $B.method.tp_getattro=function(self,attr){var tp=$B.get_class(self)
+// CPython's method type carries none of these in its dict, so method_getattro
+// falls through to im_func and a bound method reports the FUNCTION's module,
+// name and qualname. Brython's set_func_names puts __module__ on the type
+// itself, which then wins the MRO lookup: every bound method answered
+// 'builtins', inspect.getmodule resolved it to the builtins module, and
+// inspect.getsourcefile gave up on a file it could otherwise have found
+// through the module's __loader__ (which is how TorchScript reads a method).
+if(attr=='__module__'||attr=='__name__'||attr=='__qualname__'){
+return $B.object_getattribute(self.im_func,$B.get_class(self.im_func),attr)}
 var descr=$B.search_in_mro(tp,attr,$B.NULL)
 if(descr !==$B.NULL){var getter=$B.search_slot($B.get_class(descr),'tp_descr_get',$B.NULL)
 if(getter !==$B.NULL){return getter(descr,self,tp)}else{return descr}}
@@ -6129,7 +6157,9 @@ $B.init_dict(res)
 for(var attr in infos){res[attr]=infos[attr]}
 positions=self.positions ?? positions}
 res.ob_type=$B.code
-positions=positions.map($B.decode_position)
+// co_positions() must stay well formed: CPython yields a 4-tuple of None for
+// an instruction whose position is unknown, never a hole
+positions=positions.map(p=> p===undefined ?[0,0,0,0]:$B.decode_position(p))
 var co_positions=()=> $B.$list(positions)
 co_positions.ob_type=$B.function
 res.co_positions=co_positions
@@ -15667,7 +15697,14 @@ $B.copy_position=copy_position
 function encode_position(lineno,end_lineno,col_offset,end_col_offset){var res
 if(end_lineno==lineno){res=`[${lineno},${col_offset},${end_col_offset - col_offset}]`}else{res=`[${lineno},${end_lineno},${col_offset},${end_col_offset}]`}
 return res}
-$B.decode_position=function(pos){if(pos.length==3){return[pos[0],pos[0],pos[1],pos[1]+pos[2]]}else{return pos}}
+// a missing entry is answered with undefined, not a TypeError: this runs while
+// a traceback is being FORMATTED, so throwing here replaces the exception the
+// user has to read with "can't access property length, pos is undefined", and
+// it throws as a JS error, which no Python `except` catches -- one frame whose
+// inum outruns its positions array takes down the whole module. Callers already
+// test the result before using it.
+$B.decode_position=function(pos){if(pos===undefined){return pos}
+if(pos.length==3){return[pos[0],pos[0],pos[1],pos[1]+pos[2]]}else{return pos}}
 function get_source_from_position(scopes,ast_obj){scopes.lines=scopes.lines ?? scopes.src.split('\n')
 var lines=scopes.lines,start_line=lines[ast_obj.lineno-1],res
 if(ast_obj.end_lineno==ast_obj.lineno){res=start_line.substring(ast_obj.col_offset,ast_obj.end_col_offset)}else{var res=start_line.substr(ast_obj.col_offset),line_num=ast_obj.lineno+1
