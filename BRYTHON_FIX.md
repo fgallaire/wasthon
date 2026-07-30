@@ -18,6 +18,54 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
 
 ---
 
+- [ ] **A name bound in BOTH branches of an `if`/`else` is compiled as possibly
+  unbound, and reading it raises `UnboundLocalError`.** Moving two comprehensions
+  from the body of a function into the `else` of an `if` -- same statements, same
+  order, same bindings -- turned a working suite runner into
+  `cannot access local variable 'arch_skipped' where it is not associated with a
+  value`. The generated JS shows the decision, on the very same read:
+
+  ```js
+  // both comprehensions at function level
+  locals.arch_skipped
+  // the same two inside an `else:`
+  $B.resolve_local('arch_skipped', 75)
+  ```
+
+  `resolve_local` is the lane for a name the compiler believes may be unbound,
+  and it is the lane that is wrong:
+
+  ```js
+  $B.resolve_local=function(name,inum){
+  if($B.frame_obj !==null){var frame=$B.frame_obj.frame
+  if(frame[1].hasOwnProperty(name)){return frame[1][name]}}
+  ... UnboundLocalError
+  ```
+
+  It resolves a LEXICAL local by asking the DYNAMIC frame stack for it. The
+  direct `locals.x` form reads the binding the compiler established and cannot
+  be wrong; `resolve_local` reads whichever frame happens to be current. Any
+  drift in `$B.frame_obj` turns it into a false `UnboundLocalError` -- and the
+  frame it actually read here was `unittest.case.__call__`, several hundred
+  tests into a suite, with the runner's module frame as its parent. The
+  function whose local was being read was no longer on the stack at all.
+
+  So the conditional binding is only the trigger: it decides which lane the
+  read compiles to. Making a name conditionally bound must not change whether
+  reading it is correct.
+
+  Not reduced to a standalone snippet, and probably not reducible to one: the
+  two obvious shrinks (the bare `if`/`else`, and the same plus a later
+  conditional rebinding) both run correctly, because ten lines never drift the
+  frame stack. The evidence above is from the real module, compiled both ways
+  with `$B.py2js(...).to_js()`, plus a probe that recorded the frame actually
+  read.
+
+  Raising from `resolve_local` also stamps that `inum` on the wrong frame -- one
+  whose positions array has a single entry. The traceback formatter then indexed
+  it at 37 and threw the JS `TypeError` below, which is why a false
+  `UnboundLocalError` spent a day looking like something else entirely.
+
 - [x] **Formatting a traceback can throw a JS `TypeError` and take down the whole
   module: `can't access property "length", pos is undefined`.** The formatter
   reads `frame.positions[Math.floor(frame.inum/2)]` and hands the result to
