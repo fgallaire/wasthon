@@ -1007,6 +1007,59 @@ Infrastructure work that pays back on existing modules:
       None of this touches the reclaim-scale question — deciding among hundreds
       of thousands of candidates at once is a different problem, and still open.
       Full dossier: brytorch `BUG_torch_dealloc_cluster.md`.
+- [x] `del` and `gc.collect()` **release**, and only on proof. The limit above
+      had two halves, and the first was not about triggers at all: a C function
+      returning an object Python already holds left one count behind (see the
+      entry on instances handed back to Python), so a temporary view sat at
+      refcount 2 and no path could ever find it sole-owned. With that fixed,
+      `del` is enough of a trigger for the family — what it lacked was a sound
+      verdict. The walks above are bounded and walled (modules, classes, depth
+      7): they are fit to say *held*, never *dead*. Used as a death verdict,
+      each wall is a use-after-free, and the audit probes built eight of them —
+      a class attribute, another module's global, a default argument, a bound
+      method, a closure, nine levels of nesting, a dict with a non-str key
+      (Brython then keeps **all** entries in Symbol-keyed arrays no property
+      walk sees) and a resurrecting `__del__`.
+      So the chapter now has two tiers over **one** definition of the graph
+      (`_edges`: own data properties, Symbol-keyed ones, a function's
+      `__dict__`, defaults and defining frame — which is where a closure's free
+      variables live, visible after all — and the C++ side through
+      `cTraverse`). The quick walk runs on every `del`, so it stays as lean as
+      the old one: from the frames' locals and globals, depth 2, 4 then 7, into
+      no function beyond a bound C method's self, no non-str dict's entry
+      arrays, no big array's index list (enumerating those allocated a string
+      per byte of `test_bz2`'s payloads: 24 s → 113 s until it stopped). It
+      decides a finalizer on the spot, as before: a wrong "dead" there can only
+      run a `__del__` early, which is what Brython does on every `del`, and a
+      mark per `del` cost `test_bz2`'s 10 000-iteration `BZ2File` loop
+      24 s → 961 s. Nothing is **freed** until **the mark** — a complete
+      traversal from every live frame and every imported module, no walls, no
+      depth bound — proves it unreachable, and a mark that cannot finish proves
+      nothing; the mark also decides the pending objects a death or
+      `gc.collect()` settles. It is paid only when something is about to die (56
+      marks across `test_torch`, 44 s in all at a million objects), one
+      mark decides a whole batch, and a pending object found alive backs off (1,
+      2, 4 … 1024 settles) so one held out of the quick walk's sight cannot cost
+      a mark per `del`. The cascade keeps CPython's split: what a dying object held
+      dies with it, unless a reference cycle is within reach of that data — the
+      cycle's count stays above zero until the collector runs, and whatever
+      hangs from it waits too.
+      One hole no walk can close remains: a value an enclosing frame is still
+      evaluating (`[g, f()]` while `f` deletes `g`) lives in a compiled-JS
+      local. Such a miss no longer corrupts memory: `_release` retypes the
+      wrapper to `released`, whose every attribute read raises
+      `ReferenceError`, and repoints it at a tombstone block, so the worst case
+      is an exception to read. `released.touched` counts those reads — **0**
+      across the lifetime family and `test_torch`.
+      And one hazard the old path carried unseen: a page can load two wasm
+      runtimes under one Brython (brytorch loads numpy next to torch), and these
+      hooks are installed once, bound to the first. An instance of the other
+      runtime carries a pointer into another heap, which can name an unrelated
+      object of ours; only instances whose `__wasthon_type_rt__` is ours are
+      ever released or have their cells cleared.
+      `gc.get_objects()` answers with the C instances the bridge still holds.
+      Measured: `test_torch` **912/912** (was 910), the eight probe cases now
+      behave as CPython, and the chapter is shorter than the one it replaces.
 - [x] Container-boundary reference discipline + scope-owned `GET_ITEM` buffers
       — the three memory roots behind pickle's "delayed-writer page poison"
       (a 10k-object framed dump left ~300k pinned handles and a 1.6 GB heap,

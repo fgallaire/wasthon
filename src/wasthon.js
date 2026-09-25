@@ -807,498 +807,534 @@ mergeInto(LibraryManager.library, {
                      * so live C instances count as roots here too — otherwise
                      * this call fires the finalizables that gc.collect()'s own
                      * bilateral drain would have protected, a step later. */
-                    if (B.$wasthon_drain_pending) B.$wasthon_drain_pending(true);
+                    if (B.$wasthon_drain_pending) rt._drained = B.$wasthon_drain_pending();
+                    return true;
                 };
             }
 
-            /* ---- CPython `del` / finalization semantics -------------------
-             * Brython's `del name` calls __del__ on the object unconditionally,
-             * whether or not anything else still references it (brython.js,
-             * $B.$delete). CPython only unbinds the name; __del__ runs when the
-             * LAST reference goes, and never while a container still holds the
-             * object. That single divergence is what torch's whole
-             * dealloc/lifetime family measures (`Tracker.__del__` + `del`).
+            /* ---- `del`, gc.collect() and the death of a C instance ---------
+             * CPython frees an object when its last reference goes: `del name`
+             * only unbinds, `__del__` runs and the memory is returned when the
+             * count reaches zero, and a reference cycle waits for gc.collect().
+             * Brython has no refcount on its objects, so the bridge answers the
+             * same question from the object graph, in two tiers:
              *
-             * There is no refcount to consult here, so the predicate is
-             * reachability from the live Python frames — the same walk the
-             * gc sweep above uses. Two properties make it affordable and much
-             * narrower than the bulk reclaim pass (which frees live objects at
-             * scale, GC_BILATERAL_RECLAIM.md §3bis): it runs on an EXPLICIT
-             * `del` of an object whose class defines __del__ (a rare
-             * population, not 400 000 candidates), and it answers about ONE
-             * object, so it can search deeper and stop as soon as it finds a
-             * referrer. Errors are one-sided by construction: "found" always
-             * defers (never finalizes something live), and a miss only
-             * reproduces today's eager behaviour.
+             *   - a QUICK walk, bounded and walled (modules, classes, depth 7),
+             *     cheap enough to run on every `del`. It decides a finalizer on
+             *     the spot — a wrong "dead" only runs __del__ early, what Brython
+             *     itself does on every del — and otherwise only answers "held";
+             *   - the MARK, a complete traversal from every live frame and every
+             *     imported module, with no walls and no depth bound, run only
+             *     when something is about to die. Nothing is FREED unless the
+             *     mark proves it unreachable, and a mark that cannot finish
+             *     proves nothing.
              *
-             * The walk is a deliberate copy of the sweep's, not a refactor of
-             * it: the sweep is proven and load-bearing (sqlite3/pickle
-             * finalization), and a shared helper would put this new caller on
-             * its hot path. */
+             * Both read one definition of the graph, `_edges`, so a reference the
+             * bridge learns to see is seen by every decision at once.
+             *
+             * One hole no walk can close: a value an enclosing frame is still
+             * evaluating (the left operand of `a + f()` while f runs) lives in a
+             * compiled-JS local. So a released wrapper is not left pointing at
+             * freed memory: `_kill` retypes it to `released`, whose every
+             * attribute read raises ReferenceError, and repoints it at a
+             * tombstone block. Mistaking a live object for a dead one then gives
+             * an exception to read, never a heap to corrupt. */
             if (!B.$wasthon_should_finalize) {
                 var _rtDF = this;
-                /* Deferred finalizables: still referenced when their name was
-                 * deleted. Held strongly, exactly as CPython's refcount holds
-                 * them; drained when they become unreachable. */
+                /* Objects whose name was deleted while something still held them,
+                 * or that sit in a cycle: those with a __del__ of their own, and
+                 * C instances with weak cells. A later death or gc.collect()
+                 * settles them. Held strongly, as CPython's refcount would. */
                 _rtDF.pendingDel = new Set();
-                /* Weak-referenced C instances whose name was deleted while
-                 * something still held them. Their cells must stay live, but
-                 * nothing would ever come back to them: the `del` that ends
-                 * their life is the HOLDER's, and that one is judged on the
-                 * holder. Same shape as pendingDel, drained the same way. */
                 _rtDF.pendingWeak = new Set();
-                /* The walls that keep either walk from wandering into the whole
-                 * interpreter: the bridge's own strong-ref bookkeeping (it pins
-                 * EVERY instance), the module graphs, and the weak cells (a weak
-                 * reference must never mark its referent). Same set the sweep
-                 * uses — without it a walk that starts at a torch tensor reaches
-                 * all of torch and never ends in useful time. */
-                var _mkSkip = function() {
-                    var rt = _rtDF, Bx = rt.$B, skip = new Set();
-                    skip.add(rt); skip.add(rt.handles); skip.add(rt.gcRegistry);
-                    skip.add(rt.refcounts); skip.add(rt.scopeOf); skip.add(rt.sentinelByObj);
-                    skip.add(rt.internPool); skip.add(rt.types); skip.add(rt.modules);
-                    skip.add(rt.moduleDefs); skip.add(rt.pendingDel);
-                    if (rt.scopes) skip.add(rt.scopes);
-                    skip.add(Bx); skip.add(Bx.builtins); skip.add(Bx.imported);
-                    /* Host objects: `from browser import window` puts the real
-                     * DOM window in the frame globals, and a walk that steps
-                     * into it covers the entire browser environment (measured:
-                     * ~80 s for ONE query, with no torch object in sight). */
-                    try { if (typeof globalThis !== 'undefined') skip.add(globalThis); } catch (e) {}
-                    try { if (typeof window !== 'undefined') skip.add(window); } catch (e) {}
-                    try { if (typeof document !== 'undefined') skip.add(document); } catch (e) {}
-                    try {
-                        var imp = Bx.imported, ik = imp ? Object.getOwnPropertyNames(imp) : [];
-                        for (var ii = 0; ii < ik.length; ii++) {
-                            var mv;
-                            try { mv = Object.getOwnPropertyDescriptor(imp, ik[ii]); }
-                            catch (e) { continue; }
-                            if (mv && mv.value && typeof mv.value === 'object') skip.add(mv.value);
-                        }
-                    } catch (e) {}
-                    return skip;
+                _rtDF.lifeStats = { marks: 0, markMs: 0, maxN: 0, released: 0 };
+                _rtDF._backoff = new WeakMap();
+                B.$wasthon_life = function() {
+                    var t = _rtDF._released ? B.$getattr(_rtDF._released, 'touched') : 0;
+                    return JSON.stringify(Object.assign({ touched: t }, _rtDF.lifeStats));
                 };
-                /* The references a C instance holds that no JS property shows.
-                 * cTraverse can read them, but the two walks that decide `del`
-                 * only ever looked at $B.DICT and own properties, so a torch
-                 * accessor over C state — `t.grad`, `_backward_hooks`, the
-                 * storage behind a tensor — stayed invisible to them and their
-                 * holders read as dead. Gated on an OWN __wasthon_ptr__ so the
-                 * wasm call happens for C instances only (a plain read would
-                 * resolve through the class and call it for everything). */
-                var _cEdges = function(v) {
+                _rtDF._settleTick = 0;
+
+                var _ownPtr = function(v) {
                     var d;
                     try { d = Object.getOwnPropertyDescriptor(v, '__wasthon_ptr__'); }
-                    catch (e) { return null; }
-                    if (!d || typeof d.value !== 'number' || !d.value) return null;
-                    try { return _rtDF.cTraverse(v); } catch (e) { return null; }
+                    catch (e) { return 0; }
+                    return d && typeof d.value === 'number' ? d.value : 0;
                 };
-                /* The C instances that are STILL REACHABLE, marked forward from
-                 * the live frames — the root set the bilateral half needs.
-                 * It used to take every instance in rt.handles, which holds
-                 * each one for the wrapper's whole life: a `z` whose last name
-                 * is gone stays in there, so `z.grad = x` kept x alive forever
-                 * and nothing cyclic was ever collectable. That blanket was
-                 * only there because the walk could not see C++ edges; now that
-                 * cTraverse reports them, an honest mark can answer instead.
-                 * Computed ONCE per drain (the caller passes the set down),
-                 * where the old code paid a full walk per deferred object. */
-                var _liveCRoots = function() {
-                    var rt = _rtDF, Bx = rt.$B;
-                    var out = new Set(), seen = new Set(), skip = _mkSkip();
-                    var budget = 40000;
-                    var _isCls = function(o) {
-                        try {
-                            return Object.getOwnPropertyDescriptor(o, '__mro__') !== undefined ||
-                                   Object.getOwnPropertyDescriptor(o, 'tp_mro') !== undefined;
-                        } catch (e) { return false; }
-                    };
-                    var scan = function(v, depth) {
-                        if (v === null || v === undefined || budget <= 0) return;
-                        var t = typeof v;
-                        if (t !== 'object' && t !== 'function') return;
-                        if (skip.has(v) || seen.has(v)) return;
-                        if (_isCls(v)) return;          /* classes reach all of torch */
-                        seen.add(v); budget--;
-                        var isC = false;
-                        try { isC = Object.getOwnPropertyDescriptor(v, '__wasthon_ptr__') !== undefined; }
-                        catch (e) {}
-                        if (isC) {
-                            out.add(v);
-                            /* Follow what the C++ holds, so a tensor reachable
-                             * ONLY through another one's grad is a root too. */
-                            var ce;
-                            try { ce = rt.cTraverse(v); } catch (e) { ce = null; }
-                            if (ce) for (var ci = 0; ci < ce.length; ci++) scan(ce[ci], depth - 1);
+                /* A page can load two wasm runtimes (torch and numpy) under one
+                 * Brython, and these hooks are installed once, bound to the first.
+                 * An instance of the OTHER runtime carries a pointer into another
+                 * heap: looked up here it can name an unrelated object of ours.
+                 * Only our own instances are ever released or have cells cleared. */
+                var _mine = function(v) {
+                    var d;
+                    try { d = Object.getOwnPropertyDescriptor(v, '__wasthon_type_rt__'); } catch (e) { return false; }
+                    return !!d && d.value === _malloc;
+                };
+                var _isCls = function(v) {
+                    try {
+                        return Object.getOwnPropertyDescriptor(v, '__mro__') !== undefined ||
+                               Object.getOwnPropertyDescriptor(v, 'tp_mro') !== undefined;
+                    } catch (e) { return false; }
+                };
+
+                /* What never holds a Python object in the Python sense: the
+                 * bridge's own bookkeeping (it pins every instance), the pending
+                 * sets, the interpreter object and the host environment (a
+                 * `from browser import window` puts the whole DOM one step away:
+                 * measured 84 s for one walk). Weak cells are checked apart: a
+                 * weak reference never keeps its referent. */
+                var _walls = null;
+                var _mkWalls = function() {
+                    if (_walls) return _walls;
+                    var rt = _rtDF;
+                    _walls = new Set([rt, rt.handles, rt.gcRegistry, rt.refcounts, rt.scopeOf,
+                        rt.sentinelByObj, rt.internPool, rt.types, rt.modules, rt.moduleDefs,
+                        rt.scopes, rt.weakRegistry, rt.weakCells, rt.demoted, rt.demotedType,
+                        rt.pendingDel, rt.pendingWeak, rt.$B]);
+                    try { if (typeof globalThis !== 'undefined') _walls.add(globalThis); } catch (e) {}
+                    try { if (typeof window !== 'undefined') _walls.add(window); } catch (e) {}
+                    try { if (typeof document !== 'undefined') _walls.add(document); } catch (e) {}
+                    return _walls;
+                };
+                /* The quick walk's extra walls: every imported module, and every
+                 * class (a class reaches all of torch). Cheap, and why the quick
+                 * walk may only ever answer "held". */
+                var _qw = null, _qwN = -1;
+                var _quickWalls = function() {
+                    var Bx = _rtDF.$B, nMods = 0;
+                    try { nMods = Object.getOwnPropertyNames(Bx.imported).length; } catch (e) {}
+                    if (_qw && nMods === _qwN) return _qw;
+                    var w = new Set(_mkWalls());
+                    w.add(Bx.builtins); w.add(Bx.imported);
+                    try {
+                        var ik = Object.getOwnPropertyNames(Bx.imported);
+                        for (var i = 0; i < ik.length; i++) {
+                            var mv;
+                            try { mv = Object.getOwnPropertyDescriptor(Bx.imported, ik[i]); } catch (e) { continue; }
+                            if (mv && mv.value && typeof mv.value === 'object') w.add(mv.value);
                         }
-                        if (depth <= 0 || t === 'function') return;
-                        if (Bx.DICT) {
-                            var idict;
-                            try { idict = v[Bx.DICT]; } catch (e) { idict = undefined; }
-                            if (idict && typeof idict === 'object') scan(idict, depth - 1);
-                        }
-                        if (Array.isArray(v)) {
-                            for (var i = 0; i < v.length; i++) scan(v[i], depth - 1);
+                    } catch (e) {}
+                    _qw = w; _qwN = nMods;
+                    return w;
+                };
+
+                /* THE graph: push everything `v` holds. Own data properties only
+                 * (a getter is never invoked), plus:
+                 *   - Symbol-keyed properties: an instance's attributes live
+                 *     under $B.DICT, and a dict holding a non-str key keeps ALL
+                 *     its entries in Symbol-keyed arrays;
+                 *   - for a function, its __dict__ (a Symbol too), defaults
+                 *     ($function_infos [4] [5]), __doc__ [6], annotations [17],
+                 *     method class [20] and the frame it was defined in [19],
+                 *     whose locals are where a closure's free variables live —
+                 *     but not its metadata (five arrays of names, and the
+                 *     prototype the engine gives every function);
+                 *   - for a C instance, what its tp_traverse reports: torch's
+                 *     `z.grad = x` is an accessor over C++ state, invisible to
+                 *     any property walk. */
+                var _DICT = B.DICT;
+                var _FN_META = { '$function_infos': 1, prototype: 1, length: 1,
+                                 name: 1, arguments: 1, caller: 1 };
+                var _edges = function(v, push, quick) {
+                    var i, j, k, pd, nm, sy, isArr = Array.isArray(v),
+                        isFn = typeof v === 'function';
+                    if (isFn) {
+                        /* The quick walk keeps to the one edge of a function
+                         * that is cheap and common, a bound C method's self;
+                         * the rest (defaults, __dict__, and the defining frame,
+                         * which reaches a module's whole namespace) is the
+                         * mark's. Walking it here made the quick walk exhaust its
+                         * budget on every dead object: test_bz2 24 s -> 127 s. */
+                        if (quick) {
+                            try { pd = Object.getOwnPropertyDescriptor(v, 'm_self'); } catch (e) { pd = null; }
+                            if (pd && 'value' in pd) push(pd.value);
                             return;
                         }
-                        if (v instanceof Map) { v.forEach(function(x) { scan(x, depth - 1); }); return; }
-                        if (v instanceof Set) { v.forEach(function(x) { scan(x, depth - 1); }); return; }
-                        var nm;
-                        try { nm = Object.getOwnPropertyNames(v); } catch (e) { return; }
-                        for (var n = 0; n < nm.length; n++) {
-                            var pd;
-                            try { pd = Object.getOwnPropertyDescriptor(v, nm[n]); }
-                            catch (e) { continue; }
-                            if (pd && 'value' in pd) scan(pd.value, depth - 1);
+                        try { pd = Object.getOwnPropertyDescriptor(v, '$function_infos'); } catch (e) { pd = null; }
+                        var fi = pd && pd.value;
+                        if (Array.isArray(fi)) {
+                            push(fi[4]); push(fi[5]); push(fi[6]); push(fi[17]); push(fi[19]); push(fi[20]);
                         }
-                    };
-                    var fo = Bx.frame_obj;
-                    while (fo) {
-                        var f = fo.frame;
-                        if (f) { scan(f[1], 8); scan(f[3], 8); }
-                        fo = fo.prev;
+                    } else if (isArr) {
+                        for (i = 0; i < v.length; i++) push(v[i]);
+                    } else if (v instanceof Map || v instanceof Set) {
+                        v.forEach(function(x, key) { push(x); push(key); });
+                        return;
+                    } else if (ArrayBuffer.isView(v)) {
+                        return;                         /* typed array: numbers only */
                     }
-                    return out;
+                    /* getOwnPropertyNames lists every index of an array: a
+                     * bytes payload of a few hundred kB made each walk allocate
+                     * that many strings (test_bz2 24 s -> 113 s). A big array's
+                     * named properties are its class; its Symbols still count. */
+                    if (isArr && v.length > 64) nm = [];
+                    else try { nm = Object.getOwnPropertyNames(v); } catch (e) { nm = []; }
+                    for (i = 0; i < nm.length; i++) {
+                        k = nm[i];
+                        if (isArr && (k === 'length' || (k >>> 0) + '' === k)) continue;
+                        if (isFn && _FN_META[k] === 1) continue;
+                        try { pd = Object.getOwnPropertyDescriptor(v, k); } catch (e) { continue; }
+                        if (pd && 'value' in pd) push(pd.value);
+                    }
+                    try { sy = Object.getOwnPropertySymbols(v); } catch (e) { sy = []; }
+                    for (i = 0; i < sy.length; i++) {
+                        /* The quick walk keeps an instance's attributes (DICT) and
+                         * leaves a non-str-keyed dict's entry arrays to the mark:
+                         * unfolding every such cache made each quick walk of a
+                         * dead object cost ~10 ms (test_bz2 24 s -> 113 s). */
+                        if (quick && sy[i] !== _DICT) continue;
+                        try { pd = Object.getOwnPropertyDescriptor(v, sy[i]); } catch (e) { continue; }
+                        if (!pd || !('value' in pd)) continue;
+                        var sv = pd.value;
+                        if (Array.isArray(sv) && sv.ob_type === undefined) {
+                            for (j = 0; j < sv.length; j++) push(sv[j]);
+                        } else push(sv);
+                    }
+                    if (_ownPtr(v)) {
+                        var ce;
+                        try { ce = _rtDF.cTraverse(v); } catch (e) { ce = null; }
+                        if (ce) for (i = 0; i < ce.length; i++) push(ce[i]);
+                    }
                 };
-                _rtDF._liveCRoots = _liveCRoots;
+                var _obj = function(x) {
+                    return x !== null && x !== undefined &&
+                           (typeof x === 'object' || typeof x === 'function');
+                };
 
-                var _reach = function(target, cRoots) {
-                    var rt = _rtDF, Bx = rt.$B, found = false;
-                    var seen = new Map(), skip = _mkSkip();
-                    var _isClass = function(o) {
-                        try {
-                            return Object.getOwnPropertyDescriptor(o, '__mro__') !== undefined ||
-                                   Object.getOwnPropertyDescriptor(o, 'tp_mro') !== undefined;
-                        } catch (e) { return false; }
-                    };
-                    var scan = function(v, depth) {
-                        if (found || v === null || v === undefined) return;
-                        var t = typeof v;
-                        if (t !== 'object' && t !== 'function') return;
+                /* Quick: is `target` held? Iterative deepening from the live
+                 * frames — a holder is almost always close to a binding, while
+                 * one binding (`self` in a test method) can open an enormous
+                 * graph. True is an answer; false only means "not found". */
+                var _quickHeld = function(target) {
+                    var walls = _quickWalls(), weak = _rtDF.weakCells, found = false,
+                        seen, budget, depths = [2, 4, 7];
+                    var visit = function(v, depth) {
+                        if (found || !_obj(v)) return;
                         if (v === target) { found = true; return; }
-                        if (skip.has(v)) return;
-                        if (_isClass(v)) return;      /* classes reach all of torch */
-                        if (rt.weakCells.size && rt.weakCells.has(v)) return;
+                        if (walls.has(v) || (weak.size && weak.has(v)) || _isCls(v)) return;
                         var sd = seen.get(v);
                         if (sd !== undefined && sd >= depth) return;
                         seen.set(v, depth);
-                        if (seen.size > 60000) return;      /* backstop: a miss only defers */
-                        if (depth <= 0 || t === 'function') return;
-                        if (Bx.DICT) {
-                            var idict;
-                            try { idict = v[Bx.DICT]; } catch (e) { idict = undefined; }
-                            if (idict && typeof idict === 'object') scan(idict, depth - 1);
-                        }
-                        var ce = _cEdges(v);
-                        if (ce) for (var ci = 0; ci < ce.length && !found; ci++)
-                            scan(ce[ci], depth - 1);
-                        if (Array.isArray(v)) {
-                            for (var i = 0; i < v.length && !found; i++) scan(v[i], depth - 1);
-                            return;
-                        }
-                        if (v instanceof Map) { v.forEach(function(x) { scan(x, depth - 1); }); return; }
-                        if (v instanceof Set) { v.forEach(function(x) { scan(x, depth - 1); }); return; }
-                        var nm;
-                        try { nm = Object.getOwnPropertyNames(v); } catch (e) { return; }
-                        for (var n = 0; n < nm.length && !found; n++) {
-                            var pd;
-                            try { pd = Object.getOwnPropertyDescriptor(v, nm[n]); }
-                            catch (e) { continue; }
-                            if (pd && 'value' in pd) scan(pd.value, depth - 1);
-                        }
+                        if (depth <= 0 || --budget < 0) return;
+                        _edges(v, function(x) { visit(x, depth - 1); }, true);
                     };
-                    /* Iterative deepening. A holder is almost always CLOSE to
-                     * a frame binding (`x._tracker = t` is locals -> x -> dict ->
-                     * t), while one binding can open an enormous graph — inside a
-                     * unittest method `self` reaches the whole test machinery. A
-                     * single deep pass spends its whole budget in the first such
-                     * binding and never gets to the neighbour that actually holds
-                     * the object; a shallow pass first answers the common case
-                     * for almost nothing. */
-                    var depths = [2, 4, 7];
                     for (var di = 0; di < depths.length && !found; di++) {
-                        seen = new Map();
-                        var fo = Bx.frame_obj;
-                        while (fo && !found) {
-                            var f = fo.frame;
-                            if (f) { scan(f[1], depths[di]); scan(f[3], depths[di]); }
-                            fo = fo.prev;
+                        seen = new Map(); budget = 60000;
+                        for (var fo = _rtDF.$B.frame_obj; fo && !found; fo = fo.prev) {
+                            if (fo.frame) { visit(fo.frame[1], depths[di]); visit(fo.frame[3], depths[di]); }
                         }
-                    }
-                    /* Bilateral half. A bound C instance may be held by the C++
-                     * side through links this walk cannot see — torch's own test
-                     * says so out loud: `z.grad = x` keeps a Python cycle alive
-                     * from C++, and its trackers must NOT be finalized. So when
-                     * the question is "may I finalize this now" outside the
-                     * cascade, every live C instance counts as a root: what one
-                     * of them references is not provably dead. Their Python
-                     * attributes are the $B.DICT walked at shallow depth; the
-                     * wrapper's own JS properties are bridge bookkeeping. */
-                    if (!found && cRoots) {
-                        var budget = 60000;
-                        seen = new Map();
-                        /* cRoots is the live-C-instance set computed once by the
-                         * caller (_liveCRoots); a bare `true` keeps the old
-                         * all-handles behaviour for any caller that has none. */
-                        var rootSet = (cRoots instanceof Set) ? cRoots : rt.handles;
-                        if (!rootSet) rootSet = new Set();
-                        rootSet.forEach(function(inst) {
-                            if (found || budget-- <= 0) return;
-                            if (!inst || typeof inst !== 'object') return;
-                            if (inst === target) return;       /* itself is not a root */
-                            var idict;
-                            try { idict = Bx.DICT ? inst[Bx.DICT] : undefined; }
-                            catch (e) { idict = undefined; }
-                            if (idict && typeof idict === 'object') scan(idict, 3);
-                            /* …and the references the C++ holds outside any
-                             * Python attribute: torch's `z.grad = x` is an
-                             * accessor over autograd metadata, so the dict
-                             * above sees nothing while the C++ holds x. */
-                            var ce;
-                            try { ce = rt.cTraverse(inst); } catch (e) { ce = null; }
-                            if (ce) {
-                                for (var ci = 0; ci < ce.length && !found; ci++) {
-                                    if (ce[ci] === target) { found = true; break; }
-                                    scan(ce[ci], 3);
-                                }
-                            }
-                        });
                     }
                     return found;
                 };
-                _rtDF._reachFromFrames = _reach;
 
-                _rtDF.$B.__wtPending = function() { return _rtDF.pendingDel ? _rtDF.pendingDel.size : -1; };
-
-                /* Called by `del name` (brython.js) for an object whose class
-                 * defines __del__, AFTER the name has been unbound. True = run
-                 * __del__ now (nothing else references it, CPython's
-                 * refcount-0); false = defer. */
-                B.$wasthon_should_finalize = function(obj) {
-                    var rt = _rtDF;
-                    B.$wasthon_wire_gc();
-                    try {
-                        if (_reach(obj)) { rt.pendingDel.add(obj); return false; }
-                        /* Unreachable but CYCLIC is not refcount-0: the cycle
-                         * keeps the count above zero and CPython leaves the
-                         * object to the collector, so `del` stays silent and
-                         * the next gc.collect() finalizes it. */
-                        if (_inCycle(obj)) { rt.pendingDel.add(obj); return false; }
-                        rt.pendingDel.delete(obj);
-                        return true;
-                    } catch (e) { return true; }   /* never break `del` */
+                /* Is `target` reachable from itself? CPython frees unreachable
+                 * acyclic garbage on the spot and leaves cycles to the
+                 * collector; torch's suite measures that split (`x.arf = t; del
+                 * t; del x` finalizes t at once, `x.o = y; y.o = x` waits for
+                 * gc.collect()). Bounded: a missed long cycle only moves a death
+                 * from gc.collect() to the `del`, and the mark still decides. */
+                var _inCycle = function(target) {
+                    var walls = _quickWalls(), weak = _rtDF.weakCells, found = false,
+                        seen = new Set();
+                    var visit = function(v, depth) {
+                        if (found || !_obj(v)) return;
+                        if (v === target) { found = true; return; }
+                        if (walls.has(v) || (weak.size && weak.has(v)) || _isCls(v) || seen.has(v)) return;
+                        seen.add(v);
+                        if (depth <= 0 || seen.size > 4000) return;
+                        _edges(v, function(x) { visit(x, depth - 1); }, true);
+                    };
+                    _edges(target, function(x) { visit(x, 3); }, true);
+                    return found;
                 };
 
-                /* Fire __del__ on every deferred object that has since become
-                 * unreachable. This is what CPython's cycle collector does for
-                 * the cyclic case, so it is called from gc.collect(). */
-                B.$wasthon_drain_pending = function(cRoots) {
-                    var rt = _rtDF;
-                    if (!rt.pendingDel || !rt.pendingDel.size) return 0;
-                    var dead = [];
-                    /* One mark for the whole batch: the root set does not change
-                     * while we decide, and the old code paid a full walk per
-                     * deferred object. */
-                    var roots = null;
-                    if (cRoots) { try { roots = _liveCRoots(); } catch (e) { roots = true; } }
-                    rt.pendingDel.forEach(function(o) { if (!_reach(o, roots)) dead.push(o); });
-                    var n = 0;
+                /* Does the DATA `v` holds reach a reference cycle within a few
+                 * steps? `z.grad = x` puts x one level down, inside z's __dict__,
+                 * and x may be the cycle. Classes and functions are left out: a
+                 * class reaches itself through its mro and methods, so it would
+                 * block every cascade. Past the bound the answer is yes: the
+                 * cascade then waits for gc.collect(), which only delays a death. */
+                var _feedsCycle = function(v) {
+                    var walls = _quickWalls(), seen = new Set([v]), level = [v], n = 0;
+                    for (var depth = 0; depth < 3 && level.length; depth++) {
+                        var next = [];
+                        for (var i = 0; i < level.length; i++) {
+                            var over = false;
+                            _edges(level[i], function(x) {
+                                if (!_obj(x) || typeof x === 'function' || _isCls(x) ||
+                                        walls.has(x) || seen.has(x)) return;
+                                seen.add(x);
+                                if (++n > 32) { over = true; return; }
+                                next.push(x);
+                            }, true);
+                            if (over) return true;
+                        }
+                        for (var j = 0; j < next.length; j++) if (_inCycle(next[j])) return true;
+                        level = next;
+                    }
+                    return false;
+                };
+
+                /* The mark: which of `cands` are reachable from the roots — every
+                 * live frame (the frame array itself: its locals, globals,
+                 * function and whatever the frame carries, such as the exception
+                 * being handled) and every imported module. Stops as soon as all
+                 * candidates are found. Returns null when it cannot finish,
+                 * which callers read as "all live". */
+                var _mark = function(cands) {
+                    var rt = _rtDF, Bx = rt.$B, st = rt.lifeStats, t0 = Date.now();
+                    var walls = _mkWalls(), weak = rt.weakCells, seen = new Set(), stack = [],
+                        live = new Set(), left = cands.size, n = 0, cut = false;
+                    var push = function(x) {
+                        if (!_obj(x) || seen.has(x) || walls.has(x)) return;
+                        if (weak.size && weak.has(x)) return;
+                        seen.add(x);
+                        if (cands.has(x)) { live.add(x); left--; }
+                        stack.push(x);
+                    };
+                    for (var fo = Bx.frame_obj; fo; fo = fo.prev) push(fo.frame);
+                    push(Bx.builtins);
+                    try {
+                        var ik = Object.getOwnPropertyNames(Bx.imported);
+                        for (var i = 0; i < ik.length; i++) {
+                            var mv;
+                            try { mv = Object.getOwnPropertyDescriptor(Bx.imported, ik[i]); } catch (e) { continue; }
+                            if (mv && 'value' in mv) push(mv.value);
+                        }
+                    } catch (e) { cut = true; }
+                    while (stack.length && left > 0 && !cut) {
+                        if (++n > 5000000) { cut = true; break; }
+                        _edges(stack.pop(), push);
+                    }
+                    st.marks++; st.markMs += Date.now() - t0;
+                    if (n > st.maxN) st.maxN = n;
+                    return cut ? null : live;
+                };
+
+                /* The type a released wrapper takes (see the chapter comment).
+                 * Defined in Python so Brython builds every cache it keeps for a
+                 * class; `touched` counts the reads that reached it. */
+                var _deadType = function() {
+                    var rt = _rtDF, Bx = rt.$B;
+                    if (rt._released) return rt._released;
+                    var ns = Bx.empty_dict();
+                    Bx.$call(Bx.builtins.exec,
+                        "class released:\n" +
+                        "    __slots__ = ()\n" +
+                        "    touched = 0\n" +
+                        "    def __getattribute__(self, name):\n" +
+                        "        type(self).touched += 1\n" +
+                        "        raise ReferenceError('released: del freed this object while " +
+                        "something the bridge cannot see still held it')\n" +
+                        "    def __repr__(self):\n" +
+                        "        return '<released object>'\n", ns);
+                    rt._released = Bx.$getitem(ns, 'released');
+                    rt._tomb = _malloc(4096);
+                    HEAPU8.fill(0, rt._tomb, rt._tomb + 4096);
+                    rt.handles.set(rt._tomb, { ob_type: rt._released, __class__: rt._released,
+                                               __wasthon_ptr__: rt._tomb });
+                    return rt._released;
+                };
+                var _kill = function(obj) {
+                    var D = _deadType();
+                    try {
+                        obj.__wasthon_ptr__ = _rtDF._tomb;
+                        obj.ob_type = D;
+                        obj.__class__ = D;
+                    } catch (e) {}
+                };
+
+                /* Free a C instance the mark proved dead. What stays checked
+                 * here is only what the mark cannot say: the bridge must be sole
+                 * owner (refcount 1 — C kept no reference of its own), a
+                 * destructor must exist through the base chain (without one the
+                 * struct would leak instead of being freed), and pybind11
+                 * instances are left alone (their registry is walked at teardown
+                 * and a freed entry asserts). */
+                var _release = function(obj) {
+                    var rt = _rtDF, ptr = _ownPtr(obj);
+                    if (!ptr || ptr === rt._tomb || !_mine(obj) || rt.refcounts.get(ptr) !== 1) return false;
+                    var rd = 0, rw = obj.__wasthon_type__, rg = 16;
+                    while (rw && rg-- > 0) {
+                        rd = HEAP32[(rw + 40) >> 2];
+                        if (rd) break;
+                        rw = HEAP32[(rw + 140) >> 2];      /* tp_base */
+                    }
+                    if (!rd) return false;
+                    var kindFn = (typeof Module !== 'undefined') && Module['_wasthon_census_kind'];
+                    if (kindFn) {
+                        try { if (kindFn(ptr) === 3) return false; } catch (e) { return false; }
+                    }
+                    try { rt.decref(ptr); } catch (e) { return false; }
+                    /* tp_dealloc has run: the object is dead. Drop the binding
+                     * (gc.get_objects() must not list it) and retype the wrapper.
+                     * The struct bytes are tp_free's business: a Python subclass
+                     * over a C type (torch.Tensor) carries a minted struct whose
+                     * memory torch's pyobj_slot still addresses, and inheriting
+                     * tp_free onto it cost test_serialization 175/0 -> 72/103. */
+                    if (rt.handles.get(ptr) === obj) rt.handles.delete(ptr);
+                    _kill(obj);
+                    rt.lifeStats.released++;
+                    return true;
+                };
+
+                /* Settle everything that may have died: `trigger` (a name just
+                 * deleted, already judged dead by the caller) plus, when the
+                 * death cascades, the pending objects the quick walk no longer
+                 * finds held. One mark decides for all of them. Outside
+                 * gc.collect(), cyclic garbage waits.
+                 * CPython's order: finalizers first, then, since a finalizer may
+                 * resurrect what it touches, a second mark, then the free. */
+                var _settle = function(trigger, collecting, cascadeOk) {
+                    var rt = _rtDF, Bx = rt.$B, cands = new Set(), tick = ++rt._settleTick;
+                    if (trigger) cands.add(trigger);
+                    /* A pending object the mark just found alive is not asked
+                     * again for a while (1, 2, 4 … 1024 settles): one held where
+                     * the quick walk cannot look (a module-level list) would
+                     * otherwise cost a full mark on every del. Waiting can only
+                     * delay a death, never cause one. */
+                    var consider = function(o) {
+                        if (cands.has(o)) return;
+                        var bo = rt._backoff.get(o);
+                        if (bo && tick < bo.next) return;
+                        if (_quickHeld(o)) return;
+                        if (!collecting && _inCycle(o)) return;
+                        cands.add(o);
+                    };
+                    if (collecting || cascadeOk) {
+                        var before = cands.size;
+                        rt.pendingDel.forEach(consider);
+                        rt.pendingWeak.forEach(consider);
+                        /* Only now, with a candidate in hand, ask whether the
+                         * dying object feeds a cycle: that stops the cascade. */
+                        if (!collecting && cands.size > before && !cascadeOk()) {
+                            cands = new Set(trigger ? [trigger] : []);
+                        }
+                    }
+                    if (!cands.size) return 0;
+                    var live = _mark(cands);
+                    if (live === null) return 0;
+                    var dead = [], n = 0, ranDel = false;
+                    cands.forEach(function(o) {
+                        if (!live.has(o)) { dead.push(o); return; }
+                        var bo = rt._backoff.get(o), wait = bo ? Math.min(bo.wait * 2, 1024) : 1;
+                        rt._backoff.set(o, { next: tick + wait, wait: wait });
+                    });
                     for (var i = 0; i < dead.length; i++) {
-                        rt.pendingDel.delete(dead[i]);
+                        if (!rt.pendingDel.delete(dead[i])) continue;
                         try {
-                            var m = B.search_in_mro(B.get_class(dead[i]), '__del__');
-                            if (m) { B.$call(m, dead[i]); n++; }
+                            var m = Bx.search_in_mro(Bx.get_class(dead[i]), '__del__');
+                            if (m) { Bx.$call(m, dead[i]); n++; ranDel = true; }
                         } catch (e) {}
+                    }
+                    if (ranDel) {
+                        var again = _mark(new Set(dead));
+                        if (again === null) return n;
+                        dead = dead.filter(function(o) { return !again.has(o); });
+                    }
+                    for (var j = 0; j < dead.length; j++) {
+                        var o = dead[j], ptr = _mine(o) ? _ownPtr(o) : 0;
+                        rt.pendingWeak.delete(o);
+                        if (ptr && rt.weakRegistry.has(ptr)) {
+                            try { rt.clearWeakRefs(ptr); } catch (e) {}
+                        }
+                        try { _release(o); } catch (e) {}
                     }
                     return n;
                 };
 
-                /* Is `target` reachable FROM ITSELF — i.e. part of a reference
-                 * cycle? CPython's refcount frees an unreachable acyclic object
-                 * at once and leaves cyclic garbage to the collector, and the
-                 * torch suite measures exactly that difference: `x.arf = t; del
-                 * t; del x` must finalize t on the spot (x died, nothing is
-                 * cyclic), while `x.other = y; y.other = x; del x; del y` must
-                 * NOT — those two only die at gc.collect(). */
-                var _inCycle = function(target) {
-                    var Bx = _rtDF.$B, seen = new Set(), found = false;
-                    var skip = _mkSkip();
-                    var _isCls = function(o) {
-                        try {
-                            return Object.getOwnPropertyDescriptor(o, '__mro__') !== undefined ||
-                                   Object.getOwnPropertyDescriptor(o, 'tp_mro') !== undefined;
-                        } catch (e) { return false; }
-                    };
-                    var walk = function(v, depth) {
-                        if (found || v === null || v === undefined) return;
-                        var t = typeof v;
-                        if (t !== 'object' && t !== 'function') return;
-                        if (skip.has(v)) return;
-                        if (v !== target && _isCls(v)) return;   /* see _reach */
-                        if (seen.has(v)) return;
-                        seen.add(v);
-                        if (seen.size > 4000) return;       /* backstop */
-                        if (depth <= 0 || t === 'function') return;
-                        var visit = function(x) {
-                            if (found) return;
-                            if (x === target) { found = true; return; }
-                            walk(x, depth - 1);
-                        };
-                        if (Bx.DICT) {
-                            var idict;
-                            try { idict = v[Bx.DICT]; } catch (e) { idict = undefined; }
-                            if (idict && typeof idict === 'object') visit(idict);
+                /* `del name` on an object whose class defines __del__, AFTER the
+                 * name has been unbound. True = run __del__ now (CPython's
+                 * refcount-0); false = it is still held or cyclic, defer it.
+                 * The quick walk decides here, not the mark: a wrong "dead" can
+                 * only run a finalizer early — what Brython itself does on every
+                 * del — while freeing is guarded separately, by the mark. A mark
+                 * per del cost test_bz2's `for i in range(10000): o =
+                 * BZ2File(f); del o` 24 s -> 961 s. An error defers. */
+                B.$wasthon_should_finalize = function(obj) {
+                    var rt = _rtDF;
+                    B.$wasthon_wire_gc();
+                    try {
+                        if (!_quickHeld(obj) && !_inCycle(obj)) {
+                            rt.pendingDel.delete(obj);
+                            rt._judgedDead = obj;   /* after_unbind follows __del__ */
+                            return true;
                         }
-                        var ce = _cEdges(v);
-                        if (ce) for (var ci = 0; ci < ce.length && !found; ci++) visit(ce[ci]);
-                        if (Array.isArray(v)) {
-                            for (var i = 0; i < v.length && !found; i++) visit(v[i]);
-                            return;
-                        }
-                        if (v instanceof Map) { v.forEach(visit); return; }
-                        if (v instanceof Set) { v.forEach(visit); return; }
-                        var nm;
-                        try { nm = Object.getOwnPropertyNames(v); } catch (e) { return; }
-                        for (var n = 0; n < nm.length && !found; n++) {
-                            var pd;
-                            try { pd = Object.getOwnPropertyDescriptor(v, nm[n]); }
-                            catch (e) { continue; }
-                            if (pd && 'value' in pd) visit(pd.value);
-                        }
-                    };
-                    walk(target, 4);
-                    return found;
+                    } catch (e) {}
+                    rt.pendingDel.add(obj);
+                    return false;
                 };
 
-                /* `del name` on an object with no __del__ of its own: if THAT
-                 * object just died (unreachable, not in a cycle), whatever it
-                 * held died with it — CPython would cascade the decrefs. Drain
-                 * the deferred finalizables that this made unreachable. Free
-                 * when nothing is deferred, which is the overwhelming case. */
+                /* After every `del name` (and after __del__ ran on the object).
+                 * If that object just died, it goes, and so may what was waiting
+                 * on it — CPython's decref cascade. This runs on EVERY del, so the
+                 * fast path stays one Map lookup: only a C instance the bridge
+                 * alone holds, one with weak cells, or a non-empty pending set
+                 * buys a walk. */
                 B.$wasthon_after_unbind = function(obj) {
                     var rt = _rtDF;
                     if (!B.$wasthon_gc_wired) B.$wasthon_wire_gc();
-                    /* A C instance can be observed dying even with nothing
-                     * deferred: a weakref on it must read None and its callback
-                     * must fire, which is refcount-0 behaviour in CPython.
-                     * This used to also require refcount 1 — "the bridge alone
-                     * holds it, so C kept no reference of its own". That was a
-                     * proxy from the days when the walk could not see C++
-                     * edges, and it is the same kind of blanket the root set
-                     * shed: the reachability test three lines below answers the
-                     * real question, and answers it on both sides now. It cost
-                     * `test_tensor_dead_weak_ref`, where reading the weakref
-                     * (`x = w_x()`) leaves the count at 2 and the cell never
-                     * cleared even though nothing referenced the tensor. */
-                    var ptr;
+                    var ptr = _mine(obj) ? _ownPtr(obj) : 0;
+                    var weakHere = !!(ptr && rt.weakRegistry.has(ptr));
+                    var sole = !!(ptr && rt.refcounts.get(ptr) === 1);
+                    var pending = rt.pendingDel.size !== 0 || rt.pendingWeak.size !== 0;
+                    if ((!weakHere && !sole && !pending) || !_obj(obj)) return;
+                    /* Just judged dead by should_finalize, before its __del__:
+                     * the same walk again would say the same. A __del__ that
+                     * resurrected it is the mark's to see, before any free. */
+                    var judged = rt._judgedDead === obj;
+                    rt._judgedDead = null;
                     try {
-                        var d = Object.getOwnPropertyDescriptor(obj, '__wasthon_ptr__');
-                        ptr = d && typeof d.value === 'number' ? d.value : 0;
-                    } catch (e) { ptr = 0; }
-                    var weakHere = !!(ptr && rt.weakRegistry && rt.weakRegistry.has(ptr));
-                    /* Fast path, and it must stay fast: this runs on EVERY
-                     * `del name`. Gating on "any weakref exists anywhere" was
-                     * measured ruinous — one live weakref made every delete in
-                     * the page pay two walks. Only the object's own cells, or
-                     * an actual pending set, buy the work. */
-                    if (!weakHere && (!rt.pendingDel || !rt.pendingDel.size) &&
-                                     (!rt.pendingWeak || !rt.pendingWeak.size)) return;
-                    try {
-                        if (_reach(obj) || _inCycle(obj)) {
-                            /* Still held, so its cells stay live — but its name
-                             * is gone and nothing would ever revisit it. Park
-                             * it, exactly as pendingDel parks a finalizable. */
+                        if (!judged && (_quickHeld(obj) || _inCycle(obj))) {
                             if (weakHere) rt.pendingWeak.add(obj);
                             return;
                         }
-                        /* CLEAR-ONLY, never a free: the weak cells go dead (and
-                         * their callbacks run) while the struct stays put. The
-                         * bytes are the bulk reclaim's job, and freeing here
-                         * would re-open exactly the failure mode
-                         * GC_BILATERAL_RECLAIM.md §3bis measured. */
-                        if (weakHere) {
-                            rt.pendingWeak.delete(obj);
-                            try { rt.clearWeakRefs(ptr); } catch (e) {}
-                        }
-                        /* The cascade only carries where a refcount would:
-                         * what the dying object held dies WITH it, unless that
-                         * something sits in a reference cycle — CPython drops
-                         * the count but the cycle keeps it above zero, and it
-                         * dies at the next collection instead. torch's suite
-                         * measures exactly that step: `z.grad = x` with x in a
-                         * cycle, `del z` must NOT finalize x's tracker, the
-                         * following gc.collect() must. */
-                        var cyclic = false, outs = [];
-                        try {
-                            var od = B.DICT ? obj[B.DICT] : undefined;
-                            if (od && typeof od === 'object') {
-                                var on = Object.getOwnPropertyNames(od);
-                                for (var oi = 0; oi < on.length; oi++) {
-                                    var opd = Object.getOwnPropertyDescriptor(od, on[oi]);
-                                    if (opd && 'value' in opd) outs.push(opd.value);
-                                }
-                            }
-                            var oce = rt.cTraverse(obj);
-                            if (oce) for (var oj = 0; oj < oce.length; oj++) outs.push(oce[oj]);
-                            for (var ok = 0; ok < outs.length && !cyclic; ok++) {
-                                var ov = outs[ok];
-                                if (ov && typeof ov === 'object' && _inCycle(ov)) cyclic = true;
-                            }
-                        } catch (e) {}
-                        if (cyclic) return;
-                        /* The cascade carries the weak cells too. A parked
-                         * object dies when its last holder does, and that death
-                         * is the event we are standing on: `del x` leaves the
-                         * storage alive under the tensor, `del y` is the moment
-                         * it goes (`test_storage_dead_weak_ref`). */
-                        if (rt.pendingWeak && rt.pendingWeak.size) {
-                            var wdead = [];
-                            rt.pendingWeak.forEach(function(o) {
-                                var wd, wp = 0;
-                                try {
-                                    wd = Object.getOwnPropertyDescriptor(o, '__wasthon_ptr__');
-                                    wp = wd && typeof wd.value === 'number' ? wd.value : 0;
-                                } catch (e) {}
-                                /* Already cleared elsewhere (the sweep does it
-                                 * wholesale) — stop tracking it. */
-                                if (!wp || !rt.weakRegistry.has(wp)) { wdead.push([o, 0]); return; }
-                                if (!_reach(o) && !_inCycle(o)) wdead.push([o, wp]);
-                            });
-                            for (var wi = 0; wi < wdead.length; wi++) {
-                                rt.pendingWeak.delete(wdead[wi][0]);
-                                if (wdead[wi][1]) {
-                                    try { rt.clearWeakRefs(wdead[wi][1]); } catch (e) {}
-                                }
-                            }
-                        }
-                        if (rt.pendingDel && rt.pendingDel.size) B.$wasthon_drain_pending();
+                        /* It died, and what it held dies with it — unless a
+                         * reference cycle is among what it held: the cycle keeps
+                         * its count above zero until the collector runs, and
+                         * whatever hangs from it waits too (`z.grad = x` with x in
+                         * a cycle: `del z` must not finalize x's tracker, the
+                         * next gc.collect() must). */
+                        _settle(weakHere || sole ? obj : null, false,
+                                pending ? function() { return !_feedsCycle(obj); } : null);
                     } catch (e) {}
                 };
 
-                /* gc.collect() — Brython ships a stub (`def collect(*a,**k):
-                 * pass`), so the sweep above, which IS this project's explicit
-                 * collection contract, was only ever reached through
-                 * test-cpython.html's `support.gc_collect` shim. Any suite
-                 * calling plain `gc.collect()` (torch's whole
-                 * dealloc/cycle family) got a no-op. Wire the real thing here:
-                 * the behaviour is wasthon-specific, so it belongs bridge-side
-                 * rather than in the vendored stdlib. */
-                /* Wired LAZILY: wasthon_init() runs before the page calls
-                 * brython(), so at this point the import machinery cannot yet
-                 * produce the module. Every entry point below calls this, and
-                 * it is a single boolean test once wired. */
+                /* gc.collect()'s half: settle everything pending, cycles included. */
+                B.$wasthon_drain_pending = function() {
+                    try { return _settle(null, true, true); } catch (e) { return 0; }
+                };
+
+                /* gc.collect() and gc.get_objects() — Brython ships stubs (collect
+                 * does nothing, get_objects returns None). Wired lazily, since
+                 * wasthon_init() runs before the page imports anything; every
+                 * entry point above calls this, a boolean test once wired.
+                 * get_objects answers with what this collector tracks: the C
+                 * instances the bridge holds — a released one is gone from it. */
                 B.$wasthon_wire_gc = function() {
                     if (B.$wasthon_gc_wired) return;
                     try {
                         var _gcmod = B.imported && B.imported.gc;
-                        if (!_gcmod) return;              /* not imported yet */
+                        if (!_gcmod) return;
                         B.$wasthon_gc_wired = true;
                         B.str_dict_set(B.get_dict(_gcmod), 'collect', function() {
-                            var freed = 0;
-                            try { if (B.$wasthon_gc_collect) B.$wasthon_gc_collect(); } catch (e) {}
-                            try { if (B.$wasthon_drain_pending) freed = B.$wasthon_drain_pending(true); } catch (e) {}
-                            return freed;
+                            var n = 0;
+                            try {
+                                if (B.$wasthon_gc_collect && B.$wasthon_gc_collect()) n = _rtDF._drained || 0;
+                                else n = B.$wasthon_drain_pending();
+                            } catch (e) {}
+                            return n;
+                        });
+                        B.str_dict_set(B.get_dict(_gcmod), 'get_objects', function() {
+                            var out = [];
+                            try {
+                                _rtDF.handles.forEach(function(inst, h) {
+                                    if (inst && typeof inst === 'object' && h !== _rtDF._tomb &&
+                                            inst.__wasthon_type__ !== undefined) out.push(inst);
+                                });
+                            } catch (e) {}
+                            return out;
                         });
                     } catch (e) {}
                 };

@@ -7,6 +7,26 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`del` and `gc.collect()` release, and only on proof** (`src/wasthon.js`,
+  the `del`/`gc.collect()` chapter, rewritten). The bounded walk that decides
+  `del` stays as lean as before and still decides a finalizer on the spot (a
+  wrong verdict there only runs `__del__` early; a mark per del cost
+  test_bz2's BZ2File loop 24 s -> 961 s); freeing now waits for a complete
+  mark from every live frame and imported module (no walls, no depth bound,
+  a budget whose exhaustion proves nothing), which also settles the pending
+  objects in one batch. One graph
+  definition, `_edges`, serves every walk: it adds Symbol-keyed properties (a
+  dict with a non-str key keeps all entries there) and a function's
+  `__dict__`, defaults and defining frame (a closure's free variables). The
+  audit probes' eight use-after-free cases now behave as CPython. A released
+  wrapper is retyped to `released` (every attribute read raises
+  ReferenceError) and repointed at a tombstone, so the one remaining blind
+  spot — a value an enclosing frame is still evaluating — gives an exception,
+  never a freed struct. Release and weak-cell clearing only act on instances
+  of this runtime (`__wasthon_type_rt__`): the hooks are bound to the first
+  of two wasm runtimes a page may load. `gc.get_objects()` is wired.
+  `test_torch` 912/912.
+
 - **An instance C hands back to Python is counted once** (`src/wasthon.js`,
   `consumeResultRef`). Returning a result to Python releases the reference the
   C function handed over, except for instances, on the grounds that an
