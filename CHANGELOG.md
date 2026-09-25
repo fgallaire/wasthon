@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **An instance C hands back to Python is counted once** (`src/wasthon.js`,
+  `consumeResultRef`). Returning a result to Python releases the reference the
+  C function handed over, except for instances, on the grounds that an
+  instance's refcount 1 belongs to its Brython wrapper. That holds the first
+  time an instance reaches Python, and only then: a C function that returns an
+  object Python already holds (`return Py_NewRef(self)`, an in-place op, a
+  `__torch_function__` result coming back through `PyObject_CallFunctionObjArgs`)
+  left one count behind per call — measured 1 → 2 after one call, 6 after five,
+  where CPython stays at 1. An instance stuck above 1 is never sole-owned, so no
+  release path could ever reach it. Now the first crossing marks the instance
+  and hands the reference to the wrapper; every later return releases the
+  caller's reference, never below 1. The July attempts at the same consumption
+  judged "already held" from the current count, which also consumed borrowed
+  returns (33 failures); the crossing mark does not.
+
 - **`del name` gets CPython's meaning, and `gc.collect()` finally reaches the
   sweep** (`src/wasthon.js`, plus two hook points in `$B.$delete` — see
   `BRYTHON_FIX.md`). Brython called `__del__` on **every** `del name`, whether or

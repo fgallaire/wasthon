@@ -501,7 +501,16 @@ mergeInto(LibraryManager.library, {
         consumeResultRef: function(h) {
             if (!h) return;
             var o = this.handles.get(h);
-            if (o && o.__wasthon_ptr__) return;
+            if (o && o.__wasthon_ptr__) {
+                /* The first time an instance reaches Python, the reference
+                 * the C side hands over becomes the wrapper's. After that the
+                 * wrapper already holds one, so a returned reference is the
+                 * caller's and is released here: a C function returning an
+                 * object Python already holds (Py_NewRef(self)) left one
+                 * count behind per call. */
+                if (o.$wasthon_py === undefined) { o.$wasthon_py = 1; return; }
+                if (!(this.refcounts.get(h) > 1)) return;
+            }
             this.decref(h);
         },
         unwrapResult: function(h) {

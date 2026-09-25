@@ -1164,6 +1164,21 @@ Infrastructure work that pays back on existing modules:
       wasthonc / WasmGC pivot), not a better heuristic; for a driver that
       merely needs the memory back, throwing the whole context away
       (iframe isolation) proves nothing and therefore cannot be wrong.
+- [x] An instance C hands back to Python is counted once — the exemption
+      above (`consumeResultRef` leaves an instance's reference to its wrapper)
+      is right for the **first** crossing only. Once the wrapper exists, a C
+      function returning the same object again (`return Py_NewRef(self)`, an
+      in-place op, a `__torch_function__` result coming back through
+      `PyObject_CallFunctionObjArgs`) hands over a reference nobody takes, and
+      it stayed: measured 1 → 2 after one call, 6 after five, where CPython
+      stays at 1. Every path to `tp_dealloc` described here requires the
+      bridge to be sole owner (refcount 1), so an instance stuck above 1 was
+      out of reach of all of them, whatever Python did with it. The first
+      crossing now marks the instance and gives the C reference to the
+      wrapper; every later return releases the caller's reference, never
+      below 1. Deciding "already held" from the current count instead — the
+      July attempts — also consumed borrowed returns and freed live objects
+      (33 failures on `test_torch`); the crossing mark does not.
 - [ ] Explicit-contract residual — a C instance held by a Python local that is
       dropped or reassigned without a `close()`/`with` (and with no
       `gc.collect()` call, and on a page that does not opt into
