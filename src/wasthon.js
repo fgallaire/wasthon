@@ -1891,7 +1891,13 @@ mergeInto(LibraryManager.library, {
             // reads it back) must preserve this pointer-handle identity —
             // otherwise we get a fresh sentinel id, the C code casts it
             // as if it were a struct pointer, and dereferences garbage.
-            if (obj.__wasthon_ptr__) {
+            // Only for THIS runtime's instances: one another bridge wasm
+            // allocated (brytorch: a numpy array reaching torch) carries an
+            // address in THAT heap, which names whatever this heap holds at the
+            // same address — `t + a` found a leftover tensor there and returned
+            // t + 24. It crosses like any other Brython object instead.
+            if (obj.__wasthon_ptr__ &&
+                    (obj.__wasthon_type_rt__ === undefined || obj.__wasthon_type_rt__ === _malloc)) {
                 if (!this.handles.has(obj.__wasthon_ptr__)) {
                     this.handles.set(obj.__wasthon_ptr__, obj);
                     // A watched wrapper re-entering C: re-track it so the

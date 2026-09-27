@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **An instance of another runtime crosses as an object, not as its address**
+  (`src/wasthon.js`, `wrap`). A page can run two bridge wasms under one
+  Brython (brytorch: torch and numpy), and `wrap` handed any instance over by
+  its `__wasthon_ptr__` — for a numpy array reaching torch, an address in the
+  NUMPY heap, used as a handle in torch's table, where the same number can
+  name a torch object. `t + a` found a leftover tensor holding 24 at the
+  array's address and returned `tensor([25], dtype=torch.int8)`. Only this
+  runtime's instances (`__wasthon_type_rt__`) take the address path now; a
+  sibling's goes through like any Brython object. Collisions only became
+  likely once freed memory was reused, which is why they surfaced with the
+  whole-heap collection. +3 `test_numpy_array_binary_ufunc_promotion`.
+
 - **A whole-heap collection, every runtime's** (`src/wasthon.js`,
   `$wasthon_reclaim`). What a program stops using without a `del` was never
   freed. One mark of the Brython graph now decides, and each runtime frees in
