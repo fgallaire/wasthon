@@ -1809,13 +1809,23 @@ case '/=':
 return $B.fast_float(res_type.x/res_type.y)}
 if(z){if(res_type.is_int && Number.isSafeInteger(z)){return z}else if(res_type.res_is_float){return $B.fast_float(z)}}}else if(op=='*='){if(typeof left=="number" && typeof right=="string"){return left <=0 ? '' :right.repeat(left)}else if(typeof left=="string" && typeof right=="number"){return right <=0 ? '' :left.repeat(right)}}else if(op=='+='){if(typeof left=="string" && typeof right=="string"){return left+right}}
 var op1=op.substr(0,op.length-1),method=$B.op2method.augmented_assigns[op],augm_func=$B.$getattr($B.get_class(left),'__'+method+'__',$B.NULL)
+// an in-place method that declines does NOT end the dispatch: CPython falls
+// back to the binary operation, which is how `s |= other` works on a
+// frozenset (it has an __ior__ that returns NotImplemented, and the result
+// is a NEW frozenset from __or__). Raising here made `|` work and `|=` fail
+// on the same pair of operands. If the binary operation also declines,
+// rich_op raises the TypeError itself, with the message CPython gives.
 if(augm_func !==$B.NULL){var res=$B.$call(augm_func,left,right)
-if(res===_b_.NotImplemented){$B.RAISE(_b_.TypeError,`unsupported operand type(s)`+
-` for ${op}: '${$B.class_name(left)}' `+
-`and '${$B.class_name(right)}'`)}
-return res}else{var method1=$B.op2method.operations[op1]
+if(res !==_b_.NotImplemented){return res}}
+var method1=$B.op2method.operations[op1]
 if(method1===undefined){method1=$B.op2method.binary[op1]}
-return $B.rich_op(`__${method1}__`,left,right)}}
+// the fallback must still blame the AUGMENTED operator: CPython says
+// "unsupported operand type(s) for +=", not "for +".
+try{return $B.rich_op(`__${method1}__`,left,right)}
+catch(err){if($B.$isinstance(err,_b_.TypeError)){$B.RAISE(_b_.TypeError,
+`unsupported operand type(s) for ${op}: '${$B.class_name(left)}' `+
+`and '${$B.class_name(right)}'`)}
+throw err}}
 $B.$is=function(a,b){
 switch(typeof a){case "null":
 case "undefined":
@@ -11356,7 +11366,7 @@ var len_self=dictview_len(self)
 if($B.exact_type(other,_b_.set)&& len_self <=_b_.len(other)){return $B.$call($B.$getattr(other,'intersection'),self)}
 if(PyDictViewSet_Check(other)){var len_other=dictview_len(other)
 if(len_other > len_self){[self,other]=[other,self]}}
-var result=_b_.set.tp_new(set,[],$B.empty_dict())
+var result=_b_.set.tp_new(_b_.set,[],$B.empty_dict())
 var it=$B.make_js_iterator(other)
 if($B.$isinstance(self,$B.dict_keys)){dict_contains=$B.dict_keys.sq_contains}else{dict_contains=dictitems_contains}
 while(true){var item=it.next()
@@ -11579,9 +11589,17 @@ if(missing_method !==_b_.None){return missing_method(self,key)}}}
 $B.RAISE(_b_.KeyError,key)}
 dict.tp_hash=_b_.None
 function init_from_list(self,args){var i=0
-for(var item of args){if(item.length !=2){$B.RAISE(_b_.ValueError,"dictionary "+
-`update sequence element #${i} has length ${item.length}; 2 is required`)}
-dict.$setitem(self,item[0],item[1])
+for(var item of args){
+// item.length is a JS property: undefined for any Python sequence that is not
+// backed by a JS array, so an object defining __len__/__getitem__ was rejected
+// with "has length undefined". CPython asks the OBJECT, and indexes it the
+// Python way. JS arrays and strings keep the direct path.
+var js_seq=item.length !==undefined,
+    n=js_seq ? item.length :_b_.len(item)
+if(n !=2){$B.RAISE(_b_.ValueError,"dictionary "+
+`update sequence element #${i} has length ${n}; 2 is required`)}
+dict.$setitem(self,js_seq ? item[0]:$B.$getitem(item,0),
+js_seq ? item[1]:$B.$getitem(item,1))
 i++}}
 dict.$set_string_no_duplicate=function(d,keys,string,value){if(typeof string !=='string'){$B.RAISE(_b_.TypeError,'keywords must be strings')}
 if(keys.has(string)){$B.RAISE(_b_.TypeError,'dict() got multiple values for keyword '+
