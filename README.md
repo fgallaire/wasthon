@@ -4,276 +4,183 @@
     <img src="Wasthon.png" alt="Wasthon Logo" width="200"/>
 </div>
 
-**Run real CPython C extension modules inside Brython, compiled to WebAssembly.**
+**A CPython C-API bridge for Brython: unmodified C extension modules,
+compiled to WebAssembly, running inside Brython.**
 
 > Brython is Holmes — the genius detective doing Python→JS magic.
 > Wasthon is Watson — the loyal companion bringing the C extensions along.
 
-## What it does
+## What it is
 
-Brython ships a Python 3 runtime in the browser by compiling Python to
-JavaScript. The catch: CPython's stdlib modules written in C (`_sha256`,
-`zlib`, `_sre`, `_decimal`, …) don't compile to JS — Brython has either
-re-implemented them in JavaScript / pure Python (smaller surface, sometimes
-worse perf, the occasional silent semantic divergence) or simply doesn't
-ship them at all.
+Wasthon implements just enough of CPython's public C-API, on top of
+Brython's runtime, for C extension modules to compile unmodified with
+Emscripten and run inside Brython. The C side works with `PyObject *`; the
+bridge maps each one onto a Brython object, with reference counting,
+`tp_dealloc`, the buffer protocol, type specs, arg parsing and the rest of
+the surface extension modules actually use.
 
-Wasthon takes the **unmodified C source** of those CPython modules,
-compiles them to WebAssembly with Emscripten, and exposes them to Brython
-through a minimal CPython C-API bridge. Result for Brython users:
+What runs on it lives in its own repositories, which take the bridge from
+here (`src/`, `cython-support/`, the vendored Brython and the loader helpers):
 
-- The same `import hashlib`, `import struct`, `import zlib`, `import
-  _decimal` works — and flies. Bulk-operation speedups range from 4× to
-  **131×** depending on module.
-- **New algorithms Brython doesn't ship**: full SHA-3, BLAKE2, HMAC, full
-  Unicode database, `_bz2`, `_lzma`, `_zstd`, real `array.array`.
-- **Modules that now work**: Brython's `_struct`, `unicodedata`, `zlib`,
-  `array` are partially broken / very lossy / unusable in some cases —
-  Wasthon implementations are bit-exact with CPython.
-- **Bit-exact CPython semantics** — when CPython fixes a bug or adds a
-  feature in 3.x, Wasthon picks it up by recompiling, not re-porting.
+- [Wastdlib](https://github.com/fgallaire/wastdlib) — CPython's C
+  standard-library modules (`hashlib`, `zlib`, `_decimal`, `_json`,
+  `_sqlite3`, …), validated against CPython's own test suites
+- [NumBry](https://github.com/fgallaire/numbry) — NumPy, SciPy, pandas,
+  matplotlib, seaborn, Pillow, SymPy
+- [BryTorch](https://github.com/fgallaire/brytorch) — PyTorch
+- [Brygame](https://github.com/fgallaire/brygame) — pygame-ce and Dear ImGui
 
-## Status
+## How it works
 
-### Headline result — `_json.encode_basestring`: 25× to 332× faster
+Brython executes Python by compiling it to JavaScript: its objects are JS
+objects, its garbage collector is the JS engine's tracing GC, and **nothing
+has a reference count**. CPython extension modules are C code that expects
+the opposite world: `PyObject *` pointers into a C heap, reference counting,
+struct layouts (`ob_type`, `tp_dealloc`, buffer pointers) read directly by
+offset.
 
-| Input                  | Wasthon  | Brython pure-Python | Speedup    |
-| ---------------------- | -------- | ------------------- | ---------- |
-| 11-char ASCII          | 0.014 ms | 0.358 ms            | **25.57×** |
-| 1300-char ASCII        | 0.110 ms | 22.88 ms            | **208×**   |
-| 1700-char w/ escapes   | 0.090 ms | 24.12 ms            | **268×**   |
-| 11000-char Lorem Ipsum | 0.450 ms | 149.45 ms           | **332×**   |
+Pyodide resolves this by shipping the entire CPython interpreter as wasm.
+Wasthon does not: it keeps Brython as the runtime and **reifies the CPython
+C-API as a foreign-function boundary** — every `Py*` call made by the C code
+is served, on the JS side, by Brython. The extension's algorithms run as
+native wasm; its view of "Python objects" is an illusion maintained by the
+bridge. From a `<x>module.c`, one `emcc` invocation against `src/` produces
+an Emscripten ES6 module exposing `PyInit_<x>()`; `loader/wasthon-loader.js`
+instantiates it and registers it under `__BRYTHON__.imported[<x>]`, so
+`import <x>` from Python just works.
 
-`_json.encode_basestring` produces ~24 MB/s of JSON encoding at 11 KB
-input — basically native libC speed, against a pure-Python loop saturated
-at ~75 KB/s. Largest speedup we've measured on any ported module.
+```
+                ┌──────────────────────────────────────────────┐
+   <x>module.c  │  emcc  →  PyInit_<x>() exported via WASM     │
+   (unmodified) │     ↑                                        │
+                │  wasthon.h + wasthon.c + wasthon.js          │
+                │  (CPython C-API replicated atop Brython)     │
+                └──────────────────────────────────────────────┘
+                                  ↑
+                          Brython runtime
+                          (__BRYTHON__, _b_)
+                                  ↑
+                          User Python:
+                              import _decimal
+                              d = _decimal.Decimal('3.14') * 2
+```
 
-### Modules ported
+Fix-by-fix history lives in `CHANGELOG.md` (bridge) and `BRYTHON_FIX.md`
+(vendored Brython); what follows is the map.
 
-| Module         | What it provides                                         | `.wasm`     |
-| -------------- | -------------------------------------------------------- | ----------- |
-| `_md5`         | md5                                                      | 14 KB       |
-| `_sha1`        | sha1                                                     | 12 KB       |
-| `_sha2`        | sha224, sha256, sha384, sha512                           | 36 KB       |
-| `_sha3`        | sha3_224, sha3_256, sha3_384, sha3_512                   | 26 KB       |
-| `_blake2`      | blake2b, blake2s                                         | 36 KB       |
-| `_hmac`        | HMAC over any of the hashes above                        | 98 KB       |
-| `_zlib`        | compress / decompress, crc32, adler32                    | 83 KB       |
-| `_bz2`         | bzip2 compress / decompress (libbz2 1.0.8)               | 91 KB       |
-| `_lzma`        | XZ / LZMA / raw (xz-utils 5.4.6, pre-CVE-2024-3094)      | 133 KB      |
-| `_zstd`        | Zstandard compress / decompress (libzstd 1.5.6)          | 555 KB      |
-| `_sre`         | regex engine                                             | 73 KB       |
-| `_random`      | Mersenne Twister (bit-exact with CPython)                | 12 KB       |
-| `_struct`      | binary pack/unpack, full format-code coverage            | 29 KB       |
-| `_decimal`     | arbitrary-precision decimal arithmetic (libmpdec)        | 360 KB      |
-| `_csv`         | C-level CSV reader/writer state machine                  | 25 KB       |
-| `array`        | typed arrays (b/B/h/H/i/I/l/L/q/Q/f/d)                   | 41 KB       |
-| `pyexpat`      | XML parser (libexpat 2.8.2)                              | 169 KB      |
-| `_json`        | JSON encoder/decoder C accelerator                       | 28 KB       |
-| `math`         | int-heavy fns (factorial, gcd, isqrt, prod, …)           | 77 KB       |
-| `cmath`        | complex math (sqrt/exp/log/sin/polar/rect/…)             | 51 KB       |
-| `unicodedata`  | full Unicode 15.x database + normalization               | 669 KB      |
-| `_statistics`  | `_normal_dist_inv_cdf` (Wichura AS241)                   | 15 KB       |
-| `_pickle`      | C accelerator for pickle (protocols 0-5)                 | 79 KB       |
-| `_sqlite3`     | SQLite 3.46.1 embedded DB (FTS5 + RTREE + JSON1)         | 730 KB      |
-| `binascii`     | hex / base64 / CRC encoding (CPython C accelerator)      | 24 KB       |
-|                | **Total**                                                | **~3.4 MB** |
+### Handles
 
-### Highlight benchmarks — Wasthon vs Brython
+`PyObject *` is a 32-bit integer **handle** into a JS-side table
+(`WasthonRT.handles: Map<int, object>`) holding strong references to Brython
+objects. Three key ranges share one map:
 
-**hashlib** (0.5 MB payload, MB/s):
+- **11–14** — the immortal singletons (`None`, `True`, `False`,
+  `NotImplemented`); not 1–4, since pybind11 reads a returned 1 as its "try
+  the next overload" marker.
+- **15 – 0xFFFF** — *sentinel* handles: Brython objects passed into C
+  (`wrap(obj)`). IDs are recycled through a free list. `wrap` is
+  idempotent per object (identity interning via a `WeakMap`), so handle
+  equality is object identity — C-side `a == b` pointer comparisons work.
+- **≥ 0x10000** — *instance* handles: real linear-memory pointers returned
+  by `_malloc` for instances of C-defined types
+  (`wasthon_object_gc_new`). The pointer doubles as the map key, so JS can
+  find the Brython wrapper of any C struct and vice versa
+  (`obj.__wasthon_ptr__`).
 
-| Algo   | Wasthon | Brython | Speedup   |
-| ------ | ------- | ------- | --------- |
-| md5    | 238     | 17.7    | **13.5×** |
-| sha256 | 119     | 20.6    | 5.8×      |
-| sha512 | 192     | 8.3     | **23.3×** |
-| sha3_* | 51-82   | absent  | ∞         |
+`PyObject` is declared as `{ intptr_t ob_refcnt; }` (hard rule 3) and every
+macro that CPython implements by struct access (`Py_TYPE`,
+`PyTuple_GET_ITEM`, `PyUnicode_GET_LENGTH`, …) is routed through a bridge
+function.
 
-**`_struct`** (per-call ms, 100 ops/loop):
+### Object lifetime
 
-| Operation   | Wasthon | Brython | Speedup  |
-| ----------- | ------- | ------- | -------- |
-| pack '>I'   | 1.17    | 22.4    | **19×**  |
-| pack '<10I' | 1.53    | 201     | **131×** |
-| pack '>d'   | 0.73    | 34.0    | **46×**  |
+The core difficulty: C code *does* refcount (it calls `Py_INCREF`/`DECREF`
+and stores "owned" references in structs), while Brython cannot. The bridge
+resolves this with **handle scopes** (the JNI local-reference / HPy model)
+layered under a real refcount for whatever C explicitly owns:
 
-**`_decimal`** (ms/op vs Brython's `_pydecimal`):
+1. **Scope-owned** (the default). Every JS→C entry point — method
+   trampoline, slot dispatch, `tp_new`/`tp_init`/`tp_call`, getset — runs
+   under `pushScope()`/`popScope()`. Sentinel handles created while the
+   scope is active belong to it and are released at pop. A borrowed
+   argument therefore lives exactly as long as the C call, like CPython's
+   borrowed references.
+2. **Refcounted**. A handle escapes its scope by acquiring a refcount:
+   `wrapNewRef()` (the new-reference convention of constructors and call
+   results — seeds refcount 1), a C-side `Py_INCREF`, or a "no-steal" store
+   API (`PyList_SET_ITEM`, `PyModule_AddObjectRef`, …). At pop, ownership
+   transfers from the scope to the refcount; the handle dies when it drops
+   to zero. For instances, zero dispatches the type's **`tp_dealloc`**
+   (read at offset 40 of the type struct, up the base chain as CPython's
+   `subtype_dealloc` does, called through the wasm table under its own
+   scope) and then `PyObject_GC_Del` frees the struct and the map entries.
+3. **Immortal**. No scope active (module init, loader time) → handles are
+   never collected. Interned strings live in a pinned pool.
 
-| Operation                         | Wasthon | _pydecimal | Speedup |
-| --------------------------------- | ------- | ---------- | ------- |
-| Decimal('3.14') × Decimal('2.71') | 0.04    | 1.8        | **46×** |
-| 1000 mul chain                    | 1.7     | 31         | **18×** |
+`tests/lifetime.py` proves both halves A/B: over 2000 calls `handles.size`
+stays flat with scopes (+91 per call without), `refcounts.size` stays flat
+with `tp_dealloc` (+1 per call without).
 
-**`_csv`** (parse/write, ms/op):
+What no refcount sees is Python dropping its last reference: Brython has no
+scope-exit or GC callback into `wasthon_decref`. So an instance Python holds
+is released on a **trigger** (history and measurements under "What's next"):
 
-| Operation                     | Wasthon | csv.py | Speedup   |
-| ----------------------------- | ------- | ------ | --------- |
-| parse 1000 simple rows        | 20.2    | 495.6  | **24.5×** |
-| parse 500 quoted-comma rows   | 15.9    | 314.7  | **19.8×** |
-| parse tab-delimited 1000 rows | 71.0    | 630.5  | **8.9×**  |
+- **`close()`/`with`** for heavy native resources (compressor contexts, DB
+  connections) — the stance of Pyodide's `PyProxy.destroy()` — plus the
+  wrap of the one-shot `compress()`/`decompress()` helpers
+  (`loader/wasthon-dealloc.js`);
+- **`del`**: a quick walk decides `__del__` on the spot, and the instance is
+  freed only once a complete mark from every live frame and module proves
+  it unreachable;
+- **`gc.collect()`**: settles everything pending since a `del`, cycles
+  included, and sweeps the resource-holding types that opt in
+  (`$wasthon_gc_finalizable`: sqlite3's, `_pickle`'s Pickler/Unpickler);
+- **the whole-heap collection** (`$wasthon_reclaim`): one mark, then each
+  runtime frees every instance only its wrapper owns (refcount 1, handed
+  over at its first crossing) that the mark did not reach — what a program
+  simply stopped using. The host calls it where no expression is half
+  evaluated (brytorch: between two tests);
+- **`FinalizationRegistry`**, opt-in (`rt.reclaimResults`) on a page that
+  yields between units of work: the JS GC's own proof that a result's
+  wrapper died.
 
-**Compression family** (MB/s throughput; higher is better):
+### Types
 
-| Op                      | _bz2 | _lzma | _zstd |
-| ----------------------- | ---- | ----- | ----- |
-| compress 10 KB text     | 1.14 | 1.95  | 2.44  |
-| compress 100 KB text    | 3.12 | 12.21 | 10.85 |
-| compress 500 KB text    | —    | —     | 21.54 |
-| compress 1 MB text      | 2.61 | —     | —     |
-| decompress 10 KB text   | 6.98 | 7.32  | 7.32  |
-| decompress 100 KB text  | 5.78 | 5.74  | 5.43  |
-| decompress 1 MB text    | 7.98 | —     | —     |
-| compress 50 KB binary   | —    | 10.46 | 10.46 |
-| decompress 50 KB binary | —    | 10.46 | 14.65 |
+C extensions create types with `PyType_FromModuleAndSpec` / `PyType_FromSpec`
+(heap types, slots identified by CPython's numeric slot IDs). The bridge:
 
-(`_bz2`/`_lzma`/`_zstd` have no Brython equivalent, so the columns measure
-absolute throughput, not speedup. The writable-bytes bridge refactor
-roughly doubled decompress throughput vs the prior baseline by skipping
-one O(n) copy on the output path.)
+- creates a **Brython class** for Python-side use, and
+- allocates a **`PyTypeObject` struct in linear memory** (field order
+  documented in `wasthon.h`; e.g. `tp_dealloc` at offset 40) for the C code
+  that reads type fields directly (`type->tp_alloc(type, 0)`,
+  `st->type->tp_dict`, …). The type handle *is* this struct's pointer.
+  Brython classes that never went through FromSpec get one lazily
+  (`ensureTypeStruct`).
 
-**`array`** (5000-element typed array, ms/op):
+Static `PyTypeObject` definitions (torch, pygame) go through `PyType_Ready`
+instead; same wiring, read from the struct at the `wasthon.h` offsets.
+**Metatypes**: `PyVarObject_HEAD_INIT(&meta, 0)` stores its first argument
+in the tail `ob_type` field (offset 176, appended — no historical offset
+moved) and `PyType_Ready` sets the class's `__class__` to the readied
+metatype, so `__instancecheck__` and metaclass getsets dispatch exactly as
+CPython (`isinstance(t, torch.FloatTensor)`, `torch.FloatTensor.dtype`).
+The value is honoured only if it names an already-readied type — modules
+compiled before the field existed carry arbitrary trailing bytes.
 
-| Operation                      | Wasthon | Brython list (best alt) | Verdict   |
-| ------------------------------ | ------- | ----------------------- | --------- |
-| tobytes 5000 ints              | 7.5     | 51.4 (manual pack)      | **6.9×**  |
-| tobytes + frombytes round-trip | 6.7     | 85.1                    | **12.7×** |
-| construct array('i', 5000)     | 6.2     | ~0 (list copy)          | list wins |
-| extend 10000 ints              | 28.0    | 0.5                     | list wins |
+Slots are wired **by ID, not by struct offset** — `Py_tp_call`,
+`Py_nb_add`, `Py_bf_getbuffer` etc. map to Brython dunders and to the
+protocol dispatchers. Making a method visible to Brython requires three
+installs (learned the hard way, all mandatory): the `tp_funcs` fast path,
+the `$getattribute` marker, and a real `method_descriptor` in the class
+dict — `__wasthon_install_methods` / `_getsets` / `_members` do all three.
 
-Brython's own `Lib/array.py` is broken (rejects valid typecodes, missing
-methods). Wasthon's `array` is the first working typed array in Brython.
-
-**`_json`** (`encode_basestring`, scaling with input size):
-
-| Input size            | Wasthon ms | Brython pure-Py ms | Speedup    |
-| --------------------- | ---------- | ------------------ | ---------- |
-| 11 chars ASCII        | 0.014      | 0.358              | **25.57×** |
-| 1300 chars ASCII      | 0.110      | 22.88              | **208×**   |
-| 1700 chars w/ escapes | 0.090      | 24.12              | **268×**   |
-| 11000 chars Lorem     | 0.450      | 149.45             | **332×**   |
-
-Largest single-operation speedup measured on any ported module. The C
-state machine asymptotes to ~24 MB/s of JSON encoding while pure-Python
-char-by-char saturates around 75 KB/s — interpreter overhead vs native
-string scan.
-
-**Brython has a broken `_json` module**: a user (the author of this project)
-filed a Brython issue 3 months before this port noting that
-`json.loads(invalid_xml_string)` raised `json.decoder.JSONError` (an
-exception that doesn't exist in CPython) instead of `JSONDecodeError`.
-Brython's `_json` is also API-incompatible with CPython — Brython's
-`_json.loads(s, **kw)` exists but CPython's `_json` has no top-level
-`loads`. Wasthon's `_json` ships the genuine CPython API. Combined with
-bundling `Lib/json/`, `import json` would resolve that filed Brython
-issue automatically.
-
-**`math`** (int-heavy functions vs pure-Python equivalents):
-
-| Operation          | Wasthon ms | Brython ms | Speedup      |
-| ------------------ | ---------- | ---------- | ------------ |
-| factorial(200)     | 0.024      | 0.289      | **12×**      |
-| factorial(500)     | 0.066      | 0.773      | **11.7×**    |
-| gcd(10**18, 7**18) | 0.008      | 0.156      | **19.4×**    |
-| isqrt(10**18)      | 0.004      | 0.089      | **22.2×**    |
-| isqrt(10**40)      | 0.020      | 0.178      | 8.9×         |
-| prod(range(1,100)) | 0.289      | 0.126      | 0.44× (loss) |
-
-The int-heavy helpers (factorial, gcd, isqrt) win 9-22× because CPython's
-C implementation does the BigInt arithmetic in tight C loops — exactly the
-pattern wasthon thrives on. The trig/log floats (sin/cos/sqrt) are
-delegated to libm and would barely beat Brython (browser `Math.sin` is
-the same hardware op). `prod` loses because iteration crosses the bridge
-per element — canonical case of the work-density anti-pattern (each
-multiplication walks JS → bridge → C → bridge → JS).
-
-**`cmath`** (complex math) — smoke 8/8. Historically the bench was noisy
-across runs because each iteration used to leak a Brython complex wrapper
-into the bridge's handle map (the sentinel handle-map leak — since fixed
-by handle scopes, see *What's next*). Across reruns the directional pattern
-is consistent: complex→complex ops (sqrt/exp/log/sin/cos) tend to win
-**2-3.5×** while scalar-returning ops (`phase`, `polar`) lose. Exact
-speedup numbers await a bench rerun now that the leak is gone (the
-historical noise floor was ~50% on cmath bench results). Brython's bundled `cmath.py` is
-broken at import time — wasthon's port is the first working complex math
-for Brython users regardless.
-
-**`_statistics`** (`_normal_dist_inv_cdf`, Wichura AS241 — ms/op):
-
-| Quantile / branch                     | Wasthon | Pure-Py AS241 | Speedup  |
-| ------------------------------------- | ------- | ------------- | -------- |
-| inv_cdf(0.5,   0, 1)   [central, q=0] | 0.00750 | 0.01800       | 2.4×     |
-| inv_cdf(0.7,   0, 1)   [central]      | 0.00300 | 0.00900       | 3.0×     |
-| inv_cdf(0.975, 0, 1)   [near-tail]    | 0.00500 | 0.01750       | 3.5×     |
-| inv_cdf(0.999, 0, 1)   [near-tail]    | 0.00300 | 0.01900       | **6.3×** |
-| inv_cdf(1−1e-15, 0, 1) [extreme tail] | 0.00350 | 0.02150       | **6.1×** |
-| inv_cdf(0.95, 100, 15) [scaled]       | 0.00400 | 0.01500       | 3.8×     |
-
-Textbook work-density curve: the tail branches evaluate one extra polynomial,
-so more flops sit behind the single bridge crossing → bigger win. 1 call =
-1 crossing for ~30-50 flops, so always a win, never close to break-even.
-
-**`pyexpat`** (parse 5000 XML items, ~22 KB doc):
-
-| Callback pattern                 | Time   | Throughput                    |
-| -------------------------------- | ------ | ----------------------------- |
-| Parse only (no Python callbacks) | 4.4 ms | **63 MB/s** (native libexpat) |
-| Parse + 1 callback per element   | 364 ms | 767 KB/s (80× slower)         |
-| Parse + 3 callbacks per element  | 678 ms | 412 KB/s (150× slower)        |
-
-Cleanest demo of the work-density rule we have: same module, three patterns,
-three orders of magnitude difference. The "parse only" path runs at native
-libexpat speed because *no bridge crossings happen during the parse* — C
-state machine just consumes bytes. Add a Python handler per element and
-throughput collapses. Strategic implication: for XML in practice, the next
-port should be `_elementtree` (the C accelerator for `xml.etree.ElementTree`)
-which builds the DOM tree *inside C* from libexpat callbacks, so only one
-bridge crossing happens at the end.
-
-**Brython has no working XML parser**: own `pyexpat` errors on basic
-`ParserCreate()` calls; `xml.etree`, `xml.dom`, `xml.sax` are not shipped.
-Brython upstream explicitly labelled the XML gap **"won't fix"** — the
-reasoning was that `pyexpat` is CPython C and no pure-Python port exists,
-proposing browser `DOMParser` as the workaround. Wasthon's `pyexpat` is the
-first working XML parser for Brython users; combined with bundling CPython's
-pure-Python `xml/` stdlib it lights up `xml.dom.minidom.parseString(...)`
-and `xml.etree.ElementTree.fromstring(...)` end-to-end (etree at pure-Python
-speeds until `_elementtree` is ported).
-
-### What the bench results teach — the "work-density rule"
-
-A clear pattern emerged across the ports. WASM-via-bridge wins when the C
-code does substantial work **between** bridge crossings; it loses when the
-operation is small and the bridge crossing dominates:
-
-| Profile                                            | Speedup expected  | Examples                             |
-| -------------------------------------------------- | ----------------- | ------------------------------------ |
-| Compute-dense, custom C types, work in WASM        | **5-50×**         | `_decimal`, `_csv`, hashlib, zlib    |
-| Single bulk call with O(N) inner loop in C         | **5-15×**         | `array.tobytes`, compress/decompress |
-| Per-element bridge crossings (loop in JS, op in C) | **0.5-1×** (LOSS) | `math.prod`, `cmath.phase`           |
-
-This is the second selection rule for choosing modules to port. The first
-is **"engine separable from Py-API"** (the C side does substantive work
-that doesn't constantly call back into Python). There used to be a third —
-**"no static PyTypeObject"**: modules that define their types with 50-field
-static struct initializers were incompatible with the bridge, because
-wasthon.h reorders `struct _typeobject` and a positional initializer fills
-the wrong slots. That rule fell with `src/dtconvert.py` (see "How it's
-built" below): `_datetime` — 7 static types, 227 positional slots — now
-compiles verbatim and ships in both bundles (`datetime.date + timedelta`
-drops from 146 µs interpreted to 1.7 µs, **86×**). The same conversion,
-generalized, is what put real PyTorch on the bridge
-([BryTorch](https://github.com/fgallaire/brytorch): 31 static types,
-1029 slots).
-
-## How it's built
-
-The bridge is the leverage. It implements just enough of the public CPython
-C-API to compile unmodified stdlib modules. From a `<x>module.c` in
-CPython's `Modules/`, one `emcc` invocation produces an Emscripten ES6
-module exposing `PyInit_<x>()`. A small Brython-side loader
-(`loader/wasthon-loader.js`) instantiates it and registers it under
-`__BRYTHON__.imported[<x>]` so `import <x>` from Python just works.
+**Dual identity.** An instance carries two type facts: `ob_type` = the live
+Brython class (so `type(x)` and Python subclassing behave), and
+`__wasthon_type__` = the C type struct (so C-side `Py_TYPE` /
+`PyObject_TypeCheck` see the layout they allocated). `Py_TYPE` returns the
+live class when it differs from the registered one (Python subclass of a C
+type), the registered struct otherwise. Python subclasses of C types get
+identity preservation and an instance `__dict__` in the `tp_new` path.
 
 One module gets an extra build step. `_datetime` defines its 7 types as
 **static `PyTypeObject` initializers** — positional C89 lists whose meaning
@@ -286,35 +193,123 @@ output is ordinary diffable C, and the source stays byte-for-byte upstream
 CPython in the repo — the same zero-fork rule as every other module. The
 runtime half (`_PyDateTime_InitTypes`, singleton registration, the real
 packed-struct `datetime.h` for capsule consumers like pandas) rides in
-`datetime_exec` via `build.sh`.
+`datetime_exec` via [Wastdlib](https://github.com/fgallaire/wastdlib)'s
+`build.sh`.
 
-```
-                ┌──────────────────────────────────────────────┐
-   <x>module.c  │  emcc  →  PyInit_<x>() exported via WASM     │
-   (CPython,    │     ↑                                        │
-   unmodified)  │  wasthon.h + wasthon.c + wasthon.js          │
-                │  (CPython C-API replicated atop Brython)     │
-                └──────────────────────────────────────────────┘
-                                  ↑
-                          Brython runtime
-                          (__BRYTHON__, _b_)
-                                  ↑
-                          User Python:
-                              import _decimal
-                              d = _decimal.Decimal('3.14') * 2
-```
+### Calls
+
+**JS→C**: `__wasthon_make_trampoline` turns a `PyMethodDef` entry into a
+Brython-callable closure — it wraps arguments into a malloc'd handle array,
+dispatches on the `METH_*` flags (FASTCALL, KEYWORDS, METH_O, VARARGS,
+METH_METHOD), calls the C function pointer through the wasm table, and
+unwraps the result. Vectorcall-capable objects (Cython's `CyFunctionType`)
+are dispatched through their stored vectorcall pointer.
+
+**C→JS**: every C-API function the modules call (`PyObject_GetAttr`,
+`PyDict_Next`, `PyNumber_Multiply`, `PyErr_SetString`, ~630 entries) is a
+JS implementation in `wasthon.js` calling straight into Brython's runtime
+(`$B.$getattr`, `$B.rich_op`, …).
+
+### Errors
+
+C signals failure by returning `NULL` with an exception *set*; Brython
+raises exceptions as JS throws. The bridge holds the C-side state in
+`WasthonRT.pendingException`: `PyErr_SetString/SetObject/Format` populate
+it, `PyErr_Occurred/Fetch/Restore` manage it, and the trampoline re-throws
+it as a real Brython exception when the C call returns `NULL`. Conversely a
+Brython exception thrown *during* a C→JS call is caught, stored as pending,
+and `NULL`/`-1` is returned to C — matching CPython's contract exactly is
+what most error-path bugs came down to.
+
+### Data crossing the boundary
+
+- **Bytes/str**: copied. C-produced buffers travel back through
+  linear-memory records (under the runtime's `_cstrKey`) drained
+  recursively by the trampoline (`syncCstrBytes`) — critical for
+  pickle/zlib output.
+- **Buffer protocol**: real. Instances of C types own actual data in
+  linear memory, so `bf_getbuffer` hands out genuine pointers — this is
+  why numpy's ndarrays (and matplotlib's C++ reading their vertices) work
+  at native speed. Exporter-owned ("borrowed") views are tracked so
+  `PyBuffer_Release` never frees memory the bridge doesn't own.
+
+### Build integration
+
+`wasthon.js` is an Emscripten `--js-library`: it is **inlined into each
+module's `.mjs` at link time**. Consequences:
+
+- A bridge change requires **relinking every `.mjs`** (Wastdlib's bundles,
+  every NumBry and BryTorch module). `grep` the built `.mjs` for your
+  change to verify it took.
+- The vendored Brython (`loader/brython/brython.js`) is loaded fresh by
+  the page — Brython-level fixes are testable without any relink. Hence
+  the two logs: bridge fixes → `CHANGELOG.md`, vendored Brython fixes →
+  `BRYTHON_FIX.md`.
+
+`wasthon.c` defines the extern sentinels (`Py_None`, `PyExc_*`,
+`PyType_Type`, …); `wasthon_init()` must run once per module instance to
+populate them via JS accessors before any ported code executes.
+
+### Two runtimes in one page: addresses are heap-local
+
+A page can load several bridge modules at once — brytorch runs torch and
+NumBry's numpy side by side. Each is a separate Emscripten module with its
+**own linear memory and its own `_malloc`**; `wasthon.js` is inlined into
+each, so a bridge call runs against the *calling* module's heap, and each
+runtime registers in `B.$wasthon_rts`. The Brython objects are shared;
+linear memory is not, and the heaps can differ wildly in size (torch's
+reaches ~1.6 GB, numpy's stays tens of MB). The rule: **an address means
+something only in the heap that allocated it, so anything a runtime
+records on a shared Brython object is keyed by runtime.**
+
+- A pointer cached on a shared object carries its module: a list indexed
+  by torch then by numpy reused torch's `PySequence_Fast_ITEMS` buffer
+  inside numpy's heap (`index out of bounds`). Content copies live under
+  per-runtime keys (`_cstrKey`, `_cstrSizeKey`, `_bufKey`, `_bufLenKey`):
+  `_sha1` read `_md5`'s buffer address in its own heap.
+- Class stamps live under the runtime's `_thKey`, minted in `init()`
+  because Emscripten folds a library literal at build time — with one
+  shared key, numpy's `&PyFloat_Type` overwrote torch's on `float`.
+- An instance carries its runtime (`__wasthon_type_rt__`). Another
+  runtime's instance crosses `wrap` as an object, never as its address,
+  and its `Py_TYPE` is a local struct minted for its class
+  (`foreignTypes`): an honest `tp_name`, subtype of nothing registered
+  here. The tag is checked only when it positively names another runtime.
+- The whole-heap collection marks the one graph but frees each instance in
+  its own runtime, and reads its C edges there.
+
+Such mix-ups need an address to be reused or two heaps of different sizes;
+a single-heap page never meets them.
+
+### Beyond the stdlib: Cython and pybind11
+
+Two support layers in `cython-support/` extend the surface to binding
+generators, in increasing order of layout hostility:
+
+- **Cython** (numpy.random, pandas, scipy) — mostly handle-friendly;
+  needs compat headers, spec-based type creation
+  (`-DCYTHON_USE_TYPE_SPECS=1`) and two generic post-cythonize patches.
+  See `cython-support/README.md`.
+- **pybind11** (matplotlib, kiwisolver, torch) — aggressively
+  struct-layout-dependent: it casts handles to `PyCFunctionObject*` /
+  `PyHeapTypeObject*` and reads fields by offset. The bridge answers by
+  making those specific objects *real*: `PyCFunction_NewEx` returns an
+  actual 24-byte C struct whose address is the handle (trampoline bound on
+  top), and `PyType_Type.tp_alloc` hands out raw `PyHeapTypeObject` memory
+  that `PyType_Ready` consumes. See `cython-support/pybind11_compat.h` and
+  NumBry's `docs/MATPLOTLIB.md`.
 
 ## Repo layout
 
 - **`src/`** — the C-API bridge.
-  - `wasthon.h` (~1500 lines) — type defs, macros, function prototypes.
+  - `wasthon.h` (~2400 lines) — type defs, macros, function prototypes.
     Mostly a mirror of CPython's public C-API surface; the load-bearing
     parts are struct layouts (`PyTypeObject` offsets), macro values that
     must match `Include/typeslots.h` exactly (`Py_nb_multiply=29`, etc.),
     and the selection of which API to expose at all.
-  - `wasthon.c` (~500 lines) — `extern` definitions, `wasthon_init()`
+  - `wasthon.c` (~1100 lines) — `extern` definitions, `wasthon_init()`
     which populates them at boot, plus a few small C helpers.
-  - `wasthon.js` (~7200 lines) — Emscripten js-library: ~395 entry points
+  - `wasthon.js` (~19 000 lines) — Emscripten js-library: ~630 entry points
     covering handle management, object protocol, type-spec creation,
     buffer protocol, arg parsing, Unicode, dict/list/tuple, IEEE 754,
     sequence protocol, METH_METHOD trampoline, getset descriptors, slot
@@ -323,25 +318,20 @@ packed-struct `datetime.h` for capsule consumers like pandas) rides in
     lives — most C-side functions in `wasthon.h` are declarations whose
     implementation is here.
   - Plus `Python.h`, `pyconfig.h`, `pymacro.h`, `hashlib.h`, `pyexpat.h`,
-    `complexobject.h`, and ~25 `pycore_*.h` stubs that mostly redirect
+    `complexobject.h`, and ~35 `pycore_*.h` stubs that mostly redirect
     `#include "pycore_X.h"` to `wasthon.h` so unmodified CPython source
     files compile. The notable exception is `pycore_blocks_output_buffer.h`
     (321 lines), copied verbatim from CPython — used by compression modules.
-- **`build/`** — copied CPython sources + compiled `.wasm`/`.mjs` artifacts.
-  Per-module compile happens here. Includes pre-built object files for
-  bundled external libraries when needed (HACL\* hashes, libmpdec, bzip2).
-- **`external/`** — downloaded upstream source trees (CPython, libexpat,
-  liblzma, libzstd, bzip2, emsdk itself). Gitignored. Populated on first
-  `./build.sh` run, ~3 GB after a full build.
-- **`loader/`** — `wasthon-loader.js` (Brython integration), `index.html`
-  navigation page, 14 per-module smoke pages (`test-*.html`), 14 per-module
-  bench pages (`bench-*.html`). Brython is loaded via `brython-src.js`, which
-  defaults to the **vendored, patched build in `loader/brython/`** (stock
-  3.14.1 plus the fixes tracked in `BRYTHON_FIX.md`, pending upstream); add
-  `?brython=cdn` to any page to load stock `brython@3.14.1` from jsDelivr
-  instead, for comparison. (`loader/brython/` is vendored so results are
-  reproducible and match GitHub Pages; it goes away once the fixes ship in a
-  published Brython.)
+- **`cython-support/`** — the Cython and pybind11 layer on top of the
+  bridge, shared by NumBry and BryTorch.
+- **`loader/`** — the Brython side: `wasthon-loader.js` instantiates a
+  module and registers it under `__BRYTHON__.imported`; `wasthon-fs*.js`,
+  `wasthon-io-write.js`, `wasthon-dealloc.js` and `wasthon-dbm.js` back the
+  filesystem, I/O and lifetime hooks; `brython-src.js` loads the **vendored,
+  patched Brython in `loader/brython/`** (stock release plus the fixes
+  tracked in `BRYTHON_FIX.md`, pending upstream); `test-bridge.html` runs
+  the unit tests in the browser.
+- **`tests/`** — the bridge's unit tests (see "Tests").
 
 ## Hard rules (so the bridge stays small)
 
@@ -350,19 +340,26 @@ prevent it from becoming "CPython in JS" (which would defeat the point —
 that's Pyodide):
 
 1. **Implement only what targeted modules actually call.** Grow on demand.
-2. **No Python runtime.** No `PyImport_*`, no `PyEval_*`, no `PyCode_*`,
-   no exception machinery beyond a single pending-exception flag.
-3. **`PyObject*` is opaque** for most code. C never inspects layout except
-   for a small fixed `_typeobject` struct (tp_free, tp_dict, tp_name,
-   tp_alloc, tp_init) needed for direct slot access from a handful of
-   modules, plus `PyObject_VAR_HEAD` which declares `Py_ssize_t ob_size`
-   at struct offset 0 for variable-size objects (array, bytes-like).
+2. **No Python runtime.** Brython is the runtime: `PyImport_*` goes through
+   Brython's import, `PyEval_*` is `PyEval_GetBuiltins` and the GIL stubs,
+   no `PyCode_*`, no exception machinery beyond a single pending-exception
+   flag.
+3. **`PyObject*` is opaque** for most code. C inspects layout only where
+   CPython code reads it directly: `PyTypeObject` (the slots C touches at
+   fixed offsets, `tp_dealloc` at 40, the rest in CPython's order,
+   `ob_type` at the tail, offset 176), and `PyObject_VAR_HEAD`, which
+   declares `Py_ssize_t ob_size` at offset 4 (after `ob_refcnt`) for
+   variable-size objects (array, bytes-like).
 4. **Two handle kinds**: sentinel-range small integers for ordinary Brython
    objects; real WASM pointers for C-allocated instances. The handle IS the
    pointer so `self->field` dereferences hit the right linear memory.
 
-The bridge today covers ~425 distinct C-API entry points. That's enough for
-**25 stdlib modules**, all major type-creation patterns (factory functions,
+Everything Python-semantic is Brython's job — the bridge's job is to be a
+faithful, lying-through-its-teeth `Python.h`.
+
+The bridge today covers ~510 distinct C-API entry points. That's enough for
+CPython's C standard-library modules, NumPy, SciPy, pandas and PyTorch,
+all major type-creation patterns (factory functions,
 tp_new-only, tp_new+tp_init, multi-phase exec slot), buffer protocol,
 Unicode (PEP 393 strict, kind-aware), dict/list/tuple, IEEE 754, slot
 dispatch including sequence and number protocols, getset descriptors
@@ -397,7 +394,7 @@ bug looks like inter-test poisoning — green in every standalone probe,
 failing deterministically in suite context (this was pickle's long-hunted
 `optional_frames` "poison": `_PyBytes_Resize` read the *new* size from
 the *old* block). Any `HEAPU8[ptr + i]` loop must clamp to
-the tracked allocation size (e.g. `__wasthon_cstr_size__`) — a size the C
+the tracked allocation size (e.g. the runtime's `_cstrSizeKey`) — a size the C
 side asks for is a request, not a promise about the block under `ptr`.
 
 **⚠ Recursion is three nested stacks, and the wasm one must never win.**
@@ -406,10 +403,10 @@ JS): Brython's own counter — driven by `sys.setrecursionlimit`, with the
 engine's `InternalError: too much recursion` converted as a backstop —
 raises `RecursionError` there. A C-level recursion (`_json`'s
 scanner/encoder, `_pickle`'s save/load, expat's content model) runs on
-the **wasm stack**, a fixed 4 MB reservation (`-sSTACK_SIZE=4MB`) whose
-overflow is an *uncatchable trap* that kills the page — so
-`Py_EnterRecursiveCall` routes to a bridge depth counter (cap 4000 ≈
-CPython's `Py_C_RECURSION_LIMIT`, a ×5 margin under the stack) that
+the **wasm stack**, a fixed reservation chosen at link time (`-sSTACK_SIZE`,
+4 MB in Wastdlib) whose overflow is an *uncatchable trap* that kills the
+page — so `Py_EnterRecursiveCall` routes to a bridge depth counter (cap
+4000 ≈ CPython's `Py_C_RECURSION_LIMIT`, a ×5 margin under 4 MB) that
 raises CPython's exact `RecursionError` first, call-site suffix included.
 The C cap is fixed and deliberately *not* tied to `sys.setrecursionlimit`
 — that is CPython 3.12+'s own design (the C recursion limit is decoupled
@@ -420,262 +417,22 @@ emscripten builds skip the deep-recursion tests (their stack-probing
 guard has no headroom in wasm); wasthon runs them and passes — a 500k-deep
 JSON nesting raises `RecursionError` instead of trapping.
 
-## Running it
-
-Prerequisites:
-
-- [Emscripten SDK](https://emscripten.org/) is installed automatically into
-  `./external/emsdk/` on first build (pinned to 5.0.7); only `curl` or `wget`
-  needs to be on PATH up front
-- `make` (used by `emmake make` to build liblzma and libzstd)
-- Python 3 (for `python3 -m http.server`)
-- Brython is loaded by the loader pages from the vendored build in
-  `loader/brython/` (stock 3.14.1 + the patches in `BRYTHON_FIX.md`); pass
-  `?brython=cdn` on any page to load stock `brython@3.14.1` from jsDelivr — no
-  local checkout needed either way
-
-Source trees for CPython and the C libraries (bzip2, expat, xz, zstd) are
-**downloaded automatically** by `build.sh` if not already present. Defaults
-land them in `./external/<libname>` (gitignored). Override via env vars to
-point at an existing checkout outside the repo:
-
-```
-CPYTHON_SRC, EXPAT_DIR, ZSTD_DIR, XZ_DIR, BZIP2_DIR
-```
-
-Build any module via the wrapper script (after activating emsdk):
+## Tests
 
 ```bash
-cd wasthon
-./build.sh _sha2          # any of the 25 known modules → build/_sha2.{mjs,wasm}
-./build.sh _sha2 _decimal # several specific modules in one go
-./build.sh all            # everything as per-module .mjs/.wasm
-                          # (~45 s once libs are cached; first run downloads + builds the libs too)
-./build.sh wasthon        # light bundle: 23 modules in build/wasthon.{mjs,wasm} (~1 MB)
-                          # — drops the three specialists (unicodedata, _zstd, _sqlite3)
-./build.sh wasthon-full   # full bundle: 26 modules in build/wasthon-full.{mjs,wasm} (~3 MB)
+source /path/to/emsdk/emsdk_env.sh   # emcc 5.0.7, and node
+tests/run.sh
 ```
 
-The per-module target is best for dev, bench, and incremental work — each
-module is fetched only if imported, and rebuilds are cheap. The bundled
-targets are the "drop one script tag into your HTML" deliverable: one
-fetch, one WASM instance, shared bridge runtime. `wasthon` is the default
-(~1 MB / 348 KB gzip); `wasthon-full` adds the three specialists
-`unicodedata` (full Unicode DB), `_zstd` (libzstd), and `_sqlite3`
-(SQLite 3.46.1 + FTS5/RTREE/JSON1) — together responsible for most of the
-full bundle's extra weight. Users who need any of them can also load the
-per-module .wasm add-on alongside `wasthon`. See `loader/test-wasthon.html`
-and `loader/test-wasthon-full.html` for working bundle pages.
-
-**Compile flags.** Modules are compiled with `emcc -O3` by default. The
-project's positioning is perf-first — the C accelerators only earn their
-wasm footprint if they beat Brython's pure-Python implementations by
-large margins. `_sqlite3` is the single documented exception: built with
-`-Oz` (halves the wasm — 1.35 MB → 730 KB — with negligible runtime cost
-in practice, since SQLite is bridge-bound and carries large cold-path
-features like FTS5/RTREE/JSON1 that aren't on the query hot loop). This
-size cut is what made bundling `_sqlite3` in `wasthon-full` viable.
-
-**Link flags.** Links use `emcc -O2` with the standard runtime exports.
-Three per-target deviations target the stack and the heap ceiling:
-
-- **`-sSTACK_SIZE=4MB`** on `_decimal`, `_pickle`, `pyexpat` and both
-  wasthon bundles. The sizing rule is **"match the legitimate use
-  case, not just the tests"**: each of these modules has a stack-heavy
-  code path that's part of its public contract — arbitrary-precision
-  arithmetic on big numbers (`_decimal`), deeply-nested XML (`pyexpat`),
-  deep object-graph serialization (`_pickle`). The test suite plateaus
-  are tighter (e.g. `pyexpat` clears all its tests at 1 MB), but real
-  workloads can push further — DOM trees with hundreds of nesting
-  levels, recursive object graphs, `c.prec` set very high — so we bump
-  everyone to 4 MB for headroom on legitimate inputs. **Zero `.wasm`
-  byte cost** — STACK_SIZE is a runtime reservation, not embedded
-  bytes. ALLOW_MEMORY_GROWTH=1 means the reservation only takes
-  effect on actual use; idle code paths pay nothing.
-- **`-sSTACK_OVERFLOW_CHECK=2`** on `_decimal` standalone and on the
-  `wasthon-full` bundle (which contains `_decimal`). libmpdec is the
-  single module that can still push the stack at extreme inputs even
-  with 4 MB; the per-prologue guard turns any remaining overflow into
-  a clean Python exception instead of silent memory corruption.
-  Level 1 (end-of-program sentinel) is too late. Size cost:
-  `_decimal.wasm` +4.3%, `wasthon-full.wasm` +~2%. NOT applied to the
-  light `wasthon` bundle (which doesn't ship `_decimal`) nor to
-  `_pickle`/`pyexpat` standalone — the 4 MB headroom alone clears
-  everything we've measured for those, and the per-prologue guard
-  carries a small runtime perf cost.
-- **`-sMAXIMUM_MEMORY=4GB`** on `_lzma` standalone and both wasthon
-  bundles. The default 2GB growth ceiling was the
-  real wall behind most of test_lzma's out-of-memory failures: liblzma's
-  preset-6 encoder allocates ~94 MB per instance, and the *cumulative*
-  heap pressure of a long-running page (the bridge's known handle-map /
-  sentinel retention, see the GC section) pushes the total toward the
-  cap, where `ALLOW_MEMORY_GROWTH` can grow no further and `malloc`
-  starts returning NULL. 4 GB is the wasm32 maximum; the `maximum` is a
-  virtual-address-space reservation, not an allocation, so it costs
-  nothing on 64-bit hosts (32-bit user agents may fail to instantiate —
-  considered acceptable in 2026). This buys headroom, it does not fix
-  the retention. Re-evaluated once the per-call arena work landed
-  (handle scopes, 2026-06-12): with retention gone, a 2GB build still
-  measures −18 on test_lzma and times out test_pickle — the ceiling is
-  real allocation appetite (liblzma's larger presets, pickle's biggest
-  payloads), not bridge retention. 4GB is the permanent setting; the
-  price is the unsigned-pointer discipline required of hand-written JS
-  above the 2GB address boundary.
-
-The script handles all the per-module quirks: downloading missing source
-trees, compiling external libraries (libexpat, liblzma, libzstd, bzip2,
-libmpdec, HACL\*), and the emcc `EXPORTED_FUNCTIONS`/`EXPORT_NAME` for each
-target module.
-
-Serve and test:
-
-```bash
-# from the wasthon directory
-python3 -m http.server 8765
-# open http://localhost:8765/loader/index.html
-# → individual test-*.html and bench-*.html pages for each module
-# → test-all.html for a one-click sequential sweep of every test page
-```
-
-Headless runs and CI:
-
-```bash
-pip install playwright
-playwright install chromium
-python3 test.py   # spawns http.server, drives test-all.html via Chromium,
-                  # exits 0 on green / 1 on red
-```
-
-A GitHub Actions workflow (`.github/workflows/test.yml`) runs this on every
-push to `main` and every pull request — it builds all modules, both bundles,
-and runs the headless sweep. The first run is the slow one (downloads
-CPython + SQLite + emsdk + all libs, cold-compiles everything); subsequent
-runs benefit from the `external/` and `build/*.o` caches.
+builds `tests/_bridgetest.c` — a test module compiled against `src/`
+alone — and runs the test files in Node: `tests/lifetime.py` proves
+`tp_dealloc` and handle scopes A/B (each mechanism switched on keeps its
+table flat, switched off leaks what it is there to reclaim). They depend on
+nothing else; the repositories built on the bridge test the rest. The same
+file runs in the browser on the Pages: `loader/test-bridge.html`.
 
 ## What's next
 
-Recent ports:
-
-- [x] `binascii` — CPython C accelerator for hex / base64 / CRC encoding
-      (`hexlify`/`unhexlify`, `b2a_base64`/`a2b_base64`, `crc32`, `crc_hqx`,
-      `b2a_hex` with the 3.14 `sep`/`bytes_per_sep` API). 24 KB wasm, the
-      smallest module ported so far. Bundled in `wasthon` light by
-      default (+13 KB marginal — encoding is a fundamental Python
-      primitive used wherever bytes touch the network or the file
-      system). Brython's `binascii` is pure-Python; wasthon replaces it
-      transparently with bit-exact CPython behaviour. **Honest
-      benchmark** (2 MB payloads, median of 10 runs): decode operations
-      are **~4× faster** (`unhexlify` 3.9×, `a2b_base64` 4.3×) and
-      `crc32` works at all — Brython's pure-Python `crc32` raises
-      `TypeError: ord() expected a character, but int was found`, a
-      latent bug in its impl that wasthon resolves in passing. Encode
-      operations are mixed: `b2a_base64` ~1.8× faster, but
-      **`hexlify` is actually slower than Brython** (~0.55×) because
-      the bridge bandwidth cost on `bytes → hex string` (6 MB of
-      transfer for 2 MB input) outweighs the C win on what is otherwise
-      a trivial byte-to-char operation. Reporting that regression
-      honestly rather than papering it over with a JS-side shortcut:
-      wasthon's contract is "real CPython C behaviour", optimization
-      of `hexlify`-as-pure-Python belongs upstream in Brython.
-      Port surfaced two CPython-internal symbols not previously
-      needed by the bridge: `_PyLong_DigitValue[256]` (char→digit
-      lookup used by hex parsing, added verbatim from
-      `Objects/longobject.c`) and `_Py_strhex_bytes_with_sep`
-      (hex-with-separator formatter; the naming is misleading — the
-      `bytes_` infix denotes the *return* type, not the input, so it
-      returns a `bytes` object). Also hit a new instance of the Brython
-      kwarg-falsy-default quirk: a direct top-level
-      `b2a_base64(b'…', newline=False)` compiles to
-      `b2a_base64(b'…', 0=False)` (the kwarg name '`0`' is the value of
-      `False`). Previously thought lambda-only; now confirmed to fire
-      from plain calls too.
-- [x] `_sqlite3` — SQLite 3.46.1 amalgamation + CPython's full `_sqlite`
-      hierarchy (Connection / Cursor / Row / Blob / PrepareProtocol /
-      Statement / microprotocols / util). FTS5, RTREE, and JSON1 enabled
-      for real-world usefulness; `:memory:` only for now (no persistence
-      wired yet). Bundled in `wasthon-full`, also loadable standalone for
-      sites that only need a database. **Compiled with `emcc -Oz`** —
-      the project's overall rule is `-O3` (perf-first, that's wasthon's
-      value prop), but SQLite is a documented exception: -Oz halves the
-      wasm (1.35 MB → 730 KB) with negligible cost in practice (SQLite
-      is bridge-bound + carries large cold-path features like FTS5/RTREE/
-      JSON1 that aren't on query hot loops). The size cut is what made
-      bundling sqlite in `wasthon-full` viable. Bench validation is still
-      blocked on handle reclamation: `tp_dealloc` dispatch has since landed,
-      but a loop-bench `con = connect()` drops the Connection at Python
-      scope exit, outside the explicit `close()`/`with` contract, so its
-      native context leaks (the documented scope-exit residual — not an
-      auto-finalizer, which a synchronous run can't fire promptly anyway).
-      A proper compare-loop bench waits on that scope-exit reclamation. Bridge growth from this port — chief
-      among them: `forwardError` helper preserves the original Brython
-      exception class through C boundaries (replaces ~30 sites of
-      `setError(RuntimeError, e.message)` flattening); `Py_tp_call`
-      slot wiring lets callable types dispatch through C (sqlite's
-      `statement_cache(lru_cache(n))` flow needs this); `__wasthon_type__`
-      on `tp_new`'d instances unlocks `PyObject_TypeCheck` for clinic
-      `__init__` guards; new bridge symbols `_PyUnicode_AsUTF8NoNUL`,
-      `PyUnicode_FSConverter`, `PyLong_AsUInt32`, `PySequence_Check`,
-      `_PyErr_FormatFromCause`, `PyErr_Print`, `PyExc_Warning`, plus
-      single-threaded GIL stubs and `PyArg_ParseTuple` format-char `'U'`.
-- [x] `_pickle` — C accelerator for `pickle`. Round-trips ints (incl. BigInts),
-      floats, str (incl. non-ASCII unicode), bytes, bool, None, list, tuple,
-      dict, set, frozenset, and arbitrary nestings of these across all four
-      protocols (0–5; default 5). Bit-exact with CPython 3.14. Bundled in
-      `wasthon` light (+57 KB marginal) since serialization is a fundamental
-      Python primitive. Brython's own pickle is pure-Python (slow) and
-      exposes a different API surface; wasthon's port is the genuine
-      CPython API. Surfaced and fixed a stack of latent bridge bugs
-      benefiting all future ports — chief among them: `PyObject_GetAttr`
-      must fall back through `cls.tp_funcs` (Brython's `$getattr` only
-      consults the class dict); `PyErr_NewException` must rebuild the MRO
-      and inherit `tp_new`/`tp_init` (raise-time "$is_slot of undefined"
-      otherwise); the bytes "C wrote into `__wasthon_cstr__` but `.source`
-      still zero" sync must descend recursively into container return
-      values; `PyTuple_New` must go through `tuple.$factory` (a tagged JS
-      Array doesn't fully mimic a Brython tuple); `PyOS_snprintf` needed
-      a real varargs implementation (it was a stub that copied the format
-      string verbatim, so `%zd\n` from protocol-0 INT serialization went
-      straight into the pickle stream). And the gem: `bind_builtin_type`
-      was last-write-wins on the Brython-class key, so `PyODict_Type` was
-      overwriting `PyDict_Type` — making `Py_TYPE(dict) == &PyDict_Type`
-      silently false and pickle fall through to the reduce path. Latent
-      for the previous 22 modules because none compared
-      `Py_TYPE(obj) == &PyXxx_Type` directly.
-- [x] `_decimal` (libmpdec) — arbitrary-precision math, 18-46× speedup.
-- [x] `_csv` — full state machine port, 8-25× speedup.
-- [x] Full compression family: `_bz2`, `_lzma`, `_zstd` alongside `_zlib`.
-- [x] `array` — foundation for typed arrays / future numerics.
-- [x] `pyexpat` (libexpat) — XML parser. Brython upstream had labelled the
-      XML gap "won't fix" (no pure-Python pyexpat). Wasthon's port resolves
-      it: real CPython pyexpat, 63 MB/s on the parse-only path.
-- [x] `_json` — JSON encoder/decoder C accelerator. **25-332× speedup**
-      on encode_basestring vs pure-Python (largest single-op speedup of
-      any port). Brython has its own incompatible `_json` with a known bug
-      filed 3 months prior to this port — wasthon's port ships the real
-      CPython API and resolves it.
-- [x] `math` — int-heavy fns (factorial / gcd / isqrt / prod / comb / perm).
-      **9-22× speedup** on the int helpers (factorial(500): 11.7×,
-      isqrt(10**18): 22.2×). Float ops (sin/cos/sqrt) delegate to libm
-      and gain nothing over browser `Math.X`. Exposed two latent generic
-      bridge bugs: PyNumber_Multiply/Add silently produced JS Infinity on
-      Number×Number overflow (now promotes to BigInt automatically), and
-      `_PyLong_Lshift`/`_Rshift` were declared `size_t` in our header but
-      CPython 3.14 uses `int64_t` — emcc ABI mismatch produced garbage
-      shift values for the new BigInt-aware code paths.
-- [x] `cmath` — complex math. 8/8 smoke. Bench numbers pending a rerun:
-      the old 50%+ variance came from handle-map pressure — the sentinel
-      handle-map leak behind that noise is now fixed (handle scopes — see
-      *What's next*); directionally: complex→complex ops win ~2-3.5×,
-      scalar-returning ops lose. Exposed the emcc wasm32
-      ABI pattern for passing/returning
-      small structs (Py_complex) by value via sret. Brython's own
-      `cmath.py` is broken at import time — wasthon's is the first
-      working complex math for Brython users regardless.
-- [x] `_statistics` — `_normal_dist_inv_cdf` (Wichura AS241). 7/7 smoke.
-      6/6 bench wins: 2.4× central, up to **6.3×** on the tail branches.
-      Smallest port to date (15 KB wasm), single METH_FASTCALL function.
-      Textbook validation of the work-density rule — one bridge crossing,
-      ~30-50 flops inside C, never close to break-even.
 - [x] Bridge fixes since the polish pass — moved to `CHANGELOG.md` to
       keep this list focused on what's *in* the bridge rather than
       what was *fixed in* it. Recent highlights: `tp_init` kwarg
@@ -684,7 +441,7 @@ Recent ports:
       types. Older entries (`PyUnicode_FromFormat`, writable-bytes
       refactor, slot-ID collision, `unicodedata.numeric`/`.digit`/
       `.decimal`) are there too.
-- [x] Bridge surface ~7200 lines: METH_METHOD trampoline, getset
+- [x] Bridge surface: METH_METHOD trampoline, getset
       descriptors, sequence protocol slots, dict-style kwargs in
       `_PyArg_UnpackKeywords`, struct-aware `Py_SIZE`/`Py_SET_SIZE`,
       numeric format dispatch in `PyArg_Parse` (was a no-op stub for
@@ -703,63 +460,6 @@ Recent ports:
       encode_basestring on ASCII strings, where input kind=4 was read
       with output kind=1 stride and produced zero-byte garbage between
       chars).
-- [x] Top-level `build.sh <module>|all|wasthon|wasthon-full|list` script. Bootstraps emsdk into
-      `external/emsdk/` if missing, downloads CPython + libexpat + libxz +
-      libzstd + bzip2 sources via `curl`/`wget` on first run, compiles all
-      the per-module quirks (which CPython sources, which external library
-      objects, include paths, `EXPORTED_FUNCTIONS`, `EXPORT_NAME`). On a
-      fresh checkout: `./build.sh all` goes from zero to 23 `.wasm` in
-      a single command (~45 s once libs are cached).
-
-The "stdlib integration" layer — where the next wins live:
-
-Wasthon ports the C modules. The natural complement is wiring them to the
-pure-Python stdlib wrappers that Brython users actually import. Each gap
-below has a C module already in place; what's left is integration glue.
-
-- [ ] **Bundle CPython's `Lib/xml/` into Brython.** `xml.dom.minidom`,
-      `xml.etree.ElementTree`, `xml.sax`, `xml.parsers.expat` are all
-      pure-Python — they just need `pyexpat` to exist, which it now does.
-      `xml.dom.minidom.parseString(...)` and similar would light up
-      immediately. Direct response to Brython's "won't fix" on XML.
-- [ ] **Bundle CPython's `Lib/json/` into Brython.** `json/__init__.py`,
-      `decoder.py`, `encoder.py`, `scanner.py` are pure-Python wrappers
-      around `_json`. Brython has its own incompatible `json/` package
-      with an open bug. Replacing it with CPython's gives the proper
-      `JSONDecodeError`-with-context behaviour AND picks up wasthon's
-      25-332× speedup automatically.
-- [ ] **`_elementtree` (the C accelerator).** With it, `xml.etree`
-      operates at near-libexpat speed (50-60 MB/s effective) because the
-      DOM tree is built in C from libexpat callbacks — one bridge crossing
-      at the end of the parse instead of one per element.
-- [x] **Wire `_sre` into Brython's `re.py`.** Brython ships its own
-      pure-Python regex code in `re.py`. Patch (or replace) `re.py` so it
-      uses our `_sre` C module when available. More invasive than the XML
-      case because Brython has an incumbent, not a gap.
-      *Done by Pierre 2026-05-26: Brython's `Lib/re/` is now CPython
-      3.14's `re/` package verbatim, importing `_sre` (auto-loaded via
-      `$B.wasthonLoad` at boot). Confirmed all `tests/test_wasthon`
-      pass.*
-
-Module candidates worth porting are largely exhausted at this point. What
-remains in CPython's stdlib falls into one of three buckets:
-
-- **Structurally impossible in browser** — `_socket`, `_ssl`, `_thread`,
-  `_ctypes`, `_curses`, `mmap`, `select`, `_asyncio`, heavy `_io`,
-  `_multiprocessing` (no OS). (`_datetime` used to sit here under the
-  static-`PyTypeObject` ban; `dtconvert.py` lifted the ban and it is now
-  module #26.)
-- **Fails the work-density rule** — `_functools` (`lru_cache`/`reduce`),
-  `_operator`, `_queue` (no threads anyway). `_heapq` and `_bisect` were
-  ported and dropped after benchmarks measured zero-or-negative gain.
-- **Needs integration layer or non-trivial bridge work** — `itertools`
-  (attempted, rolled back — exposed 4 transversal bridge gaps in series),
-  `_elementtree` (needs `Lib/xml/` bundled), `_tokenize` (needs Parser/
-  sources bundled), `_multibytecodec` + CJK codecs (needs codec system
-  integration in Brython).
-
-Future work is therefore in **depth** (better infra, integration) rather
-than **breadth** (more modules).
 
 Infrastructure work that pays back on existing modules:
 
@@ -770,8 +470,8 @@ Infrastructure work that pays back on existing modules:
       through `wasthon_incref`/`decref`; on zero the bridge dispatches the
       type's `tp_dealloc` → `tp_free` → `PyObject_GC_Del`. Backed by a C-API
       refcount-convention audit (no-steal INCREF / steal / new-ref) that
-      keeps the harness at 1750/4485, zero regression. Proven by
-      `loader/test-tp-dealloc.html` (`refcounts.size` flat with dispatch on,
+      kept the CPython harness at 1750/4485 at the time, zero regression.
+      Proven by `tests/lifetime.py` (`refcounts.size` flat with dispatch on,
       +1/call with it off). Full design in `CHANGELOG.md`.
       Exact state of the dispatch chain (2026-07-16): a C subclass dealloc
       that *delegates up to a builtin* (numpy's `unicode_arrtype_dealloc`
@@ -879,8 +579,9 @@ Infrastructure work that pays back on existing modules:
       the spot — measured in the port: `x.arf = t; del t` fired `t.__del__`
       where CPython stays silent. Second, Brython's `gc` module is a stub
       (`def collect(*a, **k): pass`), so the explicit sweep documented here was
-      only ever reached through `test-cpython.html`'s `support.gc_collect`
-      shim; a suite calling plain `gc.collect()` got a no-op.
+      only ever reached through the `support.gc_collect` shim of the CPython
+      test page (`test-cpython.html`, now in Wastdlib); a suite calling plain
+      `gc.collect()` got a no-op.
       The bridge now answers `del` from **reachability out of the live Python
       frames** (`$wasthon_should_finalize`, two hook points in
       `$B.$delete` — the pattern `Lib/_weakref.py` already uses for
@@ -1005,8 +706,8 @@ Infrastructure work that pays back on existing modules:
       per function return would be ruinous. That is the wrapper-refcount option,
       a different order of work.
       None of this touches the reclaim-scale question — deciding among hundreds
-      of thousands of candidates at once is a different problem, and still open.
-      Full dossier: brytorch `BUG_torch_dealloc_cluster.md`.
+      of thousands of candidates at once is a different problem, answered since
+      by the whole-heap collection below.
 - [x] `del` and `gc.collect()` **release**, and only on proof. The limit above
       had two halves, and the first was not about triggers at all: a C function
       returning an object Python already holds left one count behind (see the
@@ -1261,6 +962,9 @@ Infrastructure work that pays back on existing modules:
       wasthonc / WasmGC pivot), not a better heuristic; for a driver that
       merely needs the memory back, throwing the whole context away
       (iframe isolation) proves nothing and therefore cannot be wrong.
+      **Closed since** without either: the whole-heap collection above marks
+      completely (no depth bound, no visit budget), takes everything C holds
+      as a root, and runs only between two tests.
 - [x] An instance C hands back to Python is counted once — the exemption
       above (`consumeResultRef` leaves an instance's reference to its wrapper)
       is right for the **first** crossing only. Once the wrapper exists, a C
@@ -1276,25 +980,24 @@ Infrastructure work that pays back on existing modules:
       below 1. Deciding "already held" from the current count instead — the
       July attempts — also consumed borrowed returns and freed live objects
       (33 failures on `test_torch`); the crossing mark does not.
-- [ ] Explicit-contract residual — a C instance held by a Python local that is
-      dropped or reassigned without a `close()`/`with` (and with no
-      `gc.collect()` call, and on a page that does not opt into
-      `reclaimResults` + yields) is never DECREF'd:
-      Brython offers no scope-exit or GC callback into `wasthon_decref`, so its
-      native context leaks. Four triggers now cover the common cases: the
-      `close()`/`with` contract for every heavy native that exposes one
-      (LZMA/Zstd/bz2 file wrappers; sqlite `Connection.close()` frees
-      natively), the one-shot `compress()`/`decompress()` helper wrap for
-      the create-use-drop transient with no `close()`, an explicit
-      `gc.collect()` mark-sweep for unreachable resource-holding sqlite3 types,
-      and — on a yielding page that opts in — the automatic
-      `FinalizationRegistry` reclamation above, which covers the create-use-drop
-      *result* flood the other three cannot see. The residual is what none of
-      them reach: a bare compressor/`Connection` kept in a long-lived local and
-      dropped on its own, on a page with no `gc.collect()` and no job boundaries
-      — acceptable for light natives and a known cap on loop-bench depth for
-      heavy ones, since a heavy native is exactly the case that *should* carry
-      an explicit `close()`. (Instance /
+- [ ] Automatic-trigger residual — Brython offers no scope-exit or GC
+      callback into `wasthon_decref`, so a C instance's release needs a
+      trigger. Six now cover the cases: the `close()`/`with` contract for
+      every heavy native that exposes one (LZMA/Zstd/bz2 file wrappers; sqlite
+      `Connection.close()` frees natively), the one-shot
+      `compress()`/`decompress()` helper wrap for the create-use-drop transient
+      with no `close()`, `del` (freed once the mark proves it unreachable),
+      `gc.collect()` (everything pending since a `del`, cycles included, and
+      the resource-holding types' sweep), the whole-heap collection
+      (`$wasthon_reclaim`, what a program simply stopped using), and — on a
+      yielding page that opts in — the `FinalizationRegistry` reclamation
+      above. The residual is what none of them reach: an instance dropped
+      **without** `del` (a name rebound, a local of a finished call) in a
+      program where nothing calls `$wasthon_reclaim` — the bridge never calls
+      it itself, the host does (brytorch between two tests), since it is sound
+      only where no expression is half evaluated. Freed at the next
+      collection, kept until then; with none, kept for the page's life. Next:
+      firing the collection automatically at such a point. (Instance /
       `refcounts` axis; distinct from the sentinel / `handles` leak below.)
 - [x] JS-side handle-map (sentinel) leak — FIXED by **handle scopes** (the
       JNI local-reference / HPy model). Every JS→C entry point (method
@@ -1304,10 +1007,10 @@ Infrastructure work that pays back on existing modules:
       APIs seed refcount 1 (`wrapNewRef`, the instance-era refcount-convention
       audit extended to sentinels), steal APIs consume. Module init stays
       unscoped (immortal, as before); a real intern pool backs
-      `PyUnicode_InternFromString`/`_Py_ID` (lazy C statics). Proven by
-      `loader/test-scopes.html` (`noScopeFree` A/B): `handles.size` grows
-      **+0.00/call** across 2000 `pickle.dumps` of a rich graph vs
-      **+105/call** without scopes. This was the dominant `pickle.dumps`
+      `PyUnicode_InternFromString`/`_Py_ID` (lazy C statics). Measured on
+      2000 `pickle.dumps` of a rich graph: `handles.size` grows
+      **+0.00/call** vs **+105/call** without scopes; proven by
+      `tests/lifetime.py` (`noScopeFree` A/B). This was the dominant `pickle.dumps`
       byte-leak — and, it turned out, an invisible cap on the test suite
       itself: the map's internal resize blew up ("allocation size overflow")
       once enough state accumulated, making correct fixes measure as huge
@@ -1324,9 +1027,8 @@ Eventually:
       Wasthon's `array` foundation; what landed instead is **real NumPy
       2.5.1**: the actual C core (`_multiarray_umath`, ~150 files)
       compiled against the bridge, numpy's own Python layer served to
-      Brython, `import numpy` completing (83 modules; `np.linalg` is the
-      one honest stub — LAPACK isn't built for this target, those calls
-      raise `NotImplementedError`). Validated by running **numpy's own
+      Brython, `import numpy` completing (83 modules; `np.linalg` on
+      f2c'd LAPACK-lite). Validated by running **numpy's own
       test suite** in the browser (via a minimal pytest shim), and
       numpy.random's nine Cython extensions run with `MT19937.random_raw`
       **bit-exact vs upstream numpy 2.5.1**. No facade, no semantic
@@ -1334,9 +1036,9 @@ Eventually:
       bridge-side C-API growth this took (an 87-symbol link contract,
       vectorcall, the buffer protocol over `__array_interface__`, Cython
       cdef-class support) is merged on `main`; the build recipe, browser
-      demo and test dashboard are being spun out as **NumBry** — *the
-      NumPy stack in the browser with Wasthon* (numpy today; pandas and
-      matplotlib are the mapped next walls). An Array API layer atop
+      demo and test dashboard live in **NumBry** — *the NumPy stack in the
+      browser with Wasthon* (NumPy, SciPy, pandas, matplotlib, seaborn,
+      Pillow, SymPy). An Array API layer atop
       `array` could never have gotten there: pandas and matplotlib
       consume numpy's real C-API (`PyArray_*`, capsules, dtypes), not
       the Array API surface.
@@ -1344,20 +1046,9 @@ Eventually:
 
 ## Acknowledgements
 
-The crypto work rides on [HACL\*](https://project-everest.github.io/) —
-formally verified C implementations bundled in CPython 3.13+. The zlib
-build uses Emscripten's `madler/zlib` port. The compression trilogy bundles
-[bzip2](https://sourceware.org/bzip2/) (Julian Seward),
-[xz-utils](https://tukaani.org/xz/) (Lasse Collin and Igor Pavlov's LZMA),
-and [zstd](https://facebook.github.io/zstd/) (Yann Collet, Meta). `_decimal`
-embeds [libmpdec](https://www.bytereef.org/mpdecimal/) (Stefan Krah).
-`pyexpat` rides on [libexpat](https://libexpat.github.io/) (James Clark
-and successors).
-`_sqlite3` bundles the [SQLite](https://www.sqlite.org/) amalgamation
-(D. Richard Hipp; placed in the public domain).
-Wasthon is mostly the plumbing that lets these libraries talk to Python
-code translated to JavaScript by Brython, through a synthetic CPython
-C-API implemented over the JavaScript runtime.
+Wasthon plugs into [Brython](https://brython.info/) (Pierre Quentel and
+contributors) and is compiled with [Emscripten](https://emscripten.org/);
+the C-API it reproduces is CPython's.
 
 ## License
 

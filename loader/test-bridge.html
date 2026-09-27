@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wasthon — bridge unit tests</title>
+<script src="./brython-src.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 980px; margin: 1.5rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  #status { font-size: 1.15rem; font-weight: 600; margin: 1em 0; }
+  .ok { color: #1a7f37; } .ko { color: #c62828; }
+  pre { background: #f4f4f4; padding: 1em; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>wasthon — bridge unit tests</h1>
+<p>
+  <code>tests/_bridgetest.c</code>, a test module compiled against the bridge
+  alone, runs <code>tests/lifetime.py</code> right here: <code>tp_dealloc</code>
+  and handle scopes, each proved A/B — switched on, the table stays flat;
+  switched off, it leaks what the mechanism is there to reclaim. The same file
+  runs in Node in CI (<code>tests/run.sh</code>). What runs <em>on</em> the
+  bridge is tested in its own repositories, starting with
+  <a href="https://fgallaire.github.io/wastdlib/">Wastdlib</a>, CPython's C
+  standard-library modules.
+</p>
+<div id="status">⏳ Running…</div>
+<pre id="log"></pre>
+<script type="module">
+const out = document.getElementById('log'), status = document.getElementById('status');
+const log = (s) => { out.textContent += s + '\n'; };
+try {
+  const $B = __BRYTHON__;
+  brython({debug: 0});
+  const factory = (await import('../tests/build/_bridgetest.mjs')).default;
+  const M = await factory();
+  M._wasthon_init();
+  const rt = M.wasthon;
+  $B.imported._bridgetest = rt.handles.get(M._PyInit__bridgetest());
+  let failed = 0;
+  Object.assign($B.builtins, {
+    bt_handles: () => rt.handles.size,
+    bt_refcounts: () => rt.refcounts.size,
+    bt_set_nofree: (v) => { rt.noFree = !!v; },
+    bt_set_noscopes: (v) => { rt.noScopeFree = !!v; },
+    bt_fail: () => { failed++; },
+  });
+  const src = await (await fetch('../tests/lifetime.py')).text();
+  const cl = console.log;
+  console.log = (...a) => { log(a.join(' ')); cl(...a); };
+  try { $B.runPythonSource(src, 'lifetime'); } finally { console.log = cl; }
+  status.textContent = failed ? `✗ ${failed} failed` : '✓ all passed';
+  status.className = failed ? 'ko' : 'ok';
+  log(failed ? '=== SOME FAILED ===' : '=== ALL OK ===');
+  log('=== done ===');
+} catch (e) {
+  status.textContent = 'FATAL: ' + (e.message || e);
+  status.className = 'ko';
+  log('FATAL: ' + (e.message || e));
+}
+</script>
+</body>
+</html>

@@ -345,8 +345,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
   above and shared builtins resolve through the genuinely per-runtime
   `builtinTypeForClass` — but the promise is not kept). **+0 on every test
   count**: no suite asserts these rejections today. numpy 3250/3250, CPython
-  sweep 4459/4746 0 fail, test_torch unchanged at 17. See `docs/BRIDGE.md`
-  "Co-resident modules".
+  sweep 4459/4746 0 fail, test_torch unchanged at 17. See the README's
+  "Two runtimes in one page".
 
 - **A `_malloc`'d pointer cached on a shared Brython object is heap-local:
   `PySequence_Fast_ITEMS` reused one module's pointer inside another
@@ -378,8 +378,8 @@ Module ports and the bridge-surface inventory live in `README.md`.
   and +1 test_reductions** — the one reduction comparison that deterministically
   hit the cross-heap trap (advancedindex's twin). The many others it aborted
   mid-test now run to completion, surfacing a separate, pre-existing `argminmax`
-  int32/int64 dtype gap underneath (a distinct front). See `docs/BRIDGE.md`
-  "Co-resident modules".
+  int32/int64 dtype gap underneath (a distinct front). See the README's
+  "Two runtimes in one page".
 
 - **The demoted-instance reclaim is bilateral — evidence from both GC
   models, or nothing is freed** (`src/wasthon.js`; read-only census
