@@ -1085,6 +1085,25 @@ Infrastructure work that pays back on existing modules:
       (1774 → 41 MB after each), `test_torch` peaks at 669 MB, `test_masked`
       goes 0 → **154** once its heap is no longer full and
       `test_scatter_gather_ops` +7; `released.touched` 0 throughout.
+- [x] **Two bridge runtimes in one page.** brytorch loads torch and numpy as
+      two wasms under one Brython: one object graph, two heaps, two handle
+      tables. The rule: **an address means something only in the heap that
+      allocated it, and any identity recorded on a shared Brython object must
+      be keyed by runtime.** Four places apply it:
+      - a foreign instance's type is a local struct (`foreignTypes`), never the
+        sibling's type address (`Py_TYPE` of a numpy array in torch trapped);
+      - a foreign instance crosses `wrap` as an object, never by its
+        `__wasthon_ptr__`: torch read a numpy array's address as the leftover
+        tensor living there in its own heap, and `t + a` gave `1 + 24`;
+      - each runtime stamps classes under its own `_thKey`, minted in `init()`
+        because Emscripten folds the library literal at build time — with one
+        shared key, numpy's `&PyFloat_Type` overwrote torch's on `float` and
+        `dtype=float` stopped matching;
+      - the collection marks the one graph but frees each instance in its own
+        runtime, and reads its C edges there.
+      Such mix-ups need an address to be reused or an order to change, so a
+      page whose heap only grows rarely meets them: they surfaced once the
+      collection gave memory back and a long single frame chained the suites.
 - [x] Container-boundary reference discipline + scope-owned `GET_ITEM` buffers
       — the three memory roots behind pickle's "delayed-writer page poison"
       (a 10k-object framed dump left ~300k pinned handles and a 1.6 GB heap,

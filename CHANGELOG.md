@@ -7,6 +7,27 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Content copies cached on an object are keyed per runtime** (`src/wasthon.js`,
+  `_cstrKey`, `_bufKey`). `PyBytes_AsString` and the buffer protocol cache the
+  C copy of a bytes object's content ON the object (`__wasthon_cstr__`,
+  `__wasthon_bufptr__`), and every runtime of a page shares that object. With
+  one class stamp for all runtimes, `_sha1` took another path and never met
+  the cache; once each runtime had its own stamp (entry below), it reused the
+  address `_md5` had cached and read it in its own heap: three zero bytes, so
+  `sha1(b"abc")` came out as `sha1(b"\0\0\0")`. The cache properties are now
+  named per runtime, like the stamp. test-hashlib sha1 passes again.
+
+- **Each runtime stamps classes under its own key** (`src/wasthon.js`,
+  `init`). `_thKey`, the property under which a runtime records a class's
+  type-struct handle, was meant to differ per runtime, but Emscripten
+  evaluates a library object once, at build time: every wasm shipped the same
+  `"__wasthon_type_handle__1"`. On a page with two runtimes, both wrote their
+  own `&PyFloat_Type` into one stamp on the shared `float` class and the last
+  one won — once numpy had stamped it, torch's arg parser no longer saw
+  `dtype=float` (`* (tuple of ints size, …)`: no signature matched). The key
+  is now minted in `init()`, per load. Noted in July, left open until a long
+  single-frame run made the order bite. +1 `test_python_types`.
+
 - **An instance of another runtime crosses as an object, not as its address**
   (`src/wasthon.js`, `wrap`). A page can run two bridge wasms under one
   Brython (brytorch: torch and numpy), and `wrap` handed any instance over by

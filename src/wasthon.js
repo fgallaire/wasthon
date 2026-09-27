@@ -57,6 +57,10 @@ mergeInto(LibraryManager.library, {
         // Single-runtime behaviour is unchanged (one key, same flow).
         _thKey: '__wasthon_type_handle__' +
             (globalThis.__wasthon_rt_seq = (globalThis.__wasthon_rt_seq || 0) + 1),
+        _cstrKey: '__wasthon_cstr__',          // per runtime from init(), like _thKey
+        _cstrSizeKey: '__wasthon_cstr_size__',
+        _bufKey: '__wasthon_bufptr__',
+        _bufLenKey: '__wasthon_buflen__',
         nextHandleId: 15,        // 11-14 reserved for sentinels (see below)
         freeList: [],
 
@@ -614,7 +618,7 @@ mergeInto(LibraryManager.library, {
 
         syncCstrBytes: function(v) {
             if (!v || typeof v !== 'object') return;
-            var ptr = v.__wasthon_cstr__;
+            var ptr = v[WasthonRT._cstrKey];
             if (!ptr) return;
             var src = v.source;
             if (!src || src.length === undefined) return;
@@ -647,6 +651,23 @@ mergeInto(LibraryManager.library, {
             }
             this.$B = B;
             this._b_ = B.builtins;
+            /* The stamp key must differ per runtime, and the literal above
+             * cannot see to it: Emscripten evaluates a library object once, at
+             * build time, so every wasm shipped the same "…1". Two runtimes then
+             * wrote their own &PyFloat_Type into ONE stamp on the shared `float`
+             * class, the last one won, and torch's arg parser stopped seeing
+             * `dtype=float` once numpy had stamped it. Minted here, per load. */
+            this._thKey = '__wasthon_type_handle__' +
+                (globalThis.__wasthon_rt_seq = (globalThis.__wasthon_rt_seq || 0) + 1);
+            /* Same for every C copy of an object's content cached ON the
+             * object, which every runtime of the page shares: the buffer the
+             * protocol hands out read another runtime's address in this heap
+             * and gave _sha1 three zero bytes for b"abc" once _md5 had hashed
+             * it first. */
+            this._cstrKey = '__wasthon_cstr__' + globalThis.__wasthon_rt_seq;
+            this._cstrSizeKey = '__wasthon_cstr_size__' + globalThis.__wasthon_rt_seq;
+            this._bufKey = '__wasthon_bufptr__' + globalThis.__wasthon_rt_seq;
+            this._bufLenKey = '__wasthon_buflen__' + globalThis.__wasthon_rt_seq;
             /* Every bridge runtime under this Brython, for what must see them
              * all at once: a collection marks the one graph and frees each
              * instance in the heap that allocated it. */
@@ -2993,8 +3014,8 @@ mergeInto(LibraryManager.library, {
             var src = new Array(size);
             for (var i = 0; i < size; i++) src[i] = 0;
             var bytesObj = rt._b_.bytes.$factory(src);
-            bytesObj.__wasthon_cstr__ = ptr;
-            bytesObj.__wasthon_cstr_size__ = size;
+            bytesObj[WasthonRT._cstrKey] = ptr;
+            bytesObj[WasthonRT._cstrSizeKey] = size;
             return rt.wrapNewRef(bytesObj);
         }
         // Initial-content path: copy from C buffer to JS Array in one pass
@@ -5299,7 +5320,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(bytesHandle);
         if (obj === null) return 0;
-        if (obj.__wasthon_cstr__) return obj.__wasthon_cstr__;
+        if (obj[WasthonRT._cstrKey]) return obj[WasthonRT._cstrKey];
         if (obj.source === undefined && obj.__wasthon_ptr__) {
             // A C-allocated var-object shell of a bytes subclass — numpy's
             // PyArray_Scalar builds np.bytes_ scalars via tp_alloc(type,
@@ -5315,8 +5336,8 @@ mergeInto(LibraryManager.library, {
             var buf = _malloc(n + 1);
             if (buf === 0) return 0;
             HEAPU8.fill(0, buf, buf + n + 1);
-            obj.__wasthon_cstr__ = buf;
-            obj.__wasthon_cstr_size__ = n;
+            obj[WasthonRT._cstrKey] = buf;
+            obj[WasthonRT._cstrSizeKey] = n;
             Object.defineProperty(obj, 'source', {
                 configurable: true,
                 get: function() {
@@ -5338,7 +5359,7 @@ mergeInto(LibraryManager.library, {
             HEAPU8[ptr + i] = Number(src[i]) & 0xff;
         }
         HEAPU8[ptr + len] = 0;
-        try { obj.__wasthon_cstr__ = ptr; } catch (_) {}
+        try { obj[WasthonRT._cstrKey] = ptr; } catch (_) {}
         return ptr;
     },
 
@@ -5525,7 +5546,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var _o = rt.unwrap(sH);
         var s = rt.asJSStr(_o);
-        if (s === null && _o && (_o.__wasthon_cstr__ || (_o.source && typeof _o.source.length === 'number'))) {
+        if (s === null && _o && (_o[WasthonRT._cstrKey] || (_o.source && typeof _o.source.length === 'number'))) {
             /* CPython's PyFloat_FromString accepts bytes/bytearray too:
                _json's number scanner hands the raw numstr as BYTES on its
                parse_float == &PyFloat_Type fast path (the branch the
@@ -5534,9 +5555,9 @@ mergeInto(LibraryManager.library, {
                memcpy'd into), the truth lives in the linear-memory buffer —
                the Brython .source may still be the blank placeholder. */
             s = '';
-            if (_o.__wasthon_cstr__) {
-                var _n = _o.__wasthon_cstr_size__ | 0;
-                for (var _i = 0; _i < _n; _i++) s += String.fromCharCode(HEAPU8[_o.__wasthon_cstr__ + _i]);
+            if (_o[WasthonRT._cstrKey]) {
+                var _n = _o[WasthonRT._cstrSizeKey] | 0;
+                for (var _i = 0; _i < _n; _i++) s += String.fromCharCode(HEAPU8[_o[WasthonRT._cstrKey] + _i]);
             } else {
                 for (var _i = 0; _i < _o.source.length; _i++) s += String.fromCharCode(_o.source[_i]);
             }
@@ -6453,14 +6474,14 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT; var obj = rt.unwrap(objH);
         if (obj === null) return -1;
         var src = obj.source || obj;
-        var ptr = obj.__wasthon_cstr__;
+        var ptr = obj[WasthonRT._cstrKey];
         if (!ptr) {                              /* materialize bytes -> char*, cache */
             var len = src.length;
             ptr = _malloc(len + 1);
             if (src instanceof Uint8Array) HEAPU8.set(src, ptr);
             else for (var i = 0; i < len; i++) HEAPU8[ptr + i] = Number(src[i]) & 0xff;
             HEAPU8[ptr + len] = 0;
-            try { obj.__wasthon_cstr__ = ptr; } catch (_) {}
+            try { obj[WasthonRT._cstrKey] = ptr; } catch (_) {}
         }
         if (bufPtrPtr) HEAP32[bufPtrPtr >> 2] = ptr;
         if (lenPtr)    HEAP32[lenPtr >> 2] = (src.length | 0);
@@ -7793,7 +7814,7 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
         if (obj === null) return 0;
-        if (obj.__wasthon_cstr__) return obj.__wasthon_cstr__;
+        if (obj[WasthonRT._cstrKey]) return obj[WasthonRT._cstrKey];
         var src = obj.source || obj;
         var len = src.length;
         var ptr = _malloc(len + 1);
@@ -7803,7 +7824,7 @@ mergeInto(LibraryManager.library, {
             HEAPU8[ptr + i] = Number(src[i]) & 0xff;
         }
         HEAPU8[ptr + len] = 0;
-        try { obj.__wasthon_cstr__ = ptr; } catch (_) {}
+        try { obj[WasthonRT._cstrKey] = ptr; } catch (_) {}
         return ptr;
     },
 
@@ -11348,7 +11369,7 @@ mergeInto(LibraryManager.library, {
         var b = rt.unwrap(handle);
         if (b === null) return -1;
         var newArr = new Array(newsize);
-        if (b.__wasthon_cstr__) {
+        if (b[WasthonRT._cstrKey]) {
             // Live data lives in linear memory — but only the old
             // allocation's worth. On a GROW resize (_pickle's output-buffer
             // doubling) reading `newsize` bytes runs past the block, and
@@ -11358,10 +11379,10 @@ mergeInto(LibraryManager.library, {
             // object cannot be interpreted as an integer"). CPython's
             // _PyBytes_Resize only preserves the old content; zero-fill
             // the tail like the .source branch below.
-            var ptr = b.__wasthon_cstr__;
+            var ptr = b[WasthonRT._cstrKey];
             var lim = newsize;
-            if (typeof b.__wasthon_cstr_size__ === 'number' &&
-                b.__wasthon_cstr_size__ < lim) lim = b.__wasthon_cstr_size__;
+            if (typeof b[WasthonRT._cstrSizeKey] === 'number' &&
+                b[WasthonRT._cstrSizeKey] < lim) lim = b[WasthonRT._cstrSizeKey];
             if (ptr + lim > HEAPU8.length) lim = Math.max(0, HEAPU8.length - ptr);
             for (var i = 0; i < lim; i++) newArr[i] = HEAPU8[ptr + i];
             for (; i < newsize; i++) newArr[i] = 0;
@@ -15738,18 +15759,18 @@ mergeInto(LibraryManager.library, {
         // precisely selects the case where __wasthon_cstr__ is authoritative;
         // _PyBytes_Resize/syncBytes clear __wasthon_cstr__ once folded, so a
         // truthy pointer is always live. bytearray excluded (w* writeback).
-        if (obj.__wasthon_cstr__ &&
-                obj.__wasthon_cstr_size__ !== undefined &&
-                obj.__wasthon_cstr_size__ !== null &&
+        if (obj[WasthonRT._cstrKey] &&
+                obj[WasthonRT._cstrSizeKey] !== undefined &&
+                obj[WasthonRT._cstrSizeKey] !== null &&
                 obj.__class__ !== WasthonRT._b_.bytearray) {
-            var clen = obj.__wasthon_cstr_size__;
+            var clen = obj[WasthonRT._cstrSizeKey];
             var cbuf = _malloc(clen || 1);
             if (cbuf === 0 && clen !== 0) {
                 WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.MemoryError),
                     "buffer allocation failed");
                 return -1;
             }
-            if (clen) HEAPU8.copyWithin(cbuf, obj.__wasthon_cstr__, obj.__wasthon_cstr__ + clen);
+            if (clen) HEAPU8.copyWithin(cbuf, obj[WasthonRT._cstrKey], obj[WasthonRT._cstrKey] + clen);
             HEAP32[outBufPtrPtr >> 2] = cbuf;
             HEAP32[outLenPtr >> 2] = clen;
             // This producer path is a bytes object (bytearray is excluded
@@ -15830,16 +15851,16 @@ mergeInto(LibraryManager.library, {
          * it object-owned so wasthon_buffer_release skips the free; each
          * GetBuffer refreshes the content from the live source. */
         var buf = 0;
-        if (obj.__wasthon_bufptr__ !== undefined &&
-                obj.__wasthon_buflen__ === len) {
-            buf = obj.__wasthon_bufptr__;
+        if (obj[WasthonRT._bufKey] !== undefined &&
+                obj[WasthonRT._bufLenKey] === len) {
+            buf = obj[WasthonRT._bufKey];
         }
         if (buf === 0) {
-            if (obj.__wasthon_bufptr__ !== undefined) {
+            if (obj[WasthonRT._bufKey] !== undefined) {
                 if (WasthonRT._wasthonObjOwnedBufs)
-                    WasthonRT._wasthonObjOwnedBufs.delete(obj.__wasthon_bufptr__);
-                _free(obj.__wasthon_bufptr__);
-                delete obj.__wasthon_bufptr__;
+                    WasthonRT._wasthonObjOwnedBufs.delete(obj[WasthonRT._bufKey]);
+                _free(obj[WasthonRT._bufKey]);
+                delete obj[WasthonRT._bufKey];
             }
             buf = _malloc(len);
             if (buf === 0 && len !== 0) {
@@ -15848,8 +15869,8 @@ mergeInto(LibraryManager.library, {
                 return -1;
             }
             try {
-                obj.__wasthon_bufptr__ = buf;
-                obj.__wasthon_buflen__ = len;
+                obj[WasthonRT._bufKey] = buf;
+                obj[WasthonRT._bufLenKey] = len;
                 if (!WasthonRT._wasthonObjOwnedBufs)
                     WasthonRT._wasthonObjOwnedBufs = new Set();
                 WasthonRT._wasthonObjOwnedBufs.add(buf);
@@ -18175,14 +18196,14 @@ mergeInto(LibraryManager.library, {
                             // this descriptor — dco.unused_data came back as b'\x00' * n.
                             // Fold here; PyBytes_AsString re-allocates from .source if C
                             // touches the bytes again.
-                            if (v && v.__wasthon_cstr__ && v.source &&
+                            if (v && v[WasthonRT._cstrKey] && v.source &&
                                     typeof v.source.length === 'number') {
-                                var bsrc = v.source, bptr = v.__wasthon_cstr__;
+                                var bsrc = v.source, bptr = v[WasthonRT._cstrKey];
                                 for (var bi = 0, blen = bsrc.length; bi < blen; bi++) {
                                     bsrc[bi] = HEAPU8[bptr + bi];
                                 }
                                 _free(bptr);
-                                v.__wasthon_cstr__ = 0;
+                                v[WasthonRT._cstrKey] = 0;
                             }
                             return v;
                         }
@@ -18673,9 +18694,9 @@ mergeInto(LibraryManager.library, {
                 if (!v || typeof v !== 'object') return;
                 if (seen.has(v)) return;
                 seen.add(v);
-                if (v.__wasthon_cstr__ && v.source &&
+                if (v[WasthonRT._cstrKey] && v.source &&
                         typeof v.source.length === 'number') {
-                    var src = v.source, ptr = v.__wasthon_cstr__;
+                    var src = v.source, ptr = v[WasthonRT._cstrKey];
                     for (var i = 0, len = src.length; i < len; i++) {
                         src[i] = HEAPU8[ptr + i];
                     }
@@ -18683,7 +18704,7 @@ mergeInto(LibraryManager.library, {
                     // .source. Reclaim it; PyBytes_AsString re-allocates from
                     // .source on demand if C touches the bytes again later.
                     _free(ptr);
-                    v.__wasthon_cstr__ = 0;
+                    v[WasthonRT._cstrKey] = 0;
                 }
                 /* tuple / list — iterable JS array-shaped object with
                  * .length, and Brython tuple/list expose elements at
