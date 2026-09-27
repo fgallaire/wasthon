@@ -1806,6 +1806,7 @@ case '*=':
 z=res_type.x*res_type.y
 break
 case '/=':
+if(res_type.y==0){$B.RAISE(_b_.ZeroDivisionError,"division by zero")}
 return $B.fast_float(res_type.x/res_type.y)}
 if(z){if(res_type.is_int && Number.isSafeInteger(z)){return z}else if(res_type.res_is_float){return $B.fast_float(z)}}}else if(op=='*='){if(typeof left=="number" && typeof right=="string"){return left <=0 ? '' :right.repeat(left)}else if(typeof left=="string" && typeof right=="number"){return right <=0 ? '' :left.repeat(right)}}else if(op=='+='){if(typeof left=="string" && typeof right=="string"){return left+right}}
 var op1=op.substr(0,op.length-1),method=$B.op2method.augmented_assigns[op],augm_func=$B.$getattr($B.get_class(left),'__'+method+'__',$B.NULL)
@@ -2575,8 +2576,6 @@ try{$B.$call(meta_init,kls,class_name,resolved_bases,dict,{$kw:[extra_kwargs]})}
 console.log(err)
 console.log(err.stack)}
 throw err}}
-for(let i=0;i < bases.length;i++){bases[i].tp_subclasses=bases[i].tp_subclasses ||[]
-bases[i].tp_subclasses.push(kls)}
 return kls}
 function set_type_new(dict){
 var new_func=$B.str_dict_get(dict,'__new__',$B.NULL)
@@ -3061,7 +3060,7 @@ $B.make_fast_iter(class_obj)
 if(test){console.log('result of type_new_get_bases',res)}
 if(res < 0){assert(PyErr_Occurred());
 return NULL;}
-if(res==1){for(var _sb of class_obj.tp_bases){if(_sb.tp_subclasses){_sb.tp_subclasses.push(class_obj)}}
+if(res==1){for(var _sb of class_obj.tp_bases){(_sb.tp_subclasses=_sb.tp_subclasses ||[]).push(class_obj)}
 return class_obj}
 if(res instanceof Object){
 class_obj=res.type
@@ -3102,7 +3101,7 @@ $B.make_new(class_obj)
 $B.make_descr_get(class_obj)
 $B.make_descr_set(class_obj)
 $B.make_call(class_obj)
-for(var _sb of class_obj.tp_bases){if(_sb.tp_subclasses){_sb.tp_subclasses.push(class_obj)}}
+for(var _sb of class_obj.tp_bases){(_sb.tp_subclasses=_sb.tp_subclasses ||[]).push(class_obj)}
 return class_obj}
 var type_funcs=_b_.type.tp_funcs={}
 type_funcs.__abstractmethods___get=function(cls){if(cls !==type){var res=$B.get_from_dict(cls,'__abstractmethods__',$B.NULL)
@@ -10434,7 +10433,7 @@ return nb}
 int_funcs.bit_length=function(self){var s=_b_.bin(self)
 s=$B.$getattr(s,"lstrip")("-0b")
 return s.length }
-int_funcs.conjugate=function(self){}
+int_funcs.conjugate=function(self){return int_value(self)}
 int_funcs.denominator_get=function(self){return 1}
 int_funcs.denominator_set=_b_.None
 int_funcs.from_bytes=function(self){var $=$B.args("from_bytes",4,{cls:null,bytes:null,byteorder:null,signed:null},arguments,{byteorder:'big',signed:false})
@@ -10533,7 +10532,7 @@ $B.set_func_names(bool,"builtins")})(__BRYTHON__);
 ;
 "use strict";
 (function($B){var _b_=$B.builtins
-function conv_num(x){if(typeof x=='number'){return x}else if(typeof x=='bigint'){return Number(x)}else if($B.is_int(x)){
+function conv_num(x){if(typeof x=='number'){return x}else if(typeof x=='bigint'){return Number(x)}else if(typeof x=='boolean'){return x ? 1 :0}else if($B.is_int(x)){
 return conv_num(x.value)}else if(x.ob_type===_b_.float){return x.value}else if($B.$isinstance(x,_b_.float)){return x.value}
 return $B.NULL}
 function conv_number(...objs){var res=[]
@@ -10554,12 +10553,12 @@ $B.RAISE(_b_.TypeError,`descriptor '${method}' requires a `+
 function _float_div_mod(vx,wx){
 var mod=vx % wx
 var div=(vx-mod)/wx
-if(mod){
+if(mod !=0){
 if((wx < 0)!=(mod < 0)){mod+=wx;
 div-=1.0;}}else{
 mod=copysign(0.0,wx)}
 var floordiv
-if(div){floordiv=Math.floor(div);
+if(div !=0){floordiv=Math.floor(div);
 if(div-floordiv > 0.5){floordiv+=1.0;}}else{
 floordiv=copysign(0.0,vx/wx);}
 return{floordiv,mod}}
@@ -10851,19 +10850,13 @@ return $B.fast_float(x.value-y.value)}
 _b_.float.nb_multiply=function(self,other){var[x,y]=conv_float(self,other)
 if(x===$B.NULL ||y===$B.NULL){return _b_.NotImplemented}
 return fast_float(x.value*y.value)}
-_b_.float.nb_remainder=function(self,other){
-self=conv_float(self)[0]
-if(self===$B.NULL){return _b_.NotImplemented}
-if(other==0){$B.RAISE(_b_.ZeroDivisionError,"float modulo")}
-if($B.is_int(other)){other=_b_.int.tp_funcs.numerator_get(other)
-return fast_float((self.value % other+other)% other)}
-if($B.$isinstance(other,float)){
-var q=Math.floor(self.value/other.value),r=self.value-other.value*q
-if(r==0 && other.value < 0){return fast_float(-0)}
-return fast_float(r)}
-return _b_.NotImplemented}
+_b_.float.nb_remainder=function(self,other){var[x,y]=conv_float(self,other)
+if(x===$B.NULL ||y===$B.NULL){return _b_.NotImplemented}
+if(y.value==0){$B.RAISE(_b_.ZeroDivisionError,"float modulo")}
+return fast_float(_float_div_mod(x.value,y.value).mod)}
 _b_.float.nb_divmod=function(self,other){var[x,y]=conv_float(self,other)
 if(x===$B.NULL ||y===$B.NULL){return _b_.NotImplemented}
+if(y.value==0){$B.RAISE(_b_.ZeroDivisionError,"division by zero")}
 var divmod=_float_div_mod(x.value,y.value)
 return $B.fast_tuple([$B.fast_float(divmod.floordiv),$B.fast_float(divmod.mod)])}
 _b_.float.nb_power=function(self,other){var[x,y]=conv_number(self,other)
@@ -10930,7 +10923,7 @@ _b_.float.nb_positive=function(self){return fast_float(+self.value)}
 _b_.float.nb_absolute=function(self){check_self_is_float(self,'__abs__')
 return fast_float(Math.abs(self.value))}
 _b_.float.nb_bool=function(self){check_self_is_float(self,'__bool__')
-return _b_.bool.$factory(self.value)}
+return self.value !=0}
 _b_.float.nb_int=function(self){check_self_is_float(self,'__int__')
 if(Number.isInteger(self.value)){var res=BigInt(self.value),res_num=Number(res)
 return Number.isSafeInteger(res_num)?
@@ -10940,6 +10933,7 @@ return Math.trunc(self.value)}
 _b_.float.nb_float=function(self){return self}
 _b_.float.nb_floor_divide=function(self,other){var[x,y]=conv_float(self,other)
 if(x===$B.NULL ||y===$B.NULL){return _b_.NotImplemented}
+if(y.value==0){$B.RAISE(_b_.ZeroDivisionError,"division by zero")}
 var divmod=_float_div_mod(x.value,y.value)
 return $B.fast_float(divmod.floordiv)}
 _b_.float.nb_true_divide=function(self,other){self=conv_float(self)[0]
@@ -10984,7 +10978,7 @@ $B.shift1_cache[py_exponent]=x}
 py_exponent=x
 if(exponent > 0){numerator=$B.rich_op("__mul__",numerator,py_exponent)}else{denominator=py_exponent}
 return $B.fast_tuple([numerator,denominator])}
-float_funcs.conjugate=function(self){$B.RAISE(_b_.NotImplementedError,'conjugate')}
+float_funcs.conjugate=function(self){return float_value(self)}
 float_funcs.from_number=function(self){var $=$B.args('from_number',1,{number:null},arguments)
 var number=$.number
 if($B.$isinstance(number,_b_.float)){return float_value(number)}
@@ -11101,6 +11095,7 @@ const NINF=fast_float(Number.NEGATIVE_INFINITY),INF=fast_float(Number.POSITIVE_I
 ;
 "use strict";
 (function($B){var _b_=$B.builtins
+function is_real(obj){return $B.$isinstance(obj,_b_.float)||$B.is_int(obj)}
 function conv_complex(...objs){var res=[]
 for(var obj of objs){if($B.$isinstance(obj,_b_.complex)){res.push(obj)}else if($B.$isinstance(obj,_b_.float)){res.push($B.make_complex(obj))}else if($B.is_int(obj)){res.push($B.make_complex(obj))}else{res.push($B.NULL)}}
 return res}
@@ -11114,10 +11109,7 @@ return self.real.value==other.value}
 return _b_.NotImplemented}
 const max_precision=2**31-4
 complex.$getnewargs=function(self){return $B.fast_tuple([self.real,self.imag])}
-function complex2expo(cx){var norm=Math.sqrt((cx.real.value*cx.real.value)+
-(cx.imag.value*cx.imag.value)),sin=cx.imag.value/norm,cos=cx.real.value/norm,angle
-if(cos==0){angle=sin==1 ? Math.PI/2 :3*Math.PI/2}else if(sin==0){angle=cos==1 ? 0 :Math.PI}else{angle=Math.atan(sin/cos)}
-return{norm:norm,angle:angle}}
+function complex2expo(cx){return{norm:Math.hypot(cx.real.value,cx.imag.value),angle:Math.atan2(cx.imag.value,cx.real.value)}}
 function c_powi(x,n){if(n > 0){return c_powu(x,n)}else{return c_quot(c_1,c_powu(x,-n))}}
 function c_powu(x,n){var mask=1,r=c_1,p=x
 while(mask > 0 && n >=mask){if(n & mask){r=c_prod(r,p)}
@@ -11168,14 +11160,20 @@ $B.RAISE(_b_.OverflowError,"absolute value too large")}
 return $B.fast_float(mag)}
 _b_.complex.nb_add=function(self,other){var[x,y]=conv_complex(self,other)
 if(x===$B.NULL ||y===$B.NULL){return _b_.NotImplemented}
+if(is_real(self)){return make_complex(x.real.value+y.real.value,y.imag.value)}
+if(is_real(other)){return make_complex(x.real.value+y.real.value,x.imag.value)}
 return make_complex(x.real.value+y.real.value,x.imag.value+y.imag.value)}
 _b_.complex.nb_bool=function(self){return(! $B.rich_comp('__eq__',self.real,0))||
 ! $B.rich_comp('__eq__',self.imag,0)}
 _b_.complex.nb_subtract=function(self,other){var[x,y]=conv_complex(self,other)
 if(x===$B.NULL ||y===$B.NULL){return _b_.NotImplemented}
+if(is_real(self)){return make_complex(x.real.value-y.real.value,-y.imag.value)}
+if(is_real(other)){return make_complex(x.real.value-y.real.value,x.imag.value)}
 return make_complex(x.real.value-y.real.value,x.imag.value-y.imag.value)}
 _b_.complex.nb_multiply=function(self,other){var[x,y]=conv_complex(self,other)
 if(x===$B.NULL ||y===$B.NULL){return _b_.NotImplemented}
+if(is_real(self)){return make_complex(x.real.value*y.real.value,x.real.value*y.imag.value)}
+if(is_real(other)){return make_complex(x.real.value*y.real.value,x.imag.value*y.real.value)}
 return make_complex(x.real.value*y.real.value-
 x.imag.value*y.imag.value,x.imag.value*y.real.value+
 x.real.value*y.imag.value)}
@@ -11202,7 +11200,7 @@ if($B.is_int(other)){var res=Math.pow(exp.norm,other)
 return make_complex(res*Math.cos(angle*other),res*Math.sin(angle*other))}else if($B.$isinstance(other,_b_.float)){var res=Math.pow(exp.norm,other)
 return make_complex(res*Math.cos(angle*other.value),res*Math.sin(angle*other.value))}else if($B.$isinstance(other,complex)){
 var x=other.real.value,y=other.imag.value
-var pw=Math.pow(exp.norm,x)*Math.pow(Math.E,-y*angle),theta=y*Math.log(exp.norm)-x*angle
+var pw=Math.pow(exp.norm,x)*Math.pow(Math.E,-y*angle),theta=y*Math.log(exp.norm)+x*angle
 if(pw==Number.POSITIVE_INFINITY ||pw===Number.NEGATIVE_INFINITY){$B.RAISE(_b_.OverflowError,'complex exponentiation')}
 return make_complex(pw*Math.cos(theta),pw*Math.sin(theta))}else{$B.RAISE(_b_.TypeError,"unsupported operand type(s) "+
 "for ** or pow(): 'complex' and '"+
@@ -14081,7 +14079,7 @@ $B.addToImported=function(name,modobj){var module=$B.imported[name]
 if(modobj===undefined){$B.RAISE(_b_.ImportError,'imported not set by module')}
 for(var attr in modobj){if(typeof modobj[attr]=="function" && ! modobj[attr].$infos){modobj[attr].$infos={__module__:name,__name__:attr,__qualname__:attr,__code__:{co_filename:modobj.__file__,co_code:modobj[attr]+'',co_flags:$B.COMPILER_FLAGS.OPTIMIZED |$B.COMPILER_FLAGS.NEWLOCALS}}
 modobj[attr].$in_js_module=true
-modobj[attr].ob_type=$B.function
+modobj[attr].ob_type=modobj[attr].ob_type ?? $B.function
 $B.init_dict(modobj[attr])
 $B.add_function_infos(modobj,attr,name,attr)}else if($B.$isinstance(modobj[attr],_b_.type)){if($B.get_dict(modobj[attr])){if($B.get_from_dict(modobj[attr],'__module__',$B.NULL)===
 $B.NULL){$B.set_to_dict(modobj[attr],'__module__',name)}}}
@@ -15769,9 +15767,14 @@ var scope_name='locals_'+qualified_scope_name(scopes,scope)
 scope=scope ?? last_scope(scopes)
 while(scope.parent){scope=scope.parent}
 return scope_name}
+function make_globals_name(scopes){var ns=scopes.namespaces
+if(ns && ns.exec_locals !==ns.exec_globals){return ns.global_name}
+return make_scope_name(scopes,scopes[0])}
 function make_search_namespaces(scopes){var namespaces=[]
 for(var scope of scopes.slice().reverse()){if(scope.parent ||scope.type=='class'){continue}else if(scope.is_exec_scope){namespaces.push('$B.exec_scope')}
-namespaces.push(make_scope_name(scopes,scope))}
+namespaces.push(make_scope_name(scopes,scope))
+var ns=scopes.namespaces
+if(scope.is_exec_scope && ns && ns.exec_locals !==ns.exec_globals){namespaces.push(ns.global_name)}}
 namespaces.push('_b_')
 return namespaces}
 function mangle(scopes,scope,name){if(name.startsWith('__')&& ! name.endsWith('__')){var ix=scopes.indexOf(scope)
@@ -15996,7 +15999,7 @@ for(var symbol of _b_.dict.$iter_items(symtable_block.symbols)){if(symbol.value 
 var comp_iter_scope=name_scope(comp_iter,scopes)
 var first_for=this.generators[0],
 outmost_expr=$B.js_from_ast(first_for.iter,scopes),nb_paren=1
-var comp={ast:this,id,type,varnames,module_name:scopes[0].name,locals_name:make_scope_name(scopes),globals_name:make_scope_name(scopes,scopes[0])}
+var comp={ast:this,id,type,varnames,module_name:scopes[0].name,locals_name:make_scope_name(scopes),globals_name:make_globals_name(scopes)}
 indent()
 if(prefix.length > plen+tab.length){console.warn('JS indentation issue')}
 var js=init_comprehension(comp,scopes)
@@ -16290,7 +16293,7 @@ var value=$B.js_from_ast(this.value,scopes)
 if(this.target instanceof $B.ast.Name){var scope=name_scope(this.target.id,scopes)
 if(! scope.found){
 let left_scope=scope.resolve=='global' ?
-make_scope_name(scopes,scopes[0]):'locals'
+make_globals_name(scopes):'locals'
 js=prefix+`${left_scope}.${this.target.id} = $B.augm_assign(`+
 make_ref(this.target.id,scopes,scope,this.target)+`, '${iop}', ${value})`}else{let ref=`${make_scope_name(scopes, scope.found)}.${this.target.id}`
 js=prefix+`${ref} = $B.augm_assign(${ref}, '${iop}', ${value})`}}else if(this.target instanceof $B.ast.Subscript){js=prefix+`$B.$setitem((locals.$tg = ${this.target.value.to_js(scopes)}), `+
@@ -16372,7 +16375,7 @@ args_list.push(kw)}
 return js+`${args_list.join(', ')}`}
 $B.ast.ClassDef.prototype.to_js=function(scopes){var enclosing_scope=bind(this.name,scopes)
 var class_scope=new Scope(this.name,'class',this)
-var js='',locals_name='locals_'+qualified_scope_name(scopes,class_scope),ref=this.name+make_id(),glob=scopes[0].name,globals_name=make_scope_name(scopes,scopes[0]),decorators=[],decorated=false
+var js='',locals_name='locals_'+qualified_scope_name(scopes,class_scope),ref=this.name+make_id(),glob=scopes[0].name,globals_name=make_globals_name(scopes),decorators=[],decorated=false
 for(let dec of this.decorator_list){decorated=true
 var dec_id='decorator'+make_id()
 decorators.push(dec_id)
@@ -16515,7 +16518,7 @@ if(this.value===true ||this.value===false){return this.value+''}else if(this.val
 if(srg.length==0){return `'${s}'`}
 return `$B.String('${s}')`}
 var klass=$B.get_class(this.value)
-if(klass===_b_.bytes){return `_b_.bytes.$factory([${this.value.source}])`}else if(typeof this.value=="number"){if(Number.isInteger(this.value)){return this.value}else{return `(new $B.Float(this.value))`}}else if(typeof this.value=="bigint"){return `${this.value}n`}else if(klass===_b_.float){return `(new $B.Float(${this.value.value}))`}else if(klass===_b_.complex){return `$B.make_complex(${this.value.real.value}, ${this.value.imag.value})`}else if(this.value===_b_.Ellipsis){return `_b_.Ellipsis`}else{console.log('invalid value',this.value)
+if(klass===_b_.bytes){return `_b_.bytes.$factory([${this.value.source}])`}else if(typeof this.value=="number"){if(Number.isInteger(this.value)){return this.value}else{return `(new $B.Float(this.value))`}}else if(typeof this.value=="bigint"){return `${this.value}n`}else if(klass===_b_.float){return `(new $B.Float(${this.value.value}))`}else if(klass===_b_.complex){return `$B.make_complex(${Object.is(this.value.real.value,-0) ? '-0' : this.value.real.value}, ${Object.is(this.value.imag.value,-0) ? '-0' : this.value.imag.value})`}else if(this.value===_b_.Ellipsis){return `_b_.Ellipsis`}else{console.log('invalid value',this.value)
 console.log(Error('trace').stack)
 throw SyntaxError('bad value',this.value)}}
 $B.ast.Continue.prototype.to_js=function(scopes){if(! in_loop(scopes)){compiler_error(this,"'continue' not properly in loop")}
@@ -16626,7 +16629,7 @@ kw_defaults.push(`${mangle_arg(arg.arg)}: ${v}`)}}
 var kw_default_names=[]
 for(var kw of this.args.kwonlyargs){kw_default_names.push(`'${mangle_arg(kw.arg)}'`)}
 return{default_names,_defaults,positional,has_posonlyargs,kw_defaults,kw_default_names,annotations}}
-function type_param_in_def(tp,ref,scopes){var gname=scopes[0].name,globals_name=make_scope_name(scopes,scopes[0])
+function type_param_in_def(tp,ref,scopes){var gname=scopes[0].name,globals_name=make_globals_name(scopes)
 var js=''
 var name,param_type=tp.constructor.$name
 if(['TypeVar','TypeVarTuple','ParamSpec'].includes(param_type)){name=tp.name}else{name=tp.name.id}
@@ -16659,7 +16662,7 @@ var symtable_block=scopes.symtable.table.blocks.get(fast_id(this))
 var in_class=last_scope(scopes).ast instanceof $B.ast.ClassDef,is_async=this instanceof $B.ast.AsyncFunctionDef,arg_mangle_scope=last_scope(scopes),mangle_arg=x=> mangle(scopes,arg_mangle_scope,x)
 if(in_class){var class_scope=last_scope(scopes)}
 var func_name_scope=bind(this.name,scopes)
-var gname=scopes[0].name,globals_name=make_scope_name(scopes,scopes[0])
+var gname=scopes[0].name,globals_name=make_globals_name(scopes)
 var decorators=[],decorated=false,decs_declare=this.decorator_list.length > 0 ?
 prefix+'// declare decorators\n' :''
 for(let dec of this.decorator_list){decorated=true
@@ -16916,7 +16919,7 @@ var first_for=this.generators[0],
 outmost_expr=$B.js_from_ast(first_for.iter,scopes),nb_paren=1
 var comp_scope=new Scope(`genexpr_${id}`,'comprehension',this)
 scopes.push(comp_scope)
-var comp={ast:this,id,type:'genexpr',varnames,module_name:scopes[0].name,locals_name:make_scope_name(scopes),globals_name:make_scope_name(scopes,scopes[0])}
+var comp={ast:this,id,type:'genexpr',varnames,module_name:scopes[0].name,locals_name:make_scope_name(scopes),globals_name:make_globals_name(scopes)}
 indent()
 var head=init_comprehension(comp,scopes)
 var js=prefix+`var gen${id} = $B.generator.$factory(${has_await ? 'async ' : ''}function*(expr){\n`

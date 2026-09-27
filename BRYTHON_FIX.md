@@ -598,10 +598,16 @@ Status legend: [ ] identified · [~] patched+testing · [x] landed (measured gai
   assert Child in Base.__subclasses__()   # [] before the fix
   ```
 
-  Fix — bare `tp_subclasses.push(class_obj)` before both exits, guarded with
-  `if (_sb.tp_subclasses)` (C-extension bases have none), mirroring
-  `$class_constructor`. (+2 numpy test_seed_sequence:
+  Fix — the registration moves from `$class_constructor` to both exits of
+  `type.tp_new`, which a class statement goes through too (upstream PR
+  #2982). (+2 numpy test_seed_sequence:
   `issubclass(SeedSequence, ISeedSequence)` after `register()`.)
+  ⚠ The first version of this fix (2026-07-16) added the registration to
+  `type.tp_new` WITHOUT removing the one in `$class_constructor`: every class
+  statement then registered its class twice, and matplotlib's
+  `_docstring` (`cls, = [c for c in recursive_subclasses(Artist) if
+  c.__name__ == 'Line2D']`) raised `KeyError: 'Line2D:kwdoc'`, breaking the
+  matplotlib and seaborn pages until 2026-09-27.
 
 - [x] **A replaced `warnings.showwarning` was ignored — `_warnings.warn` called
   `_showwarnmsg_impl` instead of `_showwarnmsg`** (`www/src/builtin_modules.js`,
@@ -4916,3 +4922,262 @@ both far from the cause.
 
 Fix (vendored brython.js): build it as CPython does, from the owning type and
 the method name, falling back to the bare name when there is no `__objclass__`.
+
+## `re` backtracks into an alternation by trying the next branches first
+
+```python
+re.match('(a*|a)a', 'a')     # CPython: <re.Match object; span=(0, 1), match='a'>
+                             # Brython: None
+re.match('(a|(a*))a', 'a')   # CPython: <re.Match object; span=(0, 1), match='a'>
+                             # Brython: JavascriptError: Cannot set properties of undefined (setting 'end')
+```
+
+`GroupMO.backtrack` (`python_re.js`), popping a match made by one branch of an
+alternation, retried the *following* branches from scratch before
+backtracking inside the current one. The wrong branch could win, and the
+following branches were re-scanned at every backtracking step of the current
+one, which makes the engine cubic where CPython's is quadratic: mpmath's
+`test_issue548` (the ReDoS guard of `mpmathify`, a 5000-digit invalid complex)
+took about 4500 s against 0.64 s. A next branch was also matched without the
+`groups` and `endpos` of the call, and its end written into the last captured
+group instead of the enclosing one.
+
+Fix (vendored brython_stdlib.js, upstream PR branch `re-alternation-backtrack`):
+backtrack inside the current branch first; a next branch is matched with
+`this.endpos` and `groups` and updates the enclosing group, as the backtracking
+path above it does. Over 7056 small alternation patterns compared to CPython,
+751 were wrong and none is now; mpmath's `test_convert` takes 20 s.
+
+## A function defined by `exec()` with distinct globals and locals ignores the globals
+
+```python
+ns = {}
+exec("def f(): return x", {'x': 1}, ns)
+ns['f']()      # CPython: 1
+               # Brython: NameError: name 'x' is not defined
+```
+
+The code generator gave the function the root locals object as its global
+namespace. mpmath's `libhyper` builds its hypergeometric summators this way
+(`exec(source, globals(), namespace)`), so every one of them failed on its
+first module global (`from_man_exp`, `MPZ_ZERO`).
+
+Fix (vendored brython.js): backport of upstream `999a16c37` (Johnathon
+Selstad, merged 2026-08-12), `make_globals_name` in `ast_to_js.js`. mpmath
++41 assertions.
+
+## `math` functions are plain functions, so a class attribute binds them
+
+```python
+import math
+class C:
+    f = math.frexp
+type(math.frexp).__name__   # CPython: 'builtin_function_or_method'
+                            # Brython: 'function'
+C().f(8.0)                  # CPython: (0.5, 4)
+                            # Brython: TypeError: frexp() takes exactly 1 argument (2 given)
+```
+
+`math.js` stamps its functions `builtin_function_or_method`, but
+`$B.addToImported` then sets `ob_type = $B.function` on every function of a
+JS module. A plain function has a `__get__`, so a `math` function stored as a
+class attribute becomes a method and receives the instance: mpmath's
+`FPContext` (`frexp = math.frexp`, `ldexp = math.ldexp`) failed throughout
+its `fp` tests.
+
+Fix (vendored brython.js): `addToImported` keeps an `ob_type` the module
+already set. mpmath +8 assertions.
+
+## `float.conjugate()` raises and `int.conjugate()` returns JS `undefined`
+
+```python
+(1.5).conjugate()   # CPython: 1.5
+                    # Brython: NotImplementedError: conjugate
+(3).conjugate()     # CPython: 3
+                    # Brython: an `undefined` that is not a Python object
+```
+
+Both were stubs: `float_funcs.conjugate` raised, `int_funcs.conjugate` had an
+empty body. mpmath's `ctx.conj` calls `x.conjugate()`, so `fp.conj`,
+`fp.eig` and `cholesky` failed.
+
+Fix (vendored brython.js): the real part, as the `real` getters next to them
+compute it — `int_value(self)` and `float_value(self)`. mpmath +3 assertions.
+
+## A complex power with a complex exponent has the wrong phase
+
+```python
+(2+3j)**(1.5-2j)   # CPython: (22.57184016549748-43.352479197398665j)
+                   # Brython: (-30.476017316586873+38.21174936504145j)
+(2+3j)**(1.5+0j)   # CPython: (0.6603660276815663+6.814402636366296j)
+                   # Brython: (0.6603660276815663-6.814402636366296j)
+```
+
+For z = r·e^(iA) and w = x + iy, z**w = r^x·e^(-yA)·e^(i(y·ln r + x·A)).
+`complex.nb_power` (`py_complex.js`) computed the phase as
+`y * Math.log(norm) - x * angle`: the sign of the real-exponent term was
+flipped, so every non-integer complex exponent with a real part gave a wrong
+result (an imaginary-only exponent, x = 0, was right). mpmath's `fp` context
+raises complex numbers to complex powers inside `gamma`, `zeta`, `erf`.
+
+Fix (vendored brython.js): `+ x * angle`. mpmath +2 assertions.
+
+## A lazy optional group that `re` skipped keeps the capture it tried
+
+```python
+re.match('(a)??(ab)', 'ab').groups()   # CPython: (None, 'ab')
+                                       # Brython: ('a', 'ab')
+```
+
+A group's match loop records the capture of every repeat it tries. A lazy
+group then starts from none of them (`GroupMO` keeps `repeat.min` matches,
+zero for `??` and `*?`), but the tried capture stayed in `groups`, so a group
+the match finally skipped still reported a value. mpmath parses complex
+strings with `(?P<re>…)??(?P<im>…[ji])?`: `mpmathify('1j')` read `re='1'` and
+gave `1+1j`.
+
+Fix (vendored brython_stdlib.js, `python_re.js`): a lazy group that starts
+with no repeat drops the captures of its tried ones, and backtracking restores
+them, the group's own set to its last repeat, when it extends. 6272 small lazy
+patterns compared to CPython: 955 wrong, 279 now, none newly wrong; 7056
+alternation patterns unchanged. mpmath +3 assertions.
+
+## Float modulo loses the remainder of large quotients and of infinities
+
+```python
+1e300 % 3.7          # CPython: 1.765761626199355
+                     # Brython: 0.0
+3.0 % float('inf')   # CPython: 3.0
+                     # Brython: nan
+1e-310 % 3           # CPython: 1e-310
+                     # Brython: 0.0
+```
+
+`float.nb_remainder` computed `x - y*floor(x/y)`, which cancels for a large
+quotient and gives `inf - inf` for an infinite divisor, and, for an int
+divisor, `(x % y + y) % y`, where adding `y` absorbs a small remainder.
+
+Fix (vendored brython.js): through `_float_div_mod`, the port of CPython's
+algorithm (`fmod`, then the sign of the divisor) that `divmod` already uses.
+mpmath +1 assertion (`test_double_compatibility`).
+
+## `bool(float('nan'))` is False
+
+```python
+bool(float('nan'))   # CPython: True
+                     # Brython: False
+```
+
+`float.nb_bool` returned the JS truthiness of the value, and NaN is falsy in
+JS; a float is false only when it equals zero. mpmath's `ei` starts with
+`if not z: return -INF`, so `fp.ei(fp.nan)` gave `-inf`.
+
+Fix (vendored brython.js): `self.value != 0`. mpmath +1 assertion
+(`test_fp_nan_in_args`).
+
+## Real-complex arithmetic loses the sign of a zero imaginary part
+
+```python
+x = 1; z = 0j
+(x - z).imag       # CPython (3.14): -0.0
+                   # Brython: 0.0
+```
+
+Python 3.14 does mixed real-complex arithmetic without first turning the real
+operand into `complex(a, 0)` (C99 Annex G): `a - (x+iy)` is `(a-x) + i(-y)`,
+`(x+iy) + a` keeps `y` as is. `complex.nb_add`/`nb_subtract`/`nb_multiply`
+converted the real operand, and `0.0 - 0.0` gave `+0.0`: signed zeros are what
+put `cmath.log`/`sqrt` on the right side of their branch cuts.
+
+Fix (vendored brython.js): a real operand only contributes its value, as in
+CPython 3.14.
+
+## A complex literal folded to a constant loses a negative zero
+
+```python
+(1-0j).imag        # CPython: -0.0
+                   # Brython: 0.0
+```
+
+The code generator folds `1-0j` into a complex constant and emits it through a
+JS template literal, `$B.make_complex(${real}, ${imag})`, which prints `-0` as
+`0`.
+
+Fix (vendored brython.js): emit `-0` for a negative zero part.
+
+## A float operation with a bool operand raises a JS error
+
+```python
+2.0 ** True        # CPython: 2.0
+                   # Brython: JavascriptError: Cannot read properties of undefined (reading 'ob_type')
+```
+
+`conv_num` (`py_float.js`) takes a Brython bool, a JS boolean, for an int
+subclass and reads its `.value`, which does not exist.
+
+Fix (vendored brython.js): a boolean converts to 1 or 0.
+
+## A complex power of a number with a negative real part is wrong
+
+```python
+(-1+1j)**0.5       # CPython: (0.4550898605622274+1.0986841134678098j)
+                   # Brython: (1.0986841134678098-0.45508986056222733j)
+```
+
+`complex2expo` (`py_complex.js`) computed the argument as
+`Math.atan(sin / cos)`, which only returns angles in (-π/2, π/2): with a
+negative real part the angle was off by π, so every non-integer power of such
+a number was wrong. mpmath's `lambertw` starts from `(z - r)**0.5` with a
+negative real part, and its `fp` functions raise such numbers to complex
+powers.
+
+Fix (vendored brython.js): `Math.hypot` and `Math.atan2`, as CPython's
+`_Py_c_pow`. mpmath +5 assertions.
+
+## An in-place division by zero returns inf
+
+```python
+t = 1.0
+t /= 0             # CPython: ZeroDivisionError: division by zero
+                   # Brython: t == inf
+```
+
+`$B.augm_assign` (`py_utils.js`) has a fast path for two numbers that
+returns the JS quotient for `/=`, with no zero check; `t / 0` goes through
+`nb_true_divide` and raises. mpmath's `fp.hypsum` turns the
+ZeroDivisionError of `t /= (c+k)` at a pole of the series into
+NotImplementedError: Brython summed inf terms until NoConvergence instead.
+
+Fix (vendored brython.js): the fast path raises on a zero divisor. mpmath +1
+assertion.
+
+## A float floor division or divmod by zero returns 0.0
+
+```python
+1.5 // 0           # CPython: ZeroDivisionError: division by zero
+                   # Brython: 0.0
+divmod(1.5, 0)     # CPython: ZeroDivisionError: division by zero
+                   # Brython: (0.0, 0.0)
+```
+
+`float.nb_floor_divide` and `float.nb_divmod` (`py_float.js`) call
+`_float_div_mod` without the zero check that CPython's `float_floor_div` and
+`float_divmod` make first; `nb_remainder` has the same fix above.
+
+Fix (vendored brython.js): both raise on a zero divisor.
+
+## A float floor division or modulo with an inf or nan operand returns 0.0
+
+```python
+float('inf') // 1  # CPython: nan
+                   # Brython: 0.0
+float('inf') % 1   # CPython: nan
+                   # Brython: 0.0
+```
+
+`_float_div_mod` (`py_float.js`) is CPython's function translated line for
+line, but C's `if (mod)` and `if (div)` became JS `if(mod)` and `if(div)`: a
+NaN is true in C and false in JS, so a NaN remainder or quotient took the
+signed-zero branch.
+
+Fix (vendored brython.js): `mod != 0` and `div != 0`, the C semantics.
