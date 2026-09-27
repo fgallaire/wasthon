@@ -1060,6 +1060,31 @@ Infrastructure work that pays back on existing modules:
       `gc.get_objects()` answers with the C instances the bridge still holds.
       Measured: `test_torch` **912/912** (was 910), the eight probe cases now
       behave as CPython, and the chapter is shorter than the one it replaces.
+- [x] A **whole-heap collection**, every runtime's (`$wasthon_reclaim`). `del`
+      frees what was just unbound; what a program simply stops using — a name
+      rebound in a loop, a temporary of a finished call — was never freed, so a
+      suite piled up its garbage until the 2 GB cap. The collection marks the one
+      Brython graph once and frees, each in its own heap (a page can run torch
+      and numpy side by side: every runtime registers in `B.$wasthon_rts`), each
+      instance only its wrapper owns: refcount exactly 1, **and** that reference
+      handed to the wrapper when the instance first reached Python
+      (`$wasthon_py`) — before that, it is C's. Everything else the handle
+      tables bind is held by C and is a root, like the classes and modules the
+      bridge keeps: that root set is what July's attempt lacked (numpy's
+      `_ArrayMethod` objects, held through a ufunc's `_loops` list, looked dead).
+      A dead object can keep another at refcount 2 — a tensor's `grad_fn` saves
+      its input, which torch then preserves — so it passes again while a pass
+      changed a root (an instance dropping to refcount 1, a binding a dealloc
+      released): on two 1.7 GB tests the first pass gave back 172 MB, the second
+      1.6 GB, and a third, which could only find the same live set, is skipped.
+      It is sound only where no expression is half evaluated — between two tests
+      — since a temporary lives in a compiled-JS local. The marks also read each
+      instance's C edges through its own runtime (`cTraverse`), where they read
+      only the first runtime's. Measured in brytorch, collecting between two
+      tests: the two 1.7 GB `test_sum_noncontig_lowp` tests pass in one frame
+      (1774 → 41 MB after each), `test_torch` peaks at 669 MB, `test_masked`
+      goes 0 → **154** once its heap is no longer full and
+      `test_scatter_gather_ops` +7; `released.touched` 0 throughout.
 - [x] Container-boundary reference discipline + scope-owned `GET_ITEM` buffers
       — the three memory roots behind pickle's "delayed-writer page poison"
       (a 10k-object framed dump left ~300k pinned handles and a 1.6 GB heap,

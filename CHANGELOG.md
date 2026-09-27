@@ -7,6 +7,22 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A whole-heap collection, every runtime's** (`src/wasthon.js`,
+  `$wasthon_reclaim`). What a program stops using without a `del` was never
+  freed. One mark of the Brython graph now decides, and each runtime frees in
+  its own heap (`B.$wasthon_rts`), every instance only its wrapper owns:
+  refcount 1, handed to the wrapper when it first reached Python
+  (`$wasthon_py`). Everything else the handle tables bind is held by C and is a
+  root — July's attempt lacked that root set, and numpy's `_ArrayMethod`
+  objects (held through a ufunc's `_loops` list) looked dead. It passes again
+  while a pass changed a root (a tensor's `grad_fn` keeps its input at
+  refcount 2 until the tensor goes: 172 MB, then 1.6 GB), and skips the pass
+  that could only find the same live set. Sound between two tests, not inside
+  an expression. The marks read each instance's C edges through its own
+  runtime. brytorch, collecting between two tests: two 1.7 GB tests in one
+  frame, `test_torch` peaking at 669 MB, +154 `test_masked`, +7
+  `test_scatter_gather_ops`.
+
 - **`del` and `gc.collect()` release, and only on proof** (`src/wasthon.js`,
   the `del`/`gc.collect()` chapter, rewritten). The bounded walk that decides
   `del` stays as lean as before and still decides a finalizer on the spot (a

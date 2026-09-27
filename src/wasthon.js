@@ -117,6 +117,7 @@ mergeInto(LibraryManager.library, {
         // tp_dealloc instead of a destructor-less _free (the v1 hole).
         demotedType: null,
         _born: [],               // instance ptrs bound during the current C entry
+        _toOne: 0,               // decrefs that left a count at exactly 1
 
         // Sentinel handle IDs (filled at init). NOT 1-4: pybind11's
         // PYBIND11_TRY_NEXT_OVERLOAD is (PyObject*)1, so a None return
@@ -192,7 +193,11 @@ mergeInto(LibraryManager.library, {
             var rc = this.refcounts;
             if (!rc.has(handle)) return;
             var n = rc.get(handle) - 1;
-            if (n > 0) { rc.set(handle, n); return; }
+            if (n > 0) {
+                rc.set(handle, n);
+                if (n === 1) this._toOne++;   /* a collection's hint: see $wasthon_reclaim */
+                return;
+            }
             // A/B harness switch: when set, the reference reaches zero but the
             // instance is neither dispatched to tp_dealloc nor freed — it stays
             // pinned in handles/refcounts forever. This reproduces the bridge's
@@ -323,6 +328,70 @@ mergeInto(LibraryManager.library, {
             catch (e) { /* a traverse that throws tells us nothing; keep what we have */ }
             finally { rt.popScope(); rt._visitOut = prev; }
             return edges;
+        },
+
+        /* ---- Freeing, runtime by runtime ----
+         * A page can run several bridge wasms under one Brython (brytorch:
+         * torch and numpy). The object graph is one, the heaps are several:
+         * an instance's pointer, destructor and struct mean something only
+         * in the heap that allocated it, so each runtime frees its own. */
+        owns: function(v) {
+            var d;
+            try { d = Object.getOwnPropertyDescriptor(v, '__wasthon_type_rt__'); } catch (e) { return false; }
+            return !!d && d.value === _malloc;
+        },
+        helper: function(name) {
+            return ((typeof Module !== 'undefined') && Module[name]) || null;
+        },
+        heapUsed: function() {
+            var f = this.helper('_wasthon_census_mallinfo');
+            try { return f ? f(1) : -1; } catch (e) { return -1; }
+        },
+        /* Where a released wrapper points: a zeroed block of this heap,
+         * bound to the `released` class, never freed. */
+        tombFor: function(deadCls) {
+            if (!this._tomb) {
+                this._tomb = _malloc(4096);
+                HEAPU8.fill(0, this._tomb, this._tomb + 4096);
+                this.handles.set(this._tomb, { ob_type: deadCls, __class__: deadCls,
+                                               __wasthon_ptr__: this._tomb });
+            }
+            return this._tomb;
+        },
+        /* Free an instance the mark proved dead. What is checked here is only
+         * what the mark cannot say: the bridge must be sole owner (refcount 1
+         * — C kept no reference of its own), a destructor must exist through
+         * the base chain (without one the struct would leak instead of being
+         * freed), and pybind11 instances are left alone (their registry is
+         * walked at teardown and a freed entry asserts). */
+        releaseSole: function(obj, ptr, deadCls) {
+            if (ptr === this._tomb || this.refcounts.get(ptr) !== 1) return false;
+            var rd = 0, rw = obj.__wasthon_type__, rg = 16;
+            while (rw && rg-- > 0) {
+                rd = HEAP32[(rw + 40) >> 2];
+                if (rd) break;
+                rw = HEAP32[(rw + 140) >> 2];      /* tp_base */
+            }
+            if (!rd) return false;
+            var kindFn = this.helper('_wasthon_census_kind');
+            if (kindFn) {
+                try { if (kindFn(ptr) === 3) return false; } catch (e) { return false; }
+            }
+            var tomb = this.tombFor(deadCls);
+            try { this.decref(ptr); } catch (e) { return false; }
+            /* tp_dealloc has run: the object is dead. Drop the binding
+             * (gc.get_objects() must not list it) and retype the wrapper.
+             * The struct bytes are tp_free's business: a Python subclass
+             * over a C type (torch.Tensor) carries a minted struct whose
+             * memory torch's pyobj_slot still addresses, and inheriting
+             * tp_free onto it cost test_serialization 175/0 -> 72/103. */
+            if (this.handles.get(ptr) === obj) this.handles.delete(ptr);
+            try {
+                obj.__wasthon_ptr__ = tomb;
+                obj.ob_type = deadCls;
+                obj.__class__ = deadCls;
+            } catch (e) {}
+            return true;
         },
 
         /* ---- Handle scopes (see field comment above) ---- */
@@ -578,6 +647,10 @@ mergeInto(LibraryManager.library, {
             }
             this.$B = B;
             this._b_ = B.builtins;
+            /* Every bridge runtime under this Brython, for what must see them
+             * all at once: a collection marks the one graph and frees each
+             * instance in the heap that allocated it. */
+            (B.$wasthon_rts || (B.$wasthon_rts = [])).push(this);
             this.handles = new Map();
             // WeakMap: a released sentinel whose handle was re-bound (e.g.
             // unicode placeholder materialization) leaves a stale entry —
@@ -835,7 +908,7 @@ mergeInto(LibraryManager.library, {
              * One hole no walk can close: a value an enclosing frame is still
              * evaluating (the left operand of `a + f()` while f runs) lives in a
              * compiled-JS local. So a released wrapper is not left pointing at
-             * freed memory: `_kill` retypes it to `released`, whose every
+             * freed memory: releaseSole retypes it to `released`, whose every
              * attribute read raises ReferenceError, and repoints it at a
              * tombstone block. Mistaking a live object for a dead one then gives
              * an exception to read, never a heap to corrupt. */
@@ -866,10 +939,15 @@ mergeInto(LibraryManager.library, {
                  * An instance of the OTHER runtime carries a pointer into another
                  * heap: looked up here it can name an unrelated object of ours.
                  * Only our own instances are ever released or have cells cleared. */
-                var _mine = function(v) {
+                var _mine = function(v) { return _rtDF.owns(v); };
+                /* The runtime that allocated `v`. With no stamp, the first one's,
+                 * as cTraverse reads it. */
+                var _rtOf = function(v) {
+                    var rts = B.$wasthon_rts || [_rtDF];
+                    for (var i = 0; i < rts.length; i++) if (rts[i].owns(v)) return rts[i];
                     var d;
-                    try { d = Object.getOwnPropertyDescriptor(v, '__wasthon_type_rt__'); } catch (e) { return false; }
-                    return !!d && d.value === _malloc;
+                    try { d = Object.getOwnPropertyDescriptor(v, '__wasthon_type_rt__'); } catch (e) { return null; }
+                    return d ? null : _rtDF;
                 };
                 var _isCls = function(v) {
                     try {
@@ -884,28 +962,33 @@ mergeInto(LibraryManager.library, {
                  * `from browser import window` puts the whole DOM one step away:
                  * measured 84 s for one walk). Weak cells are checked apart: a
                  * weak reference never keeps its referent. */
-                var _walls = null;
+                var _walls = null, _wallsN = 0;
                 var _mkWalls = function() {
-                    if (_walls) return _walls;
-                    var rt = _rtDF;
-                    _walls = new Set([rt, rt.handles, rt.gcRegistry, rt.refcounts, rt.scopeOf,
-                        rt.sentinelByObj, rt.internPool, rt.types, rt.modules, rt.moduleDefs,
-                        rt.scopes, rt.weakRegistry, rt.weakCells, rt.demoted, rt.demotedType,
-                        rt.pendingDel, rt.pendingWeak, rt.$B]);
+                    var rts = B.$wasthon_rts || [_rtDF];
+                    if (_walls && _wallsN === rts.length) return _walls;
+                    _walls = new Set([_rtDF.pendingDel, _rtDF.pendingWeak, _rtDF.$B]);
+                    rts.forEach(function(rt) {
+                        [rt, rt.handles, rt.gcRegistry, rt.refcounts, rt.scopeOf,
+                         rt.sentinelByObj, rt.internPool, rt.types, rt.modules, rt.moduleDefs,
+                         rt.scopes, rt.weakRegistry, rt.weakCells, rt.demoted, rt.demotedType]
+                            .forEach(function(x) { if (x) _walls.add(x); });
+                    });
                     try { if (typeof globalThis !== 'undefined') _walls.add(globalThis); } catch (e) {}
                     try { if (typeof window !== 'undefined') _walls.add(window); } catch (e) {}
                     try { if (typeof document !== 'undefined') _walls.add(document); } catch (e) {}
+                    _wallsN = rts.length;
                     return _walls;
                 };
                 /* The quick walk's extra walls: every imported module, and every
                  * class (a class reaches all of torch). Cheap, and why the quick
                  * walk may only ever answer "held". */
-                var _qw = null, _qwN = -1;
+                var _qw = null, _qwN = -1, _qwBase = null;
                 var _quickWalls = function() {
-                    var Bx = _rtDF.$B, nMods = 0;
+                    var Bx = _rtDF.$B, nMods = 0, base = _mkWalls();
                     try { nMods = Object.getOwnPropertyNames(Bx.imported).length; } catch (e) {}
-                    if (_qw && nMods === _qwN) return _qw;
-                    var w = new Set(_mkWalls());
+                    if (_qw && nMods === _qwN && base === _qwBase) return _qw;
+                    _qwBase = base;
+                    var w = new Set(base);
                     w.add(Bx.builtins); w.add(Bx.imported);
                     try {
                         var ik = Object.getOwnPropertyNames(Bx.imported);
@@ -992,8 +1075,9 @@ mergeInto(LibraryManager.library, {
                         } else push(sv);
                     }
                     if (_ownPtr(v)) {
-                        var ce;
-                        try { ce = _rtDF.cTraverse(v); } catch (e) { ce = null; }
+                        /* in its own runtime: a sibling's struct means nothing here */
+                        var ce, owner = _rtOf(v);
+                        try { ce = owner ? owner.cTraverse(v) : null; } catch (e) { ce = null; }
                         if (ce) for (i = 0; i < ce.length; i++) push(ce[i]);
                     }
                 };
@@ -1082,7 +1166,7 @@ mergeInto(LibraryManager.library, {
                  * being handled) and every imported module. Stops as soon as all
                  * candidates are found. Returns null when it cannot finish,
                  * which callers read as "all live". */
-                var _mark = function(cands) {
+                var _mark = function(cands, moreRoots) {
                     var rt = _rtDF, Bx = rt.$B, st = rt.lifeStats, t0 = Date.now();
                     var walls = _mkWalls(), weak = rt.weakCells, seen = new Set(), stack = [],
                         live = new Set(), left = cands.size, n = 0, cut = false;
@@ -1094,6 +1178,7 @@ mergeInto(LibraryManager.library, {
                         stack.push(x);
                     };
                     for (var fo = Bx.frame_obj; fo; fo = fo.prev) push(fo.frame);
+                    if (moreRoots) moreRoots.forEach(function(s) { s.forEach(push); });
                     push(Bx.builtins);
                     try {
                         var ik = Object.getOwnPropertyNames(Bx.imported);
@@ -1125,57 +1210,20 @@ mergeInto(LibraryManager.library, {
                         "    touched = 0\n" +
                         "    def __getattribute__(self, name):\n" +
                         "        type(self).touched += 1\n" +
-                        "        raise ReferenceError('released: del freed this object while " +
-                        "something the bridge cannot see still held it')\n" +
+                        "        raise ReferenceError('released: the bridge freed this object while " +
+                        "something it cannot see still held it')\n" +
                         "    def __repr__(self):\n" +
                         "        return '<released object>'\n", ns);
                     rt._released = Bx.$getitem(ns, 'released');
-                    rt._tomb = _malloc(4096);
-                    HEAPU8.fill(0, rt._tomb, rt._tomb + 4096);
-                    rt.handles.set(rt._tomb, { ob_type: rt._released, __class__: rt._released,
-                                               __wasthon_ptr__: rt._tomb });
                     return rt._released;
                 };
-                var _kill = function(obj) {
-                    var D = _deadType();
-                    try {
-                        obj.__wasthon_ptr__ = _rtDF._tomb;
-                        obj.ob_type = D;
-                        obj.__class__ = D;
-                    } catch (e) {}
-                };
 
-                /* Free a C instance the mark proved dead. What stays checked
-                 * here is only what the mark cannot say: the bridge must be sole
-                 * owner (refcount 1 — C kept no reference of its own), a
-                 * destructor must exist through the base chain (without one the
-                 * struct would leak instead of being freed), and pybind11
-                 * instances are left alone (their registry is walked at teardown
-                 * and a freed entry asserts). */
+                /* Free a C instance of this runtime the mark proved dead (see
+                 * releaseSole for what is still checked). */
                 var _release = function(obj) {
-                    var rt = _rtDF, ptr = _ownPtr(obj);
-                    if (!ptr || ptr === rt._tomb || !_mine(obj) || rt.refcounts.get(ptr) !== 1) return false;
-                    var rd = 0, rw = obj.__wasthon_type__, rg = 16;
-                    while (rw && rg-- > 0) {
-                        rd = HEAP32[(rw + 40) >> 2];
-                        if (rd) break;
-                        rw = HEAP32[(rw + 140) >> 2];      /* tp_base */
-                    }
-                    if (!rd) return false;
-                    var kindFn = (typeof Module !== 'undefined') && Module['_wasthon_census_kind'];
-                    if (kindFn) {
-                        try { if (kindFn(ptr) === 3) return false; } catch (e) { return false; }
-                    }
-                    try { rt.decref(ptr); } catch (e) { return false; }
-                    /* tp_dealloc has run: the object is dead. Drop the binding
-                     * (gc.get_objects() must not list it) and retype the wrapper.
-                     * The struct bytes are tp_free's business: a Python subclass
-                     * over a C type (torch.Tensor) carries a minted struct whose
-                     * memory torch's pyobj_slot still addresses, and inheriting
-                     * tp_free onto it cost test_serialization 175/0 -> 72/103. */
-                    if (rt.handles.get(ptr) === obj) rt.handles.delete(ptr);
-                    _kill(obj);
-                    rt.lifeStats.released++;
+                    var ptr = _ownPtr(obj);
+                    if (!ptr || !_mine(obj) || !_rtDF.releaseSole(obj, ptr, _deadType())) return false;
+                    _rtDF.lifeStats.released++;
                     return true;
                 };
 
@@ -1304,6 +1352,145 @@ mergeInto(LibraryManager.library, {
                 /* gc.collect()'s half: settle everything pending, cycles included. */
                 B.$wasthon_drain_pending = function() {
                     try { return _settle(null, true, true); } catch (e) { return 0; }
+                };
+
+                /* A collection of the whole heap, every runtime's. The candidates
+                 * are the instances only their wrapper owns: refcount exactly 1,
+                 * and that reference handed to the wrapper when the instance
+                 * first reached Python ($wasthon_py) — before that, it is C's.
+                 * Everything else the handle tables bind is held by C, and so is
+                 * a root, like every live frame, every module and every object
+                 * waiting on a `del` (its __del__ has not run). One mark; each
+                 * candidate it did not reach is freed, and since that can bring
+                 * another down to refcount 1 (a view's base), it runs to a fixed
+                 * point. A dead object with a __del__ of its own is left to the
+                 * pending machinery. Sound only where no expression is half
+                 * evaluated — between two tests — since a temporary lives in a
+                 * compiled-JS local no walk sees.
+                 * opts.dry: free nothing, count what would go (tensorMB is an
+                 * upper bound: a dead tensor's storage may be shared). */
+                var _reclaimOnce = function(dry) {
+                    var rts = B.$wasthon_rts || [_rtDF];
+                    var Bx = _rtDF.$B, t0 = Date.now(), cands = new Set(), per = new Map();
+                    var cHeld = [];
+                    var st = { ms: 0, cands: 0, cHeld: 0, dead: 0, withDel: 0, freed: 0, rounds: 0, rts: [] };
+                    rts.forEach(function(rt) {
+                        var s = { cands: 0, dead: 0, sole: 0, freed: 0, tensorMB: 0,
+                                  usedMB: 0, usedAfterMB: 0, types: {} };
+                        per.set(rt, s); st.rts.push(s);
+                        s.usedMB = Math.round(rt.heapUsed() / 1048576);
+                        rt.handles.forEach(function(v, h) {
+                            if (h === rt._tomb || !_obj(v)) return;
+                            if (_ownPtr(v) === h && v.$wasthon_py === 1 && rt.refcounts.get(h) === 1 &&
+                                    !_isCls(v) && rt.owns(v)) {
+                                cands.add(v); s.cands++;
+                            } else cHeld.push(v);
+                        });
+                        /* and the classes and modules it keeps (walls of the walk) */
+                        rt.types.forEach(function(e) { if (e) cHeld.push(e.brythonClass); });
+                        rt.modules.forEach(function(m) { cHeld.push(m); });
+                    });
+                    st.cands = cands.size; st.cHeld = cHeld.length;
+                    var roots = [_rtDF.pendingDel, _rtDF.pendingWeak, cHeld];
+                    var live = _mark(cands, roots);
+                    cHeld = roots = null;
+                    if (live === null) { st.cut = true; st.ms = Date.now() - t0; return st; }
+                    var dead = [];
+                    cands.forEach(function(o) {
+                        if (live.has(o)) return;
+                        var m = null;
+                        try { m = Bx.search_in_mro(Bx.get_class(o), '__del__'); } catch (e) {}
+                        if (m) { st.withDel++; return; }
+                        dead.push(o);
+                    });
+                    cands = live = null;
+                    st.dead = dead.length;
+                    var i, o, rt, s, ptr;
+                    for (i = 0; i < dead.length; i++) {
+                        o = dead[i]; rt = _rtOf(o); s = per.get(rt);
+                        s.dead++;
+                        if (rt.refcounts.get(_ownPtr(o)) === 1) s.sole++;
+                    }
+                    if (dry) {
+                        var stor = new Map();
+                        for (i = 0; i < dead.length; i++) {
+                            o = dead[i]; rt = _rtOf(o); s = per.get(rt); ptr = _ownPtr(o);
+                            var nm = '?';
+                            try { nm = String(Bx.$getattr(Bx.get_class(o), '__qualname__')); } catch (e) {}
+                            s.types[nm] = (s.types[nm] || 0) + 1;
+                            var ct = rt.helper('_wasthon_census_tensor'), ck = rt.helper('_wasthon_census_kind');
+                            if (ct && ck) {
+                                try {
+                                    if (ck(ptr) === 1) {
+                                        var sp = ct(ptr, 4);
+                                        if (sp && !stor.has(sp)) { stor.set(sp, 1); s.tensorMB += ct(ptr, 2); }
+                                    }
+                                } catch (e) {}
+                            }
+                        }
+                    } else {
+                        var D = _deadType(), todo = dead, progress = true, before = [];
+                        rts.forEach(function(r) {
+                            r.tombFor(D);
+                            before.push([r._toOne, r.handles.size]);
+                        });
+                        while (todo.length && progress) {
+                            progress = false; st.rounds++;
+                            var next = [];
+                            for (i = 0; i < todo.length; i++) {
+                                o = todo[i]; rt = _rtOf(o); ptr = _ownPtr(o);
+                                if (!rt || !ptr || !rt.refcounts.has(ptr)) continue;
+                                if (rt.refcounts.get(ptr) !== 1) { next.push(o); continue; }
+                                if (rt.weakRegistry.has(ptr)) {
+                                    try { rt.clearWeakRefs(ptr); } catch (e) {}
+                                }
+                                if (rt.releaseSole(o, ptr, D)) {
+                                    per.get(rt).freed++; st.freed++; progress = true;
+                                }
+                            }
+                            todo = next;
+                        }
+                        /* Can another mark find more? Only if a root went: an
+                         * instance C held dropped to refcount 1 (it is now a
+                         * candidate), or a binding vanished beyond the ones freed
+                         * here (a dealloc released what C held). Otherwise the
+                         * next mark would see the same live set. */
+                        rts.forEach(function(r, k) {
+                            if (r._toOne !== before[k][0] ||
+                                    before[k][1] - r.handles.size > per.get(r).freed) st.changed = true;
+                        });
+                        _rtDF.lifeStats.reclaimed = (_rtDF.lifeStats.reclaimed || 0) + st.freed;
+                    }
+                    st.rts.forEach(function(s2, k) {
+                        s2.tensorMB = Math.round(s2.tensorMB / 1048576);
+                        s2.usedAfterMB = Math.round(rts[k].heapUsed() / 1048576);
+                        var top = Object.keys(s2.types).sort(function(a, b) { return s2.types[b] - s2.types[a]; });
+                        var t8 = {};
+                        top.slice(0, 8).forEach(function(k2) { t8[k2] = s2.types[k2]; });
+                        s2.types = t8;
+                    });
+                    st.ms = Date.now() - t0;
+                    return st;
+                };
+                /* A dead object can keep another at refcount 2 — a dead tensor's
+                 * grad_fn saves its input, whose PyObject torch then preserves —
+                 * and that one is a root until the first goes. So pass again while
+                 * a pass changed the roots: measured on two 1.7 GB tests, one pass
+                 * gave back 172 MB, the next 1.6 GB. Passing again only when a
+                 * pass freed something cost one useless mark per collection. */
+                B.$wasthon_reclaim = function(opts) {
+                    var dry = !!(opts && opts.dry), st = _reclaimOnce(dry), again = !!st.changed;
+                    st.passes = 1;
+                    while (!dry && !st.cut && again && st.passes < 10) {
+                        var s2 = _reclaimOnce(false);
+                        st.passes++; st.ms += s2.ms; st.rounds += s2.rounds;
+                        st.freed += s2.freed; again = !!s2.changed;
+                        if (s2.cut) st.cut = true;
+                        s2.rts.forEach(function(r, k) {
+                            st.rts[k].freed += r.freed; st.rts[k].usedAfterMB = r.usedAfterMB;
+                        });
+                    }
+                    return st;
                 };
 
                 /* gc.collect() and gc.get_objects() — Brython ships stubs (collect
