@@ -6919,7 +6919,7 @@ mergeInto(LibraryManager.library, {
                         throw rt.pendingExc(pe, rt.unwrap(pe.exc) || rt._b_.Exception);
                     }
                     var inst = rt.unwrapResult(resultH);
-                    if (inst) {
+                    if (inst && typeof inst === 'object') {
                         /* Re-stamp to the constructed class when the C tp_new
                            returned a BASE-typed (or bare) instance that isn't
                            already it — numpy's array_new returns an ndarray to

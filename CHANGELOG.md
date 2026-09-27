@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A C type's `__new__` leaves a primitive result alone** (`src/wasthon.js`,
+  the re-stamp after `tp_new`). Since 2026-07-26 the wrapper re-stamps a
+  result that has no `ob_type` as a bare instance of the constructed class; a
+  result that is a JS primitive has none either, and assigning to it throws
+  in strict mode. `np.object_('y')` returns its argument, a str: pandas'
+  `Index.insert` (`arr.dtype.type(item)` on an object array), and with it
+  seaborn's `lineplot`, died on `can't assign to property "ob_type" on "y":
+  not an object`. Fix — re-stamp objects only; a primitive is a foreign type,
+  which CPython keeps as returned. The seaborn page draws again.
+
 - **Content copies cached on an object are keyed per runtime** (`src/wasthon.js`,
   `_cstrKey`, `_bufKey`). `PyBytes_AsString` and the buffer protocol cache the
   C copy of a bytes object's content ON the object (`__wasthon_cstr__`,
