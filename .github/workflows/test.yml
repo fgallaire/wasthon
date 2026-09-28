@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  # The bridge's unit tests: tests/_bridgetest built against src/ alone and
-  # run in Node. No CPython module, no other repository — the repositories
+  # The bridge's unit tests: the test modules in tests/ built against src/
+  # alone and run in Node. No CPython module, no other repository — the repositories
   # built on the bridge (Wastdlib, NumBry, BryTorch, Brygame) test the rest.
   test:
     runs-on: ubuntu-latest
@@ -31,21 +31,30 @@ jobs:
           [ -d emsdk ] || git clone --depth 1 https://github.com/emscripten-core/emsdk.git
           cd emsdk && ./emsdk install 5.0.7 && ./emsdk activate 5.0.7
 
+      # The vendored Brython needs a recent Node (RegExp.escape, Node 24+);
+      # emsdk_env.sh puts the emsdk's Node 22 first on PATH, so the tests run
+      # with this one (emcc keeps its own, EMSDK_NODE).
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
       - name: Bridge unit tests
         run: |
+          node_bin=$(dirname "$(command -v node)")
           source emsdk/emsdk_env.sh
-          tests/run.sh
+          PATH="$node_bin:$PATH" tests/run.sh
 
-      # The same tests, in the browser: loader/test-bridge.html runs
-      # tests/lifetime.py against the _bridgetest the step above built.
+      # The same tests, in the browser: loader/test-bridge.html runs them
+      # against the test modules the step above built, as a dashboard.
       - name: Stage Pages site
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           mkdir -p _site/tests/build
           cp -r loader _site/
-          cp tests/lifetime.py _site/tests/
-          cp tests/build/_bridgetest.mjs tests/build/_bridgetest.wasm _site/tests/build/
-          printf '<!doctype html><meta charset="utf-8"><title>wasthon</title><meta http-equiv="refresh" content="0; url=loader/test-bridge.html"><p>Redirecting to <a href="loader/test-bridge.html">the bridge unit tests</a>…</p>\n' > _site/index.html
+          cp tests/lifetime.py tests/test_*.py tests/runner.py tests/bridge_bugs.txt _site/tests/
+          cp tests/build/_bridgetest.mjs tests/build/_bridgetest.wasm tests/build/tests.txt _site/tests/build/
+          printf '<!doctype html><meta charset="utf-8"><title>Wasthon</title><meta http-equiv="refresh" content="0; url=loader/test-bridge.html"><p>Redirecting to <a href="loader/test-bridge.html">the bridge unit tests</a>…</p>\n' > _site/index.html
 
       - name: Upload Pages artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

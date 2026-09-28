@@ -2,61 +2,173 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>wasthon — bridge unit tests</title>
+<title>Wasthon — bridge unit tests</title>
 <script src="./brython-src.js"></script>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 980px; margin: 1.5rem auto; padding: 0 1rem; }
   h1 { font-size: 1.4rem; }
   #status { font-size: 1.15rem; font-weight: 600; margin: 1em 0; }
-  .ok { color: #1a7f37; } .ko { color: #c62828; }
-  pre { background: #f4f4f4; padding: 1em; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+  .PASS { color: #1a7f37; } .BUG { color: #9a6700; } .FAIL { color: #c62828; }
+  table { border-collapse: collapse; margin: 1em 0; }
+  th, td { padding: 0.25em 0.8em; border-bottom: 1px solid #ddd; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  pre { background: #f4f4f4; padding: 1em; margin: 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; text-align: left; }
+  tr.file { cursor: pointer; }
+  tr.file:hover { background: #f6f8fa; }
+  #samples { display: flex; flex-wrap: wrap; gap: 0 3em; align-items: flex-start; }
 </style>
 </head>
 <body>
-<h1>wasthon — bridge unit tests</h1>
+<h1>Wasthon — bridge unit tests</h1>
 <p>
-  <code>tests/_bridgetest.c</code>, a test module compiled against the bridge
-  alone, runs <code>tests/lifetime.py</code> right here: <code>tp_dealloc</code>
-  and handle scopes, each proved A/B — switched on, the table stays flat;
-  switched off, it leaks what the mechanism is there to reclaim. The same file
-  runs in Node in CI (<code>tests/run.sh</code>). What runs <em>on</em> the
-  bridge is tested in its own repositories, starting with
-  <a href="https://fgallaire.github.io/wastdlib/">Wastdlib</a>, CPython's C
-  standard-library modules.
+  The test modules of <code>tests/</code>, compiled against the bridge alone,
+  run right here, as they run in Node in CI (<code>tests/run.sh</code>).
+</p>
+<h2>C-API unit tests</h2>
+<p>
+  The <code>test_*.py</code> files test the C-API one C function at a time. A
+  <em>known bug</em> is a case listed in <code>tests/bridge_bugs.txt</code>: it
+  fails on the bridge, passes on CPython, and waits for its fix.
 </p>
 <div id="status">⏳ Running…</div>
-<pre id="log"></pre>
+<table>
+  <thead><tr><th>file</th><th>pass</th><th>known bugs</th><th>fail</th></tr></thead>
+  <tbody id="results"></tbody>
+</table>
+<h2>Object lifetime</h2>
+<p>
+  C reaches a Brython object through a <em>handle</em>, a number the bridge maps
+  to the object. The bridge reclaims handles by three mechanisms:
+</p>
+<ul>
+  <li><strong><code>tp_dealloc</code></strong>, for the references C
+    <em>owns</em> (a new object, a <code>Py_INCREF</code>): they outlive the C
+    call, so the bridge counts them in its refcount table; when a count reaches
+    0, it calls the type's <code>tp_dealloc</code>, which frees the C instance.
+    The test creates an object in C and drops it there, never showing it to
+    Python, once per call.</li>
+  <li><strong>Handle scopes</strong>, for the references C only
+    <em>borrows</em> during a call (its arguments, the items it reads): every
+    handle made during the call is released when the call returns, as a
+    borrowed reference in CPython. The test's C function walks a small graph,
+    91 temporary handles per call.</li>
+  <li><strong>The collection</strong>, for the objects Python has held: the
+    wrapper keeps the reference C gave it, so dropping the object leaves its
+    count at 1 and runs no <code>tp_dealloc</code>. A collection of the whole
+    heap, which BryTorch's page runs between two tests, proves the object
+    unreachable and frees it. The test creates an object from Python and
+    drops it, once per call, with a collection every 200 calls.</li>
+</ul>
+<p>
+  <code>tests/lifetime.py</code> makes 2000 calls with each mechanism switched
+  on (A), then off (B): on, its table stays flat; off, it grows by what the
+  mechanism reclaims.
+</p>
+<pre id="lifetime">⏳ Running…</pre>
+<div id="samples"></div>
 <script type="module">
-const out = document.getElementById('log'), status = document.getElementById('status');
-const log = (s) => { out.textContent += s + '\n'; };
+const status = document.getElementById('status'), results = document.getElementById('results');
+// revalidated at every load, so an edited test file never runs from the cache
+const text = async (path) => (await fetch(path, {cache: 'no-cache'})).text();
 try {
   const $B = __BRYTHON__;
   brython({debug: 0});
   const factory = (await import('../tests/build/_bridgetest.mjs')).default;
   const M = await factory();
   M._wasthon_init();
-  const rt = M.wasthon;
-  $B.imported._bridgetest = rt.handles.get(M._PyInit__bridgetest());
-  let failed = 0;
+  const rt = M.wasthon, samples = {};
+  // every test module run.sh linked: _PyInit__capi registers _capi
+  for (const k of Object.keys(M).filter(k => k.startsWith('_PyInit_'))) {
+    $B.imported[k.slice(8)] = rt.handles.get(M[k]());
+  }
   Object.assign($B.builtins, {
     bt_handles: () => rt.handles.size,
     bt_refcounts: () => rt.refcounts.size,
     bt_set_nofree: (v) => { rt.noFree = !!v; },
     bt_set_noscopes: (v) => { rt.noScopeFree = !!v; },
-    bt_fail: () => { failed++; },
+    bt_fail: () => {},
+    bt_bug: () => {},
+    bt_reclaim: () => { $B.$wasthon_reclaim(); },
+    // lifetime.py's samples: {mechanism: {A: [[calls, growth]], B: ...}}
+    bt_sample: (mech, phase, calls, growth) => {
+      ((samples[mech] ||= {})[phase] ||= []).push([calls, growth]);
+    },
   });
-  const src = await (await fetch('../tests/lifetime.py')).text();
+  const runner = await text('../tests/runner.py');
+  const known = (await text('../tests/bridge_bugs.txt')).split('\n').map(l => l.trim())
+    .filter(l => l && !l.startsWith('#'));
+  const files = ['lifetime.py', ...(await text('../tests/build/tests.txt')).split('\n').filter(Boolean)];
+  const total = {PASS: 0, BUG: 0, FAIL: 0};
   const cl = console.log;
-  console.log = (...a) => { log(a.join(' ')); cl(...a); };
-  try { $B.runPythonSource(src, 'lifetime'); } finally { console.log = cl; }
-  status.textContent = failed ? `✗ ${failed} failed` : '✓ all passed';
-  status.className = failed ? 'ko' : 'ok';
-  log(failed ? '=== SOME FAILED ===' : '=== ALL OK ===');
-  log('=== done ===');
+  // a <pre> of lines, each with the class named after its tag (PASS, BUG, FAIL)
+  const fill = (pre, lines) => {
+    pre.textContent = '';
+    for (const l of lines) {
+      const div = document.createElement('div');
+      div.className = l.split(' ')[0];
+      div.textContent = l;
+      pre.appendChild(div);
+    }
+  };
+  for (const file of files) {
+    const lines = [];
+    const src = await text('../tests/' + file);
+    // tests/runner.py, as tests/run.mjs appends it (a JSON array is a Python list)
+    const code = file.startsWith('test_')
+      ? src + `\n_LINES = ${JSON.stringify(src.split('\n'))}\n_FILE = ${JSON.stringify(file)}\n` +
+        `_KNOWN = set(${JSON.stringify(known)})\n` + runner
+      : src;
+    console.log = (...a) => { const s = a.join(' ').trim(); if (s) lines.push(s); cl(...a); };
+    try {
+      $B.runPythonSource(code, file.replace(/\W/g, '_'));
+    } catch (e) {
+      lines.push('FAIL ' + file + ' - ' + (e.$py_error ? $B.class_name(e) : e.message || e));
+    } finally {
+      console.log = cl;
+    }
+    if (file === 'lifetime.py') {        // its own section, not a unit test
+      fill(document.getElementById('lifetime'), lines);
+      continue;
+    }
+    // the file's row, and under it its lines, unfolded by a click; a line,
+    // its count and its column share the class named after its tag
+    const n = {PASS: 0, BUG: 0, FAIL: 0};
+    for (const l of lines) {
+      const tag = l.split(' ')[0];
+      if (tag in n) n[tag]++;
+    }
+    for (const k in n) total[k] += n[k];
+    const tr = results.insertRow(), detail = results.insertRow();
+    detail.innerHTML = '<td colspan="4"><pre></pre></td>';
+    fill(detail.querySelector('pre'), lines);
+    tr.className = 'file';
+    tr.innerHTML = `<td>▸ ${file}</td><td class="PASS">${n.PASS}</td><td class="BUG">${n.BUG}</td>` +
+      `<td class="FAIL">${n.FAIL}</td>`;
+    const show = (open) => {
+      detail.hidden = !open;
+      tr.cells[0].textContent = (open ? '▾ ' : '▸ ') + file;
+    };
+    show(false);
+    tr.onclick = () => show(detail.hidden);
+  }
+  const tr = results.insertRow();
+  tr.innerHTML = `<th>total</th><th>${total.PASS}</th><th>${total.BUG}</th><th>${total.FAIL}</th>`;
+  status.innerHTML = `<span class="PASS">${total.PASS} passed</span>` +
+    ` — <span class="BUG">${total.BUG} known bridge bugs</span>` +
+    ` — <span class="FAIL">${total.FAIL} failed</span>`;
+  // one table per mechanism: its table's growth, A and B side by side
+  for (const [mech, {A, B}] of Object.entries(samples)) {
+    const table = document.createElement('table');
+    table.innerHTML = `<caption>${mech}: growth of the ${mech === 'handle scopes' ? 'handle' : 'refcount'}` +
+      ` table</caption><tr><th>calls</th><th>A (on)</th><th>B (off)</th></tr>`;
+    A.forEach(([calls, a], i) => {
+      table.insertRow().innerHTML = `<td>${calls}</td><td>+${a}</td><td>+${B[i][1]}</td>`;
+    });
+    document.getElementById('samples').appendChild(table);
+  }
 } catch (e) {
   status.textContent = 'FATAL: ' + (e.message || e);
-  status.className = 'ko';
-  log('FATAL: ' + (e.message || e));
+  status.className = 'FAIL';
 }
 </script>
 </body>

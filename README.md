@@ -119,7 +119,11 @@ layered under a real refcount for whatever C explicitly owns:
 
 `tests/lifetime.py` proves both halves A/B: over 2000 calls `handles.size`
 stays flat with scopes (+91 per call without), `refcounts.size` stays flat
-with `tp_dealloc` (+1 per call without).
+with `tp_dealloc` (+1 per call without). An instance Python has held keeps,
+through its wrapper, the reference C gave it, so its count stays at 1 and no
+`tp_dealloc` runs: `lifetime.py` shows `refcounts.size` flat over 2000 such
+instances with a whole-heap collection (`$wasthon_reclaim`) every 200, +1 per
+instance without.
 
 What no refcount sees is Python dropping its last reference: Brython has no
 scope-exit or GC callback into `wasthon_decref`. So an instance Python holds
@@ -374,7 +378,7 @@ full `PyUnicodeWriter` API (3.14), proper
 32-bit, by design.** Brython emulates a 64-bit CPython: `sys.hash_info.width`
 is 64, `float.__hash__` is the 61-bit `_Py_HashDouble`, and
 `str.__sizeof__`/`sys.getsizeof('abc')` report 64-bit sizes (44, what a
-desktop CPython says). The wasthon C layer is genuinely wasm32 and reports
+desktop CPython says). The Wasthon C layer is genuinely wasm32 and reports
 its own truth: `struct.calcsize('P')` is 4, and a C instance's `__sizeof__`
 is in CPython-32-bit canonical units (`sys.getsizeof(array.array('i'))` is
 32 — the number a CPython-in-wasm like Pyodide gives). Each layer is
@@ -414,22 +418,44 @@ from the Python one). Cross-boundary recursion (a C encoder calling a
 Python `default` hook per level) burns both counters and whichever fires
 first raises. One fidelity inversion worth knowing: CPython's *own*
 emscripten builds skip the deep-recursion tests (their stack-probing
-guard has no headroom in wasm); wasthon runs them and passes — a 500k-deep
+guard has no headroom in wasm); Wasthon runs them and passes — a 500k-deep
 JSON nesting raises `RecursionError` instead of trapping.
 
 ## Tests
 
 ```bash
-source /path/to/emsdk/emsdk_env.sh   # emcc 5.0.7, and node
-tests/run.sh
+source /path/to/emsdk/emsdk_env.sh   # emcc 5.0.7
+tests/run.sh                         # with Node 24 or later first on PATH
 ```
 
-builds `tests/_bridgetest.c` — a test module compiled against `src/`
-alone — and runs the test files in Node: `tests/lifetime.py` proves
-`tp_dealloc` and handle scopes A/B (each mechanism switched on keeps its
-table flat, switched off leaks what it is there to reclaim). They depend on
-nothing else; the repositories built on the bridge test the rest. The same
-file runs in the browser on the Pages: `loader/test-bridge.html`.
+builds the test modules — compiled against `src/` alone — and runs the test
+files in Node:
+
+- `tests/lifetime.py` (`tests/_bridgetest.c`) proves `tp_dealloc`, handle
+  scopes and the whole-heap collection A/B: each mechanism switched on keeps
+  its table flat, switched off leaks what it is there to reclaim.
+- `tests/test_*.py` test the C-API one C function at a time, a `tests/_capi*.c`
+  module per area making the C calls: types, str and bytes, numbers, objects
+  and exceptions, containers, runtime (modules, capsules, argument parsing,
+  import…), macros, and the private `_Py*` functions CPython exports for its
+  own extension modules. `test_types.py` covers the bridge's two ways of
+  building a type: each type is defined twice from the same C functions, by
+  `PyType_FromSpec` and as a static `PyTypeObject` passed to `PyType_Ready`,
+  and every test runs on both.
+
+The `test_*.py` files are plain pytest files: when writing a test, run
+`tests/cpython.sh`, which builds the `tests/_capi*.c` modules as CPython
+extensions and runs the tests with pytest. CPython is the reference — a test
+that fails there is a wrong test. They depend on nothing else; the
+repositories built on the bridge test the rest.
+
+`tests/bridge_bugs.txt` lists the cases known to fail on the bridge, as pytest
+names them: `run.sh` reports them as BUG without failing, and the commit that
+fixes a bug removes its line. The same files run in the browser on the Pages,
+`loader/test-bridge.html`, a dashboard of pass, known bugs and fail per file.
+`tests/coverage.sh` shows which C-API functions of `src/wasthon.js` the tests
+call, from V8's own coverage (`NODE_V8_COVERAGE`); with function names as
+arguments, it also lists their blocks the tests never run.
 
 ## What's next
 
