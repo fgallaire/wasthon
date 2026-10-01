@@ -457,20 +457,42 @@ typedef struct { uint8_t _unused; } PyMutex;
  * Type flags and method flags                                      *
  * ---------------------------------------------------------------- */
 
-#define Py_TPFLAGS_DEFAULT                  (1UL << 0)
-#define Py_TPFLAGS_BASETYPE                 (1UL << 1)
-#define Py_TPFLAGS_HAVE_GC                  (1UL << 2)
-#define Py_TPFLAGS_DISALLOW_INSTANTIATION   (1UL << 3)
-#define Py_TPFLAGS_IMMUTABLETYPE            (1UL << 4)
-#define Py_TPFLAGS_HEAPTYPE                 (1UL << 5)
-#define Py_TPFLAGS_READY                    (1UL << 6)
-#define Py_TPFLAGS_SEQUENCE                 (1UL << 5)  /* shared with HEAPTYPE — unused by bridge */
-#define Py_TPFLAGS_LIST_SUBCLASS            (1UL << 25)
-#define Py_TPFLAGS_TUPLE_SUBCLASS           (1UL << 26)
-#define Py_TPFLAGS_BYTES_SUBCLASS           (1UL << 27)
-#define Py_TPFLAGS_UNICODE_SUBCLASS         (1UL << 28)
-#define Py_TPFLAGS_DICT_SUBCLASS            (1UL << 29)
-#define Py_TPFLAGS_LONG_SUBCLASS            (1UL << 24)
+/* Type flags, CPython's Include/object.h. */
+#define _Py_TPFLAGS_STATIC_BUILTIN (1 << 1)
+#define Py_TPFLAGS_INLINE_VALUES (1 << 2)
+#define Py_TPFLAGS_MANAGED_WEAKREF (1 << 3)
+#define Py_TPFLAGS_MANAGED_DICT (1 << 4)
+#define Py_TPFLAGS_PREHEADER (Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT)
+#define Py_TPFLAGS_SEQUENCE (1 << 5)
+#define Py_TPFLAGS_MAPPING (1 << 6)
+#define Py_TPFLAGS_DISALLOW_INSTANTIATION (1UL << 7)
+#define Py_TPFLAGS_IMMUTABLETYPE (1UL << 8)
+#define Py_TPFLAGS_HEAPTYPE (1UL << 9)
+#define Py_TPFLAGS_BASETYPE (1UL << 10)
+#define Py_TPFLAGS_HAVE_VECTORCALL (1UL << 11)
+#define _Py_TPFLAGS_HAVE_VECTORCALL Py_TPFLAGS_HAVE_VECTORCALL
+#define Py_TPFLAGS_READY (1UL << 12)
+#define Py_TPFLAGS_READYING (1UL << 13)
+#define Py_TPFLAGS_HAVE_GC (1UL << 14)
+#define Py_TPFLAGS_HAVE_STACKLESS_EXTENSION 0
+#define Py_TPFLAGS_METHOD_DESCRIPTOR (1UL << 17)
+#define Py_TPFLAGS_VALID_VERSION_TAG  (1UL << 19)
+#define Py_TPFLAGS_IS_ABSTRACT (1UL << 20)
+#define _Py_TPFLAGS_MATCH_SELF (1UL << 22)
+#define Py_TPFLAGS_ITEMS_AT_END (1UL << 23)
+#define Py_TPFLAGS_LONG_SUBCLASS        (1UL << 24)
+#define Py_TPFLAGS_LIST_SUBCLASS        (1UL << 25)
+#define Py_TPFLAGS_TUPLE_SUBCLASS       (1UL << 26)
+#define Py_TPFLAGS_BYTES_SUBCLASS       (1UL << 27)
+#define Py_TPFLAGS_UNICODE_SUBCLASS     (1UL << 28)
+#define Py_TPFLAGS_DICT_SUBCLASS        (1UL << 29)
+#define Py_TPFLAGS_BASE_EXC_SUBCLASS    (1UL << 30)
+#define Py_TPFLAGS_TYPE_SUBCLASS        (1UL << 31)
+#define Py_TPFLAGS_DEFAULT  ( \
+                 Py_TPFLAGS_HAVE_STACKLESS_EXTENSION | \
+                0)
+#define Py_TPFLAGS_HAVE_FINALIZE (1UL << 0)
+#define Py_TPFLAGS_HAVE_VERSION_TAG   (1UL << 18)
 
 #define METH_VARARGS    0x0001
 #define METH_KEYWORDS   0x0002
@@ -2339,16 +2361,6 @@ Py_ssize_t _wasthon_py_refcnt(PyObject *op);
 #define Py_REFCNT(op) _wasthon_py_refcnt((PyObject *)(op))
 #endif
 
-/* Type flags numpy tests (informational on the bridge side). */
-#ifndef Py_TPFLAGS_METHOD_DESCRIPTOR
-#define Py_TPFLAGS_METHOD_DESCRIPTOR (1UL << 17)
-#endif
-#ifndef Py_TPFLAGS_HAVE_VECTORCALL
-#define Py_TPFLAGS_HAVE_VECTORCALL (1UL << 11)
-#endif
-#ifndef _Py_TPFLAGS_HAVE_VECTORCALL
-#define _Py_TPFLAGS_HAVE_VECTORCALL Py_TPFLAGS_HAVE_VECTORCALL
-#endif
 
 /* C-side views of builtin-method and descriptor objects (CPython-3.14 field
  * shapes): numpy READS m_ml/d_getset/d_member for its doc/introspection

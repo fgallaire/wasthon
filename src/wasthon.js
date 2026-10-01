@@ -6688,13 +6688,11 @@ mergeInto(LibraryManager.library, {
             if (cls.tp_mro && cls.tp_mro.indexOf(rt._b_.str) > -1) {
                 cls.tp_flags |= rt.$B.TPFLAGS.UNICODE_SUBCLASS;
             }
-            /* ndarray is Py_TPFLAGS_SEQUENCE in numpy (match-case sequence
-               patterns; matrix/MaskedArray inherit through tp_bases, which
-               Brython's matcher scans). wasthon.h shares bit 5 with HEAPTYPE,
-               so the bit alone is ambiguous — gate on the class identity. */
-            if (flags & 32) {
-                var _cnp = HEAP32[(typePtr + 12) >> 2];       /* C tp_name */
-                if (_cnp && UTF8ToString(_cnp) === 'numpy.ndarray') cls.$match_sequence_pattern = true;
+            /* Py_TPFLAGS_SEQUENCE (1<<5): a match-case sequence pattern
+               matches the type (numpy's ndarray; matrix/MaskedArray inherit
+               through tp_bases, which Brython's matcher scans). */
+            if (flags & 0x20) {
+                cls.$match_sequence_pattern = true;
             }
             if (!cls.tp_setattro)  cls.tp_setattro  = rt._b_.object.tp_setattro;
             /* A METAtype's instances are classes: their attribute access
@@ -6719,10 +6717,10 @@ mergeInto(LibraryManager.library, {
             if (cls.tp_descr_set === undefined) cls.tp_descr_set = rt.$B.NULL;
 
             /* CPython finality: a C type without Py_TPFLAGS_BASETYPE
-             * (wasthon.h bit 1 — datetime.timezone) cannot be subclassed.
+             * (1<<10 — datetime.timezone) cannot be subclassed.
              * make_builtin_class defaults Brython's BASETYPE on; clear it so
              * the class statement raises "not an acceptable base type". */
-            if (!(flags & 2) && rt.$B.TPFLAGS && rt.$B.TPFLAGS.BASETYPE) {
+            if (!(flags & 0x400) && rt.$B.TPFLAGS && rt.$B.TPFLAGS.BASETYPE) {
                 cls.tp_flags = (cls.tp_flags || 0) & ~rt.$B.TPFLAGS.BASETYPE;
             }
 
@@ -9747,16 +9745,18 @@ mergeInto(LibraryManager.library, {
          * "ready" heap-like). BUT never claim Py_TPFLAGS_IS_ABSTRACT (1<<20):
          * Cython's cdef `tp_new` routes an abstract base to
          * `PyBaseObject_Type.tp_new`, which is NULL on the bridge → trap. Also
-         * clear DISALLOW_INSTANTIATION so nothing refuses to construct.
-         * Py_TPFLAGS_HEAPTYPE (1<<5) is real, though: a static type, readied
-         * from its C struct or a builtin bound to one, has none, as in
-         * CPython (a static C type answered heap).
+         * clear DISALLOW_INSTANTIATION (1<<7) so nothing refuses to
+         * construct, and the dict and weakref layouts the bridge never
+         * manages CPython's way (INLINE_VALUES, MANAGED_WEAKREF, MANAGED_DICT:
+         * 1<<2, 1<<3, 1<<4). Py_TPFLAGS_HEAPTYPE (1<<9) is real, though: a
+         * static type, readied from its C struct or a builtin bound to one,
+         * has none, as in CPython (a static C type answered heap).
          * TODO(phase-4): real per-type bits. */
-        var flags = (0xFFFFFFFF & ~0x00100000 & ~0x00000008) >>> 0;
+        var flags = (0xFFFFFFFF & ~0x00100000 & ~0x00000080 & ~0x0000001C) >>> 0;
         var ti = rt.types.get(typeH);
         if ((ti && ti.isStatic) ||
                 (rt.builtinClassForStruct && rt.builtinClassForStruct.has(typeH))) {
-            flags = (flags & ~0x20) >>> 0;
+            flags = (flags & ~0x200) >>> 0;
         }
         return flags; },
     PyType_Modified__deps: ['$WasthonRT'],
@@ -16302,13 +16302,13 @@ mergeInto(LibraryManager.library, {
             rt.$B.set_to_dict(cls, '__doc__',
                 typeSig ? typeDoc.slice(shortName.length + typeSig.length + 5) : typeDoc);
         }
-        /* Py_TPFLAGS_IMMUTABLETYPE (wasthon.h: 1<<4): mark the Brython class
+        /* Py_TPFLAGS_IMMUTABLETYPE (1<<8): mark the Brython class
          * so type.tp_setattro refuses Python-level writes ("cannot set ...
          * attribute of immutable type ..."), as CPython does. Bridge-side
          * installs (tp_dict descriptors, class constants via
          * PyDict_SetItemString) go through set_to_dict and are unaffected. */
-        if (flags & 0x8) {
-            // Py_TPFLAGS_DISALLOW_INSTANTIATION (wasthon.h: 1<<3; array
+        if (flags & 0x80) {
+            // Py_TPFLAGS_DISALLOW_INSTANTIATION (1<<7; array
             // iterators, sqlite3 statements...): calling the class raises
             // CPython's TypeError instead of minting a hollow instance via
             // object.tp_new.
@@ -16317,13 +16317,13 @@ mergeInto(LibraryManager.library, {
                     "cannot create '" + (cls.tp_name || 'object') + "' instances");
             };
         }
-        if (flags & 0x10) {
+        if (flags & 0x100) {
             cls.tp_flags = (cls.tp_flags || 0) | rt.$B.TPFLAGS.IMMUTABLETYPE;
         }
         /* CPython finality, as PyType_Ready has it: a type without
-         * Py_TPFLAGS_BASETYPE (wasthon.h bit 1) cannot be subclassed, and
+         * Py_TPFLAGS_BASETYPE (1<<10) cannot be subclassed, and
          * make_builtin_class defaults Brython's BASETYPE on. */
-        if (!(flags & 2)) {
+        if (!(flags & 0x400)) {
             cls.tp_flags = (cls.tp_flags || 0) & ~rt.$B.TPFLAGS.BASETYPE;
         }
         /* __module__ from the dotted spec name prefix (CPython's
@@ -16578,8 +16578,8 @@ mergeInto(LibraryManager.library, {
         // ABI. The C function signature is:
         //   PyObject *tp_new(PyTypeObject *cls, PyObject *args, PyObject *kw);
         var tpNewPtr = slotMap[65 /* Py_tp_new */];
-        if ((flags & 0x8) && !tpNewPtr) {
-            // Py_TPFLAGS_DISALLOW_INSTANTIATION (wasthon.h: 1<<3): no public
+        if ((flags & 0x80) && !tpNewPtr) {
+            // Py_TPFLAGS_DISALLOW_INSTANTIATION (1<<7): no public
             // constructor — calling the type raises TypeError, as CPython
             // does. _struct.unpack_iterator uses this (no tp_new slot)
             // (test_struct.test_uninstantiable). A spec that DOES provide a

@@ -7,6 +7,21 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Type flags are CPython's `object.h`** (`src/wasthon.h`, `src/wasthon.js`
+  `PyType_Ready`, `PyType_FromModuleAndSpec`, `PyType_GetFlags`). The
+  `Py_TPFLAGS_*` bits were the bridge's own, the same story as the slot IDs:
+  `HEAPTYPE` and `SEQUENCE` shared bit 5, `BASETYPE` was bit 1 instead of 10,
+  `Py_TPFLAGS_DEFAULT` bit 0 instead of 0, and the CPython values that
+  `cython-support` defines (`MANAGED_DICT` 1<<4, `MANAGED_WEAKREF` 1<<3)
+  landed on the bridge's `IMMUTABLETYPE` and `DISALLOW_INSTANTIATION`. As
+  `SEQUENCE` could not be told from `HEAPTYPE`, only `numpy.ndarray` was
+  trusted to match a sequence pattern. Fix — the header copies `object.h`, the
+  bridge tests CPython's bits, every static type flagged `SEQUENCE` matches,
+  and `PyType_GetFlags` no longer claims the dict and weakref layouts the
+  bridge never manages. Modules built against the old header must be
+  recompiled. +3 bridge tests (`test_immutable_type`,
+  `test_uninstantiable_type`, and `test_sequence_flag`, which failed before).
+
 - **Every builtin type struct has a `tp_hash`** (`src/wasthon.c`
   `wasthon_get_builtin_tp_hash`, `src/wasthon.js`
   `wasthon_bind_builtin_type` and `wasthon_builtin_tp_hash`). Only the

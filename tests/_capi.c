@@ -17,6 +17,9 @@
  *                            Py_sq_length, Py_nb_positive next to Py_sq_item
  *   SubSpec / SubStatic      a C subclass of each, adding one method
  *   FinalSpec / FinalStatic  no Py_TPFLAGS_BASETYPE: cannot be subclassed
+ *   ImmutableSpec            Py_TPFLAGS_IMMUTABLETYPE: no class attribute set
+ *   UninstantiableSpec       Py_TPFLAGS_DISALLOW_INSTANTIATION: no instance
+ *   SequenceStatic           Py_TPFLAGS_SEQUENCE: matches a sequence pattern
  *   alloc_drop(T)            one T allocated and dropped in C
  *   deallocs()               how many Obj tp_dealloc has freed
  *   is_heaptype(T)           Py_TPFLAGS_HEAPTYPE in PyType_GetFlags(T)
@@ -280,6 +283,20 @@ static PyTypeObject FinalStatic = {
     .tp_name = "_capi.FinalStatic", .tp_basicsize = sizeof(Obj),
     .tp_flags = Py_TPFLAGS_DEFAULT, .tp_new = obj_new};
 
+/* the other flags the bridge acts on, one type each */
+static PyType_Slot flag_slots[] = {{0, NULL}};
+static PyType_Spec immutable_spec = {"_capi.ImmutableSpec", sizeof(PyObject), 0,
+                                     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE, flag_slots};
+static PyType_Spec uninstantiable_spec = {"_capi.UninstantiableSpec", sizeof(PyObject), 0,
+                                          Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+                                          flag_slots};
+static PyTypeObject SequenceStatic = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "_capi.SequenceStatic", .tp_basicsize = sizeof(Obj),
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_SEQUENCE,
+    .tp_new = obj_new, .tp_init = obj_init, .tp_dealloc = static_dealloc,
+    .tp_as_sequence = &obj_as_sequence};
+
 /* ---- the rest of the type and allocation API ---------------------------- */
 
 #ifdef WASTHON_H
@@ -443,7 +460,11 @@ PyMODINIT_FUNC PyInit__capi(void) {
         || add(m, "FinalSpec", PyType_FromSpec(&final_spec)) < 0
         || PyType_Ready(&StaticObj) < 0 || add(m, "StaticObj", (PyObject *)&StaticObj) < 0
         || PyType_Ready(&SubStatic) < 0 || add(m, "SubStatic", (PyObject *)&SubStatic) < 0
-        || PyType_Ready(&FinalStatic) < 0 || add(m, "FinalStatic", (PyObject *)&FinalStatic) < 0) {
+        || PyType_Ready(&FinalStatic) < 0 || add(m, "FinalStatic", (PyObject *)&FinalStatic) < 0
+        || add(m, "ImmutableSpec", PyType_FromSpec(&immutable_spec)) < 0
+        || add(m, "UninstantiableSpec", PyType_FromSpec(&uninstantiable_spec)) < 0
+        || PyType_Ready(&SequenceStatic) < 0
+        || add(m, "SequenceStatic", (PyObject *)&SequenceStatic) < 0) {
         Py_DECREF(m);
         return NULL;
     }

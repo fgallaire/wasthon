@@ -171,6 +171,22 @@ def test_final_type_cannot_be_subclassed(F):
     assert raises(TypeError, type, 'P', (F,), {})
 
 
+def test_immutable_type():
+    assert raises(TypeError, setattr, _capi.ImmutableSpec, 'x', 1)
+
+
+def test_uninstantiable_type():
+    assert raises(TypeError, _capi.UninstantiableSpec)
+
+
+def test_sequence_flag():
+    match _capi.SequenceStatic(3):
+        case [a, b, c]:
+            assert (a, b, c) == (0, 10, 20)
+        case _:
+            assert False, 'not matched as a sequence'
+
+
 def test_dealloc_from_c(T):
     d0 = _capi.deallocs()
     _capi.alloc_drop(T)
