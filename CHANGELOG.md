@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyBytes_FromString` copies the bytes** (`src/wasthon.js`). It decoded
+  the C string as UTF-8 and kept each character's low byte: `é` (c3 a9)
+  became e9, any non-ASCII text was mangled. Fix — the raw bytes up to
+  the NUL, as CPython. +1 bridge test (`test_PyUnicode_AsUTF8`, whose
+  fixture returns `PyBytes_FromString(PyUnicode_AsUTF8(s))`).
+
 - **`PyBytes_AsString` refuses a non-bytes** (`src/wasthon.js`). A str
   went through. Fix — CPython's `PyBytes_Check` first, TypeError
   ("expected bytes, str found"). +1 bridge test

@@ -9711,10 +9711,11 @@ mergeInto(LibraryManager.library, {
         return _PyUnicode_FromFormat(fmtPtr, va); },
     PyBytes_FromString__deps: ['$WasthonRT'],
     PyBytes_FromString: function(ptr) { var rt = WasthonRT;
-        var s = ptr ? UTF8ToString(ptr) : "";
-        var arr = new Array(s.length);
-        for (var i = 0; i < s.length; i++) arr[i] = s.charCodeAt(i) & 0xFF;
-        return rt.wrapNewRef(rt._b_.bytes.$factory(arr)); },
+        // the raw bytes up to the NUL, as CPython; decoding them as UTF-8
+        // and keeping each char's low byte turned é (c3 a9) into e9
+        var n = 0;
+        if (ptr) while (HEAPU8[ptr + n] !== 0) n++;
+        return rt.wrapNewRef(rt._b_.bytes.$factory(Array.from(HEAPU8.subarray(ptr, ptr + n)))); },
 
     /* --- Errors / exceptions --- */
     PyErr_GivenExceptionMatches__deps: ['$WasthonRT'],
