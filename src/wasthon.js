@@ -8148,7 +8148,7 @@ mergeInto(LibraryManager.library, {
      * the current key handle to *key and a placeholder hash to *hash.
      * Returns 1 if a value was emitted, 0 when exhausted, -1 on error.
      * Used by pickle to serialize set elements deterministically. */
-    _PySet_NextEntryRef__deps: ['$WasthonRT'],
+    _PySet_NextEntryRef__deps: ['$WasthonRT', 'PyObject_Hash'],
     _PySet_NextEntryRef: function(setH, posPtr, keyPtr, hashPtr) {
         var rt = WasthonRT;
         var s = rt.unwrap(setH);
@@ -8168,8 +8168,8 @@ mergeInto(LibraryManager.library, {
             }
             var v = items[pos];
             HEAP32[keyPtr >> 2] = rt.wrapNewRef(v);
-            /* Hash: pickle uses it only as an opaque ordering token. */
-            if (hashPtr !== 0) HEAP32[hashPtr >> 2] = pos;
+            /* the key's hash, as CPython's entry->hash (it wrote pos) */
+            if (hashPtr !== 0) HEAP32[hashPtr >> 2] = _PyObject_Hash(HEAP32[keyPtr >> 2]);
             HEAP32[posPtr >> 2] = pos + 1;
             return 1;
         } catch (e) {

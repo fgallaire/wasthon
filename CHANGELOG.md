@@ -7,6 +7,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`_PySet_NextEntryRef` gives the key's hash** (`src/wasthon.js`). It
+  wrote the position into `*hash`. Fix — `PyObject_Hash` of the key, as
+  CPython's `entry->hash`. +1 bridge test
+  (`test__PySet_Update_NextEntryRef`).
+
 - **`_PyErr_FormatFromCause` chains** (`src/wasthon.js`). It dropped the
   pending exception before formatting the new one. Fix — CPython's
   sequence: the pending exception taken, the new one formatted, the old
