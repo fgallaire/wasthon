@@ -9101,64 +9101,71 @@ mergeInto(LibraryManager.library, {
         return _wasthon_exacttype_of_builtin(objH, 5 /* list */);
     },
 
-    /* PyLong_AsNativeBytes(obj, buf, n, flags) — convert PyLong to bytes.
-     * Returns number of bytes actually used, or -1 on error. Implements
-     * native-endian and little/big-endian; we ignore the ALLOW_INDEX and
-     * UNSIGNED_BUFFER flags (we always accept ints, and our value-checking
-     * is the same in both modes for n ≤ 8). */
+    /* PyLong_AsNativeBytes(obj, buf, n, flags): CPython's, ported from
+     * Objects/longobject.c with a 4-byte Py_ssize_t. Flags as its
+     * longobject.h: -1 defaults, 0 big- and 1 little-endian (was read the
+     * other way round), 3 native, 4 unsigned buffer, 8 reject negative,
+     * 16 allow __index__. Writes n bytes of two's complement and returns the
+     * size the value needs — for a compact int (|v| < 2**30), n when it fits
+     * else sizeof(Py_ssize_t); for a larger one, its byte length, the sign
+     * bit included. */
     PyLong_AsNativeBytes__deps: ['$WasthonRT'],
     PyLong_AsNativeBytes: function(objH, bufPtr, n, flags) {
         var rt = WasthonRT;
-        var v = rt.unwrap(objH);
-        var big;
-        if (typeof v === 'bigint') big = v;
-        else if (typeof v === 'number') big = BigInt(Math.trunc(v));
-        else if (v && typeof v.valueOf === 'function') {
-            try { big = BigInt(v.valueOf()); }
-            catch (e) {
-                rt.setError(rt.wrap(rt._b_.TypeError),
-                    "an integer is required");
+        var v = rt.unwrap(objH), big;
+        try {
+            if (rt.$B.$isinstance(v, rt._b_.int)) {
+                big = BigInt(rt.coerceInt(v));
+            } else if (flags !== -1 && (flags & 16)) {
+                var ix = rt.$B.$getattr(v, '__index__', null);
+                if (ix === null) {
+                    rt.setError(rt.wrap(rt._b_.TypeError), "'" + rt.$B.class_name(v) +
+                        "' object cannot be interpreted as an integer");
+                    return -1;
+                }
+                big = BigInt(rt.coerceInt(rt.$B.$call(ix)));
+            } else {
+                rt.setError(rt.wrap(rt._b_.TypeError), "expect int, got " + rt.$B.class_name(v));
                 return -1;
             }
-        } else {
-            rt.setError(rt.wrap(rt._b_.TypeError),
-                "an integer is required");
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
+        if (flags !== -1 && (flags & 8) && big < 0n) {
+            rt.setError(rt.wrap(rt._b_.ValueError), "Cannot convert negative int");
             return -1;
         }
-
-        var negative = big < 0n;
-        if (negative && (flags & 8)) {
-            rt.setError(rt.wrap(rt._b_.OverflowError),
-                "can't convert negative int");
-            return -1;
+        var little = (flags === -1 || (flags & 2)) ? true : (flags & 1) === 1;
+        var unsignedOK = flags === -1 || (flags & 4) !== 0;
+        var put = function(m) {
+            var u = BigInt.asUintN(m * 8, big);
+            for (var i = 0; i < m; i++) {
+                HEAPU8[bufPtr + (little ? i : m - 1 - i)] = Number(u & 0xffn);
+                u >>= 8n;
+            }
+        };
+        var fits = function(bits) {
+            var lim = 1n << BigInt(bits - 1);
+            return big >= -lim && big < lim;
+        };
+        var SZ = 4;   // sizeof(Py_ssize_t)
+        if (big > -(1n << 30n) && big < (1n << 30n)) {
+            if (n <= 0) return SZ;
+            put(n);
+            if (n > SZ) return SZ;
+            if (fits(n * 8)) return n;
+            if (big > 0n && fits(n * 8 + 1)) return unsignedOK ? n : n + 1;
+            return SZ;
         }
-
-        // Endian: bit0 = big, bit1 = little, both = native (little for our env)
-        var endian = flags & 3;
-        var bigEndian = (endian === 1);  // native is little for wasm
-
-        // For negative numbers, use two's complement representation in n bytes.
-        var modValue = big;
-        if (negative) {
-            modValue = (1n << BigInt(n * 8)) + big;
+        if (n > 0) put(n);
+        var mag = big < 0n ? -big : big, nb = mag.toString(2).length;
+        var res = Math.floor(nb / 8) + 1;
+        if (n > 0 && res === n + 1 && nb % 8 === 0) {
+            if (big < 0n) {
+                if (mag === (1n << BigInt(nb - 1))) res = n;   // -0x80..00 fits
+            } else {
+                res = unsignedOK ? n : n + 1;                   // MSB set, unsigned
+            }
         }
-
-        // Write bytes
-        for (var i = 0; i < n; i++) {
-            var byte = Number(modValue & 0xffn);
-            modValue >>= 8n;
-            var off = bigEndian ? (n - 1 - i) : i;
-            HEAPU8[bufPtr + off] = byte;
-        }
-
-        // Compute minimal byte count needed to represent the value
-        var test = negative ? ~big : big;
-        if (test < 0n) test = -test;
-        var bitsNeeded = 0;
-        var t = test;
-        while (t > 0n) { bitsNeeded++; t >>= 1n; }
-        var bytesNeeded = Math.max(1, Math.ceil((bitsNeeded + (negative ? 1 : 0)) / 8));
-        return bytesNeeded;
+        return res;
     },
 
     /* PyMapping_Check(o) — does o support __getitem__? Conservative true

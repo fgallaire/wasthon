@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyLong_AsNativeBytes` is CPython's** (`src/wasthon.h`, `src/wasthon.js`).
+  The `Py_ASNATIVEBYTES_*` flags were the bridge's own (DEFAULTS 0,
+  BIG_ENDIAN 1, LITTLE_ENDIAN 2), so a module passing CPython's 1 for
+  little-endian got big-endian bytes; and the return was not CPython's size
+  rule. Fix — the header copies `longobject.h` (-1, 0, 1…), and the function
+  is ported from `longobject.c` with a 4-byte `Py_ssize_t`: n bytes of two's
+  complement, the size a compact int needs or the byte length of a larger
+  one, with its two edge cases. +1 bridge test (`test_PyLong_AsNativeBytes`).
+
 - **`PyLong_FromString` ends where CPython does** (`src/wasthon.js`). With a
   `pend` pointer it set it right after the digits, before the trailing
   space, and accepted trailing garbage (`"  -12xyz"` gave -12). Fix — as

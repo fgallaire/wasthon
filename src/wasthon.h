@@ -1302,11 +1302,11 @@ int PyList_CheckExact(PyObject *o);
  * untouched (caller's default is preserved). */
 int _Py_convert_optional_to_ssize_t(PyObject *obj, Py_ssize_t *result);
 
-/* PyLong → little-endian / native-endian byte buffer (3.13+).
- * Returns the number of bytes written, or -1 on error. */
-#define Py_ASNATIVEBYTES_DEFAULTS         0
-#define Py_ASNATIVEBYTES_BIG_ENDIAN       1
-#define Py_ASNATIVEBYTES_LITTLE_ENDIAN    2
+/* PyLong → byte buffer (3.13+), flags as CPython's Include/longobject.h.
+ * Returns the number of bytes the value needs, or -1 on error. */
+#define Py_ASNATIVEBYTES_DEFAULTS         -1
+#define Py_ASNATIVEBYTES_BIG_ENDIAN       0
+#define Py_ASNATIVEBYTES_LITTLE_ENDIAN    1
 #define Py_ASNATIVEBYTES_NATIVE_ENDIAN    3
 #define Py_ASNATIVEBYTES_UNSIGNED_BUFFER  4
 #define Py_ASNATIVEBYTES_REJECT_NEGATIVE  8
