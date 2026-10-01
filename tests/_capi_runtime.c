@@ -315,9 +315,10 @@ static PyObject *os_string_to_double(PyObject *m, PyObject *a) {
 static PyObject *os_double_to_string(PyObject *m, PyObject *a) {
     double v; int code, prec, flags;      /* 'C' writes an int */
     if (!PyArg_ParseTuple(a, "dCii", &v, &code, &prec, &flags)) return NULL;
-    char *s = PyOS_double_to_string(v, (char)code, prec, flags, NULL);
+    int type;
+    char *s = PyOS_double_to_string(v, (char)code, prec, flags, &type);
     if (!s) return NULL;
-    PyObject *r = PyUnicode_FromString(s);
+    PyObject *r = Py_BuildValue("si", s, type);
     PyMem_Free(s);
     return r;
 }

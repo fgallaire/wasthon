@@ -231,8 +231,19 @@ def test_PyOS_string_to_double():
 
 
 def test_PyOS_double_to_string():
-    assert r.os_double_to_string(1.0 / 3, 'r', 0, 0) == '0.3333333333333333'
-    assert r.os_double_to_string(2.5, 'f', 3, 0) == '2.500'
+    d = r.os_double_to_string
+    assert d(1.0 / 3, 'r', 0, 0) == ('0.3333333333333333', 0)
+    assert d(2.5, 'f', 3, 0) == ('2.500', 0)
+    # flags: Py_DTSF_SIGN 1, ADD_DOT_0 2, ALT 4, NO_NEG_0 8
+    assert [d(*a)[0] for a in [
+        (-0.0, 'r', 0, 0), (1e20, 'r', 0, 0), (1e15, 'r', 0, 0), (1e20, 'g', 6, 0),
+        (0.1, 'e', 2, 0), (2.0, 'r', 0, 2), (1.5, 'r', 0, 1), (3.0, 'r', 0, 4),
+        (-0.0, 'f', 1, 8), (1234.5, 'G', 2, 0)]] == [
+        '-0', '1e+20', '1000000000000000', '1e+20', '1.00e-01', '2.0', '+1.5', '3.',
+        '0.0', '1.2E+03']
+    # type: Py_DTST_INFINITE 1, Py_DTST_NAN 2
+    assert d(float('inf'), 'F', 0, 0) == ('INF', 1)
+    assert d(float('nan'), 'g', 3, 1) == ('+nan', 2)
 
 
 def test_PyOS_strtol_strtoul():

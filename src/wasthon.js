@@ -12793,30 +12793,32 @@ mergeInto(LibraryManager.library, {
     PyOS_double_to_string: function(val, formatCode, precision, flags, typePtr) {
         var rt = WasthonRT;
         var fc = String.fromCharCode(formatCode);
-        var s;
-        if (!isFinite(val)) {
-            /* CPython's PyOS_double_to_string prints "inf"/"-inf"/"nan", not
-             * JS's "Infinity"/"NaN" — e.g. math.asin(inf)'s ValueError message
-             * "...got inf" (the ieee754 doctest) and repr of an inf float. */
-            s = isNaN(val) ? 'nan' : (val < 0 ? '-inf' : 'inf');
-            var nlen = lengthBytesUTF8(s);
-            var nptr = _malloc(nlen + 1);
-            stringToUTF8(s, nptr, nlen + 1);
-            if (typePtr) HEAP32[typePtr >> 2] = 0;
-            return nptr;
+        /* Python/pystrtod.c through Brython's float formatting, which
+         * follows it: e/f/g/E/F/G are format(val, spec) with the flags as
+         * '+' (Py_DTSF_SIGN 1), 'z' (NO_NEG_0 8) and '#' (ALT 4); 'r' is
+         * the repr, whose ".0" stays only under ADD_DOT_0 (2). JS's
+         * toPrecision/toExponential/toString gave "1.00000e+20", "1.00e-1"
+         * and "0" for -0.0, and *type was 0 for inf and nan. */
+        if ("efgEFGr".indexOf(fc) === -1 || (fc === 'r' && precision !== 0)) {
+            rt.setError(rt.wrap(rt._b_.SystemError), "bad argument to internal function");
+            return 0;
         }
-        if (fc === 'r') s = val.toString();
-        else if (fc === 'g') s = val.toPrecision(precision || 6);
-        else if (fc === 'e') s = val.toExponential(precision);
-        else if (fc === 'f') s = val.toFixed(precision);
-        else s = val.toString();
-        /* If ADD_DOT_0 flag and string lacks "." and "e", append ".0". */
-        if ((flags & 2) && s.indexOf('.') === -1 && s.indexOf('e') === -1 &&
-            isFinite(val)) s += '.0';
+        var f = rt.$B.fast_float(val), s;
+        try {
+            if (fc === 'r') {
+                s = rt.$B.$call(rt._b_.repr, (flags & 8) && val === 0 ? rt.$B.fast_float(0) : f);
+                if (s.endsWith('.0') && !(flags & 2)) s = s.slice(0, (flags & 4) ? -1 : -2);
+                if ((flags & 1) && s[0] !== '-') s = '+' + s;
+            } else {
+                s = rt.$B.$call(rt._b_.format, f, ((flags & 1) ? '+' : '') +
+                    ((flags & 8) ? 'z' : '') + ((flags & 4) ? '#' : '') + '.' + precision + fc);
+            }
+        } catch (e) { rt.forwardError(e); return 0; }
         var len = lengthBytesUTF8(s);
         var ptr = _malloc(len + 1);
         stringToUTF8(s, ptr, len + 1);
-        if (typePtr) HEAP32[typePtr >> 2] = 0;
+        // Py_DTST_FINITE 0, Py_DTST_INFINITE 1, Py_DTST_NAN 2
+        if (typePtr) HEAP32[typePtr >> 2] = isNaN(val) ? 2 : (isFinite(val) ? 0 : 1);
         return ptr;
     },
 

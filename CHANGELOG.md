@@ -7,6 +7,17 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyOS_double_to_string` follows `pystrtod.c`** (`src/wasthon.js`). It
+  formatted with JS's toPrecision/toExponential/toString: `1.00000e+20`
+  for 'g', a one-digit exponent for 'e' (`1.00e-1`), `0` for -0.0 and
+  `100000000000000000000` for 1e20 under 'r', no uppercase codes, the
+  SIGN/ALT/NO_NEG_0 flags ignored and `*type` always 0. Fix — Brython's
+  float `format` with the flags as `+`, `z`, `#` for e/f/g/E/F/G, the
+  float repr for 'r' (".0" only under ADD_DOT_0), `*type` 1 for an
+  infinity and 2 for a NaN, SystemError for a bad code. The bridge test
+  extended with CPython's own answers (ctypes) on twelve cases
+  (`test_PyOS_double_to_string`).
+
 - **`PyOS_FSPath` calls `__fspath__`** (`src/wasthon.js`). It called the
   Brython method as a bare JS function ("rt.$B.$getattr(...) is not a
   function") and checked neither a missing `__fspath__` nor its result.
