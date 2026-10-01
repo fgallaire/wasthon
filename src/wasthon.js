@@ -3331,25 +3331,33 @@ mergeInto(LibraryManager.library, {
      * the named codec. pickle protocol 0 uses utf-8 by default but the
      * Unpickler accepts custom encoding/errors. Routes through Brython's
      * bytes.decode for codec support beyond utf-8 / ascii / latin-1. */
-    PyUnicode_FromEncodedObject__deps: ['$WasthonRT'],
+    // CPython's: a str is refused, a bytes-like object's bytes go through
+    // PyUnicode_Decode; obj.decode() decoded a str and turned every error
+    // into a UnicodeDecodeError
+    PyUnicode_FromEncodedObject__deps: ['$WasthonRT', 'PyUnicode_Decode'],
     PyUnicode_FromEncodedObject: function(objH, encPtr, errPtr) {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
         if (obj === null) {
-            rt.setError(rt.wrap(rt._b_.TypeError),
-                "PyUnicode_FromEncodedObject: NULL");
+            rt.setError(rt.wrap(rt._b_.SystemError), "bad argument to internal function");
             return 0;
         }
-        var enc = encPtr === 0 ? "utf-8" : UTF8ToString(encPtr);
-        var errors = errPtr === 0 ? "strict" : UTF8ToString(errPtr);
-        try {
-            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(obj, 'decode'),
-                                       enc, errors));
-        } catch (e) {
-            rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
-                "decode " + enc + " failed: " + (e.message || String(e)));
+        if (rt.asJSStr(obj) !== null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "decoding str is not supported");
             return 0;
         }
+        var src;
+        try { src = rt._b_.bytes.$factory(obj).source; }
+        catch (e) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "decoding to str: need a bytes-like object, " +
+                rt.$B.class_name(obj) + " found");
+            return 0;
+        }
+        var p = _malloc(src.length || 1);
+        HEAPU8.set(src, p);
+        var r = _PyUnicode_Decode(p, src.length, encPtr, errPtr);
+        _free(p);
+        return r;
     },
 
     /* PyBytes_DecodeEscape(s, len, errors, unicode, recode_enc) — decode

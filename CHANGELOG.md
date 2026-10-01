@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_FromEncodedObject` refuses a str** (`src/wasthon.js`). It
+  called `obj.decode()`, so a str "decoded" (Brython's str has no
+  `decode`: an AttributeError reported as UnicodeDecodeError) and every
+  error became a UnicodeDecodeError. Fix — CPython's: TypeError "decoding
+  str is not supported", a bytes-like object's bytes through
+  `PyUnicode_Decode`, TypeError "decoding to str: need a bytes-like
+  object" otherwise. +1 bridge test (`test_PyUnicode_FromEncodedObject`).
+
 - **`PyUnicode_Decode` decodes as CPython** (`src/wasthon.js`). Every
   codec went through TextDecoder with `fatal: false`: a strict error came
   back as U+FFFD, an unknown codec as a UnicodeDecodeError, 'latin-1' was
