@@ -68,7 +68,6 @@ test_runtime.py::test_PyWeakref_NewRef_GetRef_CheckRef
 test_runtime.py::test_thread_state_and_GIL
 test_types.py::test_c_subclass[SubSpec]
 test_types.py::test_final_type_cannot_be_subclassed[FinalSpec]
-test_types.py::test_heaptype_flag[StaticObj]
 test_types.py::test_inplace_add[SpecObj]
 test_types.py::test_multiply[SpecObj]
 test_types.py::test_PyErr_PrintEx

@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A static type has no `Py_TPFLAGS_HEAPTYPE`** (`src/wasthon.js`,
+  `PyType_GetFlags`). The bridge answers a permissive flag set, every bit
+  but `IS_ABSTRACT` and `DISALLOW_INSTANTIATION`, so a type readied by
+  `PyType_Ready` from its static struct claimed to be a heap type. Fix —
+  `PyType_Ready` marks its types static, and `PyType_GetFlags` clears the
+  heap bit for them and for the builtins bound to a struct, as CPython has
+  it. +1 bridge test (`test_heaptype_flag`).
+
 - **A C type's `__doc__` is its `tp_doc`** (`src/wasthon.js`,
   `PyType_FromModuleAndSpec` and `PyType_Ready`). Both paths read `tp_doc`
   only for its clinic text signature, never for `__doc__`, which stayed

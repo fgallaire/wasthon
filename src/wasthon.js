@@ -6735,6 +6735,7 @@ mergeInto(LibraryManager.library, {
             rt.types.set(typePtr, {
                 basicsize: basicsize, itemsize: itemsize, flags: flags,
                 brythonClass: cls, shortName: shortName, fullName: fullName,
+                isStatic: true,
             });
             /* wire the struct's tp_dict (offset 8) to the class dict */
             HEAP32[(typePtr + 8) >> 2] = rt.wrapPinned(rt.$B.get_dict(cls));
@@ -9749,8 +9750,17 @@ mergeInto(LibraryManager.library, {
          * Cython's cdef `tp_new` routes an abstract base to
          * `PyBaseObject_Type.tp_new`, which is NULL on the bridge → trap. Also
          * clear DISALLOW_INSTANTIATION so nothing refuses to construct.
+         * Py_TPFLAGS_HEAPTYPE (1<<5) is real, though: a static type, readied
+         * from its C struct or a builtin bound to one, has none, as in
+         * CPython (a static C type answered heap).
          * TODO(phase-4): real per-type bits. */
-        return (0xFFFFFFFF & ~0x00100000 & ~0x00000008) >>> 0; },
+        var flags = (0xFFFFFFFF & ~0x00100000 & ~0x00000008) >>> 0;
+        var ti = rt.types.get(typeH);
+        if ((ti && ti.isStatic) ||
+                (rt.builtinClassForStruct && rt.builtinClassForStruct.has(typeH))) {
+            flags = (flags & ~0x20) >>> 0;
+        }
+        return flags; },
     PyType_Modified__deps: ['$WasthonRT'],
     PyType_Modified: function(typeH) { /* no attribute cache to invalidate */ },
     PyEval_GetBuiltins__deps: ['$WasthonRT'],
