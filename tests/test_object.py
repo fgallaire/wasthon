@@ -6,7 +6,18 @@ import io
 import sys
 import warnings
 
+import _capi_number
 import _capi_object as o
+
+# Py_hash_t is a Py_ssize_t: 32 bits on wasm32, where Brython's hash() is
+# wider (CPython's never is). A hash as C holds it:
+HASH_BITS = 8 * _capi_number.sizes()['ssize_t']
+
+
+def c_hash(v):
+    h = hash(v) & (2 ** HASH_BITS - 1)
+    h = h - 2 ** HASH_BITS if h >= 2 ** (HASH_BITS - 1) else h
+    return -2 if h == -1 else h
 
 
 def raises(exc, f, *args):
@@ -236,7 +247,7 @@ def test_PyObject_Format():
 
 
 def test_PyObject_Hash():
-    assert o.hash(5) == 5 and o.hash('a') == hash('a')
+    assert o.hash(5) == 5 and o.hash('a') == c_hash('a') and o.hash(2.5) == c_hash(2.5)
     assert raises(TypeError, o.hash, [])
 
 

@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_Hash` raises for an unhashable object** (`src/wasthon.js`). It
+  returned -1 with no exception set for a list: the C caller saw an error
+  and nothing to raise. Fix — the TypeError forwarded. The test compares
+  with `hash()` at the width of `Py_hash_t` (32 bits on wasm32), as
+  `test_macros` does. +1 bridge test (`test_PyObject_Hash`).
+
 - **`PyObject_SetAttr` with a NULL value deletes** (`src/wasthon.js`,
   `PyObject_SetAttr`, `PyObject_SetAttrString`). Both set the attribute to
   the unwrapped NULL instead of removing it, which is how CPython defines a

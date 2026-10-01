@@ -5172,7 +5172,7 @@ mergeInto(LibraryManager.library, {
             var h = rt.$B.$hash(obj);
             var r = (typeof h === 'bigint') ? Number(BigInt.asIntN(32, h)) : (h | 0);
             return r === -1 ? -2 : r;
-        } catch (e) { return -1; }
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }  // unhashable: -1 had no error
     },
 
     /* PyObject_GenericHash — default tp_hash slot. Same as PyObject_Hash
