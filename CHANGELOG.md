@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **The `*_CheckExact` tests are exact** (`src/wasthon.c`
+  `PyUnicode_CheckExact`, `PyBytes_CheckExact`, `PyDict_CheckExact`;
+  `src/wasthon.js` `PyList_CheckExact`, `wasthon_exacttype_of_builtin`).
+  The first three called the isinstance test, so a subclass passed, and
+  `PyList_CheckExact` answered 1 for any JS array, a tuple included: CPython
+  tests `Py_TYPE(o) == &PyXxx_Type`. The exact-type helper itself read only
+  `__class__`/`ob_type`, which a dict does not carry (Brython keeps it under
+  its `OB_TYPE` symbol), and took any array for an exact tuple. Fix — all go
+  through the exact helper, which falls back on Brython's `get_class`. +2
+  bridge tests (`test_PyDict_Check_CheckExact`,
+  `test_PyList_AsTuple_CheckExact`).
+
 - **The dict lookups raise what Python raises** (`src/wasthon.js`,
   `PyDict_DelItem`, `PyDict_Contains`, `PyDict_GetItemRef`). Each swallowed
   its exception: `PyDict_DelItem` of a missing key returned -1 with no error

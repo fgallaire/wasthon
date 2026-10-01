@@ -9085,11 +9085,10 @@ mergeInto(LibraryManager.library, {
     },
 
     /* PyList_CheckExact(o) — is exactly a list (not a subclass). */
-    PyList_CheckExact__deps: ['$WasthonRT'],
+    PyList_CheckExact__deps: ['wasthon_exacttype_of_builtin'],
     PyList_CheckExact: function(objH) {
-        var rt = WasthonRT;
-        var obj = rt.unwrap(objH);
-        return Array.isArray(obj) ? 1 : 0;
+        // exactly a list: any JS array matched, a tuple and a subclass too
+        return _wasthon_exacttype_of_builtin(objH, 5 /* list */);
     },
 
     /* PyLong_AsNativeBytes(obj, buf, n, flags) — convert PyLong to bytes.
@@ -15714,13 +15713,14 @@ mergeInto(LibraryManager.library, {
         // accept either — a subclass box carries its OWN class there, so
         // exactness is preserved.
         if ((obj.__class__ || obj.ob_type) === target) return 1;
-        if (target === rt._b_.str && typeof obj === 'string') return 1;
-        if (target === rt._b_.int &&
-                ((typeof obj === 'number' && Number.isInteger(obj)) ||
-                 typeof obj === 'bigint')) return 1;
+        // Brython's own lookup for the rest: the OB_TYPE symbol a dict
+        // carries, a JS string, integer or bigint (a dict answered 0, and
+        // "any JS array" made a list an exact tuple)
+        var cls;
+        try { cls = rt.$B.get_class(obj); } catch (e) { cls = undefined; }
+        if (cls === target) return 1;
         if (target === rt._b_.float && typeof obj === 'number' &&
                 !Number.isInteger(obj)) return 1;
-        if (target === rt._b_.tuple && Array.isArray(obj)) return 1;
         return 0;
     },
 

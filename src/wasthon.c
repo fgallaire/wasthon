@@ -541,11 +541,11 @@ extern int wasthon_exacttype_of_builtin(PyObject *op, int builtinTag);
 #define WT_TAG_FLOAT    7
 
 int PyUnicode_Check(PyObject *o)      { return wasthon_isinstance_of_builtin(o, WT_TAG_UNICODE); }
-int PyUnicode_CheckExact(PyObject *o) { return wasthon_isinstance_of_builtin(o, WT_TAG_UNICODE); }
+int PyUnicode_CheckExact(PyObject *o) { return wasthon_exacttype_of_builtin(o, WT_TAG_UNICODE); }
 int PyBytes_Check(PyObject *o)        { return wasthon_isinstance_of_builtin(o, WT_TAG_BYTES);   }
-int PyBytes_CheckExact(PyObject *o)   { return wasthon_isinstance_of_builtin(o, WT_TAG_BYTES);   }
+int PyBytes_CheckExact(PyObject *o)   { return wasthon_exacttype_of_builtin(o, WT_TAG_BYTES);   }
 int PyDict_Check(PyObject *o)         { return wasthon_isinstance_of_builtin(o, WT_TAG_DICT);    }
-int PyDict_CheckExact(PyObject *o)    { return wasthon_isinstance_of_builtin(o, WT_TAG_DICT);    }
+int PyDict_CheckExact(PyObject *o)    { return wasthon_exacttype_of_builtin(o, WT_TAG_DICT);    }
 int PyTuple_Check(PyObject *o)        { return wasthon_isinstance_of_builtin(o, WT_TAG_TUPLE);   }
 int PyList_Check(PyObject *o)         { return wasthon_isinstance_of_builtin(o, WT_TAG_LIST);    }
 int PyLong_Check(PyObject *o)         { return wasthon_isinstance_of_builtin(o, WT_TAG_LONG);    }
