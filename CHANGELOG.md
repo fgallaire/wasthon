@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyErr_NewException` takes its `dict`** (`src/wasthon.js`). The
+  class namespace argument was ignored: `F.extra` raised AttributeError
+  and a `__module__` in it was lost. Fix — its items set in the class's
+  own dict, its `__module__` winning over the dotted name's, as CPython.
+  +1 bridge test (`test_PyErr_NewException`).
+
 - **`PyException_SetCause` sets `__suppress_context__`** (`src/wasthon.js`).
   It went through Brython's `__cause__` setter, which leaves the flag False,
   and swallowed its TypeError, as `SetContext` did. Fix — both write the

@@ -4,7 +4,6 @@
 test_macros.py::test_builtin_sequence_slots
 test_macros.py::test_PyBuffer_IsContiguous
 test_macros.py::test_Py_UNICODE_classes
-test_object.py::test_PyErr_NewException
 test_object.py::test_PyErr_NewExceptionWithDoc
 test_object.py::test_PyErr_Print
 test_object.py::test_PyErr_SetFromErrno

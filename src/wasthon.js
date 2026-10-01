@@ -8418,6 +8418,15 @@ mergeInto(LibraryManager.library, {
          * lives in __module__. make_builtin_class already set tp_name =
          * shortName — don't overwrite with the dotted name. */
         if (dotIdx >= 0) cls.__module__ = name.slice(0, dotIdx);
+        // CPython creates the class with `dict` as its namespace (its
+        // __module__, when present, wins over the dotted name's); it was ignored
+        if (dictHandle) {
+            rt.$B.init_dict(cls);
+            for (var item of rt._b_.dict.$iter_items(rt.unwrap(dictHandle))) {
+                rt.$B.set_to_dict(cls, item.key, item.value);
+                if (item.key === '__module__') cls.__module__ = item.value;
+            }
+        }
 
         /* Rebuild a full MRO from the primary base's tp_mro. make_builtin_class
          * builds a naive 3-element MRO [cls, base, object] that drops the
