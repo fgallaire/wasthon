@@ -9517,14 +9517,28 @@ mergeInto(LibraryManager.library, {
     PyLong_FromUnicodeObject: function(sH, base) { var rt = WasthonRT;
         try { return rt.wrapNewRef(rt.$B.$call(rt._b_.int, rt.unwrap(sH), base || 10)); }
         catch (e) { rt.forwardError(e, rt._b_.ValueError); return 0; } },
-    PyComplex_RealAsDouble__deps: ['$WasthonRT'],
-    PyComplex_RealAsDouble: function(aH) { var rt = WasthonRT; var a = rt.unwrap(aH);
-        try { var r = rt.$B.$getattr(a, 'real'); return (r && r.valueOf) ? r.valueOf() : r; }
-        catch (e) { return -1.0; } },
-    PyComplex_ImagAsDouble__deps: ['$WasthonRT'],
-    PyComplex_ImagAsDouble: function(aH) { var rt = WasthonRT; var a = rt.unwrap(aH);
-        try { var v = rt.$B.$getattr(a, 'imag'); return (v && v.valueOf) ? v.valueOf() : v; }
-        catch (e) { return 0.0; } },
+    /* CPython: a complex's part, else that of __complex__()'s result, else
+     * PyFloat_AsDouble's value (TypeError for a str; the imaginary part is
+     * then 0.0). They read .real/.imag of anything and swallowed the error. */
+    $__wasthon_complex_part__deps: ['$WasthonRT', 'PyFloat_AsDouble'],
+    $__wasthon_complex_part: function(aH, part) {
+        var rt = WasthonRT; var a = rt.unwrap(aH);
+        try {
+            var z = rt.$B.$isinstance(a, rt._b_.complex) ? a : null;
+            if (!z && rt.$B.$getattr(a, '__complex__', null) !== null) {
+                z = rt.$B.$call(rt.$B.$getattr(a, '__complex__'));
+            }
+            if (z) { var v = rt.$B.$getattr(z, part); return (v && v.valueOf) ? v.valueOf() : v; }
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1.0; }
+        rt.pendingException = null;
+        var d = _PyFloat_AsDouble(aH);
+        if (rt.pendingException) return -1.0;
+        return part === 'real' ? d : 0.0;
+    },
+    PyComplex_RealAsDouble__deps: ['$__wasthon_complex_part'],
+    PyComplex_RealAsDouble: function(aH) { return __wasthon_complex_part(aH, 'real'); },
+    PyComplex_ImagAsDouble__deps: ['$__wasthon_complex_part'],
+    PyComplex_ImagAsDouble: function(aH) { return __wasthon_complex_part(aH, 'imag'); },
     _Py_HashDouble__deps: ['$WasthonRT'],
     _Py_HashDouble: function(objH, v) { var rt = WasthonRT;
         try { var h = rt.$B.$call(rt.$B.$getattr(rt._b_.float.$factory(v), '__hash__'));

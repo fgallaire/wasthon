@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyComplex_RealAsDouble` and `ImagAsDouble` follow CPython**
+  (`src/wasthon.js`, `__wasthon_complex_part`). They read `.real`/`.imag` of
+  any object and swallowed the error: a str gave -1.0 and 0.0 with nothing
+  raised. Fix — a complex's part, else that of `__complex__()`'s result,
+  else `PyFloat_AsDouble` (TypeError for a str; the imaginary part 0.0).
+  +1 bridge test.
+
 - **`PyLong_IsZero` and `PyLong_GetSign` refuse a non-int** (`src/wasthon.js`).
   They read any object's value: a str was "not zero" with sign 0, and a
   boxed int subclass (`False`) compared its box with 0. Fix — CPython's
