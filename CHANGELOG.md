@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_FromObject` takes only a str** (`src/wasthon.js`). It
+  called `str()` on anything (42 gave '42') and returned the argument
+  without the new reference. Fix — CPython's: a new reference to an exact
+  str, a str copy of a subclass, TypeError ("Can't convert 'int' object
+  to str implicitly") otherwise. +1 bridge test
+  (`test_PyUnicode_FromObject`).
+
 - **`PyUnicode_FromString` decodes strictly** (`src/wasthon.js`). It went
   through `UTF8ToString`, which replaces an invalid byte with U+FFFD.
   Fix — `PyUnicode_DecodeUTF8` of the `strlen` bytes, strict, as CPython

@@ -15646,11 +15646,16 @@ mergeInto(LibraryManager.library, {
 
     PyUnicode_FromObject__deps: ['$WasthonRT'],
     PyUnicode_FromObject: function(handle) {
+        // CPython: a new reference to an exact str, a str copy of a str
+        // subclass, TypeError otherwise; str() converted anything
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
-        if (typeof obj === 'string') return handle;
-        try { return rt.wrapNewRef(rt._b_.str.$factory(obj)); }
-        catch (e) { return 0; }
+        if (typeof obj === 'string') { rt.incref(handle); return handle; }
+        var s = rt.asJSStr(obj);
+        if (s !== null) return rt.wrapNewRef(s);
+        rt.setError(rt.wrap(rt._b_.TypeError), "Can't convert '" + rt.$B.class_name(obj) +
+            "' object to str implicitly");
+        return 0;
     },
 
     PyUnicode_IS_ASCII__deps: ['$WasthonRT'],
