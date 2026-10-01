@@ -6,7 +6,6 @@ test_macros.py::test_PyBuffer_IsContiguous
 test_macros.py::test_Py_UNICODE_classes
 test_object.py::test_PyErr_Print
 test_object.py::test_PyErr_SetFromErrno
-test_object.py::test_PyErr_WarnEx_WarnFormat
 test_object.py::test_PyErr_WriteUnraisable_FormatUnraisable
 test_private.py::test__PyArg_CheckPositional
 test_private.py::test__PyErr_FormatFromCause

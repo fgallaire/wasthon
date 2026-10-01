@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyErr_WarnFormat` formats and reports** (`src/wasthon.js`). It warned
+  with the literal format, swallowed the exception of an "error" filter
+  with a 0, and defaulted to UserWarning. Fix — the message formatted by
+  `PyUnicode_FromFormat`'s reader, the error forwarded with -1, and
+  RuntimeWarning for a NULL category, as `PyErr_WarnEx`. +1 bridge test
+  (`test_PyErr_WarnEx_WarnFormat`).
+
 - **`PyUnicode_FromFormatV` formats** (`src/wasthon.js`). It returned the
   literal format, its arguments unread ("%d+%d"). wasm32's `va_list` is
   the pointer to the argument area a variadic function receives. Fix —

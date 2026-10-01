@@ -9739,12 +9739,16 @@ mergeInto(LibraryManager.library, {
             }
         } catch (e) {}
     },
-    PyErr_WarnFormat__deps: ['$WasthonRT'],
+    PyErr_WarnFormat__deps: ['$WasthonRT', 'PyUnicode_FromFormat'],
     PyErr_WarnFormat: function(catH, stacklevel, fmtPtr, va) { var rt = WasthonRT;
+        // CPython formats the message, then warns as PyErr_WarnEx: the
+        // arguments were dropped and a filter's raise swallowed with a 0
+        var msgH = _PyUnicode_FromFormat(fmtPtr, va);
+        if (!msgH) return -1;
+        var msg = rt.unwrap(msgH); rt.decref(msgH);
         try { var warn = rt.$B.$getattr(rt.$B.$call(rt._b_.__import__, 'warnings'), 'warn');
-              rt.$B.$call(warn, fmtPtr ? UTF8ToString(fmtPtr) : "",
-                          catH ? rt.unwrap(catH) : rt._b_.UserWarning); }
-        catch (e) {}
+              rt.$B.$call(warn, msg, catH ? rt.unwrap(catH) : rt._b_.RuntimeWarning); }
+        catch (e) { rt.forwardError(e); return -1; }
         return 0; },
     PyErr_WriteUnraisable__deps: ['$WasthonRT'],
     PyErr_WriteUnraisable: function(objH) { var rt = WasthonRT;
