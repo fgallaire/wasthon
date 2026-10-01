@@ -4329,11 +4329,21 @@ mergeInto(LibraryManager.library, {
     PyType_GetSlot__deps: ['$WasthonRT', '$addFunction',
         'PyNumber_Add', 'PyNumber_And', 'PyNumber_Divmod', 'PyNumber_FloorDivide',
         'PyNumber_Lshift', 'PyNumber_Multiply', 'PyNumber_Or', 'PyNumber_Remainder',
-        'PyNumber_Rshift', 'PyNumber_Subtract', 'PyNumber_TrueDivide', 'PyNumber_Xor'],
+        'PyNumber_Rshift', 'PyNumber_Subtract', 'PyNumber_TrueDivide', 'PyNumber_Xor',
+        'wasthon_static_type_slot'],
     PyType_GetSlot: function(typeHandle, slotId) {
         var rt = WasthonRT;
         var info = rt.types.get(typeHandle);
         if (info && info.slots && info.slots[slotId]) return info.slots[slotId];
+        // a static type: CPython reads its struct (tp_as_number->nb_add, …);
+        // the trampolines below answered for its own nb_ slots, and the
+        // offset table past them missed every other slot. PyType_Ready does
+        // not copy the inherited slots into the struct (CPython's
+        // inherit_slots): a NULL still takes the paths below.
+        if (info && info.isStatic) {
+            var own = _wasthon_static_type_slot(typeHandle, slotId);
+            if (own) return own;
+        }
         // Numeric binary-op slots (Py_nb_add=7, Py_nb_multiply=29, …). Cython
         // compiled against the 3.10+ stable ABI fetches e.g. Py_nb_add off a
         // builtin type and calls it DIRECTLY for `obj_int + obj_int`

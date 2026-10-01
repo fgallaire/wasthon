@@ -1091,6 +1091,113 @@ void wasthon_set_errno_erange(void) { errno = ERANGE; }
 EMSCRIPTEN_KEEPALIVE
 int wasthon_get_errno(void) { return errno; }
 
+/* PyType_GetSlot of a static type (PyType_Ready over a C struct) —
+ * Objects/typeobject.c over Objects/typeslots.inc, with wasthon.h's
+ * layout: {sub-struct field offset or -1, PyTypeObject field offset}.
+ * tp_del, tp_vectorcall and the heap type's ht_token have no field here
+ * ({-1, -1}: NULL). The JS side keeps the spec types' slot map. */
+#include <stddef.h>
+static const struct { int subslot_offset, slot_offset; } wasthon_slot_offsets[] = {
+    {0, 0},
+    {offsetof(PyBufferProcs, bf_getbuffer), offsetof(PyTypeObject, tp_as_buffer)},
+    {offsetof(PyBufferProcs, bf_releasebuffer), offsetof(PyTypeObject, tp_as_buffer)},
+    {offsetof(PyMappingMethods, mp_ass_subscript), offsetof(PyTypeObject, tp_as_mapping)},
+    {offsetof(PyMappingMethods, mp_length), offsetof(PyTypeObject, tp_as_mapping)},
+    {offsetof(PyMappingMethods, mp_subscript), offsetof(PyTypeObject, tp_as_mapping)},
+    {offsetof(PyNumberMethods, nb_absolute), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_add), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_and), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_bool), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_divmod), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_float), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_floor_divide), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_index), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_add), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_and), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_floor_divide), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_lshift), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_multiply), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_or), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_power), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_remainder), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_rshift), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_subtract), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_true_divide), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_xor), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_int), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_invert), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_lshift), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_multiply), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_negative), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_or), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_positive), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_power), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_remainder), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_rshift), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_subtract), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_true_divide), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_xor), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PySequenceMethods, sq_ass_item), offsetof(PyTypeObject, tp_as_sequence)},
+    {offsetof(PySequenceMethods, sq_concat), offsetof(PyTypeObject, tp_as_sequence)},
+    {offsetof(PySequenceMethods, sq_contains), offsetof(PyTypeObject, tp_as_sequence)},
+    {offsetof(PySequenceMethods, sq_inplace_concat), offsetof(PyTypeObject, tp_as_sequence)},
+    {offsetof(PySequenceMethods, sq_inplace_repeat), offsetof(PyTypeObject, tp_as_sequence)},
+    {offsetof(PySequenceMethods, sq_item), offsetof(PyTypeObject, tp_as_sequence)},
+    {offsetof(PySequenceMethods, sq_length), offsetof(PyTypeObject, tp_as_sequence)},
+    {offsetof(PySequenceMethods, sq_repeat), offsetof(PyTypeObject, tp_as_sequence)},
+    {-1, offsetof(PyTypeObject, tp_alloc)},
+    {-1, offsetof(PyTypeObject, tp_base)},
+    {-1, offsetof(PyTypeObject, tp_bases)},
+    {-1, offsetof(PyTypeObject, tp_call)},
+    {-1, offsetof(PyTypeObject, tp_clear)},
+    {-1, offsetof(PyTypeObject, tp_dealloc)},
+    {-1, -1 /* tp_del */},
+    {-1, offsetof(PyTypeObject, tp_descr_get)},
+    {-1, offsetof(PyTypeObject, tp_descr_set)},
+    {-1, offsetof(PyTypeObject, tp_doc)},
+    {-1, offsetof(PyTypeObject, tp_getattr)},
+    {-1, offsetof(PyTypeObject, tp_getattro)},
+    {-1, offsetof(PyTypeObject, tp_hash)},
+    {-1, offsetof(PyTypeObject, tp_init)},
+    {-1, offsetof(PyTypeObject, tp_is_gc)},
+    {-1, offsetof(PyTypeObject, tp_iter)},
+    {-1, offsetof(PyTypeObject, tp_iternext)},
+    {-1, offsetof(PyTypeObject, tp_methods)},
+    {-1, offsetof(PyTypeObject, tp_new)},
+    {-1, offsetof(PyTypeObject, tp_repr)},
+    {-1, offsetof(PyTypeObject, tp_richcompare)},
+    {-1, offsetof(PyTypeObject, tp_setattr)},
+    {-1, offsetof(PyTypeObject, tp_setattro)},
+    {-1, offsetof(PyTypeObject, tp_str)},
+    {-1, offsetof(PyTypeObject, tp_traverse)},
+    {-1, offsetof(PyTypeObject, tp_members)},
+    {-1, offsetof(PyTypeObject, tp_getset)},
+    {-1, offsetof(PyTypeObject, tp_free)},
+    {offsetof(PyNumberMethods, nb_matrix_multiply), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyNumberMethods, nb_inplace_matrix_multiply), offsetof(PyTypeObject, tp_as_number)},
+    {offsetof(PyAsyncMethods, am_await), offsetof(PyTypeObject, tp_as_async)},
+    {offsetof(PyAsyncMethods, am_aiter), offsetof(PyTypeObject, tp_as_async)},
+    {offsetof(PyAsyncMethods, am_anext), offsetof(PyTypeObject, tp_as_async)},
+    {-1, offsetof(PyTypeObject, tp_finalize)},
+    {offsetof(PyAsyncMethods, am_send), offsetof(PyTypeObject, tp_as_async)},
+    {-1, -1 /* tp_vectorcall */},
+    {-1, -1 /* ht_token */},
+};
+EMSCRIPTEN_KEEPALIVE
+void *wasthon_static_type_slot(PyTypeObject *type, int slot) {
+    int slots_len = (int)(sizeof wasthon_slot_offsets / sizeof wasthon_slot_offsets[0]);
+    if (slot <= 0 || slot >= slots_len) {
+        PyErr_BadInternalCall();
+        return NULL;
+    }
+    int slot_offset = wasthon_slot_offsets[slot].slot_offset;
+    if (slot_offset < 0) return NULL;
+    void *parent_slot = *(void **)((char *)type + slot_offset);
+    if (parent_slot == NULL) return NULL;
+    if (wasthon_slot_offsets[slot].subslot_offset == -1) return parent_slot;
+    return *(void **)((char *)parent_slot + wasthon_slot_offsets[slot].subslot_offset);
+}
+
 /* PyObject_Print — Objects/object.c, without its signal and recursion
  * checks: the repr (str under Py_PRINT_RAW) written to fp. The JS version
  * logged the repr to the console and never wrote the file. */

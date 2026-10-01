@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyType_GetSlot` reads a static type's own slots** (`src/wasthon.c`,
+  `src/wasthon.js`). A PyType_Ready type got the generic trampolines for
+  its `nb_` binary slots and an 8-entry offset table for the rest: its
+  own `nb_add`, `tp_repr`… came back as something else or NULL. Fix —
+  `wasthon_static_type_slot`, CPython's function over `typeslots.inc`
+  with wasthon.h's offsets; a NULL (an inherited slot, which PyType_Ready
+  does not copy into the struct) still takes the old paths. +1 bridge
+  test (`test_PyType_GetSlot[StaticObj]`).
+
 - **`PyObject_Print` writes to its file** (`src/wasthon.c`, `src/wasthon.h`).
   The JS version logged the repr to the console, ignored the `FILE *` and
   `Py_PRINT_RAW`, which `wasthon.h` did not define. Fix — CPython's
