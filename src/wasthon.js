@@ -3121,13 +3121,51 @@ mergeInto(LibraryManager.library, {
         return ptr;
     },
 
+    /* A decoding error over bytes [start, end): CPython's standard handlers
+     * (ignore, replace, surrogateescape, backslashreplace; strict and
+     * surrogatepass raise the 5-argument UnicodeDecodeError, a codec
+     * handles surrogatepass itself before), any other name through
+     * codecs.lookup_error. Pushes the replacement's code points to out and
+     * returns the position to resume at, or -1 with the exception set. */
+    $wasthonDecodeError__deps: ['$WasthonRT'],
+    $wasthonDecodeError: function(errors, encoding, b, start, end, reason, out) {
+        var rt = WasthonRT, q;
+        if (errors === 'ignore') return end;
+        if (errors === 'replace') { out.push(0xFFFD); return end; }
+        if (errors === 'surrogateescape') {
+            for (q = start; q < end && b[q] >= 0x80; q++);
+            if (q === end) {
+                for (q = start; q < end; q++) out.push(0xDC00 + b[q]);
+                return end;
+            }
+        }
+        if (errors === 'backslashreplace') {
+            for (q = start; q < end; q++) {
+                var h = '\\x' + (b[q] < 16 ? '0' : '') + b[q].toString(16);
+                for (var hc = 0; hc < h.length; hc++) out.push(h.charCodeAt(hc));
+            }
+            return end;
+        }
+        var exc = rt.$B.$call(rt._b_.UnicodeDecodeError, encoding,
+            rt._b_.bytes.$factory(Array.from(b)), start, end, reason);
+        if (errors !== 'strict' && errors !== 'surrogatepass' && errors !== 'surrogateescape') {
+            try {
+                var codecs = rt.$B.$call(rt._b_.__import__, 'codecs');
+                var res = rt.$B.$call(rt.$B.$call(rt.$B.$getattr(codecs, 'lookup_error'), errors), exc);
+                for (var ch of rt.asJSStr(res[0])) out.push(ch.codePointAt(0));
+                return res[1];
+            } catch (e) { rt.forwardError(e); return -1; }
+        }
+        rt.setError(rt.wrap(rt._b_.UnicodeDecodeError), '', exc);
+        return -1;
+    },
+
     /* CPython's UTF-8 decoder, for input TextDecoder rejects: the well-formed
-     * sequences of Unicode Table 3-7; an error over the maximal subpart
-     * with CPython's three reasons; the strict, ignore, replace,
-     * surrogateescape, surrogatepass and backslashreplace handlers, any
-     * other name through codecs.lookup_error. Returns the str, or null
-     * with the exception set. */
-    $wasthonDecodeUTF8__deps: ['$WasthonRT'],
+     * sequences of Unicode Table 3-7, an error over the maximal subpart with
+     * CPython's three reasons, surrogatepass for an encoded surrogate and
+     * the other handlers through $wasthonDecodeError. Returns the str, or
+     * null with the exception set. */
+    $wasthonDecodeUTF8__deps: ['$WasthonRT', '$wasthonDecodeError'],
     $wasthonDecodeUTF8: function(b, errors) {
         var rt = WasthonRT, out = [], n = b.length, i = 0;
         while (i < n) {
@@ -3161,37 +3199,13 @@ mergeInto(LibraryManager.library, {
                          ((b[i+2] & 0x3F) << 6) | (b[i+3] & 0x3F);
                 out.push(cp); i += need + 1; continue;
             }
-            if (errors === 'ignore') { i = end; continue; }
-            if (errors === 'replace') { out.push(0xFFFD); i = end; continue; }
-            if (errors === 'surrogateescape') {
-                for (var q = i; q < end; q++) out.push(0xDC00 + b[q]);
-                i = end; continue;
-            }
-            if (errors === 'backslashreplace') {
-                for (var r = i; r < end; r++) {
-                    var h = '\\x' + (b[r] < 16 ? '0' : '') + b[r].toString(16);
-                    for (var hc = 0; hc < h.length; hc++) out.push(h.charCodeAt(hc));
-                }
-                i = end; continue;
-            }
             if (errors === 'surrogatepass' && c === 0xED && i + 2 < n &&
                     b[i+1] >= 0xA0 && b[i+1] <= 0xBF && b[i+2] >= 0x80 && b[i+2] <= 0xBF) {
                 out.push(((c & 0x0F) << 12) | ((b[i+1] & 0x3F) << 6) | (b[i+2] & 0x3F));
                 i += 3; continue;
             }
-            var exc = rt.$B.$call(rt._b_.UnicodeDecodeError, 'utf-8',
-                rt._b_.bytes.$factory(Array.from(b)), i, end, reason);
-            if (errors !== 'strict' && errors !== 'surrogatepass') {
-                try {
-                    var codecs = rt.$B.$call(rt._b_.__import__, 'codecs');
-                    var res = rt.$B.$call(rt.$B.$call(rt.$B.$getattr(codecs, 'lookup_error'), errors), exc);
-                    var rep = rt.asJSStr(res[0]);
-                    for (var cpi of rep) out.push(cpi.codePointAt(0));
-                    i = res[1]; continue;
-                } catch (e) { rt.forwardError(e); return null; }
-            }
-            rt.setError(rt.wrap(rt._b_.UnicodeDecodeError), '', exc);
-            return null;
+            i = wasthonDecodeError(errors, 'utf-8', b, i, end, reason, out);
+            if (i < 0) return null;
         }
         var parts = [];
         for (var p = 0; p < out.length; p += 16384) {
@@ -13407,45 +13421,86 @@ mergeInto(LibraryManager.library, {
     },
 
     /* PyUnicode_DecodeUTF16 / UTF32 — decode raw bytes to str. */
-    PyUnicode_DecodeUTF16__deps: ['$WasthonRT'],
-    PyUnicode_DecodeUTF16: function(sPtr, size, errorsPtr, byteorderPtr) {
-        try {
-            var bo = byteorderPtr ? (HEAP32[byteorderPtr >> 2] | 0) : 0;
-            var label = bo < 0 ? 'utf-16le' : (bo > 0 ? 'utf-16be' : 'utf-16');
-            var bytes = HEAPU8.slice(sPtr, sPtr + size);
-            var s = new TextDecoder(label).decode(bytes);
-            return WasthonRT.wrapNewRef(s);
-        } catch (e) {
-            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.UnicodeDecodeError),
-                "utf-16 decode failed: " + (e.message || e));
-            return 0;
+    /* PyUnicode_DecodeUTF16 / UTF32 — CPython's DecodeUTF16Stateful and
+     * DecodeUTF32Stateful: with *byteorder 0, a leading BOM is skipped and
+     * the order it gives written back (0 without one), native order
+     * (little-endian) otherwise; CPython's error reasons and ranges, through
+     * the error handlers. TextDecoder's 'utf-16' guessed the order, never
+     * wrote *byteorder, and replaced every error. */
+    $wasthonFromCodePoints: function(out) {
+        var parts = [];
+        for (var p = 0; p < out.length; p += 16384) {
+            parts.push(String.fromCodePoint.apply(null, out.slice(p, p + 16384)));
         }
+        return parts.join('');
+    },
+    PyUnicode_DecodeUTF16__deps: ['$WasthonRT', '$wasthonDecodeError', '$wasthonFromCodePoints'],
+    PyUnicode_DecodeUTF16: function(sPtr, size, errorsPtr, byteorderPtr) {
+        var b = HEAPU8.subarray(sPtr, sPtr + size), n = b.length, q = 0, out = [];
+        var errors = errorsPtr ? UTF8ToString(errorsPtr) : 'strict';
+        var bo = byteorderPtr ? HEAP32[byteorderPtr >> 2] : 0;
+        if (bo === 0 && n >= 2) {
+            var bom = (b[1] << 8) | b[0];
+            if (bom === 0xFEFF) { q = 2; bo = -1; }
+            else if (bom === 0xFFFE) { q = 2; bo = 1; }
+            if (byteorderPtr) HEAP32[byteorderPtr >> 2] = bo;
+        }
+        var le = bo <= 0, enc = le ? 'utf-16-le' : 'utf-16-be';
+        var unit = function(p) { return le ? b[p] | (b[p+1] << 8) : (b[p] << 8) | b[p+1]; };
+        while (q < n) {
+            var start = q, end, reason;
+            if (n - q < 2) { end = n; reason = 'truncated data'; }
+            else {
+                var u = unit(q);
+                if (u < 0xD800 || u > 0xDFFF) { out.push(u); q += 2; continue; }
+                if (u >= 0xDC00) { end = q + 2; reason = 'illegal encoding'; }
+                else if (n - q < 4) { end = n; reason = 'unexpected end of data'; }
+                else {
+                    var u2 = unit(q + 2);
+                    if (u2 >= 0xDC00 && u2 <= 0xDFFF) {
+                        out.push(0x10000 + ((u - 0xD800) << 10) + (u2 - 0xDC00));
+                        q += 4; continue;
+                    }
+                    end = q + 2; reason = 'illegal UTF-16 surrogate';
+                }
+            }
+            if (errors === 'surrogatepass' && reason !== 'truncated data') {
+                out.push(unit(start)); q = start + 2; continue;
+            }
+            q = wasthonDecodeError(errors, enc, b, start, end, reason, out);
+            if (q < 0) return 0;
+        }
+        return WasthonRT.wrapNewRef(wasthonFromCodePoints(out));
     },
 
-    PyUnicode_DecodeUTF32__deps: ['$WasthonRT'],
+    PyUnicode_DecodeUTF32__deps: ['$WasthonRT', '$wasthonDecodeError', '$wasthonFromCodePoints'],
     PyUnicode_DecodeUTF32: function(sPtr, size, errorsPtr, byteorderPtr) {
-        var rt = WasthonRT;
-        try {
-            var bo = byteorderPtr ? (HEAP32[byteorderPtr >> 2] | 0) : 0;
-            /* TextDecoder doesn't ship UTF-32 natively. Decode manually. */
-            var n = size >> 2;
-            var chars = [];
-            for (var i = 0; i < n; i++) {
-                var b0 = HEAPU8[sPtr + i*4];
-                var b1 = HEAPU8[sPtr + i*4 + 1];
-                var b2 = HEAPU8[sPtr + i*4 + 2];
-                var b3 = HEAPU8[sPtr + i*4 + 3];
-                var cp = bo > 0
-                    ? (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
-                    : (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
-                chars.push(String.fromCodePoint(cp));
-            }
-            return rt.wrapNewRef(chars.join(''));
-        } catch (e) {
-            rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
-                "utf-32 decode failed: " + (e.message || e));
-            return 0;
+        var b = HEAPU8.subarray(sPtr, sPtr + size), n = b.length, q = 0, out = [];
+        var errors = errorsPtr ? UTF8ToString(errorsPtr) : 'strict';
+        var bo = byteorderPtr ? HEAP32[byteorderPtr >> 2] : 0;
+        if (bo === 0 && n >= 4) {
+            var bom = ((b[3] << 24) | (b[2] << 16) | (b[1] << 8) | b[0]) >>> 0;
+            if (bom === 0x0000FEFF) { q = 4; bo = -1; }
+            else if (bom === 0xFFFE0000) { q = 4; bo = 1; }
+            if (byteorderPtr) HEAP32[byteorderPtr >> 2] = bo;
         }
+        var le = bo <= 0, enc = le ? 'utf-32-le' : 'utf-32-be';
+        while (q < n) {
+            var start = q, end, reason;
+            if (n - q < 4) { end = n; reason = 'truncated data'; }
+            else {
+                var cp = (le ? (b[q+3] << 24) | (b[q+2] << 16) | (b[q+1] << 8) | b[q]
+                             : (b[q] << 24) | (b[q+1] << 16) | (b[q+2] << 8) | b[q+3]) >>> 0;
+                if (cp <= 0x10FFFF && (cp < 0xD800 || cp > 0xDFFF)) { out.push(cp); q += 4; continue; }
+                end = q + 4;
+                if (cp > 0x10FFFF) reason = 'code point not in range(0x110000)';
+                else if (errors === 'surrogatepass') { out.push(cp); q += 4; continue; }
+                else reason = 'code point in surrogate code point range(0xd800, 0xe000)';
+            }
+            q = wasthonDecodeError(errors, enc, b, start, end, reason, out);
+            if (q < 0) return 0;
+        }
+        return WasthonRT.wrapNewRef(wasthonFromCodePoints(out));
     },
 
     /* Slice protocol. */

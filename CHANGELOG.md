@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_DecodeUTF16` and `DecodeUTF32` are CPython's** (`src/wasthon.js`).
+  UTF-16 went through TextDecoder's 'utf-16' (which guesses the order)
+  and replaced every error; UTF-32 read whole words with no check; neither
+  wrote `*byteorder`. Fix — CPython's DecodeUTF16/32Stateful: with
+  `*byteorder` 0 a leading BOM is skipped and its order written back
+  (0 without one), native little-endian order otherwise, CPython's reasons
+  and ranges (truncated data, illegal encoding, illegal UTF-16 surrogate,
+  unexpected end of data; code point not in range, in surrogate range).
+  The error handlers are shared with UTF-8 (`$wasthonDecodeError`).
+  Checked against `codecs.utf_16/32_ex_decode`. +2 bridge tests
+  (`test_PyUnicode_DecodeUTF16`, `test_PyUnicode_DecodeUTF32`).
+
 - **`PyUnicode_FromEncodedObject` refuses a str** (`src/wasthon.js`). It
   called `obj.decode()`, so a str "decoded" (Brython's str has no
   `decode`: an AttributeError reported as UnicodeDecodeError) and every
