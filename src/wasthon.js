@@ -15521,20 +15521,28 @@ mergeInto(LibraryManager.library, {
      * The bridge has no real sys module; route via Brython's sys. */
     _PySys_GetRequiredAttr__deps: ['$WasthonRT'],
     _PySys_GetRequiredAttr: function(nameH) {
+        // CPython's errors: TypeError for a non-str name, RuntimeError
+        // "lost sys.<name>" for a missing one (it was an AttributeError)
         var rt = WasthonRT;
-        var name = rt.asJSStr(rt.unwrap(nameH));
-        if (name === null) return 0;
+        var nameObj = rt.unwrap(nameH), name = rt.asJSStr(nameObj);
+        if (name === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "attribute name must be string, not '" +
+                rt.$B.class_name(nameObj) + "'");
+            return 0;
+        }
+        var sys = rt.$B.imported.sys;
+        if (!sys) {
+            rt.setError(rt.wrap(rt._b_.RuntimeError), "no sys module");
+            return 0;
+        }
         try {
-            var sys = rt.$B.imported.sys;
-            if (!sys) {
-                rt.setError(rt.wrap(rt._b_.RuntimeError),
-                    "sys module not loaded");
-                return 0;
-            }
             return rt.wrapNewRef(rt.$B.$getattr(sys, name));
         } catch (e) {
-            rt.setError(rt.wrap(rt._b_.AttributeError),
-                "sys." + name + ": " + (e.message || String(e)));
+            if (rt.$B.$isinstance(e, rt._b_.AttributeError)) {
+                rt.setError(rt.wrap(rt._b_.RuntimeError), "lost sys." + name);
+            } else {
+                rt.forwardError(e);
+            }
             return 0;
         }
     },

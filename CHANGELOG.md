@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`_PySys_GetRequiredAttr` raises CPython's errors** (`src/wasthon.js`).
+  A missing attribute raised AttributeError ("sys.nope: [object Object]")
+  and a non-str name returned NULL with nothing set. Fix — RuntimeError
+  "lost sys.<name>", TypeError for a non-str name, RuntimeError "no sys
+  module", as `Python/sysmodule.c`. +1 bridge test
+  (`test__PySys_GetRequiredAttr`).
+
 - **`_PyNumber_Index` returns an int as is** (`src/wasthon.js`). Only a JS
   number or BigInt took the fast path: `True` went through `__index__`
   and came back `1`, an int subclass was converted, and the fast path
