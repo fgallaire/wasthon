@@ -7,6 +7,23 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Slot IDs are CPython's `typeslots.h`** (`src/wasthon.h`, `src/wasthon.js`,
+  `PyType_FromModuleAndSpec` and `PyType_GetSlot`). `wasthon.h` numbered the
+  `tp_`, `mp_` and `sq_length`/`sq_item` slots its own way while the `nb_`
+  ones followed CPython, and five pairs shared an ID: `nb_multiply` and
+  `sq_length` (29), `nb_positive` and `sq_item` (32), `nb_int` and
+  `mp_ass_subscript` (26), `tp_free` and `tp_iternext` (63), `nb_or` and
+  `sq_ass_item` (39). The bridge guessed which one a type meant from its
+  other slots: a type both numeric and a sequence lost `*` and unary `+`, and
+  `defaultdict`'s `|` landed on `__setitem__`. Most slots were not declared
+  at all (`Py_nb_inplace_add`…). Fix — the header declares the 83 IDs of
+  `typeslots.h`, the bridge reads them, and the guesses go. A module built
+  against the old header carries the old IDs and must be recompiled, not
+  relinked: Wastdlib's modules, and in NumBry every Cython module (built with
+  `CYTHON_USE_TYPE_SPECS=1`: numpy.random, pandas, scipy) and kiwisolver.
+  +3 bridge tests (`test_multiply`, `test_unary`,
+  `test_inplace_add`).
+
 - **A spec type with neither `tp_new` nor `tp_init` inherits its base's
   init** (`src/wasthon.js`, `PyType_FromModuleAndSpec`). The lookup of an
   inherited `tp_init` through the mro only ran for a type with its own

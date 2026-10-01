@@ -659,71 +659,97 @@ typedef struct {
     PyType_Slot *slots;
 } PyType_Spec;
 
-/* tp_* slot identifiers (subset used by sha2module: tp_dealloc, tp_methods,
-   tp_getset, tp_traverse, tp_new). Real CPython uses many more — only
-   declared as we need them. */
-#define Py_tp_dealloc       52
-#define Py_tp_methods       64
-#define Py_tp_getset        66
-#define Py_tp_traverse      71
-#define Py_tp_new           65
-#define Py_tp_init          61
-#define Py_tp_finalize      80
-#define Py_tp_str           50
-#define Py_tp_repr          51
-#define Py_tp_clear         54
-#define Py_tp_doc           56
-#define Py_tp_alloc         44
-#define Py_tp_free          63
-#define Py_tp_members       72
-#define Py_tp_hash          58
-#define Py_tp_richcompare   60
-#define Py_mp_subscript     27
-#define Py_mp_length        25
-#define Py_mp_ass_subscript 26
-#define Py_sq_length        29
-#define Py_sq_item          32
-/* Additional sequence + buffer slots used by arraymodule. Numbering picks
- * unused values in our internal scheme — modules see these values at compile
- * time, the bridge slot-installer reads them at register time. */
-#define Py_sq_ass_item        39
-#define Py_sq_concat          40
-#define Py_sq_contains        41
-#define Py_sq_inplace_concat  42
-#define Py_sq_inplace_repeat  43
-#define Py_sq_repeat          46
-#define Py_bf_getbuffer        1
-#define Py_bf_releasebuffer    2
-#define Py_tp_getattro      57
-#define Py_tp_setattro      59
-#define Py_tp_iter          62
-#define Py_tp_iternext      63
+/* Slot IDs, CPython's Include/typeslots.h: a module's PyType_Spec carries
+ * these numbers, read by PyType_FromModuleAndSpec and PyType_GetSlot. */
+#define Py_bf_getbuffer                   1
+#define Py_bf_releasebuffer               2
+#define Py_mp_ass_subscript               3
+#define Py_mp_length                      4
+#define Py_mp_subscript                   5
+#define Py_nb_absolute                    6
+#define Py_nb_add                         7
+#define Py_nb_and                         8
+#define Py_nb_bool                        9
+#define Py_nb_divmod                      10
+#define Py_nb_float                       11
+#define Py_nb_floor_divide                12
+#define Py_nb_index                       13
+#define Py_nb_inplace_add                 14
+#define Py_nb_inplace_and                 15
+#define Py_nb_inplace_floor_divide        16
+#define Py_nb_inplace_lshift              17
+#define Py_nb_inplace_multiply            18
+#define Py_nb_inplace_or                  19
+#define Py_nb_inplace_power               20
+#define Py_nb_inplace_remainder           21
+#define Py_nb_inplace_rshift              22
+#define Py_nb_inplace_subtract            23
+#define Py_nb_inplace_true_divide         24
+#define Py_nb_inplace_xor                 25
+#define Py_nb_int                         26
+#define Py_nb_invert                      27
+#define Py_nb_lshift                      28
+#define Py_nb_multiply                    29
+#define Py_nb_negative                    30
+#define Py_nb_or                          31
+#define Py_nb_positive                    32
+#define Py_nb_power                       33
+#define Py_nb_remainder                   34
+#define Py_nb_rshift                      35
+#define Py_nb_subtract                    36
+#define Py_nb_true_divide                 37
+#define Py_nb_xor                         38
+#define Py_sq_ass_item                    39
+#define Py_sq_concat                      40
+#define Py_sq_contains                    41
+#define Py_sq_inplace_concat              42
+#define Py_sq_inplace_repeat              43
+#define Py_sq_item                        44
+#define Py_sq_length                      45
+#define Py_sq_repeat                      46
+#define Py_tp_alloc                       47
+#define Py_tp_base                        48
+#define Py_tp_bases                       49
+#define Py_tp_call                        50
+#define Py_tp_clear                       51
+#define Py_tp_dealloc                     52
+#define Py_tp_del                         53
+#define Py_tp_descr_get                   54
+#define Py_tp_descr_set                   55
+#define Py_tp_doc                         56
+#define Py_tp_getattr                     57
+#define Py_tp_getattro                    58
+#define Py_tp_hash                        59
+#define Py_tp_init                        60
+#define Py_tp_is_gc                       61
+#define Py_tp_iter                        62
+#define Py_tp_iternext                    63
+#define Py_tp_methods                     64
+#define Py_tp_new                         65
+#define Py_tp_repr                        66
+#define Py_tp_richcompare                 67
+#define Py_tp_setattr                     68
+#define Py_tp_setattro                    69
+#define Py_tp_str                         70
+#define Py_tp_traverse                    71
+#define Py_tp_members                     72
+#define Py_tp_getset                      73
+#define Py_tp_free                        74
+#define Py_nb_matrix_multiply             75
+#define Py_nb_inplace_matrix_multiply     76
+#define Py_am_await                       77
+#define Py_am_aiter                       78
+#define Py_am_anext                       79
+#define Py_tp_finalize                    80
+#define Py_am_send                        81
+#define Py_tp_vectorcall                  82
+#define Py_tp_token                       83
 
-/* Number-protocol slot IDs used by _decimal's arithmetic plug-in.
- * Values from CPython's Include/typeslots.h (CPython 3.14 canonical
- * — _decimal references the values directly). */
-#define Py_nb_add           7
-#define Py_nb_subtract      36
-#define Py_nb_multiply      29
-#define Py_nb_remainder     34
-#define Py_nb_divmod        10
-#define Py_nb_power         33
-#define Py_nb_negative      30
-#define Py_nb_positive      32
-#define Py_nb_absolute      6
-#define Py_nb_bool          9
-#define Py_nb_int           26
-#define Py_nb_float         11
-#define Py_nb_floor_divide  12
-#define Py_nb_true_divide   37
-#define Py_nb_index         13
-
-/* Type-token slot — type identity that survives module reloads.
+/* Py_tp_token: type identity that survives module reloads.
  * Py_TP_USE_SPEC = NULL means "use the spec address as the token".
  * In our bridge, every PyType_FromModuleAndSpec call already stashes
  * specPtr on the class (cls.__wasthon_type_token__); seeing this slot
  * is a no-op confirmation. */
-#define Py_tp_token         83
 #define Py_TP_USE_SPEC      ((void *)0)
 
 #define Py_CLEANUP_SUPPORTED  0x20000
@@ -1672,10 +1698,6 @@ typedef PyUnicodeWriter _PyUnicodeWriter;
 #define _Py_DECLARE_STR(name, literal) \
     static const char _wasthon_strlit_##name[] = literal;
 
-/* Py_tp_call slot — was missing. CPython slot ID 50 conflicts with our
- * tp_str (50). Use our own unique ID. */
-#define Py_tp_call    77
-
 /* Variable-object cast + atomic-load no-ops (single-threaded WASM). */
 #define _PyVarObject_CAST(op)         ((PyVarObject *)(op))
 #define FT_ATOMIC_LOAD_SSIZE(p)       (p)
@@ -1691,16 +1713,6 @@ Py_hash_t _PyObject_HashFast(PyObject *o);
 PyObject *_PyDict_GetItem_KnownHash(PyObject *d, PyObject *k, Py_hash_t hash);
 int       PyObject_SetItem(PyObject *o, PyObject *key, PyObject *v);
 int       PyObject_DelItem(PyObject *o, PyObject *key);
-#define   Py_nb_or  39
-/* Descriptor protocol slots. NOTE: the natural CPython IDs 56/57 collide here
- * with Py_tp_doc (56) and Py_tp_getattro (57), which the bridge already reads
- * as doc/getattro — so wiring tp_descr_get off slot 56 mis-fired on every C
- * type that carries a docstring (getWasmTableEntry on the doc pointer →
- * "bad Table get address"). Give them free IDs (84/85) that nothing else uses;
- * emitter (Cython/C extension specs) and consumer (bridge slotMap) both read
- * these macros, so the value only has to be internally consistent. */
-#define   Py_tp_descr_get  84
-#define   Py_tp_descr_set  85
 extern PyTypeObject PyODict_Type;
 
 /* More _pickle support. */

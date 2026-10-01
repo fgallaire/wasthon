@@ -4328,12 +4328,10 @@ mergeInto(LibraryManager.library, {
         // its generic for-loops; returning 0 made iterating any C-typed
         // iterable (an ndarray in scipy's _cytest.filter2d) bail out of the
         // CyFunction with NULL and no exception ("vectorcall returned NULL").
-        // NOTE: wasthon.h aliases Py_tp_free to 63 as well — iteration is
-        // the live consumer, so 63 maps to tp_iternext (offset 56).
-        var off = { 44: 16 /* tp_alloc */, 51: 52 /* tp_repr */,
-                    52: 40 /* tp_dealloc */, 61: 20 /* tp_init */,
+        var off = { 47: 16 /* tp_alloc */, 66: 52 /* tp_repr */,
+                    52: 40 /* tp_dealloc */, 60: 20 /* tp_init */,
                     62: 24 /* tp_iter */, 63: 56 /* tp_iternext */,
-                    65: 60 /* tp_new */ }[slotId];
+                    65: 60 /* tp_new */, 74: 4 /* tp_free */ }[slotId];
         if (off !== undefined && typeHandle >= 0x10000)
             return HEAP32[(typeHandle + off) >> 2] || 0;
         return 0;
@@ -16227,7 +16225,7 @@ mergeInto(LibraryManager.library, {
                 var pfunc = HEAP32[(sp + 4) >> 2];
                 slotMap[sid] = pfunc;
                 if (sid === 64 /* Py_tp_methods */) methodsPtr = pfunc;
-                if (sid === 66 /* Py_tp_getset  */) getsetPtr  = pfunc;
+                if (sid === 73 /* Py_tp_getset  */) getsetPtr  = pfunc;
                 if (sid === 72 /* Py_tp_members */) membersPtr = pfunc;
             }
         }
@@ -16413,7 +16411,7 @@ mergeInto(LibraryManager.library, {
         // Pinned: stored in the malloc'd type struct (tp_dict), read by C
         // for the type's whole life (same as ensureTypeStruct's pin).
         var dictHandle = rt.wrapPinned(dictObj);
-        HEAP32[(typeStructPtr +  4) >> 2] = slotMap[63 /* Py_tp_free */] || rt._defaultTpFree;  // tp_free
+        HEAP32[(typeStructPtr +  4) >> 2] = slotMap[74 /* Py_tp_free */] || rt._defaultTpFree;  // tp_free
         HEAP32[(typeStructPtr +  8) >> 2] = dictHandle;     // tp_dict
         HEAP32[(typeStructPtr + 12) >> 2] = namePtr;        // tp_name
         var _metaAlloc2 = 0;
@@ -16431,25 +16429,25 @@ mergeInto(LibraryManager.library, {
         // Py_TYPE(self)->tp_clear and calls it directly (sqlite3 Connection
         // __init__ on an already-initialised connection, connection.c:253).
         // Leaving it NULL is an indirect call to null. Wire the spec slot.
-        HEAP32[(typeStructPtr + 44) >> 2] = slotMap[54 /* Py_tp_clear */] || 0;   // tp_clear
+        HEAP32[(typeStructPtr + 44) >> 2] = slotMap[51 /* Py_tp_clear */] || 0;   // tp_clear
         // C-struct fields Cython cdef classes read directly (offsets per
         // wasthon.h struct _typeobject). tp_new/tp_init drive (sub)class
         // construction — a Cython subclass calls base->tp_new; the rest are read
         // by feature checks and inherited-slot dispatch. Unpopulated fields stay
         // 0 (in-bounds, = "absent"), never adjacent-heap garbage.
-        HEAP32[(typeStructPtr +  20) >> 2] = slotMap[61 /* Py_tp_init */]        || 0;  // tp_init
+        HEAP32[(typeStructPtr +  20) >> 2] = slotMap[60 /* Py_tp_init */]        || 0;  // tp_init
         HEAP32[(typeStructPtr +  36) >> 2] = slotMap[71 /* Py_tp_traverse */]    || 0;  // tp_traverse
-        HEAP32[(typeStructPtr +  52) >> 2] = slotMap[51 /* Py_tp_repr */]        || 0;  // tp_repr
+        HEAP32[(typeStructPtr +  52) >> 2] = slotMap[66 /* Py_tp_repr */]        || 0;  // tp_repr
         HEAP32[(typeStructPtr +  60) >> 2] = slotMap[65 /* Py_tp_new */]         || 0;  // tp_new
         HEAP32[(typeStructPtr +  64) >> 2] = basicsize;                                 // tp_basicsize
         HEAP32[(typeStructPtr +  68) >> 2] = itemsize;                                  // tp_itemsize
-        HEAP32[(typeStructPtr +  96) >> 2] = slotMap[58 /* Py_tp_hash */]        || 0;  // tp_hash
-        HEAP32[(typeStructPtr + 100) >> 2] = slotMap[77 /* Py_tp_call */]        || 0;  // tp_call
-        HEAP32[(typeStructPtr + 104) >> 2] = slotMap[50 /* Py_tp_str */]         || 0;  // tp_str
-        HEAP32[(typeStructPtr + 108) >> 2] = slotMap[57 /* Py_tp_getattro */]    || 0;  // tp_getattro
-        HEAP32[(typeStructPtr + 112) >> 2] = slotMap[59 /* Py_tp_setattro */]    || 0;  // tp_setattro
+        HEAP32[(typeStructPtr +  96) >> 2] = slotMap[59 /* Py_tp_hash */]        || 0;  // tp_hash
+        HEAP32[(typeStructPtr + 100) >> 2] = slotMap[50 /* Py_tp_call */]        || 0;  // tp_call
+        HEAP32[(typeStructPtr + 104) >> 2] = slotMap[70 /* Py_tp_str */]         || 0;  // tp_str
+        HEAP32[(typeStructPtr + 108) >> 2] = slotMap[58 /* Py_tp_getattro */]    || 0;  // tp_getattro
+        HEAP32[(typeStructPtr + 112) >> 2] = slotMap[69 /* Py_tp_setattro */]    || 0;  // tp_setattro
         HEAPU32[(typeStructPtr + 120) >> 2] = flags;                                    // tp_flags
-        HEAP32[(typeStructPtr + 128) >> 2] = slotMap[60 /* Py_tp_richcompare */] || 0;  // tp_richcompare
+        HEAP32[(typeStructPtr + 128) >> 2] = slotMap[67 /* Py_tp_richcompare */] || 0;  // tp_richcompare
         // tp_finalize is past the 64-byte bridge struct, so stash it on the
         // class; PyObject_CallFinalizerFromDealloc invokes it (connection_dealloc
         // runs it to emit the unclosed-database ResourceWarning).
@@ -16463,7 +16461,7 @@ mergeInto(LibraryManager.library, {
         // null-function trap (scipy.ndimage._ni_label's MemviewEnum tp_new).
         // Only tp_alloc: mirroring tp_free too surfaced an extra attribute on
         // dir(C.Context()) (test_decimal.test_context_attributes).
-        if (!slotMap[44 /* Py_tp_alloc */]) slotMap[44] = rt._defaultTpAlloc;
+        if (!slotMap[47 /* Py_tp_alloc */]) slotMap[47] = rt._defaultTpAlloc;
         var typeHandle = typeStructPtr;
         rt.bindInstance(typeHandle, cls);
         cls[WasthonRT._thKey] = typeHandle;
@@ -16850,22 +16848,7 @@ mergeInto(LibraryManager.library, {
         // pointing to the same dispatch function so either lookup path works.
         // Format: slotID → [brythonSlotName, [dunderNames], shape]
         // (b=binary, t=ternary, r=unary->obj, i=inquiry->int).
-        // wasthon.h has slot ID collisions: Py_sq_length=29 == Py_nb_multiply=29
-        // and Py_sq_item=32 == Py_nb_positive=32. Whether a given pfunc at
-        // slot 29/32 means sq_* or nb_* can't be told from the ID alone.
-        // Disambiguate by other slots: if the type has Py_sq_ass_item (39)
-        // OR Py_sq_contains (41) — both unambiguous markers — it's a
-        // sequence, so 29/32 belong to sq_length/sq_item. Otherwise they're
-        // nb_multiply/nb_positive. (None of our currently-ported modules
-        // mix sequence and numeric protocols in the same type.)
-        // A type carrying the colliding slot 29/32 but NO unambiguous numeric
-        // slot (nb_add, nb_subtract, …) isn't a number — it's a length-only
-        // type like _zstd's ZstdDict (sq_length only, no sq_ass_item/sq_contains)
-        // — so its 29/32 are sq_length/sq_item (which gives it __len__).
-        var hasNumber = [7, 36, 8, 31, 38, 28, 35, 12, 37, 34, 10, 33, 30, 6, 11, 9]
-            .some(function(s) { return slotMap[s]; });
-        var isSequence = !!(slotMap[39] || slotMap[41] ||
-            ((slotMap[29] || slotMap[32]) && !hasNumber));
+        // Slot IDs are CPython's (Include/typeslots.h), one per slot.
         var slotDispatch = {
             7:  ['nb_add',                    ['__add__'],           'b'],
             36: ['nb_subtract',               ['__sub__'],           'b'],
@@ -16889,16 +16872,17 @@ mergeInto(LibraryManager.library, {
             30: ['nb_negative',               ['__neg__'],           'r'],
             32: ['nb_positive',               ['__pos__'],           'r'],
             6:  ['nb_absolute',               ['__abs__'],           'r'],
-            25: ['mp_length',                 ['__len__'],           'i'],
-            27: ['mp_subscript',              ['__getitem__'],       'b'],
+            4:  ['mp_length',                 ['__len__'],           'i'],
+            5:  ['mp_subscript',              ['__getitem__'],       'b'],
+            /* the slice-capable assignment (array_ass_subscr): `a[i:j] = x`
+             * and `del a[i:j]` must not reach the int-only sq_ass_item */
+            3:  ['mp_ass_subscript',          ['__setitem__', '__delitem__'], 'mas'],
             11: ['nb_float',                  ['__float__'],         'r'],
             26: ['nb_int',                    ['__int__'],           'r'],
             13: ['nb_index',                  ['__index__'],         'r'],
-            /* tp_str / tp_repr / tp_hash — use OUR header's slot IDs
-             * (wasthon.h), which differ from CPython canonical values. */
-            51: ['tp_repr',                   ['__repr__'],          'r'],
-            50: ['tp_str',                    ['__str__'],           'r'],
-            58: ['tp_hash',                   ['__hash__'],          'i'],
+            66: ['tp_repr',                   ['__repr__'],          'r'],
+            70: ['tp_str',                    ['__str__'],           'r'],
+            59: ['tp_hash',                   ['__hash__'],          'i'],
             9:  ['nb_bool',                   ['__bool__'],          'i'],
             /* Iterator protocol — tp_iter returns iterator, tp_iternext
              * advances. NULL return from tp_iternext == StopIteration. */
@@ -16907,11 +16891,9 @@ mergeInto(LibraryManager.library, {
             /* richcompare: single C slot, 6 Python dunders. The 'c' shape
              * is handled specially below — one slotPtr → 6 dispatch funcs
              * each calling slot(self, other, op) with a different op. */
-            60: ['tp_richcompare',            null,                  'c'],
-            /* Sequence protocol slot IDs (wasthon.h numbering — same as
-             * CPython's for 39/40/41/42/43/46, but NOT for sq_length / sq_item
-             * which collide with nb_multiply/nb_positive at 29/32. Those are
-             * patched in below when isSequence is true). */
+            67: ['tp_richcompare',            null,                  'c'],
+            45: ['sq_length',                 ['__len__'],           'i'],
+            44: ['sq_item',                   ['__getitem__'],       'si'],
             39: ['sq_ass_item',               ['__setitem__', '__delitem__'], 'sis'],
             40: ['sq_concat',                 ['__add__'],           'b'],
             41: ['sq_contains',               ['__contains__'],      'bi'],
@@ -16919,24 +16901,6 @@ mergeInto(LibraryManager.library, {
             42: ['sq_inplace_concat',         ['__iadd__'],          'b'],
             43: ['sq_inplace_repeat',         ['__imul__'],          'si'],
         };
-        // Patch the colliding entries for sequence types. wasthon.h reuses
-        // these slot IDs for both numeric and sequence operations:
-        //   29: Py_nb_multiply == Py_sq_length
-        //   32: Py_nb_positive == Py_sq_item
-        // Disambiguate via the unambiguous Py_sq_ass_item=39 / Py_sq_contains=41
-        // markers; if either is present, treat 29/32 as sq_* not nb_*.
-        if (isSequence) {
-            slotDispatch[29] = ['sq_length',    ['__len__'],     'i'];
-            slotDispatch[32] = ['sq_item',      ['__getitem__'], 'si'];
-        }
-        // wasthon.h reuses id 26 for BOTH Py_nb_int and Py_mp_ass_subscript.
-        // A type with mp_subscript (27) is a mapping/sequence, so its slot-26
-        // is the slice-capable assignment slot (array_ass_subscr), not __int__.
-        // Without this, `a[i:j] = x` / `del a[i:j]` dispatch through the
-        // int-only sq_ass_item and raise "array indices must be integers".
-        if (slotMap[27 /* mp_subscript */]) {
-            slotDispatch[26] = ['mp_ass_subscript', ['__setitem__', '__delitem__'], 'mas'];
-        }
         Object.keys(slotDispatch).forEach(function(sidStr) {
             var sid = sidStr | 0;
             var slotPtr = slotMap[sid];
@@ -17223,7 +17187,7 @@ mergeInto(LibraryManager.library, {
             dispatch = rt.scoped(dispatch);
             // Mapping-only __getitem__ (mp_subscript with no sq_item):
             // PySequence_Check must stay false (np.dtype in an object array).
-            if (sid === 27 && !(isSequence && slotMap[32])) dispatch.$mp_only = true;
+            if (sid === 5 && !slotMap[44]) dispatch.$mp_only = true;
             cls[brythonName] = dispatch;
             cls.tp_funcs = cls.tp_funcs || {};
             cls.tp_funcs[brythonName] = dispatch;
@@ -17307,7 +17271,7 @@ mergeInto(LibraryManager.library, {
         // If the type does NOT define tp_init, we alias to object's default
         // so Brython's type.tp_call (which checks `init_func !== _b_.object.tp_init`)
         // skips the init step.
-        var tpInitPtr = slotMap[61 /* Py_tp_init */];
+        var tpInitPtr = slotMap[60 /* Py_tp_init */];
         if (tpInitPtr) {
             cls.tp_init = rt.scoped(function(self) {
                 // Brython call sig: tp_init(self, ...args, kwarg)
@@ -17393,13 +17357,13 @@ mergeInto(LibraryManager.library, {
             };
         }
 
-        // Wire Py_tp_call (slot 77, wasthon.h numbering) as cls.tp_call so
+        // Wire Py_tp_call (slot 50) as cls.tp_call so
         // Brython's $call() treats instances as callable. CPython sig:
         //   PyObject *tp_call(PyObject *self, PyObject *args, PyObject *kw)
         // Brython invokes it as call_method(self, ...args[, $kw]).
         // sqlite3 relies on this: statement_cache = lru_cache(n)(connection)
         // then cache(sql) calls connection(sql) -> pysqlite_connection_call.
-        var tpCallPtr = slotMap[77 /* Py_tp_call */];
+        var tpCallPtr = slotMap[50 /* Py_tp_call */];
         if (tpCallPtr) {
             var _tpCallWrap;
             cls.tp_call = _tpCallWrap = rt.scoped(function(self) {
@@ -17459,8 +17423,8 @@ mergeInto(LibraryManager.library, {
             try { rt.$B.set_to_dict(cls, '__call__', _tpCallWrap); } catch (_) {}
         }
 
-        // Wire Py_tp_descr_get (slot 84 — see wasthon.h: 56 collides with
-        // Py_tp_doc) so instance attribute access binds a C/Cython descriptor.
+        // Wire Py_tp_descr_get (slot 54) so instance attribute access binds a
+        // C/Cython descriptor.
         // A Cython cdef-class method (e.g. numpy.random's `BitGenerator.random_raw`)
         // is a `cython_function_or_method` stored in the type dict with a
         // tp_descr_get slot; without wiring it, Brython's getattr returns the
@@ -17468,7 +17432,7 @@ mergeInto(LibraryManager.library, {
         // positional) — reading garbage struct fields. Brython invokes
         // cls.tp_descr_get(value, obj, klass); C sig is
         // PyObject *descr_get(PyObject *self, PyObject *obj, PyObject *type).
-        var tpDescrGetPtr = slotMap[84 /* Py_tp_descr_get */];
+        var tpDescrGetPtr = slotMap[54 /* Py_tp_descr_get */];
         if (tpDescrGetPtr) {
             cls.tp_descr_get = rt.scoped(function(value, obj, klass) {
                 var selfH = (value && value.__wasthon_ptr__)
@@ -17495,7 +17459,7 @@ mergeInto(LibraryManager.library, {
             });
         }
 
-        // Wire Py_tp_descr_set (slot 85) symmetrically. Brython keys BOTH
+        // Wire Py_tp_descr_set (slot 55) symmetrically. Brython keys BOTH
         // behaviors on cls.tp_descr_set: it is the setter it invokes, and
         // `tp_descr_set !== $B.NULL` is what makes the descriptor a DATA
         // descriptor (priority over the instance dict on reads). Left NULL,
@@ -17504,7 +17468,7 @@ mergeInto(LibraryManager.library, {
         // dict and shadowed the descriptor for every later read. C sig is
         // int descr_set(PyObject *self, PyObject *obj, PyObject *value),
         // value == NULL meaning delete.
-        var tpDescrSetPtr = slotMap[85 /* Py_tp_descr_set */];
+        var tpDescrSetPtr = slotMap[55 /* Py_tp_descr_set */];
         if (tpDescrSetPtr) {
             cls.tp_descr_set = rt.scoped(function(descr, obj, value) {
                 var selfH = (descr && descr.__wasthon_ptr__)
@@ -17522,7 +17486,7 @@ mergeInto(LibraryManager.library, {
             });
         }
 
-        // Wire Py_tp_getattro (slot 57 per wasthon.h numbering) using a
+        // Wire Py_tp_getattro (slot 58) using a
         // try-default-then-fallback strategy. The C-side custom getattr
         // (e.g. _decimal Context's context_getattr) intercepts specific
         // names like `traps`/`flags` that live on the C struct (not in
@@ -17534,7 +17498,7 @@ mergeInto(LibraryManager.library, {
         // AttributeError, call the C function for the custom intercepts.
         // Re-entry guard for the case where C also falls through and the
         // bridge GenericGetAttr re-invokes us on the same name.
-        var tpGetattroPtr = slotMap[57 /* Py_tp_getattro */];
+        var tpGetattroPtr = slotMap[58 /* Py_tp_getattro */];
         if (tpGetattroPtr) {
             var _objGetattr = rt._b_.object.tp_getattro;
             cls.tp_getattro = cls.$getattribute = rt.scoped(function(self, name) {
@@ -17581,14 +17545,14 @@ mergeInto(LibraryManager.library, {
             });
         }
 
-        // Wire Py_tp_setattro (slot 59) — symmetric to tp_getattro above.
+        // Wire Py_tp_setattro (slot 69) — symmetric to tp_getattro above.
         // A C type with a custom setattr (e.g. _decimal Context's
         // context_setattr, which intercepts `flags`/`traps`) was unwritable
         // without this: Brython's $setattr found no data descriptor and no
         // __dict__, raising "object has no attribute '…'". Same C-first +
         // re-entry-guard strategy as getattro (the C side falls through to
         // PyObject_GenericSetAttr for non-intercepted names).
-        var tpSetattroPtr = slotMap[59 /* Py_tp_setattro */];
+        var tpSetattroPtr = slotMap[69 /* Py_tp_setattro */];
         if (tpSetattroPtr) {
             var _objSetattr = rt._b_.object.tp_setattro;
             cls.tp_setattro = rt.scoped(function(self, name, value) {
