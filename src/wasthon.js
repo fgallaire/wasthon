@@ -17040,6 +17040,13 @@ mergeInto(LibraryManager.library, {
                             i = n | 0;
                         }
                     }
+                    /* sq_item takes a non-negative index: CPython's
+                     * wrap_sq_item adds sq_length to a negative one first, as
+                     * PyType_Ready's wrapSqItem does (sq_repeat keeps it) */
+                    if (i < 0 && brythonName === 'sq_item' && slotMap[45]) {
+                        var n = getWasmTableEntry(slotMap[45])(selfH);
+                        if (n >= 0) i += n;
+                    }
                     rt.pendingException = null;
                     var resH = getWasmTableEntry(slotPtr)(selfH, i);
                     if (rt.pendingException) {

@@ -71,7 +71,6 @@ test_types.py::test_PyObject_Print
 test_types.py::test_PyType_Freeze
 test_types.py::test_PyType_GetModuleByDef
 test_types.py::test_PyType_GetSlot[StaticObj]
-test_types.py::test_sequence[SpecObj]
 test_unicode.py::test_PyBytes_AsString_Size
 test_unicode.py::test_PyUnicode_AsEncodedString
 test_unicode.py::test_PyUnicode_AsLatin1String

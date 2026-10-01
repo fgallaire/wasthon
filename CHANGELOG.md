@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A spec type's `sq_item` gets a non-negative index** (`src/wasthon.js`,
+  `PyType_FromModuleAndSpec`, the `'si'` dispatch). CPython's `wrap_sq_item`
+  adds `sq_length` to a negative index before calling `sq_item`, as the
+  bridge's `PyType_Ready` path and its `sq_ass_item` dispatch already did;
+  the spec path handed `-1` to the C slot, which raised IndexError for
+  `o[-1]`. Fix — the same adjustment, for `sq_item` only (`sq_repeat` keeps
+  its count). +1 bridge test (`test_sequence`).
+
 - **Slot IDs are CPython's `typeslots.h`** (`src/wasthon.h`, `src/wasthon.js`,
   `PyType_FromModuleAndSpec` and `PyType_GetSlot`). `wasthon.h` numbered the
   `tp_`, `mp_` and `sq_length`/`sq_item` slots its own way while the `nb_`
