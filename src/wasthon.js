@@ -8027,17 +8027,45 @@ mergeInto(LibraryManager.library, {
         return rt.wrapNewRef({ ob_type: rt._b_.classmethod, cm_callable: tramp });
     },
 
-    /* PyErr_PrintEx — print and clear the pending exception (CPython dumps to
-     * stderr; the browser equivalent is the console). */
+    /* PyErr_PrintEx — CPython's _PyErr_PrintEx (without its SystemExit and
+     * audit hooks): sys.last_exc and the legacy last_type/last_value/
+     * last_traceback when asked, then sys.excepthook, which prints on
+     * sys.stderr. The message went to the JS console. */
     PyErr_PrintEx__deps: ['$WasthonRT'],
     PyErr_PrintEx: function(set_sys_last_vars) {
-        var rt = WasthonRT;
+        var rt = WasthonRT, $B = rt.$B;
         var pe = rt.pendingException;
         rt.pendingException = null;
-        if (pe) {
-            try { console.error('PyErr_PrintEx:', rt.asJSStr(pe.msg) || pe.msg); }
-            catch (e) { console.error('PyErr_PrintEx: <unprintable>'); }
-        }
+        if (!pe) return;
+        try {
+            var exc = rt.pendingExc(pe);
+            var typ = $B.get_class(exc);
+            var tb = $B.$getattr(exc, '__traceback__');
+            var sys = $B.$call(rt._b_.__import__, 'sys');
+            var write = function(s) { $B.$call($B.$getattr($B.$getattr(sys, 'stderr'), 'write'), s); };
+            var display = function(e) {
+                $B.$call($B.$getattr(sys, '__excepthook__'), $B.get_class(e), e,
+                         $B.$getattr(e, '__traceback__'));
+            };
+            if (set_sys_last_vars) {
+                $B.$setattr(sys, 'last_exc', exc);
+                $B.$setattr(sys, 'last_type', typ);
+                $B.$setattr(sys, 'last_value', exc);
+                $B.$setattr(sys, 'last_traceback', tb);
+            }
+            var hook = null;
+            try { hook = $B.$getattr(sys, 'excepthook'); } catch (e) {}
+            if (hook) {
+                try { $B.$call(hook, typ, exc, tb); }
+                catch (exc2) {
+                    write("Error in sys.excepthook:\n"); display(exc2);
+                    write("\nOriginal exception was:\n"); display(exc);
+                }
+            } else {
+                write("sys.excepthook is missing\n"); display(exc);
+            }
+        } catch (e) {}
+        rt.pendingException = null;
     },
 
     /* PyMethod_Check / PyMethod_GET_FUNCTION — bound Python methods. */
@@ -11399,20 +11427,9 @@ mergeInto(LibraryManager.library, {
         return _PyErr_Format(excHandle, fmtPtr, varargs);
     },
 
-    /* PyErr_Print — emit the pending exception to the JS console and clear
-     * it. No sys.last_*, no traceback object (the bridge has no traceback
-     * machinery); the message is what callers care about here. */
-    PyErr_Print__deps: ['$WasthonRT'],
-    PyErr_Print: function() {
-        var rt = WasthonRT;
-        var e = rt.pendingException;
-        if (e) {
-            var name = "Exception";
-            try { name = rt.unwrap(e.exc).__name__ || name; } catch (_) {}
-            console.error("[wasthon] " + name + ": " + (e.msg || ""));
-        }
-        rt.pendingException = null;
-    },
+    /* PyErr_Print — PyErr_PrintEx(1), as CPython. */
+    PyErr_Print__deps: ['PyErr_PrintEx'],
+    PyErr_Print: function() { _PyErr_PrintEx(1); },
 
     /* PyObject_CallFinalizerFromDealloc — tp_dealloc-path finalizer hook.
      * Invokes the type's tp_finalize once (guarded), so a C dealloc that runs

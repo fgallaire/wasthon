@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyErr_Print` and `PyErr_PrintEx` go through `sys.excepthook`**
+  (`src/wasthon.js`). Both wrote the message to the JS console: nothing
+  reached `sys.stderr`, `sys.last_exc` was never set. Fix — CPython's
+  `_PyErr_PrintEx`: the `sys.last_*` variables when asked, then
+  `sys.excepthook(type, exc, tb)`, with its "Error in sys.excepthook"
+  fallback; `PyErr_Print` is `PyErr_PrintEx(1)`. +2 bridge tests
+  (`test_PyErr_Print`, `test_PyErr_PrintEx`).
+
 - **`PyErr_WarnFormat` formats and reports** (`src/wasthon.js`). It warned
   with the literal format, swallowed the exception of an "error" filter
   with a 0, and defaulted to UserWarning. Fix — the message formatted by
