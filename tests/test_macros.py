@@ -3,6 +3,17 @@
 # against CPython (tests/cpython.sh), the reference; tests/run.sh runs it
 # against the bridge.
 import _capi_macros as x
+import _capi_number
+
+# Py_hash_t is a Py_ssize_t: 32 bits on wasm32, where Brython's hash() is
+# wider (CPython's never is). A hash as C holds it:
+HASH_BITS = 8 * _capi_number.sizes()['ssize_t']
+
+
+def c_hash(o):
+    h = hash(o) & (2 ** HASH_BITS - 1)
+    h = h - 2 ** HASH_BITS if h >= 2 ** (HASH_BITS - 1) else h
+    return -2 if h == -1 else h
 
 
 def raises(exc, f, *args):
@@ -42,8 +53,8 @@ def test_builtin_mapping_slots():
 
 
 def test_builtin_repr_str_hash_iter_slots():
-    assert x.object_slots('ab') == ("'ab'", 'ab', hash('ab'), 'a')
-    assert x.object_slots((7,)) == ('(7,)', '(7,)', hash((7,)), 7)
+    assert x.object_slots('ab') == ("'ab'", 'ab', c_hash('ab'), 'a')
+    assert x.object_slots((7,)) == ('(7,)', '(7,)', c_hash((7,)), 7)
 
 
 # ---- Py_SIZE, Py_REFCNT, Py_IS_TYPE
@@ -108,7 +119,8 @@ def test_builtin_tp_repr_tp_str():
 
 
 def test_builtin_tp_hash():
-    assert x.one_slot('hash', 'ab') == hash('ab') and x.one_slot('hash', (7,)) == hash((7,))
+    assert x.one_slot('hash', 'ab') == c_hash('ab') and x.one_slot('hash', (7,)) == c_hash((7,))
+    assert x.one_slot('hash', 2.5) == c_hash(2.5)
 
 
 def test_builtin_tp_iter_tp_iternext():

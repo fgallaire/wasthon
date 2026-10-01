@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Every builtin type struct has a `tp_hash`** (`src/wasthon.c`
+  `wasthon_get_builtin_tp_hash`, `src/wasthon.js`
+  `wasthon_bind_builtin_type` and `wasthon_builtin_tp_hash`). Only the
+  tuple's was set: a C caller of `Py_TYPE(s)->tp_hash(s)` on a str called a
+  NULL slot and the wasm trapped ("null function or function signature
+  mismatch"). Fix — the generic shim on every builtin struct, as `tp_repr`
+  and `tp_str` already are; it now also reduces a BigInt hash (a float's) to
+  the 32 bits of `Py_hash_t`, as `PyObject_Hash` does, where `| 0` threw.
+  The tests compare with `hash()` at that width: Brython's is wider than
+  wasm32's `Py_hash_t`, CPython's never is. +2 bridge tests
+  (`test_builtin_tp_hash`, `test_builtin_repr_str_hash_iter_slots`).
+
 - **A spec type's `sq_item` gets a non-negative index** (`src/wasthon.js`,
   `PyType_FromModuleAndSpec`, the `'si'` dispatch). CPython's `wrap_sq_item`
   adds `sq_length` to a negative index before calling `sq_item`, as the

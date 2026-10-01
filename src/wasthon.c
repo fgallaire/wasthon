@@ -826,6 +826,13 @@ void *wasthon_get_builtin_tp_str(void) {
     return (void *)wasthon_builtin_tp_str;
 }
 
+/* tp_hash for the builtin type-structs (offset 96), same shape: a C caller
+ * of Py_TYPE(o)->tp_hash on a str called a NULL slot. */
+EMSCRIPTEN_KEEPALIVE
+void *wasthon_get_builtin_tp_hash(void) {
+    return (void *)wasthon_builtin_tp_hash;
+}
+
 /* tp_dealloc for the builtin type-structs (offset 40). A C subclass dealloc
  * delegates up — numpy's unicode_arrtype_dealloc ends with
  * `PyUnicode_Type.tp_dealloc(v)` — and the NULL slot trapped (silently: the

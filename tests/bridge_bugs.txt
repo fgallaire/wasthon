@@ -12,9 +12,7 @@ test_container.py::test_PyList_Size
 test_container.py::test_PySequence_DelItem
 test_container.py::test_PySlice_GetIndicesEx
 test_container.py::test_PyTuple_Size_GET_SIZE
-test_macros.py::test_builtin_repr_str_hash_iter_slots
 test_macros.py::test_builtin_sequence_slots
-test_macros.py::test_builtin_tp_hash
 test_macros.py::test_PyBuffer_IsContiguous
 test_macros.py::test_Py_UNICODE_classes
 test_number.py::test_PyComplex_FromDoubles_RealAsDouble_ImagAsDouble

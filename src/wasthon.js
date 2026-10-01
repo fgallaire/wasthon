@@ -13574,7 +13574,10 @@ mergeInto(LibraryManager.library, {
              * subclass's C __hash__ (torch THPSize_hash delegates back to
              * PyTuple_Type.tp_hash — hash(Size) recursed to death). */
             if (Array.isArray(self)) self = rt._b_.tuple.$factory(self);
-            var h = rt._b_.hash(self) | 0;
+            /* to the 32 bits of Py_hash_t: a float's hash is a BigInt,
+             * which `| 0` refuses ("Cannot mix BigInt") */
+            var h = rt._b_.hash(self);
+            h = typeof h === 'bigint' ? Number(BigInt.asIntN(32, h)) : h | 0;
             return h === -1 ? -2 : h;  // CPython: -1 is the error sentinel
         }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
@@ -13861,6 +13864,14 @@ mergeInto(LibraryManager.library, {
         }
         if (HEAP32[(structPtr + 104) >> 2] === 0) {
             HEAP32[(structPtr + 104) >> 2] = rt._builtinTpStr;
+        }
+        // tp_hash (offset 96), same story: only the tuple's was set, and a C
+        // caller of Py_TYPE(s)->tp_hash on a str called a NULL slot.
+        if (rt._builtinTpHash === undefined) {
+            rt._builtinTpHash = _wasthon_get_builtin_tp_hash();
+        }
+        if (HEAP32[(structPtr + 96) >> 2] === 0) {
+            HEAP32[(structPtr + 96) >> 2] = rt._builtinTpHash;
         }
         // tp_dealloc (offset 40), one more delegation target: numpy's
         // unicode_arrtype_dealloc ends with PyUnicode_Type.tp_dealloc(v),
