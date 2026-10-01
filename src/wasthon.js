@@ -6508,10 +6508,27 @@ mergeInto(LibraryManager.library, {
     PyOS_FSPath: function(pH) {
         var rt = WasthonRT; var p = rt.unwrap(pH);
         if (p === null) return 0;
+        // CPython: __fspath__ looked up on the type and called, its result
+        // checked; the Brython method was called as a bare JS function
+        var isPath = function(o) {
+            return rt.$B.$isinstance(o, rt._b_.str) || rt.$B.$isinstance(o, rt._b_.bytes);
+        };
         try {
-            if (rt.$B.$isinstance(p, rt._b_.str) || rt.$B.$isinstance(p, rt._b_.bytes))
-                return rt.wrapNewRef(p);
-            return rt.wrapNewRef(rt.$B.$getattr(p, '__fspath__')());
+            if (isPath(p)) return rt.wrapNewRef(p);
+            var cls = rt.$B.get_class(p), func = null;
+            try { func = rt.$B.$getattr(cls, '__fspath__'); } catch (e) {}
+            if (func === null || func === rt._b_.None) {
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                    "expected str, bytes or os.PathLike object, not " + rt.$B.class_name(p));
+                return 0;
+            }
+            var res = rt.$B.$call(func, p);
+            if (!isPath(res)) {
+                rt.setError(rt.wrap(rt._b_.TypeError), "expected " + rt.$B.class_name(p) +
+                    ".__fspath__() to return str or bytes, not " + rt.$B.class_name(res));
+                return 0;
+            }
+            return rt.wrapNewRef(res);
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 

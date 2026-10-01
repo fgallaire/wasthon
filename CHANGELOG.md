@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyOS_FSPath` calls `__fspath__`** (`src/wasthon.js`). It called the
+  Brython method as a bare JS function ("rt.$B.$getattr(...) is not a
+  function") and checked neither a missing `__fspath__` nor its result.
+  Fix — CPython's function: `__fspath__` looked up on the type and called,
+  TypeError for a non-path object or a result neither str nor bytes. +1
+  bridge test (`test_PyOS_FSPath`).
+
 - **`PyVectorcall_Call` passes its kwargs as keywords** (`src/wasthon.js`).
   For a callable without a C vectorcall function, it marked the dict
   `{$nat: 'kw'}`, which this Brython does not read: the dict arrived as
