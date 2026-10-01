@@ -2383,14 +2383,15 @@ mergeInto(LibraryManager.library, {
             // 20 = tp_init, 24 = tp_iter, 28 = tp_as_number, 32 = tp_methods,
             // 36 = tp_traverse, 40 = tp_dealloc, 44 = tp_clear,
             // 48 = tp_version_tag, 52 = tp_repr, 56 = tp_iternext, 60 = tp_new.
-            // Allocate the FULL wasthon.h PyTypeObject (176 bytes), zeroed:
+            // Allocate the FULL wasthon.h PyTypeObject (180 bytes, the
+            // metatype ob_type@176 included), zeroed:
             // C code reads appended fields directly (tp_basicsize@64 —
             // wasthon_object_gc_new's MRO inheritance RELIED on reading 0
             // here, which the old 64-byte malloc only gave by heap luck —
             // tp_itemsize@68 in numpy's @name@_arrtype_new, tp_flags@120,
             // tp_mro@148 in numpy's _descr_from_subtype).
-            var typeStructPtr = _malloc(176);
-            HEAPU8.fill(0, typeStructPtr, typeStructPtr + 176);
+            var typeStructPtr = _malloc(180);
+            HEAPU8.fill(0, typeStructPtr, typeStructPtr + 180);
             // tp_mro (offset 148): CPython convention, the class itself
             // first. numpy's _descr_from_subtype resolves a Python scalar
             // subclass's dtype via PyTuple_GET_ITEM(type->tp_mro, 1) — a
@@ -2522,8 +2523,11 @@ mergeInto(LibraryManager.library, {
             }
             var pinfo = this.types.get(parentHandle);
             if (!pinfo || pinfo.basicsize === undefined) return parentHandle;
-            var sub = _malloc(64);
-            HEAPU8.set(HEAPU8.subarray(parentHandle, parentHandle + 64), sub);
+            /* the whole struct, 180 bytes: a 64-byte copy, from when the
+             * struct was that size, left tp_basicsize@64, tp_flags@120,
+             * tp_base@140 and ob_type@176 outside the allocation */
+            var sub = _malloc(180);
+            HEAPU8.set(HEAPU8.subarray(parentHandle, parentHandle + 180), sub);
             var dictObj = this.$B.get_dict(subCls);
             if (!dictObj) { this.$B.init_dict(subCls); dictObj = this.$B.get_dict(subCls); }
             HEAP32[(sub + 8) >> 2] = this.wrapPinned(dictObj);  // tp_dict

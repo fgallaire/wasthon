@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A type struct is allocated at its full size** (`src/wasthon.js`,
+  `subtypeStructFor` and `ensureTypeStruct`). The `PyTypeObject` of
+  `wasthon.h` has grown to 180 bytes by appending fields, but the struct a
+  `Decimal` subclass hands to C was a 64-byte copy of its parent's, from when
+  the struct was that size, and the one made for a Brython class 176 bytes:
+  C reading `tp_basicsize`, `tp_flags`, `tp_base` or the metatype `ob_type`
+  read past the allocation. Latent today (`_decimal` reads `tp_alloc` only).
+  Fix — both allocate and copy 180 bytes. +0 bridge tests.
+
 - **Type flags are CPython's `object.h`** (`src/wasthon.h`, `src/wasthon.js`
   `PyType_Ready`, `PyType_FromModuleAndSpec`, `PyType_GetFlags`). The
   `Py_TPFLAGS_*` bits were the bridge's own, the same story as the slot IDs:
