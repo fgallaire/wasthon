@@ -9691,13 +9691,12 @@ mergeInto(LibraryManager.library, {
         if (start < 0) start = 0; if (end > s.length) end = s.length;
         var seg = s.slice(start, end);
         return (direction > 0 ? seg.endsWith(sub) : seg.startsWith(sub)) ? 1 : 0; },
-    PyUnicode_FromFormatV__deps: ['$WasthonRT'],
-    PyUnicode_FromFormatV: function(fmtPtr, va) { var rt = WasthonRT;
-        /* printf-style vararg formatting is not reachable through the JS
-         * ABI; return the literal format (numpy uses this only on error
-         * paths). TODO(phase-4): a real C-varargs formatter if a live path
-         * needs it. */
-        return rt.wrapNewRef(fmtPtr ? UTF8ToString(fmtPtr) : ""); },
+    PyUnicode_FromFormatV__deps: ['PyUnicode_FromFormat'],
+    PyUnicode_FromFormatV: function(fmtPtr, va) {
+        /* wasm32's va_list is the pointer to the argument area a variadic
+         * function receives: PyUnicode_FromFormat's reader takes it as is.
+         * The literal format was returned, its arguments unread. */
+        return _PyUnicode_FromFormat(fmtPtr, va); },
     PyBytes_FromString__deps: ['$WasthonRT'],
     PyBytes_FromString: function(ptr) { var rt = WasthonRT;
         var s = ptr ? UTF8ToString(ptr) : "";

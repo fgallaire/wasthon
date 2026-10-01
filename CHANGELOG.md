@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_FromFormatV` formats** (`src/wasthon.js`). It returned the
+  literal format, its arguments unread ("%d+%d"). wasm32's `va_list` is
+  the pointer to the argument area a variadic function receives. Fix —
+  `PyUnicode_FromFormat`'s reader called with it. +1 bridge test
+  (`test_PyUnicode_FromFormatV`).
+
 - **`PyErr_NewExceptionWithDoc` keeps its doc** (`src/wasthon.js`). It
   dropped the doc and called `PyErr_NewException`. Fix — the doc put in
   the `dict` (a new one when NULL) first, as CPython. +1 bridge test

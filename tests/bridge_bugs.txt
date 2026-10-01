@@ -51,7 +51,6 @@ test_unicode.py::test_PyUnicode_DecodeUTF16
 test_unicode.py::test_PyUnicode_DecodeUTF32
 test_unicode.py::test_PyUnicode_DecodeUTF8_errors
 test_unicode.py::test_PyUnicode_FromEncodedObject
-test_unicode.py::test_PyUnicode_FromFormatV
 test_unicode.py::test_PyUnicode_FromObject
 test_unicode.py::test_PyUnicode_FromString
 test_unicode.py::test_PyUnicode_GetLength
