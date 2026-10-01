@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A spec type with neither `tp_new` nor `tp_init` inherits its base's
+  init** (`src/wasthon.js`, `PyType_FromModuleAndSpec`). The lookup of an
+  inherited `tp_init` through the mro only ran for a type with its own
+  `tp_new`: a C subclass adding only methods (`SubSpec(3)`) was built by its
+  base's `tp_new` but never initialized, its value left at 0. Fix — every
+  type without its own `tp_init` takes the inherited one, as CPython's
+  `inherit_slots` does. +1 bridge test (`test_c_subclass`).
+
 - **A spec type without `Py_TPFLAGS_BASETYPE` cannot be subclassed**
   (`src/wasthon.js`, `PyType_FromModuleAndSpec`). `make_builtin_class` turns
   Brython's `BASETYPE` on, and only `PyType_Ready` cleared it for a type

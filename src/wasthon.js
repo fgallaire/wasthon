@@ -17370,9 +17370,11 @@ mergeInto(LibraryManager.library, {
             // wrap('__init__') in finalize_builtin_types.
             rt.$B.set_to_dict(cls, '__init__', rt.$B.wrapper_descriptor.$factory(
                 cls, '__init__', cls.tp_init));
-        } else if (tpNewPtr) {
+        } else {
             // No own Py_tp_init: inherit through the bases first, as CPython's
-            // PyType_FromSpec does — a Cython subclass relying on its parent's
+            // PyType_FromSpec does, whether or not the type has its own
+            // tp_new (a C subclass with neither, SubSpec(3), never ran its
+            // base's init) — a Cython subclass relying on its parent's
             // `def __init__` (pandas ObjectEngine over IndexEngine) got
             // object.tp_init here, so the parent init never ran and every cdef
             // field stayed None (Index.get_loc died "'NoneType' has no len()",
