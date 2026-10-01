@@ -11435,10 +11435,21 @@ mergeInto(LibraryManager.library, {
      * no chaining machinery, so we drop the prior exception and set the
      * new one (message still surfaces; __cause__ link is lost). Reuses
      * PyErr_Format's printf-subset formatter. */
-    _PyErr_FormatFromCause__deps: ['$WasthonRT', 'PyErr_Format'],
+    _PyErr_FormatFromCause__deps: ['$WasthonRT', 'PyErr_Format', 'PyException_SetCause',
+                                   'PyException_SetContext', 'PyErr_SetRaisedException'],
     _PyErr_FormatFromCause: function(excHandle, fmtPtr, varargs) {
-        WasthonRT.pendingException = null;
-        return _PyErr_Format(excHandle, fmtPtr, varargs);
+        // CPython: the pending exception becomes the new one's __cause__
+        // and __context__; it was dropped
+        var rt = WasthonRT, pe = rt.pendingException;
+        rt.pendingException = null;
+        _PyErr_Format(excHandle, fmtPtr, varargs);
+        if (pe && rt.pendingException) {
+            var cause = rt.pendingExc(pe), exc2 = rt.pendingExc(rt.pendingException);
+            _PyException_SetCause(rt.wrap(exc2), rt.wrap(cause));
+            _PyException_SetContext(rt.wrap(exc2), rt.wrap(cause));
+            _PyErr_SetRaisedException(rt.wrap(exc2));
+        }
+        return 0;
     },
 
     /* PyErr_Print — PyErr_PrintEx(1), as CPython. */

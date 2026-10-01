@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`_PyErr_FormatFromCause` chains** (`src/wasthon.js`). It dropped the
+  pending exception before formatting the new one. Fix — CPython's
+  sequence: the pending exception taken, the new one formatted, the old
+  one set as its `__cause__` and `__context__`. +1 bridge test
+  (`test__PyErr_FormatFromCause`).
+
 - **`_PySys_GetRequiredAttr` raises CPython's errors** (`src/wasthon.js`).
   A missing attribute raised AttributeError ("sys.nope: [object Object]")
   and a non-str name returned NULL with nothing set. Fix — RuntimeError
