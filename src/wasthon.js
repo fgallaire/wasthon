@@ -10241,22 +10241,6 @@ mergeInto(LibraryManager.library, {
          * goes through this; the old 0-stub made every such method return NULL
          * with no exception ("reshape: call returned NULL"). */
         return _PyArg_ParseTupleAndKeywords(argsH, kwH, fmtPtr, kwlistPtr, va); },
-    PyOS_strtol__deps: ['$WasthonRT'],
-    PyOS_strtol: function(strPtr, endptrPtr, base) {
-        var s = strPtr ? UTF8ToString(strPtr) : "";
-        var v = parseInt(s, base || 10);
-        if (endptrPtr !== 0) {
-            var m = s.match(/^\s*[-+]?[0-9a-zA-Z]+/); HEAP32[endptrPtr >> 2] = strPtr + (m ? m[0].length : 0);
-        }
-        return isNaN(v) ? 0 : v; },
-    PyOS_strtoul__deps: ['$WasthonRT'],
-    PyOS_strtoul: function(strPtr, endptrPtr, base) {
-        var s = strPtr ? UTF8ToString(strPtr) : "";
-        var v = parseInt(s, base || 10);
-        if (endptrPtr !== 0) {
-            var m = s.match(/^\s*[-+]?[0-9a-zA-Z]+/); HEAP32[endptrPtr >> 2] = strPtr + (m ? m[0].length : 0);
-        }
-        return (isNaN(v) ? 0 : v) >>> 0; },
 
     /* --- Runtime / thread-state stubs (single interpreter, no GIL) --- */
     Py_IsInitialized: function() { return 1; },

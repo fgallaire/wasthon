@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyOS_strtol` and `PyOS_strtoul` are CPython's** (`src/wasthon.c`).
+  The JS versions went through `parseInt`: no 0x/0o/0b prefix under base
+  0 (`'0x1Fz'` read 0), an end pointer past any alphanumeric run, and a
+  wrapped value without ERANGE on overflow. Fix — `Python/mystrtoul.c`
+  taken as is, with its 4-byte-long table. +1 bridge test
+  (`test_PyOS_strtol_strtoul`).
+
 - **`PyOS_double_to_string` follows `pystrtod.c`** (`src/wasthon.js`). It
   formatted with JS's toPrecision/toExponential/toString: `1.00000e+20`
   for 'g', a one-digit exponent for 'e' (`1.00e-1`), `0` for -0.0 and
