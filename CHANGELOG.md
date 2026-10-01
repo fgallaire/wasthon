@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyType_Freeze` freezes** (`src/wasthon.js`). It was a no-op: the
+  type still took new attributes. Fix — CPython's check that every base
+  in the MRO is immutable ("Creating immutable type ... from mutable base
+  ..."), then `IMMUTABLETYPE` on the class, which `type.tp_setattro`
+  enforces. +1 bridge test (`test_PyType_Freeze`).
+
 - **`PyType_GetModuleByDef` matches the def** (`src/wasthon.js`). It
   returned the first module found in the MRO whatever its def, and NULL
   with nothing set when there was none. Fix — the module whose def is the

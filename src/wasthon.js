@@ -10888,8 +10888,26 @@ mergeInto(LibraryManager.library, {
         return 0;
     },
 
-    /* PyType_Freeze — new in 3.14. Single-threaded WASM has no benefit; no-op. */
-    PyType_Freeze: function(typeH) { return 0; },
+    /* PyType_Freeze — CPython: every base in the MRO must be immutable, then
+     * the type gets Py_TPFLAGS_IMMUTABLETYPE, which type.tp_setattro
+     * enforces. It was a no-op: the "frozen" type took new attributes. */
+    PyType_Freeze__deps: ['$WasthonRT'],
+    PyType_Freeze: function(typeH) { var rt = WasthonRT;
+        var cls = rt.unwrap(typeH), IMM = rt.$B.TPFLAGS.IMMUTABLETYPE;
+        var mro = cls.tp_mro || [];
+        for (var i = 1; i < mro.length; i++) {
+            if (!(mro[i].tp_flags & IMM)) {
+                var b = mro[i], mod = rt.$B.$getattr(b, '__module__'),
+                    qual = rt.$B.$getattr(b, '__qualname__');
+                var info = rt.types.get(typeH);
+                rt.setError(rt.wrap(rt._b_.TypeError), "Creating immutable type " +
+                    (info ? info.fullName : cls.__name__) + " from mutable base " +
+                    (mod === 'builtins' ? qual : mod + '.' + qual));
+                return -1;
+            }
+        }
+        cls.tp_flags = (cls.tp_flags || 0) | IMM;
+        return 0; },
 
     /* PyObject_SetAttr — set attribute by str name PyObject. */
     PyObject_SetAttr__deps: ['$WasthonRT'],
