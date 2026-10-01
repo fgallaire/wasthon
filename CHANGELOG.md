@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_AsLatin1String` raises on an unencodable character**
+  (`src/wasthon.js`). Each UTF-16 unit was cut to 8 bits ('€' gave
+  b'\xac') and a non-str raised a TypeError of its own. Fix — CPython's
+  strict latin-1 encoder: one `UnicodeEncodeError('latin-1', s, start,
+  end, 'ordinal not in range(256)')` over the run of unencodable code
+  points, `PyErr_BadArgument` for a non-str. +1 bridge test
+  (`test_PyUnicode_AsLatin1String`).
+
 - **`PyBytes_FromString` copies the bytes** (`src/wasthon.js`). It decoded
   the C string as UTF-8 and kept each character's low byte: `é` (c3 a9)
   became e9, any non-ASCII text was mangled. Fix — the raw bytes up to

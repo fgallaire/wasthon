@@ -10272,14 +10272,25 @@ mergeInto(LibraryManager.library, {
         }
         return n === s.length ? s.codePointAt(index) : _PyUnicode_READ_CHAR(handle, index);
     },
-    PyUnicode_AsLatin1String__deps: ['$WasthonRT'],
+    PyUnicode_AsLatin1String__deps: ['$WasthonRT', 'PyErr_BadArgument'],
     PyUnicode_AsLatin1String: function(handle) {
+        // CPython's strict latin-1 encoder: one UnicodeEncodeError over the
+        // run of unencodable code points; each UTF-16 unit was cut to 8 bits
         var rt = WasthonRT;
-        var s = rt.asJSStr(rt.unwrap(handle));
-        if (s === null) { rt.setError(rt.wrap(rt._b_.TypeError), "str expected"); return 0; }
-        var arr = new Array(s.length);
-        for (var i = 0; i < s.length; i++) arr[i] = s.charCodeAt(i) & 0xFF;
-        return rt.wrapNewRef(rt._b_.bytes.$factory(arr));
+        var obj = rt.unwrap(handle), s = rt.asJSStr(obj);
+        if (s === null) { _PyErr_BadArgument(); return 0; }
+        var cps = Array.from(s, function(c) { return c.codePointAt(0); });
+        for (var i = 0; i < cps.length; i++) {
+            if (cps[i] > 0xff) {
+                var j = i + 1;
+                while (j < cps.length && cps[j] > 0xff) j++;
+                var exc = rt.$B.$call(rt._b_.UnicodeEncodeError, 'latin-1', obj, i, j,
+                                      'ordinal not in range(256)');
+                rt.setError(rt.wrap(rt._b_.UnicodeEncodeError), '', exc);
+                return 0;
+            }
+        }
+        return rt.wrapNewRef(rt._b_.bytes.$factory(cps));
     },
 
     /* PyObject_GetOptionalAttr — like GetAttr but missing attr is OK.
