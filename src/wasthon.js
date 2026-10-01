@@ -6461,8 +6461,9 @@ mergeInto(LibraryManager.library, {
             /* Brython lists are tagged JS arrays (see PyList_New) — delete
              * natively. pygame's surflock DelItems its locklist this way;
              * the $getattr('__delitem__') path failed there ("error
-             * unlocking surface" on every per-pixel draw). */
-            if (Array.isArray(s)) {
+             * unlocking surface" on every per-pixel draw). A list only: a
+             * tuple is an array too, and was spliced in place. */
+            if (Array.isArray(s) && rt.$B.$isinstance(s, rt._b_.list)) {
                 var n = s.length;
                 if (i < 0) i += n;
                 if (i < 0 || i >= n) {
@@ -6471,6 +6472,11 @@ mergeInto(LibraryManager.library, {
                 }
                 s.splice(i, 1);
                 return 0;
+            }
+            if (rt.$B.$getattr(s, '__delitem__', null) === null) {
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                    "'" + rt.$B.class_name(s) + "' object doesn't support item deletion");
+                return -1;
             }
             rt.$B.$getattr(s, '__delitem__')(i);
             return 0;

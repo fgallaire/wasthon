@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PySequence_DelItem` deletes from a list only** (`src/wasthon.js`). Its
+  native path spliced any JS array, so `del` from C removed an item of a
+  tuple in place; a type without `__delitem__` raised AttributeError. Fix —
+  the native path is for lists, and the rest raises CPython's TypeError
+  "'tuple' object doesn't support item deletion". +1 bridge test
+  (`test_PySequence_DelItem`).
+
 - **`PySlice_GetIndicesEx` refuses a zero step** (`src/wasthon.js`). It took
   start/stop/step from Brython's `slice.indices()`, which does not check
   the step, and computed a length out of a step of 0. Fix — ValueError
