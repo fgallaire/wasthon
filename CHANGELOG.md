@@ -7,6 +7,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyErr_NewExceptionWithDoc` keeps its doc** (`src/wasthon.js`). It
+  dropped the doc and called `PyErr_NewException`. Fix — the doc put in
+  the `dict` (a new one when NULL) first, as CPython. +1 bridge test
+  (`test_PyErr_NewExceptionWithDoc`).
+
 - **`PyErr_NewException` takes its `dict`** (`src/wasthon.js`). The
   class namespace argument was ignored: `F.extra` raised AttributeError
   and a `__module__` in it was lost. Fix — its items set in the class's

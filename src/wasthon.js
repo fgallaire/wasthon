@@ -8386,9 +8386,16 @@ mergeInto(LibraryManager.library, {
         return h | 0;  // signed for Py_hash_t
     },
 
-    /* PyErr_NewExceptionWithDoc — same as PyErr_NewException, doc ignored. */
+    /* PyErr_NewExceptionWithDoc — CPython puts the doc in `dict` (a new
+     * one when NULL), then calls PyErr_NewException; it was dropped. */
     PyErr_NewExceptionWithDoc__deps: ['$WasthonRT', 'PyErr_NewException'],
     PyErr_NewExceptionWithDoc: function(namePtr, docPtr, baseHandle, dictHandle) {
+        var rt = WasthonRT;
+        if (docPtr) {
+            var ns = dictHandle ? rt.unwrap(dictHandle) : rt.$B.empty_dict();
+            rt._b_.dict.$setitem(ns, '__doc__', UTF8ToString(docPtr));
+            if (!dictHandle) dictHandle = rt.wrap(ns);
+        }
         return _PyErr_NewException(namePtr, baseHandle, dictHandle);
     },
 
