@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_Decode` decodes as CPython** (`src/wasthon.js`). Every
+  codec went through TextDecoder with `fatal: false`: a strict error came
+  back as U+FFFD, an unknown codec as a UnicodeDecodeError, 'latin-1' was
+  not a label at all, and the 'iso-8859-1' label is windows-1252 (0x80-0x9F
+  wrong for pyexpat's 'iso8859'). Fix — CPython's shape: the normalized
+  name, UTF-8 through `PyUnicode_DecodeUTF8`, latin-1 byte for byte,
+  ASCII with its handlers, any other codec through Brython's
+  `bytes.decode` (LookupError for an unknown one). +2 bridge tests
+  (`test_PyUnicode_Decode`, `test_PyUnicode_Decode_latin1`).
+
 - **`PyUnicode_DecodeUTF8` honors its error handler** (`src/wasthon.js`).
   Only 'strict' was read: 'ignore' and the others kept TextDecoder's
   U+FFFD, a strict error had neither position nor reason, and any 0xED

@@ -11108,35 +11108,48 @@ mergeInto(LibraryManager.library, {
         } catch (e) { return -1; }
     },
 
-    /* PyUnicode_Decode(bytes, n, encoding, errors) — generic decoder. */
-    PyUnicode_Decode__deps: ['$WasthonRT'],
+    /* PyUnicode_Decode(bytes, n, encoding, errors) — CPython's: the name
+     * normalized, UTF-8, latin-1 and ASCII decoded directly, any other
+     * codec through the registry (Brython's bytes.decode). Everything went
+     * through TextDecoder with fatal: false — a strict error was a U+FFFD,
+     * an unknown codec a UnicodeDecodeError — and its 'iso-8859-1' label
+     * is windows-1252 (0x80-0x9F were not latin-1, pyexpat's 'iso8859'). */
+    PyUnicode_Decode__deps: ['$WasthonRT', 'PyUnicode_DecodeUTF8'],
     PyUnicode_Decode: function(sPtr, size, encodingPtr, errorsPtr) {
         var rt = WasthonRT;
-        var enc = encodingPtr ? UTF8ToString(encodingPtr).toLowerCase() : 'utf-8';
-        // Python encoding names are not WHATWG TextDecoder labels: pyexpat
-        // hands us 'iso8859' (a CPython alias of latin-1), Python spells
-        // others with underscores. Normalize before TextDecoder.
-        var encMap = {
-            'iso8859': 'iso-8859-1', 'latin': 'iso-8859-1',
-            'latin1': 'iso-8859-1', 'latin_1': 'iso-8859-1',
-            'l1': 'iso-8859-1', 'cp819': 'iso-8859-1', '8859': 'iso-8859-1',
-            'us_ascii': 'ascii', 'utf_8': 'utf-8', 'utf8': 'utf-8',
-            'utf_16': 'utf-16', 'utf_16_le': 'utf-16le', 'utf_16_be': 'utf-16be',
-        };
-        enc = encMap[enc] || enc.replace(/_/g, '-');
-        try {
-            var bytes = HEAPU8.slice(sPtr, sPtr + size);
-            // ignoreBOM only for utf-8: a leading U+FEFF is data there (CPython
-            // keeps it), whereas utf-16/utf-32 legitimately consume it as the
-            // byte-order mark. TextDecoder strips it by default otherwise.
-            var s = new TextDecoder(enc,
-                { fatal: false, ignoreBOM: enc === 'utf-8' }).decode(bytes);
-            return rt.wrapNewRef(s);
-        } catch (e) {
-            rt.setError(rt.wrap(rt._b_.UnicodeDecodeError),
-                "decode " + enc + " failed: " + (e.message || String(e)));
-            return 0;
+        var enc = encodingPtr ? UTF8ToString(encodingPtr) : 'utf-8';
+        var errors = errorsPtr ? UTF8ToString(errorsPtr) : 'strict';
+        var norm = enc.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+        var b = HEAPU8.subarray(sPtr, sPtr + size);
+        if (norm === 'utf_8' || norm === 'utf8') return _PyUnicode_DecodeUTF8(sPtr, size, errorsPtr);
+        if (['latin_1', 'latin1', 'latin', 'l1', 'iso_8859_1', 'iso8859_1', 'iso8859',
+             '8859', 'cp819'].indexOf(norm) !== -1) {
+            var l = [];
+            for (var i = 0; i < b.length; i += 16384) {
+                l.push(String.fromCharCode.apply(null, Array.from(b.subarray(i, i + 16384))));
+            }
+            return rt.wrapNewRef(l.join(''));
         }
+        if (norm === 'ascii' || norm === 'us_ascii' || norm === '646') {
+            var out = '';
+            for (var j = 0; j < b.length; j++) {
+                var c = b[j];
+                if (c < 0x80) { out += String.fromCharCode(c); continue; }
+                if (errors === 'ignore') continue;
+                if (errors === 'replace') { out += '�'; continue; }
+                if (errors === 'surrogateescape') { out += String.fromCharCode(0xDC00 + c); continue; }
+                if (errors === 'backslashreplace') { out += '\\x' + c.toString(16); continue; }
+                var exc = rt.$B.$call(rt._b_.UnicodeDecodeError, 'ascii',
+                    rt._b_.bytes.$factory(Array.from(b)), j, j + 1, 'ordinal not in range(128)');
+                rt.setError(rt.wrap(rt._b_.UnicodeDecodeError), '', exc);
+                return 0;
+            }
+            return rt.wrapNewRef(out);
+        }
+        try {
+            var bo = rt._b_.bytes.$factory(Array.from(b));
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(bo, 'decode'), enc, errors));
+        } catch (e) { rt.forwardError(e); return 0; }
     },
 
     PyObject_HasAttrString__deps: ['$WasthonRT'],
