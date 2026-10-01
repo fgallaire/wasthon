@@ -35,6 +35,29 @@ def test_PyFloat_Type_number_slots():
     assert x.float_slots(-2.7) == (-2, 2.7)
 
 
+# every number slot of int and float, one call each: (slot, x, y, result)
+INT_SLOTS = [('add', 7, 2, 9), ('subtract', 7, 2, 5), ('multiply', 7, 2, 14),
+             ('remainder', 7, 2, 1), ('divmod', 7, 2, (3, 1)), ('floor_divide', 7, 2, 3),
+             ('true_divide', 7, 2, 3.5), ('power', 7, 2, 49), ('lshift', 7, 2, 28),
+             ('rshift', 7, 2, 1), ('and', 7, 2, 2), ('xor', 7, 2, 5), ('or', 7, 2, 7),
+             ('negative', 7, None, -7), ('positive', 7, None, 7), ('absolute', -7, None, 7),
+             ('invert', 7, None, -8), ('int', 7, None, 7), ('float', 7, None, 7.0),
+             ('index', 7, None, 7), ('bool', 0, None, False)]
+FLOAT_SLOTS = [('add', 7.5, 2.0, 9.5), ('subtract', 7.5, 2.0, 5.5), ('multiply', 7.5, 2.0, 15.0),
+               ('remainder', 7.5, 2.0, 1.5), ('divmod', 7.5, 2.0, (3.0, 1.5)),
+               ('floor_divide', 7.5, 2.0, 3.0), ('true_divide', 7.5, 2.0, 3.75),
+               ('power', 1.5, 2.0, 2.25), ('negative', 7.5, None, -7.5),
+               ('positive', 7.5, None, 7.5), ('absolute', -7.5, None, 7.5), ('int', 7.5, None, 7),
+               ('float', 7.5, None, 7.5), ('bool', 0.0, None, False)]
+
+
+def test_builtin_number_slots_all():
+    for t, slots in (('int', INT_SLOTS), ('float', FLOAT_SLOTS)):
+        for name, a, b, want in slots:
+            got = x.number_slot(t, name, a) if b is None else x.number_slot(t, name, a, b)
+            assert got == want and type(got) is type(want), (t, name, got)
+
+
 def test_builtin_tp_new():
     assert x.builtin_new('tuple', [1, 2]) == (1, 2)
     assert x.builtin_new('float', '1.5') == 1.5

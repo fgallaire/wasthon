@@ -26,6 +26,42 @@ static PyObject *float_slots(PyObject *m, PyObject *x) {
     PyNumberMethods *nb = PyFloat_Type.tp_as_number;
     return Py_BuildValue("NN", nb->nb_int(x), nb->nb_absolute(x));
 }
+/* one slot of int's or float's tp_as_number, by name; a NULL slot raises
+ * SystemError instead of trapping */
+static PyObject *number_slot(PyObject *m, PyObject *a) {
+    const char *t, *name; PyObject *x, *y = Py_None;
+    if (!PyArg_ParseTuple(a, "ssO|O", &t, &name, &x, &y)) return NULL;
+    PyNumberMethods *nb = (t[0] == 'i' ? &PyLong_Type : &PyFloat_Type)->tp_as_number;
+    binaryfunc b = NULL; unaryfunc u = NULL;
+    if (!strcmp(name, "add")) b = nb->nb_add;
+    else if (!strcmp(name, "subtract")) b = nb->nb_subtract;
+    else if (!strcmp(name, "multiply")) b = nb->nb_multiply;
+    else if (!strcmp(name, "remainder")) b = nb->nb_remainder;
+    else if (!strcmp(name, "divmod")) b = nb->nb_divmod;
+    else if (!strcmp(name, "floor_divide")) b = nb->nb_floor_divide;
+    else if (!strcmp(name, "true_divide")) b = nb->nb_true_divide;
+    else if (!strcmp(name, "lshift")) b = nb->nb_lshift;
+    else if (!strcmp(name, "rshift")) b = nb->nb_rshift;
+    else if (!strcmp(name, "and")) b = nb->nb_and;
+    else if (!strcmp(name, "xor")) b = nb->nb_xor;
+    else if (!strcmp(name, "or")) b = nb->nb_or;
+    else if (!strcmp(name, "negative")) u = nb->nb_negative;
+    else if (!strcmp(name, "positive")) u = nb->nb_positive;
+    else if (!strcmp(name, "absolute")) u = nb->nb_absolute;
+    else if (!strcmp(name, "invert")) u = nb->nb_invert;
+    else if (!strcmp(name, "int")) u = nb->nb_int;
+    else if (!strcmp(name, "float")) u = nb->nb_float;
+    else if (!strcmp(name, "index")) u = nb->nb_index;
+    else if (!strcmp(name, "power")) {
+        if (nb->nb_power) return nb->nb_power(x, y, Py_None);
+    }
+    else if (!strcmp(name, "bool")) {
+        if (nb->nb_bool) { int r = nb->nb_bool(x); return r < 0 ? NULL : PyBool_FromLong(r); }
+    }
+    if (b) return b(x, y);
+    if (u) return u(x);
+    return PyErr_Format(PyExc_SystemError, "%s.nb_%s is NULL", t, name);
+}
 /* tp_new of tuple, float, str, bytes, each called on one argument */
 static PyObject *builtin_new(PyObject *m, PyObject *a) {
     const char *which; PyObject *arg;
@@ -214,7 +250,8 @@ static PyObject *module_state(PyObject *m, PyObject *u) {
 
 #define M(name, flags) {#name, (PyCFunction)(void (*)(void))name, flags, NULL}
 static PyMethodDef methods[] = {
-    M(long_slots, METH_VARARGS), M(float_slots, METH_O), M(builtin_new, METH_VARARGS),
+    M(long_slots, METH_VARARGS), M(float_slots, METH_O), M(number_slot, METH_VARARGS),
+    M(builtin_new, METH_VARARGS),
     M(sequence_slots, METH_VARARGS), M(mapping_slots, METH_VARARGS), M(object_slots, METH_O),
     M(sizes, METH_O), M(char_class, METH_VARARGS), M(char_case, METH_VARARGS),
     M(buffer, METH_O), M(buffer_contiguous, METH_O), M(writable_buffer, METH_O),

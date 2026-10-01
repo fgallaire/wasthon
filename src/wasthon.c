@@ -323,8 +323,12 @@ static PySequenceMethods wasthon_builtin_as_sequence = {
  * PyType_Type.tp_alloc). Priority 101 orders this ctor ahead of every
  * default-priority (C++) initializer in __wasm_call_ctors. Pure pointer
  * stores only — no JS calls are legal this early. */
+void wasthon_init_number_protocols(void);
 __attribute__((constructor(101)))
 static void wasthon_prime_builtin_slot_tables(void) {
+    /* tp_as_number of int and float: _decimal and other modules cache their
+     * nb_* pointers, a C++ static initializer as early as THPSize's */
+    wasthon_init_number_protocols();
     PyType_Type.tp_iter    = wasthon_builtin_tp_iter;
     /* pybind11's get_internals() calls PyType_Type.tp_alloc(&PyType_Type, 0)
      * to build its 3 internal heap types by hand; hand back raw
@@ -503,11 +507,6 @@ void wasthon_init(void) {
      * separate module). When that port resumes, re-establish it there without
      * touching wasthon_init, and fix the real uninitialized-fn-pointer read the
      * layout shift exposes. */
-
-    /* Populate tp_as_number for PyLong_Type / PyFloat_Type so _decimal
-     * (and other modules that cache nb_* pointers) can read them. */
-    extern void wasthon_init_number_protocols(void);
-    wasthon_init_number_protocols();
 }
 
 /*
@@ -982,6 +981,40 @@ extern PyObject *wasthon_float_as_integer_ratio(PyObject *, PyObject *);
 static PyNumberMethods wasthon_long_nb;
 static PyNumberMethods wasthon_float_nb;
 
+/* The rest of int's and float's number slots, generic: each calls the
+ * class's own dunder through Brython (int.__add__(a, b), or the reflected
+ * one when only the right operand is of the class), so a C subclass that
+ * delegates to PyLong_Type.tp_as_number does not re-enter its override.
+ * The op numbers index the dunder lists of src/wasthon.js. */
+extern PyObject *wasthon_builtin_nb_binary(int is_float, int op, PyObject *a, PyObject *b);
+extern PyObject *wasthon_builtin_nb_unary(int is_float, int op, PyObject *a);
+extern PyObject *wasthon_builtin_nb_power(int is_float, PyObject *a, PyObject *b, PyObject *c);
+extern int wasthon_builtin_nb_bool(int is_float, PyObject *a);
+#define NB_BINARY(T, F, NAME, OP) static PyObject *nb_##T##_##NAME(PyObject *a, PyObject *b) \
+    { return wasthon_builtin_nb_binary(F, OP, a, b); }
+#define NB_UNARY(T, F, NAME, OP) static PyObject *nb_##T##_##NAME(PyObject *a) \
+    { return wasthon_builtin_nb_unary(F, OP, a); }
+NB_BINARY(long, 0, add, 0)          NB_BINARY(float, 1, add, 0)
+NB_BINARY(long, 0, subtract, 1)     NB_BINARY(float, 1, subtract, 1)
+NB_BINARY(float, 1, multiply, 2)
+NB_BINARY(long, 0, remainder, 3)    NB_BINARY(float, 1, remainder, 3)
+NB_BINARY(long, 0, divmod, 4)       NB_BINARY(float, 1, divmod, 4)
+NB_BINARY(float, 1, floor_divide, 5)
+NB_BINARY(long, 0, true_divide, 6)  NB_BINARY(float, 1, true_divide, 6)
+NB_BINARY(long, 0, rshift, 8)
+NB_BINARY(long, 0, and, 9)
+NB_BINARY(long, 0, xor, 10)
+NB_BINARY(long, 0, or, 11)
+NB_UNARY(long, 0, negative, 0)      NB_UNARY(float, 1, negative, 0)
+NB_UNARY(long, 0, positive, 1)      NB_UNARY(float, 1, positive, 1)
+NB_UNARY(long, 0, absolute, 2)
+NB_UNARY(long, 0, invert, 3)
+NB_UNARY(long, 0, float, 5)         NB_UNARY(float, 1, float, 5)
+static PyObject *nb_float_power(PyObject *a, PyObject *b, PyObject *c)
+    { return wasthon_builtin_nb_power(1, a, b, c); }
+static int nb_long_bool(PyObject *a) { return wasthon_builtin_nb_bool(0, a); }
+static int nb_float_bool(PyObject *a) { return wasthon_builtin_nb_bool(1, a); }
+
 static struct PyMethodDef wasthon_long_methods[] = {
     {"bit_length", (void *)wasthon_long_bit_length, METH_NOARGS, 0},
     {0, 0, 0, 0},
@@ -1002,6 +1035,21 @@ void wasthon_init_number_protocols(void) {
      * (np.void(5)). nb_index is the same function, as for CPython's long. */
     wasthon_long_nb.nb_int          = wasthon_long_nb_int;
     wasthon_long_nb.nb_index        = wasthon_long_nb_int;
+    wasthon_long_nb.nb_add          = nb_long_add;
+    wasthon_long_nb.nb_subtract     = nb_long_subtract;
+    wasthon_long_nb.nb_remainder    = nb_long_remainder;
+    wasthon_long_nb.nb_divmod       = nb_long_divmod;
+    wasthon_long_nb.nb_true_divide  = nb_long_true_divide;
+    wasthon_long_nb.nb_rshift       = nb_long_rshift;
+    wasthon_long_nb.nb_and          = nb_long_and;
+    wasthon_long_nb.nb_xor          = nb_long_xor;
+    wasthon_long_nb.nb_or           = nb_long_or;
+    wasthon_long_nb.nb_negative     = nb_long_negative;
+    wasthon_long_nb.nb_positive     = nb_long_positive;
+    wasthon_long_nb.nb_absolute     = nb_long_absolute;
+    wasthon_long_nb.nb_invert       = nb_long_invert;
+    wasthon_long_nb.nb_float        = nb_long_float;
+    wasthon_long_nb.nb_bool         = nb_long_bool;
     PyLong_Type.tp_as_number = &wasthon_long_nb;
     PyLong_Type.tp_methods   = wasthon_long_methods;
 
@@ -1010,6 +1058,18 @@ void wasthon_init_number_protocols(void) {
      * PyFloat_Type.tp_as_number->nb_int(x) directly — NULL trapped once
      * PyFloat_CheckExact learned to recognize Brython's Float box. */
     wasthon_float_nb.nb_int = wasthon_float_nb_int;
+    wasthon_float_nb.nb_add          = nb_float_add;
+    wasthon_float_nb.nb_subtract     = nb_float_subtract;
+    wasthon_float_nb.nb_multiply     = nb_float_multiply;
+    wasthon_float_nb.nb_remainder    = nb_float_remainder;
+    wasthon_float_nb.nb_divmod       = nb_float_divmod;
+    wasthon_float_nb.nb_floor_divide = nb_float_floor_divide;
+    wasthon_float_nb.nb_true_divide  = nb_float_true_divide;
+    wasthon_float_nb.nb_power        = nb_float_power;
+    wasthon_float_nb.nb_negative     = nb_float_negative;
+    wasthon_float_nb.nb_positive     = nb_float_positive;
+    wasthon_float_nb.nb_float        = nb_float_float;
+    wasthon_float_nb.nb_bool         = nb_float_bool;
     PyFloat_Type.tp_as_number = &wasthon_float_nb;
     PyFloat_Type.tp_methods   = wasthon_float_methods;
 }

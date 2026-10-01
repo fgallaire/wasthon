@@ -14144,11 +14144,74 @@ mergeInto(LibraryManager.library, {
             var d = (typeof x === 'number') ? x
                   : (x && typeof x.value === 'number') ? x.value
                   : Number(x);
-            return rt.wrapNewRef(Math.abs(d));
+            // a Brython float: the bare JS number read back as an int (2.0)
+            // or a JSObject (7.5)
+            return rt.wrapNewRef(rt.$B.fast_float(Math.abs(d)));
         } catch (e) {
             rt.forwardError(e, rt._b_.TypeError);
             return 0;
         }
+    },
+
+    /* The generic number slots of int and float (wasthon.c, the NB_BINARY
+     * and NB_UNARY tables): the class's own dunder, called unbound so a
+     * subclass override is not re-entered. A binary slot gets its operands
+     * in either order: the dunder when the left one is of the class, the
+     * reflected dunder when only the right one is, else NotImplemented, as
+     * CPython's long_add (CHECK_BINOP) and float_add (int operands too). */
+    wasthon_builtin_nb_binary__deps: ['$WasthonRT'],
+    wasthon_builtin_nb_binary: function(isFloat, op, aH, bH) {
+        var rt = WasthonRT;
+        try {
+            var name = ['__add__', '__sub__', '__mul__', '__mod__', '__divmod__', '__floordiv__',
+                        '__truediv__', '__lshift__', '__rshift__', '__and__', '__xor__', '__or__'][op];
+            var cls = isFloat ? rt._b_.float : rt._b_.int;
+            var a = rt.unwrap(aH), b = rt.unwrap(bH);
+            if (rt.$B.$isinstance(a, cls)) {
+                return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(cls, name), a, b));
+            }
+            if (rt.$B.$isinstance(b, cls)) {
+                return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(cls, '__r' + name.slice(2)), b, a));
+            }
+            return rt.wrapNewRef(rt._b_.NotImplemented);
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+    },
+    wasthon_builtin_nb_unary__deps: ['$WasthonRT'],
+    wasthon_builtin_nb_unary: function(isFloat, op, aH) {
+        var rt = WasthonRT;
+        try {
+            var name = ['__neg__', '__pos__', '__abs__', '__invert__', '__int__', '__float__',
+                        '__index__'][op];
+            var cls = isFloat ? rt._b_.float : rt._b_.int;
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(cls, name), rt.unwrap(aH)));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+    },
+    wasthon_builtin_nb_power__deps: ['$WasthonRT'],
+    wasthon_builtin_nb_power: function(isFloat, aH, bH, cH) {
+        var rt = WasthonRT;
+        try {
+            var c = cH ? rt.unwrap(cH) : rt._b_.None;
+            var cls = isFloat ? rt._b_.float : rt._b_.int;
+            var a = rt.unwrap(aH), b = rt.unwrap(bH);
+            if (c === rt._b_.None) {
+                if (rt.$B.$isinstance(a, cls)) {
+                    return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(cls, '__pow__'), a, b));
+                }
+                if (rt.$B.$isinstance(b, cls)) {
+                    return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(cls, '__rpow__'), b, a));
+                }
+                return rt.wrapNewRef(rt._b_.NotImplemented);
+            }
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(cls, '__pow__'), a, b, c));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+    },
+    wasthon_builtin_nb_bool__deps: ['$WasthonRT'],
+    wasthon_builtin_nb_bool: function(isFloat, aH) {
+        var rt = WasthonRT;
+        try {
+            var cls = isFloat ? rt._b_.float : rt._b_.int;
+            return rt.$B.$call(rt.$B.$getattr(cls, '__bool__'), rt.unwrap(aH)) ? 1 : 0;
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
     },
 
     /* int.bit_length — number of bits required for binary representation

@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **int and float have every number slot, set before C++ initializers**
+  (`src/wasthon.c` `wasthon_init_number_protocols`, `src/wasthon.js`
+  `wasthon_builtin_nb_*`). `PyLong_Type.tp_as_number` held six slots and
+  `PyFloat_Type`'s two: a C caller of `nb_add`, `nb_true_divide`, `nb_bool`…
+  called NULL. And they were set by `wasthon_init()`, after the C++ static
+  initializers that cache such pointers (as THPSize does `PyTuple_Type`'s).
+  Fix — the rest are generic slots calling the class's own dunder (or the
+  reflected one, else NotImplemented, as `CHECK_BINOP`), set in the priority
+  constructor with the sequence and mapping tables. `float`'s `nb_absolute`
+  returned a bare JS number, read back as an int for `abs(-2.0)`: it returns
+  a float. +1 bridge test (`test_builtin_number_slots_all`, every slot).
+
 - **`_PyOnceFlag_CallOnce` retries a failed init** (`src/wasthon.c`). It set
   the flag whatever the init function returned: a run that failed (-1) was
   never retried, and every later call answered 0, success, over a half-done
