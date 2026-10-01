@@ -20,7 +20,6 @@ test_unicode.py::test_PyUnicode_DecodeUTF32
 test_unicode.py::test_PyUnicode_DecodeUTF8_errors
 test_unicode.py::test_PyUnicode_FromEncodedObject
 test_unicode.py::test_PyUnicode_FromObject
-test_unicode.py::test_PyUnicode_FromString
 test_unicode.py::test_PyUnicode_GetLength
 test_unicode.py::test_PyUnicode_KIND_MAX_CHAR_VALUE_IS_ASCII
 test_unicode.py::test_PyUnicodeWriter

@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_FromString` decodes strictly** (`src/wasthon.js`). It went
+  through `UTF8ToString`, which replaces an invalid byte with U+FFFD.
+  Fix — `PyUnicode_DecodeUTF8` of the `strlen` bytes, strict, as CPython
+  (UnicodeDecodeError); a stray duplicate `__deps` key above it is gone.
+  +1 bridge test (`test_PyUnicode_FromString`).
+
 - **`_Py_hashtable` is CPython's** (`src/wasthon.c`, `src/pycore_hashtable.h`,
   `src/pycore_pyhash.h`, `src/wasthon.js`). A JS-Map stub keyed every table
   by the key read as a C string, whatever the table's hash and compare

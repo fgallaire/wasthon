@@ -3540,7 +3540,6 @@ mergeInto(LibraryManager.library, {
         }
     },
 
-    PyUnicode_FromString__deps: ['$WasthonRT'],
     /* PyUnicode_InternFromString — like FromString, but the result is
      * interned: a real content-keyed pool of pinned handles. Interned
      * strings are immortal in CPython 3.12+, and C code stores the result
@@ -3560,10 +3559,14 @@ mergeInto(LibraryManager.library, {
         return h;
     },
 
-    PyUnicode_FromString__deps: ['$WasthonRT'],
+    PyUnicode_FromString__deps: ['PyUnicode_DecodeUTF8'],
     PyUnicode_FromString: function(uPtr) {
         if (uPtr === 0) return 0;
-        return WasthonRT.wrapNewRef(UTF8ToString(uPtr));
+        // CPython: the strict UTF-8 decoding of strlen(u) bytes; UTF8ToString
+        // replaced an invalid byte with U+FFFD
+        var n = 0;
+        while (HEAPU8[uPtr + n] !== 0) n++;
+        return _PyUnicode_DecodeUTF8(uPtr, n, 0);
     },
 
     PyLong_FromLong__deps: ['$WasthonRT'],
