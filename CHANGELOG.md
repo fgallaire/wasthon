@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`_Py_HashDouble` agrees with `PyObject_Hash`** (`src/wasthon.js`). It
+  returned `Number()` of Brython's BigInt float hash, which reached C as
+  2147483647 for 1.5. Fix — `PyObject_Hash` of the float (Brython's hash
+  reduced to the 32-bit Py_hash_t), of the object for a NaN, as CPython.
+  The test compares with the hash as C holds it (`c_hash`, as
+  test_object). +1 bridge test (`test__Py_HashDouble`).
+
 - **`PyOS_snprintf` is CPython's, with `PyOS_vsnprintf`** (`src/wasthon.c`,
   `src/wasthon.h`). The JS version was a printf subset that returned the
   count written (7 for `"%d-%s"` into 8 bytes, where CPython returns the 9

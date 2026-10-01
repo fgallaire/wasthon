@@ -5,6 +5,17 @@
 import sys
 
 import _capi_private as p
+import _capi_number
+
+# Py_hash_t is a Py_ssize_t: 32 bits on wasm32, where Brython's hash() is
+# wider (CPython's never is). A hash as C holds it:
+HASH_BITS = 8 * _capi_number.sizes()['ssize_t']
+
+
+def c_hash(v):
+    h = hash(v) & (2 ** HASH_BITS - 1)
+    h = h - 2 ** HASH_BITS if h >= 2 ** (HASH_BITS - 1) else h
+    return -2 if h == -1 else h
 
 
 def raises(exc, f, *args):
@@ -199,7 +210,7 @@ def test__PyTime_ObjectToTime_t_localtime():
 
 
 def test__Py_HashDouble():
-    assert p.hash_double(1.5) == hash(1.5) and p.hash_double(3.0) == 3
+    assert p.hash_double(1.5) == c_hash(1.5) and p.hash_double(3.0) == 3
 
 
 def test__PyOS_URandomNonblock():

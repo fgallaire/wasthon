@@ -7,7 +7,6 @@ test_object.py::test_PyErr_SetFromErrno
 test_object.py::test_PyErr_WriteUnraisable_FormatUnraisable
 test_private.py::test__PyArg_CheckPositional
 test_private.py::test__PyErr_FormatFromCause
-test_private.py::test__Py_HashDouble
 test_private.py::test__Py_hashtable
 test_private.py::test__PyLong_internals
 test_private.py::test__PyNumber_Index

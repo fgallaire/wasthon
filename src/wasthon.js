@@ -9650,11 +9650,13 @@ mergeInto(LibraryManager.library, {
     PyComplex_RealAsDouble: function(aH) { return __wasthon_complex_part(aH, 'real'); },
     PyComplex_ImagAsDouble__deps: ['$__wasthon_complex_part'],
     PyComplex_ImagAsDouble: function(aH) { return __wasthon_complex_part(aH, 'imag'); },
-    _Py_HashDouble__deps: ['$WasthonRT'],
-    _Py_HashDouble: function(objH, v) { var rt = WasthonRT;
-        try { var h = rt.$B.$call(rt.$B.$getattr(rt._b_.float.$factory(v), '__hash__'));
-              return (h && h.valueOf) ? Number(h.valueOf()) : Number(h); }
-        catch (e) { return 0; } },
+    _Py_HashDouble__deps: ['$WasthonRT', 'PyObject_Hash'],
+    _Py_HashDouble: function(objH, v) {
+        // the float's hash as PyObject_Hash hands it to C (Brython's 2**61-1
+        // modulus reduced to Py_hash_t), the object's for a NaN, as CPython;
+        // Number() of the BigInt hash reached C as garbage (2147483647)
+        if (isNaN(v)) return _PyObject_Hash(objH);
+        return _PyObject_Hash(WasthonRT.wrap(WasthonRT.$B.fast_float(v))); },
 
     /* --- Dict --- */
     PyDict_Copy__deps: ['$WasthonRT'],
