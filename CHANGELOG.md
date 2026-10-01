@@ -7,6 +7,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_MAX_CHAR_VALUE` is the kind's maximum** (`src/wasthon.js`).
+  It returned the string's largest character ('abc' gave 0x63). Fix —
+  CPython's: 0x7f for ASCII, else 0xff, 0xffff or 0x10ffff by kind. +1
+  bridge test (`test_PyUnicode_KIND_MAX_CHAR_VALUE_IS_ASCII`).
+
 - **`PyUnicode_GetLength` and `PyUnicode_ReadChar` count code points**
   (`src/wasthon.js`). Both used UTF-16 units: an astral char counted
   twice, `PyUnicode_AsUCS4Copy`'s caller then read one slot past the

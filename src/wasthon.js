@@ -14806,17 +14806,15 @@ mergeInto(LibraryManager.library, {
         try { return rt.wrapNewRef(parts.join(sep)); } catch (e) { return 0; }
     },
 
-    PyUnicode_MAX_CHAR_VALUE__deps: ['$WasthonRT'],
+    /* CPython's: the maximum of the string's kind (0x7f ASCII, 0xff,
+     * 0xffff, 0x10ffff), not its largest character */
+    PyUnicode_MAX_CHAR_VALUE__deps: ['PyUnicode_IS_ASCII', 'PyUnicode_KIND'],
     PyUnicode_MAX_CHAR_VALUE: function(handle) {
-        var obj = WasthonRT.asJSStr(WasthonRT.unwrap(handle));
-        if (obj === null) return 0x10FFFF;
-        var max = 0;
-        for (var i = 0; i < obj.length;) {
-            var c = obj.codePointAt(i);
-            if (c > max) max = c;
-            i += c > 0xFFFF ? 2 : 1;
-        }
-        return max;
+        if (_PyUnicode_IS_ASCII(handle)) return 0x7f;
+        var kind = _PyUnicode_KIND(handle);
+        if (kind === 1) return 0xff;
+        if (kind === 2) return 0xffff;
+        return 0x10ffff;
     },
 
     /* PyUnicode_New(size, maxchar) — allocate a fresh str of `size` chars.
