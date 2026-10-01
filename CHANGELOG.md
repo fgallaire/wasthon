@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **The PyCFunction accessors read the function** (`src/wasthon.js`).
+  `PyCFunction_GetFunction` returned NULL, `PyCFunction_GET_FUNCTION` read
+  a `__wasthon_fnptr__` nothing set (0), and `PyCFunction_GET_SELF` wrapped
+  `m_self` again instead of handing back the pointer stored. Fix — every
+  trampoline carries its `ml_meth`, `GetFunction` checks the type
+  (SystemError otherwise) and returns it, `GET_SELF` of a NewEx object
+  reads its `m_self` field, as CPython. +1 bridge test
+  (`test_PyCFunction_NewEx`).
+
 - **`PyModule_FromDefAndSpec2` takes the spec's name** (`src/wasthon.js`).
   The module was named after the def's `m_name`. Fix — `spec.name`, as
   CPython (AttributeError without one, TypeError for a non-str). +1

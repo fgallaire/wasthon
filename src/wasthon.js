@@ -12389,10 +12389,14 @@ mergeInto(LibraryManager.library, {
                         || obj.ob_type === WasthonRT.$B.builtin_function_or_method)) ? 1 : 0;
     },
 
-    /* PyCFunction_GetFunction — return the C function pointer behind a
-     * builtin method. Our trampolines don't expose the raw fn pointer; we
-     * return NULL so callers fall back to PyObject_Call. */
-    PyCFunction_GetFunction: function(handle) { return 0; },
+    /* PyCFunction_GetFunction — CPython: the function's m_ml->ml_meth,
+     * SystemError for anything but a C function. It returned NULL. */
+    PyCFunction_GetFunction__deps: ['PyCFunction_Check', 'PyCFunction_GET_FUNCTION',
+                                    'PyErr_BadInternalCall'],
+    PyCFunction_GetFunction: function(handle) {
+        if (!_PyCFunction_Check(handle)) { _PyErr_BadInternalCall(); return 0; }
+        return _PyCFunction_GET_FUNCTION(handle);
+    },
 
     /* _PyErr_FormatNote(format, ...) — format a message and append it to the
      * currently-raised exception's __notes__ (PEP 678). _json's encoder calls
@@ -15279,6 +15283,7 @@ mergeInto(LibraryManager.library, {
         HEAP32[(ptr + 8)  >> 2] = selfHandle;    /* m_self */
         HEAP32[(ptr + 12) >> 2] = moduleHandle;  /* m_module */
         tramp.__wasthon_ptr__ = ptr;
+        tramp.$cfuncStruct = true;
         /* module-lifetime pin: pybind11 juggles borrows around def()/attr
          * assignment whose net count reaches 0 here even though the
          * trampoline stays reachable from the class dict (CPython's setattr
@@ -15300,6 +15305,8 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var obj = rt.unwrap(objH);
         if (!obj) return 0;
+        // NewEx's PyCFunctionObject: m_self as stored, as CPython reads it
+        if (obj.$cfuncStruct) return HEAP32[(obj.__wasthon_ptr__ + 8) >> 2];
         var self = obj.__self__ !== undefined ? obj.__self__ : null;
         return self === null ? 0 : rt.wrap(self);
     },
@@ -19086,6 +19093,7 @@ mergeInto(LibraryManager.library, {
          * which became an unpicklable '<JavascriptFunction>' instead of the
          * builtin. PYOBJ makes jsobj2pyobj return the trampoline unchanged. */
         try { tramp[rt.$B.PYOBJ] = tramp; } catch (_) {}
+        tramp.__wasthon_fnptr__ = fnPtr;   /* ml_meth, for PyCFunction_GET_FUNCTION */
         return tramp;
     },
 
