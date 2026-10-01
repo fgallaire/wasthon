@@ -3847,6 +3847,21 @@ mergeInto(LibraryManager.library, {
 
     PyList_Size__deps: ['$WasthonRT'],
     PyList_Size: function(listHandle) {
+        var rt = WasthonRT;
+        var arr = rt.unwrap(listHandle);
+        // CPython: a non-list is PyErr_BadInternalCall, not a length of 0
+        if (!Array.isArray(arr) || !rt.$B.$isinstance(arr, rt._b_.list)) {
+            rt.setError(rt.wrap(rt._b_.SystemError), "bad argument to internal function");
+            return -1;
+        }
+        return arr.length;
+    },
+    /* PyList_GET_SIZE is CPython's unchecked macro: no error path, so its
+     * callers never test it. Through the checking PyList_Size, sqlite3's
+     * close() on a Connection finalized by gc.collect() (self->blobs
+     * cleared to NULL) left a SystemError pending behind a None. */
+    _wasthon_PyList_GET_SIZE__deps: ['$WasthonRT'],
+    _wasthon_PyList_GET_SIZE: function(listHandle) {
         var arr = WasthonRT.unwrap(listHandle);
         return Array.isArray(arr) ? arr.length : 0;
     },
@@ -3978,8 +3993,14 @@ mergeInto(LibraryManager.library, {
 
     PyTuple_Size__deps: ['$WasthonRT'],
     PyTuple_Size: function(handle) {
-        var arr = WasthonRT.unwrap(handle);
-        return Array.isArray(arr) ? arr.length : 0;
+        var rt = WasthonRT;
+        var arr = rt.unwrap(handle);
+        // CPython: a non-tuple is PyErr_BadInternalCall, not a length of 0
+        if (!Array.isArray(arr) || !rt.$B.$isinstance(arr, rt._b_.tuple)) {
+            rt.setError(rt.wrap(rt._b_.SystemError), "bad argument to internal function");
+            return -1;
+        }
+        return arr.length;
     },
 
     /* PyTuple_Pack(n, o1, o2, ..., oN) — varargs tuple constructor. emcc

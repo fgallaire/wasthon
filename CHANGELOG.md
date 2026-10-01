@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyList_Size` and `PyTuple_Size` refuse the other type** (`src/wasthon.js`).
+  Both answered the length of any JS array, a list for a tuple and the
+  reverse, and 0 for anything else. Fix — `PyErr_BadInternalCall`'s
+  SystemError and -1, as CPython. `PyList_GET_SIZE`, CPython's unchecked
+  macro whose callers never test it, gets its own error-free accessor like
+  `PyTuple_GET_SIZE` (`src/wasthon.h`): on the checking function, sqlite3's
+  `close()` of a Connection finalized by `gc.collect()` (`self->blobs`
+  cleared to NULL) left a pending SystemError. +2 bridge tests
+  (`test_PyList_Size`, `test_PyTuple_Size_GET_SIZE`).
+
 - **A `METH_VARARGS` function gets a real tuple** (`src/wasthon.js`,
   `__wasthon_make_trampoline`, and `PyType_Ready`'s `tp_init`). The
   `METH_VARARGS | METH_KEYWORDS` branch built `args` as a tuple, the plain

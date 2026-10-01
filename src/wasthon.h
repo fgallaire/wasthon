@@ -1162,7 +1162,8 @@ Py_hash_t PyObject_Hash(PyObject *o);
 int       PyObject_RichCompareBool(PyObject *o1, PyObject *o2, int op);
 #define PyList_GET_ITEM(list, i)        PyList_GetItem((list), (i))
 #define PyList_SET_ITEM(list, i, item)  ((void)PyList_SetItem((list), (i), (item)))
-#define PyList_GET_SIZE(list)           PyList_Size(list)
+Py_ssize_t _wasthon_PyList_GET_SIZE(PyObject *list);
+#define PyList_GET_SIZE(list)           _wasthon_PyList_GET_SIZE((PyObject *)(list))
 
 /* Bytes-accessor macros / fast-paths. */
 char      *PyBytes_AsString(PyObject *bytes);
