@@ -3121,66 +3121,103 @@ mergeInto(LibraryManager.library, {
         return ptr;
     },
 
-    /* PyUnicode_DecodeUTF8(buf, size, errors) — decode UTF-8 bytes to a
-     * Python str. We ignore the errors argument (strict-mode behaviour). */
-    PyUnicode_DecodeUTF8__deps: ['$WasthonRT'],
-    PyUnicode_DecodeUTF8: function(strPtr, size, errorsPtr) {
-        if (strPtr === 0) return WasthonRT.wrapNewRef("");
-        /* UTF8ToString stops at the first NUL even with a size bound
-         * (C-string semantics) — pickle's BINUNICODE payloads may embed
-         * NULs ('\u20ac\x00' lost its tail). Decode the exact slice.
-         * surrogatepass: CESU sequences (ed a0-bf ..) must round-trip as
-         * lone surrogates, TextDecoder replaces them — slow path only when
-         * an 0xED lead byte is present. */
-        var sl = HEAPU8.subarray(strPtr, strPtr + size);
-        var hasED = false;
-        for (var di = 0; di < sl.length; di++) {
-            if (sl[di] === 0xED) { hasED = true; break; }
-        }
-        if (!hasED) {
-            // ignoreBOM: true — a leading U+FEFF is data, not a byte-order mark.
-            // TextDecoder defaults to stripping it, so a string starting with
-            // '﻿' decoded to '' (pickle round-trip of array('u',
-            // '...﻿') lost the char). CPython's UTF-8 codec never strips it.
-            // 'strict' (the default) must reject invalid bytes with
-            // UnicodeDecodeError — pickle's find_class decodes a module/global
-            // name strict, so a \xff name raises instead of yielding U+FFFD.
-            // On this fast path there are no 0xED lead bytes, hence no lone
-            // surrogates — so 'surrogatepass' behaves like 'strict' here (an
-            // invalid byte such as \xff is rejected either way); only the
-            // lenient modes keep replacing. The 0xED slow path below still
-            // round-trips lone surrogates for 'surrogatepass'.
-            var err = errorsPtr ? UTF8ToString(errorsPtr) : 'strict';
-            var strict = (err === 'strict' || err === 'surrogatepass');
-            try {
-                return WasthonRT.wrapNewRef(
-                    new TextDecoder('utf-8', { ignoreBOM: true, fatal: strict }).decode(sl));
-            } catch (e) {
-                WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.UnicodeDecodeError),
-                    "'utf-8' codec can't decode byte: invalid start byte");
-                return 0;
+    /* CPython's UTF-8 decoder, for input TextDecoder rejects: the well-formed
+     * sequences of Unicode Table 3-7; an error over the maximal subpart
+     * with CPython's three reasons; the strict, ignore, replace,
+     * surrogateescape, surrogatepass and backslashreplace handlers, any
+     * other name through codecs.lookup_error. Returns the str, or null
+     * with the exception set. */
+    $wasthonDecodeUTF8__deps: ['$WasthonRT'],
+    $wasthonDecodeUTF8: function(b, errors) {
+        var rt = WasthonRT, out = [], n = b.length, i = 0;
+        while (i < n) {
+            var c = b[i];
+            if (c < 0x80) { out.push(c); i++; continue; }
+            var need = -1, lo = 0x80, hi = 0xBF;
+            if (c >= 0xC2 && c <= 0xDF) need = 1;
+            else if (c >= 0xE0 && c <= 0xEF) {
+                need = 2;
+                if (c === 0xE0) lo = 0xA0; else if (c === 0xED) hi = 0x9F;
+            } else if (c >= 0xF0 && c <= 0xF4) {
+                need = 3;
+                if (c === 0xF0) lo = 0x90; else if (c === 0xF4) hi = 0x8F;
             }
-        }
-        var chars = [];
-        for (var p = 0; p < sl.length;) {
-            var b = sl[p];
-            if (b < 0x80) { chars.push(b); p += 1; }
-            else if ((b & 0xE0) === 0xC0) {
-                chars.push(((b & 31) << 6) | (sl[p+1] & 63)); p += 2;
-            } else if ((b & 0xF0) === 0xE0) {
-                chars.push(((b & 15) << 12) | ((sl[p+1] & 63) << 6) | (sl[p+2] & 63)); p += 3;
-            } else {
-                var cp = ((b & 7) << 18) | ((sl[p+1] & 63) << 12) |
-                         ((sl[p+2] & 63) << 6) | (sl[p+3] & 63);
-                cp -= 0x10000;
-                chars.push(0xD800 + (cp >> 10), 0xDC00 + (cp & 1023)); p += 4;
+            var end = i + 1, reason = null;
+            if (need < 0) reason = 'invalid start byte';
+            else {
+                for (var k = 1; k <= need; k++) {
+                    if (i + k >= n) { reason = 'unexpected end of data'; break; }
+                    var x = b[i + k];
+                    if (k === 1 ? (x < lo || x > hi) : (x < 0x80 || x > 0xBF)) {
+                        reason = 'invalid continuation byte'; break;
+                    }
+                    end = i + k + 1;
+                }
             }
+            if (reason === null) {
+                var cp = need === 1 ? ((c & 0x1F) << 6) | (b[i+1] & 0x3F)
+                       : need === 2 ? ((c & 0x0F) << 12) | ((b[i+1] & 0x3F) << 6) | (b[i+2] & 0x3F)
+                       : ((c & 0x07) << 18) | ((b[i+1] & 0x3F) << 12) |
+                         ((b[i+2] & 0x3F) << 6) | (b[i+3] & 0x3F);
+                out.push(cp); i += need + 1; continue;
+            }
+            if (errors === 'ignore') { i = end; continue; }
+            if (errors === 'replace') { out.push(0xFFFD); i = end; continue; }
+            if (errors === 'surrogateescape') {
+                for (var q = i; q < end; q++) out.push(0xDC00 + b[q]);
+                i = end; continue;
+            }
+            if (errors === 'backslashreplace') {
+                for (var r = i; r < end; r++) {
+                    var h = '\\x' + (b[r] < 16 ? '0' : '') + b[r].toString(16);
+                    for (var hc = 0; hc < h.length; hc++) out.push(h.charCodeAt(hc));
+                }
+                i = end; continue;
+            }
+            if (errors === 'surrogatepass' && c === 0xED && i + 2 < n &&
+                    b[i+1] >= 0xA0 && b[i+1] <= 0xBF && b[i+2] >= 0x80 && b[i+2] <= 0xBF) {
+                out.push(((c & 0x0F) << 12) | ((b[i+1] & 0x3F) << 6) | (b[i+2] & 0x3F));
+                i += 3; continue;
+            }
+            var exc = rt.$B.$call(rt._b_.UnicodeDecodeError, 'utf-8',
+                rt._b_.bytes.$factory(Array.from(b)), i, end, reason);
+            if (errors !== 'strict' && errors !== 'surrogatepass') {
+                try {
+                    var codecs = rt.$B.$call(rt._b_.__import__, 'codecs');
+                    var res = rt.$B.$call(rt.$B.$call(rt.$B.$getattr(codecs, 'lookup_error'), errors), exc);
+                    var rep = rt.asJSStr(res[0]);
+                    for (var cpi of rep) out.push(cpi.codePointAt(0));
+                    i = res[1]; continue;
+                } catch (e) { rt.forwardError(e); return null; }
+            }
+            rt.setError(rt.wrap(rt._b_.UnicodeDecodeError), '', exc);
+            return null;
         }
         var parts = [];
-        for (var k = 0; k < chars.length; k += 16384) {
-            parts.push(String.fromCharCode.apply(null, chars.slice(k, k + 16384)));
+        for (var p = 0; p < out.length; p += 16384) {
+            parts.push(String.fromCodePoint.apply(null, out.slice(p, p + 16384)));
         }
-        return WasthonRT.wrapNewRef(parts.join(''));
+        return parts.join('');
+    },
+
+    /* PyUnicode_DecodeUTF8(buf, size, errors). UTF8ToString stops at the
+     * first NUL even with a size bound — pickle's BINUNICODE payloads may
+     * embed NULs ('€\x00' lost its tail): decode the exact slice.
+     * TextDecoder (ignoreBOM: a leading U+FEFF is data, as CPython) for
+     * well-formed input; CPython's decoder above otherwise. Its errors
+     * argument was read for 'strict' only: 'ignore' kept U+FFFD, a strict
+     * error had no position, and an 0xED lead byte was decoded as a
+     * surrogate whatever the handler. */
+    PyUnicode_DecodeUTF8__deps: ['$WasthonRT', '$wasthonDecodeUTF8'],
+    PyUnicode_DecodeUTF8: function(strPtr, size, errorsPtr) {
+        if (strPtr === 0) return WasthonRT.wrapNewRef("");
+        var sl = HEAPU8.subarray(strPtr, strPtr + size);
+        try {
+            return WasthonRT.wrapNewRef(
+                new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }).decode(sl));
+        } catch (e) {}
+        var s = wasthonDecodeUTF8(sl, errorsPtr ? UTF8ToString(errorsPtr) : 'strict');
+        return s === null ? 0 : WasthonRT.wrapNewRef(s);
     },
 
     /* PyUnicode_DecodeASCII — same as UTF8 decode for 0x00-0x7F. */

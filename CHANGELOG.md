@@ -7,6 +7,19 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_DecodeUTF8` honors its error handler** (`src/wasthon.js`).
+  Only 'strict' was read: 'ignore' and the others kept TextDecoder's
+  U+FFFD, a strict error had neither position nor reason, and any 0xED
+  lead byte was decoded as a surrogate whatever the handler. Fix —
+  TextDecoder for well-formed input, else CPython's decoder
+  (`$wasthonDecodeUTF8`): Unicode Table 3-7, the maximal-subpart error
+  range with CPython's three reasons, a real 5-argument
+  UnicodeDecodeError, the strict, ignore, replace, surrogateescape,
+  surrogatepass and backslashreplace handlers, any other name through
+  `codecs.lookup_error` (Brython's returns None for every name, not
+  fixed). Checked against CPython on eleven malformed inputs. +1 bridge
+  test (`test_PyUnicode_DecodeUTF8_errors`).
+
 - **`PyUnicode_AsLatin1String` raises on an unencodable character**
   (`src/wasthon.js`). Each UTF-16 unit was cut to 8 bits ('€' gave
   b'\xac') and a non-str raised a TypeError of its own. Fix — CPython's

@@ -12,5 +12,4 @@ test_unicode.py::test_PyUnicode_Decode
 test_unicode.py::test_PyUnicode_Decode_latin1
 test_unicode.py::test_PyUnicode_DecodeUTF16
 test_unicode.py::test_PyUnicode_DecodeUTF32
-test_unicode.py::test_PyUnicode_DecodeUTF8_errors
 test_unicode.py::test_PyUnicode_FromEncodedObject
