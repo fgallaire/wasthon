@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyLong_IsZero` and `PyLong_GetSign` refuse a non-int** (`src/wasthon.js`).
+  They read any object's value: a str was "not zero" with sign 0, and a
+  boxed int subclass (`False`) compared its box with 0. Fix — CPython's
+  TypeError ("expected int, got …", "expect int, got …") and -1 for a
+  non-int, the value read through `coerceInt`. +2 bridge tests.
+
 - **`PySequence_DelItem` deletes from a list only** (`src/wasthon.js`). Its
   native path spliced any JS array, so `del` from C removed an item of a
   tuple in place; a type without `__delitem__` raised AttributeError. Fix —

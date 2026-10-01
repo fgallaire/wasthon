@@ -9505,8 +9505,14 @@ mergeInto(LibraryManager.library, {
 
     /* --- Long / hash / complex accessors --- */
     PyLong_IsZero__deps: ['$WasthonRT'],
-    PyLong_IsZero: function(aH) { var v = WasthonRT.unwrap(aH);
-        var n = (v && v.valueOf) ? v.valueOf() : v; return (n === 0 || n === 0n) ? 1 : 0; },
+    PyLong_IsZero: function(aH) { var rt = WasthonRT; var v = rt.unwrap(aH);
+        // CPython: a non-int is TypeError; an int subclass (False) is read
+        // through coerceInt, the boxed value compared as 0 before
+        if (!rt.$B.$isinstance(v, rt._b_.int)) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "expected int, got " + rt.$B.class_name(v));
+            return -1;
+        }
+        return rt.coerceInt(v) == 0 ? 1 : 0; },
     PyLong_FromUnicodeObject__deps: ['$WasthonRT'],
     PyLong_FromUnicodeObject: function(sH, base) { var rt = WasthonRT;
         try { return rt.wrapNewRef(rt.$B.$call(rt._b_.int, rt.unwrap(sH), base || 10)); }
@@ -15115,13 +15121,14 @@ mergeInto(LibraryManager.library, {
     PyLong_GetSign: function(vH, signPtr) {
         var rt = WasthonRT;
         var v = rt.unwrap(vH);
-        if (v === null || v === undefined) {
-            rt.setError(rt.wrap(rt._b_.TypeError), "PyLong_GetSign: NULL");
+        // CPython: a non-int is TypeError (a str had sign 0)
+        if (v === null || v === undefined || !rt.$B.$isinstance(v, rt._b_.int)) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "expect int, got " + rt.$B.class_name(v));
             return -1;
         }
-        var n = (typeof v === 'bigint') ? Number(v > 0n ? 1n : v < 0n ? -1n : 0n)
-              : (typeof v === 'number') ? (v > 0 ? 1 : v < 0 ? -1 : 0)
-              : 0;
+        var c = rt.coerceInt(v);
+        var n = (typeof c === 'bigint') ? Number(c > 0n ? 1n : c < 0n ? -1n : 0n)
+              : (c > 0 ? 1 : c < 0 ? -1 : 0);
         HEAP32[signPtr >> 2] = n;
         return 0;
     },
