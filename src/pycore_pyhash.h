@@ -29,6 +29,19 @@ typedef union {
 
 extern _Py_HashSecret_t _Py_HashSecret;
 
+// Similar to Py_HashPointer(), but don't replace -1 with -2.
+static inline Py_hash_t
+_Py_HashPointerRaw(const void *ptr)
+{
+    uintptr_t x = (uintptr_t)ptr;
+
+    // Bottom 3 or 4 bits are likely to be 0; rotate x by 4 to the right
+    // to avoid excessive hash collisions for dicts and sets.
+    x = (x >> 4) | (x << (8 * sizeof(uintptr_t) - 4));
+
+    return (Py_hash_t)x;
+}
+
 #ifdef __cplusplus
 }
 #endif

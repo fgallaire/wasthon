@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`_Py_hashtable` is CPython's** (`src/wasthon.c`, `src/pycore_hashtable.h`,
+  `src/pycore_pyhash.h`, `src/wasthon.js`). A JS-Map stub keyed every table
+  by the key read as a C string, whatever the table's hash and compare
+  functions: integer or pointer keys read memory at their address, and the
+  destroy functions never ran. Fix — `Python/hashtable.c` in wasthon.c,
+  CPython 3.14's header (without its Py_BUILD_CORE guard) and
+  `_Py_HashPointerRaw`; hmac's table goes through its own hash
+  (`Py_HashBuffer`) and `strcmp`. +1 bridge test (`test__Py_hashtable`).
+
 - **`_PyTime_ObjectToTime_t` honors its rounding mode** (`src/wasthon.js`).
   Every mode floored. Fix — `pytime.c`'s `pytime_round`: FLOOR, CEILING,
   HALF_EVEN (C's `round()` then even on a tie), UP, before the time_t range

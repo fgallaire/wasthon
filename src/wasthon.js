@@ -8551,59 +8551,6 @@ mergeInto(LibraryManager.library, {
         return rt.ensureTypeStruct(cls);
     },
 
-    /* _Py_hashtable_t — JS-Map-backed minimal implementation. Used by
-     * hmacmodule to map algo-name → entry. We attach the Map directly to
-     * the handle via a JS WeakMap-style registry. */
-    $WasthonHashtables__deps: ['$WasthonRT'],
-    $WasthonHashtables: null,
-
-    _Py_hashtable_new_full__deps: ['$WasthonRT', '$WasthonHashtables'],
-    _Py_hashtable_new_full: function(_hash, _cmp, _kdtor, _vdtor, _alloc) {
-        if (!WasthonHashtables) WasthonHashtables = new Map();
-        var id = _malloc(4);  // unique handle; the 4-byte slot is unused
-        WasthonHashtables.set(id, new Map());
-        return id;
-    },
-
-    _Py_hashtable_destroy__deps: ['$WasthonHashtables'],
-    _Py_hashtable_destroy: function(ht) {
-        if (WasthonHashtables) WasthonHashtables.delete(ht);
-        _free(ht);
-    },
-
-    /* The only user (hmacmodule) keys this table by algorithm NAME (a C
-     * string): it `set`s with static string literals (`e->name`) and `get`s
-     * with `PyUnicode_AsUTF8(name)` — a different pointer for the same text.
-     * So we must key the Map by string CONTENT, not the raw pointer, or every
-     * lookup misses (→ "unsupported hash type"). */
-    _Py_hashtable_set__deps: ['$WasthonHashtables'],
-    _Py_hashtable_set: function(ht, key, value) {
-        var m = WasthonHashtables && WasthonHashtables.get(ht);
-        if (!m) return -1;
-        m.set(key ? UTF8ToString(key) : key, value);
-        return 0;
-    },
-
-    _Py_hashtable_get__deps: ['$WasthonHashtables'],
-    _Py_hashtable_get: function(ht, key) {
-        var m = WasthonHashtables && WasthonHashtables.get(ht);
-        var k = key ? UTF8ToString(key) : key;
-        return (m && m.has(k)) ? m.get(k) : 0;
-    },
-
-    /* `_Py_hashtable_get_entry` returns a pointer to the entry struct or NULL.
-     * We allocate a 1-entry struct (key + value) per get call; minor leak. */
-    _Py_hashtable_get_entry__deps: ['$WasthonHashtables'],
-    _Py_hashtable_get_entry: function(ht, key) {
-        var m = WasthonHashtables && WasthonHashtables.get(ht);
-        var k = key ? UTF8ToString(key) : key;
-        if (!m || !m.has(k)) return 0;
-        var entryPtr = _malloc(8);
-        HEAP32[ entryPtr      >> 2] = key;
-        HEAP32[(entryPtr + 4) >> 2] = m.get(k);
-        return entryPtr;
-    },
-
     /* GIL stubs (single-threaded WASM) */
     PyGILState_Ensure: function() { return 1; },
     PyGILState_Release: function(_s) {},
