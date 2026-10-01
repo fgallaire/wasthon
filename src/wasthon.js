@@ -4229,7 +4229,10 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var d = rt.unwrap(dictH);
         if (d === null) return -1;
-        try { rt._b_.dict.clear(d); return 0; } catch (e) { return -1; }
+        // dict's methods live in its tp_funcs: `_b_.dict.clear` is undefined,
+        // and the TypeError it threw was swallowed with the dict left full
+        try { rt.$B.$call(rt.$B.$getattr(rt._b_.dict, 'clear'), d); return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
     },
 
     PyDict_Size__deps: ['$WasthonRT'],
@@ -12428,11 +12431,10 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var a = rt.unwrap(aH);
         var b = rt.unwrap(bH);
-        try { rt._b_.dict.update(a, b); return 0; }
-        catch (e) {
-            rt.setError(rt.wrap(rt._b_.TypeError), "dict.update failed");
-            return -1;
-        }
+        // through dict's own method, as PyDict_Clear: `_b_.dict.update` is
+        // undefined (dict's methods live in its tp_funcs), so every call failed
+        try { rt.$B.$call(rt.$B.$getattr(rt._b_.dict, 'update'), a, b); return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
     },
 
     /* _PyObject_HashFast(o) — same as hash(o). */

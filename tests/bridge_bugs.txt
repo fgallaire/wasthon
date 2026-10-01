@@ -2,11 +2,9 @@
 # reports them as BUG without failing; the commit that fixes one removes its
 # line.
 test_container.py::test_PyDict_Check_CheckExact
-test_container.py::test_PyDict_Clear
 test_container.py::test_PyDict_Contains_ContainsString
 test_container.py::test_PyDict_DelItem_DelItemString
 test_container.py::test_PyDict_GetItemRef_GetItemStringRef
-test_container.py::test_PyDict_Update
 test_container.py::test_PyList_AsTuple_CheckExact
 test_container.py::test_PySequence_DelItem
 test_container.py::test_PySlice_GetIndicesEx

@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyDict_Clear` clears and `PyDict_Update` updates** (`src/wasthon.js`).
+  Both called `rt._b_.dict.clear` / `.update`, which Brython does not have:
+  dict's methods live in its `tp_funcs`. The TypeError was swallowed, so
+  `PyDict_Clear` left the dict full and `PyDict_Update` always failed
+  ("dict.update failed"). Fix — through `dict`'s own Python method, the real
+  error forwarded. +2 bridge tests (`test_PyDict_Clear`, `test_PyDict_Update`).
+
 - **`PyList_Size` and `PyTuple_Size` refuse the other type** (`src/wasthon.js`).
   Both answered the length of any JS array, a list for a tuple and the
   reverse, and 0 for anything else. Fix — `PyErr_BadInternalCall`'s
