@@ -4209,7 +4209,8 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         var d = rt.unwrap(dictH);
         var k = rt.unwrap(keyH);
-        try { return rt._b_.dict.$contains(d, k) ? 1 : 0; } catch (e) { return 0; }
+        try { return rt._b_.dict.$contains(d, k) ? 1 : 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }  // unhashable key
     },
 
     PyDict_DelItem__deps: ['$WasthonRT'],
@@ -4221,7 +4222,8 @@ mergeInto(LibraryManager.library, {
         // dict.__delitem__ is NOT a direct attribute (Brython keeps it in slots),
         // so the old call was `undefined(d,k)` → always -1. _json's encoder bailed
         // on the circular-ref marker cleanup → "tp_call returned NULL" on dumps.
-        try { rt._b_.dict.$delitem(d, k); return 0; } catch (e) { return -1; }
+        try { rt._b_.dict.$delitem(d, k); return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.KeyError); return -1; }  // -1 had no error set
     },
 
     PyDict_Clear__deps: ['$WasthonRT'],
@@ -4301,7 +4303,9 @@ mergeInto(LibraryManager.library, {
             return 1;
         } catch (e) {
             HEAP32[resultPtr >> 2] = 0;
-            return 0;  // not present
+            if (rt.$B.is_exc && rt.$B.is_exc(e, rt._b_.KeyError)) return 0;  // not present
+            rt.forwardError(e, rt._b_.TypeError);   // unhashable key: -1, as CPython
+            return -1;
         }
     },
 

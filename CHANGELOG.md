@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **The dict lookups raise what Python raises** (`src/wasthon.js`,
+  `PyDict_DelItem`, `PyDict_Contains`, `PyDict_GetItemRef`). Each swallowed
+  its exception: `PyDict_DelItem` of a missing key returned -1 with no error
+  set (the C caller then returned NULL with nothing raised), and an
+  unhashable key made `PyDict_Contains` and `PyDict_GetItemRef` answer
+  "absent". Fix — KeyError and TypeError forwarded with -1, as CPython; a
+  missing key still answers 0 for `GetItemRef`. +3 bridge tests.
+
 - **`PyDict_Clear` clears and `PyDict_Update` updates** (`src/wasthon.js`).
   Both called `rt._b_.dict.clear` / `.update`, which Brython does not have:
   dict's methods live in its `tp_funcs`. The TypeError was swallowed, so
