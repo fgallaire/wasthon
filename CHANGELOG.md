@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`Py_BuildValue("y")` builds the bytes** (`src/wasthon.js`). Plain `y`
+  called `bytes()` on the decoded C string, which raises "string argument
+  without an encoding" (a SystemError out of `Py_BuildValue`). Fix — the
+  raw bytes up to the NUL, as CPython. The first assertion of
+  `test_PyBytes_AsString_Size`; its second is the next fix.
+
 - **`PyUnicodeWriter_Format` formats** (`src/wasthon.js`). It appended the
   format string literally, its arguments unread ("%d%%" for "50%"). Fix —
   `PyUnicode_FromFormat`'s output written into the writer, as CPython. +2

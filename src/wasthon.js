@@ -5055,7 +5055,11 @@ mergeInto(LibraryManager.library, {
                         return [rt._b_.bytes.$factory(Array.from(HEAPU8.subarray(ptr, ptr + blen))), i+2];
                     }
                     if (ptr === 0) return [rt._b_.None, i+1];
-                    return [rt._b_.bytes.$factory(UTF8ToString(ptr)), i+1];
+                    // 'y': the raw bytes up to the NUL; bytes(<decoded str>)
+                    // raised "string argument without an encoding"
+                    var yn = 0;
+                    while (HEAPU8[ptr + yn] !== 0) yn++;
+                    return [rt._b_.bytes.$factory(Array.from(HEAPU8.subarray(ptr, ptr + yn))), i+1];
                 }
                 case 'C':
                     // C int → one-character Python str (Unicode ordinal).
