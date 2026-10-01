@@ -14759,10 +14759,20 @@ mergeInto(LibraryManager.library, {
 
     PyUnicode_Concat__deps: ['$WasthonRT'],
     PyUnicode_Concat: function(leftH, rightH) {
+        // CPython's TypeErrors (str subclasses are str); it returned NULL
+        // with nothing set
         var rt = WasthonRT;
-        var l = rt.unwrap(leftH);
-        var r = rt.unwrap(rightH);
-        if (typeof l !== 'string' || typeof r !== 'string') return 0;
+        var lo = rt.unwrap(leftH), ro = rt.unwrap(rightH);
+        var l = rt.asJSStr(lo), r = rt.asJSStr(ro);
+        if (l === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "must be str, not " + rt.$B.class_name(lo));
+            return 0;
+        }
+        if (r === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "can only concatenate str (not \"" +
+                rt.$B.class_name(ro) + "\") to str");
+            return 0;
+        }
         return rt.wrapNewRef(l + r);
     },
 

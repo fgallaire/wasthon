@@ -12,7 +12,6 @@ test_unicode.py::test_PyUnicode_AsEncodedString
 test_unicode.py::test_PyUnicode_AsLatin1String
 test_unicode.py::test_PyUnicode_AsUCS4Copy
 test_unicode.py::test_PyUnicode_AsUTF8
-test_unicode.py::test_PyUnicode_Concat
 test_unicode.py::test_PyUnicode_Decode
 test_unicode.py::test_PyUnicode_Decode_latin1
 test_unicode.py::test_PyUnicode_DecodeUTF16

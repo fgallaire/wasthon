@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_Concat` raises on a non-str** (`src/wasthon.js`). It
+  returned NULL with nothing set, for a str subclass too. Fix — CPython's
+  TypeErrors ("must be str, not int", "can only concatenate str (not
+  "int") to str"), a str subclass taken as str. +1 bridge test
+  (`test_PyUnicode_Concat`).
+
 - **`PyUnicode_FromObject` takes only a str** (`src/wasthon.js`). It
   called `str()` on anything (42 gave '42') and returned the argument
   without the new reference. Fix — CPython's: a new reference to an exact
