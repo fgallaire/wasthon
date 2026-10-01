@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyLong_FromDouble` raises on an infinity or a NaN** (`src/wasthon.js`).
+  It wrapped `Math.trunc(v)`, an infinity or a NaN as an "int", and a
+  value past 2**53 as an inexact JS number. Fix — CPython's OverflowError
+  and ValueError, and a BigInt past the safe range. +1 bridge test
+  (`test_PyLong_FromDouble`).
+
 - **`PyArg_Parse` writes `L`, `K` and `k` exactly** (`src/wasthon.js`, the
   integer formats of the tuple/keywords parser). The value was turned into a
   JS Number (past 2**53, inexact) and its 64-bit slot written as `n | 0` and

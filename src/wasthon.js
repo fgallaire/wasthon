@@ -10493,7 +10493,19 @@ mergeInto(LibraryManager.library, {
     /* PyLong from/to double */
     PyLong_FromDouble__deps: ['$WasthonRT'],
     PyLong_FromDouble: function(v) {
-        return WasthonRT.wrapNewRef(Math.trunc(v));
+        var rt = WasthonRT;
+        // CPython's errors (an infinity was wrapped as an "int"), and an
+        // exact int past 2**53
+        if (isNaN(v)) {
+            rt.setError(rt.wrap(rt._b_.ValueError), "cannot convert float NaN to integer");
+            return 0;
+        }
+        if (!isFinite(v)) {
+            rt.setError(rt.wrap(rt._b_.OverflowError), "cannot convert float infinity to integer");
+            return 0;
+        }
+        var t = Math.trunc(v);
+        return rt.wrapNewRef(Number.isSafeInteger(t) ? t : BigInt(t));
     },
     PyLong_AsDouble__deps: ['$WasthonRT'],
     PyLong_AsDouble: function(handle) {
