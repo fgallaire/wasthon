@@ -2,7 +2,6 @@
 # reports them as BUG without failing; the commit that fixes one removes its
 # line.
 test_container.py::test_PySequence_DelItem
-test_container.py::test_PySlice_GetIndicesEx
 test_macros.py::test_builtin_sequence_slots
 test_macros.py::test_PyBuffer_IsContiguous
 test_macros.py::test_Py_UNICODE_classes

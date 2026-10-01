@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PySlice_GetIndicesEx` refuses a zero step** (`src/wasthon.js`). It took
+  start/stop/step from Brython's `slice.indices()`, which does not check
+  the step, and computed a length out of a step of 0. Fix — ValueError
+  "slice step cannot be zero", as CPython's `PySlice_Unpack`. +1 bridge test
+  (`test_PySlice_GetIndicesEx`).
+
 - **The `*_CheckExact` tests are exact** (`src/wasthon.c`
   `PyUnicode_CheckExact`, `PyBytes_CheckExact`, `PyDict_CheckExact`;
   `src/wasthon.js` `PyList_CheckExact`, `wasthon_exacttype_of_builtin`).

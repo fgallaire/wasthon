@@ -7616,6 +7616,10 @@ mergeInto(LibraryManager.library, {
             var start = num(rt.$B.$getitem(t, 0));
             var stop  = num(rt.$B.$getitem(t, 1));
             var step  = num(rt.$B.$getitem(t, 2));
+            if (step === 0) {   // PySlice_Unpack's check, Brython's indices() lacks it
+                rt.setError(rt.wrap(rt._b_.ValueError), "slice step cannot be zero");
+                return -1;
+            }
             var slen  = (step > 0) ? Math.max(0, Math.ceil((stop - start) / step))
                                    : Math.max(0, Math.ceil((stop - start) / step));
             if (pStart)    HEAP32[pStart    >> 2] = start | 0;
