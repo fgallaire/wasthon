@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyCapsule_GetPointer` checks the name** (`src/wasthon.js`). It
+  returned the pointer whatever name was asked. Fix — CPython's
+  `name_matches` (both NULL or equal), else ValueError ("PyCapsule_
+  GetPointer called with incorrect name"). +1 bridge test
+  (`test_PyCapsule_GetPointer_wrong_name`).
+
 - **The capsule accessors refuse a non-capsule** (`src/wasthon.js`). On
   anything but a capsule with a pointer, `GetPointer`, `GetName`,
   `GetContext`, `SetPointer`, `SetName` and `SetContext` returned 0 or -1

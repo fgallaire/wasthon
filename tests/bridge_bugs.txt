@@ -13,7 +13,6 @@ test_private.py::test__PyNumber_Index
 test_private.py::test__PySet_Update_NextEntryRef
 test_private.py::test__PySys_GetRequiredAttr
 test_private.py::test__PyTime_ObjectToTime_t_localtime
-test_runtime.py::test_PyCapsule_GetPointer_wrong_name
 test_runtime.py::test_PyCFunction_New_accessors
 test_runtime.py::test_PyCFunction_NewEx
 test_runtime.py::test_PyEval_GetBuiltins

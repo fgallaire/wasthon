@@ -15098,6 +15098,13 @@ mergeInto(LibraryManager.library, {
     PyCapsule_GetPointer: function(capsuleHandle, namePtr) {
         var obj = wasthonCapsule(capsuleHandle, 'PyCapsule_GetPointer');
         if (!obj) return 0;
+        // CPython's name_matches (both NULL, or equal); any name was taken
+        var name = namePtr ? UTF8ToString(namePtr) : null;
+        if (name !== (obj.name === undefined ? null : obj.name)) {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.ValueError),
+                "PyCapsule_GetPointer called with incorrect name");
+            return 0;
+        }
         return obj.ptr;
     },
 
