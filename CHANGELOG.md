@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_GetLength` and `PyUnicode_ReadChar` count code points**
+  (`src/wasthon.js`). Both used UTF-16 units: an astral char counted
+  twice, `PyUnicode_AsUCS4Copy`'s caller then read one slot past the
+  copy, and a non-str gave -1 with nothing set. Fix — CPython's: the
+  length and index of `PyUnicode_GET_LENGTH`/`READ_CHAR` (code points),
+  TypeError for a non-str, IndexError out of range; matplotlib's ft2font
+  iterates through the pair. +2 bridge tests (`test_PyUnicode_GetLength`,
+  `test_PyUnicode_AsUCS4Copy`).
+
 - **`PyUnicode_Concat` raises on a non-str** (`src/wasthon.js`). It
   returned NULL with nothing set, for a str subclass too. Fix — CPython's
   TypeErrors ("must be str, not int", "can only concatenate str (not

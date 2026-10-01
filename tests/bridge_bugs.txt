@@ -10,7 +10,6 @@ test_runtime.py::test_PyWeakref_NewRef_GetRef_CheckRef
 test_unicode.py::test_PyBytes_AsString_Size
 test_unicode.py::test_PyUnicode_AsEncodedString
 test_unicode.py::test_PyUnicode_AsLatin1String
-test_unicode.py::test_PyUnicode_AsUCS4Copy
 test_unicode.py::test_PyUnicode_AsUTF8
 test_unicode.py::test_PyUnicode_Decode
 test_unicode.py::test_PyUnicode_Decode_latin1
@@ -18,7 +17,6 @@ test_unicode.py::test_PyUnicode_DecodeUTF16
 test_unicode.py::test_PyUnicode_DecodeUTF32
 test_unicode.py::test_PyUnicode_DecodeUTF8_errors
 test_unicode.py::test_PyUnicode_FromEncodedObject
-test_unicode.py::test_PyUnicode_GetLength
 test_unicode.py::test_PyUnicode_KIND_MAX_CHAR_VALUE_IS_ASCII
 test_unicode.py::test_PyUnicodeWriter
 test_unicode.py::test_PyUnicodeWriter_Format

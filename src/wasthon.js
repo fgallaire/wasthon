@@ -10236,19 +10236,26 @@ mergeInto(LibraryManager.library, {
     PyUnstable_Object_IsUniquelyReferenced: function(oH) { return 0; },
 
     /* PyUnicode helpers */
-    PyUnicode_GetLength__deps: ['$WasthonRT'],
+    /* PyUnicode_GetLength / PyUnicode_ReadChar — CPython counts and indexes
+     * code points, as PyUnicode_GET_LENGTH and READ_CHAR do; both counted
+     * UTF-16 units, so an astral char counted twice (matplotlib's ft2font
+     * iterates text through the pair). */
+    PyUnicode_GetLength__deps: ['$WasthonRT', 'PyErr_BadArgument', 'PyUnicode_GET_LENGTH'],
     PyUnicode_GetLength: function(handle) {
-        var s = WasthonRT.asJSStr(WasthonRT.unwrap(handle));
-        return s === null ? -1 : s.length;
+        if (WasthonRT.asJSStr(WasthonRT.unwrap(handle)) === null) { _PyErr_BadArgument(); return -1; }
+        return _PyUnicode_GET_LENGTH(handle);
     },
-    /* PyUnicode_ReadChar — codepoint at index; index space matches
-     * PyUnicode_GetLength (UTF-16 units). matplotlib's ft2font iterates
-     * text this way to build the set of glyphs to load. */
-    PyUnicode_ReadChar__deps: ['$WasthonRT'],
+    PyUnicode_ReadChar__deps: ['$WasthonRT', 'PyErr_BadArgument', 'PyUnicode_GET_LENGTH',
+                               'PyUnicode_READ_CHAR'],
     PyUnicode_ReadChar: function(handle, index) {
-        var s = WasthonRT.asJSStr(WasthonRT.unwrap(handle));
-        if (s === null || index < 0 || index >= s.length) return -1;
-        return s.codePointAt(index);
+        var rt = WasthonRT, s = rt.asJSStr(rt.unwrap(handle));
+        if (s === null) { _PyErr_BadArgument(); return -1; }
+        var n = _PyUnicode_GET_LENGTH(handle);
+        if (index < 0 || index >= n) {
+            rt.setError(rt.wrap(rt._b_.IndexError), "string index out of range");
+            return -1;
+        }
+        return n === s.length ? s.codePointAt(index) : _PyUnicode_READ_CHAR(handle, index);
     },
     PyUnicode_AsLatin1String__deps: ['$WasthonRT'],
     PyUnicode_AsLatin1String: function(handle) {
