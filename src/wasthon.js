@@ -3268,44 +3268,86 @@ mergeInto(LibraryManager.library, {
         return WasthonRT.wrapNewRef(s);
     },
 
-    /* PyUnicode_AsEncodedString(s, encoding, errors) — encode str via the
-     * named codec (utf-8, ascii, latin-1, ...). Delegates to Brython's
-     * str.encode which routes through its codec registry. NULL encoding
-     * defaults to utf-8 (CPython convention). */
-    PyUnicode_AsEncodedString__deps: ['$WasthonRT', 'PyUnicode_AsUTF8String'],
+    /* CPython's UTF-8, latin-1 and ASCII encoders: a run of unencodable
+     * code points (surrogates for UTF-8) goes to the handler — strict raises
+     * the 5-argument UnicodeEncodeError, ignore, replace ('?'),
+     * xmlcharrefreplace, backslashreplace, surrogateescape (U+DC80-U+DCFF
+     * back to their byte), surrogatepass (UTF-8 only), any other name
+     * through codecs.lookup_error. Returns the byte array, or null with the
+     * exception set. */
+    $wasthonEncode__deps: ['$WasthonRT'],
+    $wasthonEncode: function(obj, enc, errors) {
+        var rt = WasthonRT, cps = Array.from(rt.asJSStr(obj), function(c) { return c.codePointAt(0); });
+        var limit = enc === 'ascii' ? 0x80 : (enc === 'latin-1' ? 0x100 : 0);
+        var reason = limit ? 'ordinal not in range(' + limit + ')' : 'surrogates not allowed';
+        var bad = function(c) { return limit ? c >= limit : (c >= 0xD800 && c <= 0xDFFF); };
+        var out = [];
+        var put = function(c) {
+            if (limit || c < 0x80) out.push(c);
+            else if (c < 0x800) out.push(0xC0 | (c >> 6), 0x80 | (c & 63));
+            else if (c < 0x10000) out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+            else out.push(0xF0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+        };
+        var ascii = function(str) { for (var k = 0; k < str.length; k++) out.push(str.charCodeAt(k)); };
+        var hex = function(c, w) { var h = c.toString(16); while (h.length < w) h = '0' + h; return h; };
+        for (var i = 0; i < cps.length;) {
+            if (!bad(cps[i])) { put(cps[i]); i++; continue; }
+            var j = i + 1, k;
+            while (j < cps.length && bad(cps[j])) j++;
+            var run = cps.slice(i, j);
+            if (errors === 'ignore') {}
+            else if (errors === 'replace') run.forEach(function() { out.push(0x3F); });
+            else if (errors === 'xmlcharrefreplace') run.forEach(function(c) { ascii('&#' + c + ';'); });
+            else if (errors === 'backslashreplace') run.forEach(function(c) {
+                ascii(c <= 0xff ? '\\x' + hex(c, 2) : c <= 0xffff ? '\\u' + hex(c, 4) : '\\U' + hex(c, 8));
+            });
+            else if (errors === 'surrogateescape' &&
+                     run.every(function(c) { return c >= 0xDC80 && c <= 0xDCFF; })) {
+                run.forEach(function(c) { out.push(c - 0xDC00); });
+            }
+            else if (errors === 'surrogatepass' && !limit) run.forEach(put);
+            else {
+                var exc = rt.$B.$call(rt._b_.UnicodeEncodeError, enc, obj, i, j, reason);
+                if (['strict', 'surrogateescape', 'surrogatepass'].indexOf(errors) === -1) {
+                    try {
+                        var codecs = rt.$B.$call(rt._b_.__import__, 'codecs');
+                        var res = rt.$B.$call(rt.$B.$call(rt.$B.$getattr(codecs, 'lookup_error'), errors), exc);
+                        for (var ch of rt.asJSStr(res[0])) put(ch.codePointAt(0));
+                        i = res[1]; continue;
+                    } catch (e) { rt.forwardError(e); return null; }
+                }
+                rt.setError(rt.wrap(rt._b_.UnicodeEncodeError), '', exc);
+                return null;
+            }
+            i = j;
+        }
+        return out;
+    },
+
+    /* PyUnicode_AsEncodedString(s, encoding, errors) — CPython's: the name
+     * normalized, UTF-8, latin-1 and ASCII encoded directly, any other codec
+     * through the registry (Brython's str.encode). ASCII and latin-1 went
+     * to Brython, whose handlers ignore 'replace'; UTF-8's surrogateescape
+     * CESU-encoded instead of restoring the byte; every error message was
+     * the bridge's own. */
+    PyUnicode_AsEncodedString__deps: ['$WasthonRT', '$wasthonEncode', 'PyErr_BadArgument'],
     PyUnicode_AsEncodedString: function(sH, encPtr, errPtr) {
         var rt = WasthonRT;
-        var s = rt.asJSStr(rt.unwrap(sH));
-        if (s === null) {
-            rt.setError(rt.wrap(rt._b_.TypeError),
-                "PyUnicode_AsEncodedString: not a str");
-            return 0;
-        }
+        var obj = rt.unwrap(sH), s = rt.asJSStr(obj);
+        if (s === null) { _PyErr_BadArgument(); return 0; }
         var enc = encPtr === 0 ? "utf-8" : UTF8ToString(encPtr);
         var errors = errPtr === 0 ? "strict" : UTF8ToString(errPtr);
-        var encNorm = enc.toLowerCase().replace(/_/g, '-');
-        if (encNorm === 'utf-8' || encNorm === 'utf8') {
-            // Honor the error handler for lone surrogates: "surrogatepass"
-            // (and "surrogateescape") CESU-encode them so they round-trip —
-            // this is pickle's fallback after the strict PyUnicode_AsUTF8
-            // returns NULL. "strict" (default) raises UnicodeEncodeError.
-            var sp = (errors === 'surrogatepass' || errors === 'surrogateescape');
-            var bytes = rt.encodeUTF8(s, sp);
-            if (bytes === null) {
-                rt.setError(rt.wrap(rt._b_.UnicodeEncodeError),
-                    "'utf-8' codec can't encode character: surrogates not allowed");
-                return 0;
-            }
-            return rt.wrapNewRef(rt._b_.bytes.$factory(Array.from(bytes)));
+        var norm = enc.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+        var codec = (norm === 'utf_8' || norm === 'utf8') ? 'utf-8'
+            : (['latin_1', 'latin1', 'iso_8859_1', 'iso8859_1'].indexOf(norm) !== -1) ? 'latin-1'
+            : (norm === 'ascii' || norm === 'us_ascii') ? 'ascii' : null;
+        if (codec) {
+            var bytes = wasthonEncode(obj, codec, errors);
+            return bytes === null ? 0 : rt.wrapNewRef(rt._b_.bytes.$factory(bytes));
         }
         try {
-            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(s, 'encode'),
-                                       enc, errors));
-        } catch (e) {
-            rt.setError(rt.wrap(rt._b_.UnicodeEncodeError),
-                "encode " + enc + " failed: " + (e.message || String(e)));
-            return 0;
-        }
+            return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(obj, 'encode'), enc, errors));
+        } catch (e) { rt.forwardError(e); return 0; }
     },
 
     /* PyUnicode_DecodeRawUnicodeEscape(s, size, errors) — decode raw-unicode-

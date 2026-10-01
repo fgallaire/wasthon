@@ -7,6 +7,18 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicode_AsEncodedString` encodes as CPython** (`src/wasthon.js`).
+  ASCII and latin-1 went to Brython's `str.encode`, whose handlers ignore
+  'replace' (it raised, with "character 0x1 in position undefined"),
+  UTF-8's surrogateescape CESU-encoded instead of restoring the byte, and
+  every error message was the bridge's own. Fix — CPython's encoders for
+  UTF-8, latin-1 and ASCII (`$wasthonEncode`): a run of unencodable code
+  points to the handler (strict's 5-argument UnicodeEncodeError, ignore,
+  replace, xmlcharrefreplace, backslashreplace, surrogateescape,
+  surrogatepass, any other through `codecs.lookup_error`); other codecs
+  through `str.encode`. Checked against CPython on 35 cases. +1 bridge
+  test (`test_PyUnicode_AsEncodedString`).
+
 - **`PyUnicode_DecodeUTF16` and `DecodeUTF32` are CPython's** (`src/wasthon.js`).
   UTF-16 went through TextDecoder's 'utf-16' (which guesses the order)
   and replaced every error; UTF-32 read whole words with no check; neither
