@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **One interpreter state** (`src/wasthon.js`). `PyInterpreterState_Get`
+  returned a sentinel ID of its own while `PyInterpreterState_Main` and
+  `tstate->interp` gave a malloc'd address: `PyInterpreterState_Get() ==
+  PyInterpreterState_Main()` was false. Fix — the three give the same
+  address. +1 bridge test (`test_thread_state_and_GIL`).
+
 - **`PyCFunction_New` passes its self** (`src/wasthon.js`). It built its
   own trampoline without `self`: the C function got a NULL arg0. Fix —
   `PyCFunction_NewEx(ml, self, NULL)`, as CPython. +1 bridge test

@@ -8925,12 +8925,10 @@ mergeInto(LibraryManager.library, {
      * interp with one dict (where _datetime caches its module). */
     PyInterpreterState_Get__deps: ['$WasthonRT'],
     PyInterpreterState_Get: function() {
+        // the one interpreter: the address PyInterpreterState_Main and
+        // tstate->interp give (a sentinel ID of its own made Get != Main)
         var rt = WasthonRT;
-        if (!rt._interpHandle) {
-            rt._interpHandle = rt._allocSentinelId();
-            rt.handles.set(rt._interpHandle, { __wasthon_interp__: true });
-        }
-        return rt._interpHandle;
+        return rt._interp || (rt._interp = _malloc(8));
     },
     PyInterpreterState_GetDict__deps: ['$WasthonRT'],
     PyInterpreterState_GetDict: function(interpH) {
