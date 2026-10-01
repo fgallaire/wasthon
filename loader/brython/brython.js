@@ -3369,7 +3369,8 @@ jarg=tuple_extend(newargs,jarg,arg[0],arg.length)}else{newargs[jarg]=arg
 jarg++}}
 return newargs}
 $B.GenericAlias=$B.make_builtin_class("types.GenericAlias")
-$B.GenericAlias.$factory=function(origin,args){var res={ob_type:$B.GenericAlias,origin,args}
+$B.GenericAlias.$factory=function(origin,args){if(! $B.$isinstance(args,_b_.tuple)){args=$B.fast_tuple([args])}
+var res={ob_type:$B.GenericAlias,origin,args}
 return res}
 function GenericAlias_eq(self,other){return $B.rich_comp("__eq__",self.origin,other.origin)&&
 $B.rich_comp("__eq__",self.args,other.args)}

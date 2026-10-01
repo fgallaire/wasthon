@@ -5222,3 +5222,23 @@ except AttributeError as e:
 positional argument. Fix (vendored brython.js): the `[]` removed; `name` and
 `obj` are kept. Without it, test_pickle lost 4 tests to the `__str__` fix
 (`PicklingError` messages built from `str()` of an AttributeError).
+
+## `types.GenericAlias(origin, arg)` keeps a lone arg out of a tuple
+
+```python
+import types
+types.GenericAlias(list, int).__args__   # CPython: (<class 'int'>,)
+                                         # Brython: <class 'int'>
+types.GenericAlias(list, int) == list[int]   # CPython: True
+                                             # Brython: False
+```
+
+`$B.GenericAlias.$factory` (`py_type.js`) stores `args` as given; CPython's
+`setup_ga`, which every construction goes through, packs a non-tuple into a
+1-tuple. `list[int]` takes another path and was right. Found with the
+bridge's `Py_GenericAlias(list, int)` test.
+
+Fix (vendored brython.js): `$factory` packs a non-tuple `args`. Not fixed:
+`list[T][int]` (T a TypeVar) raises `JavascriptError: argitems is not
+iterable`, and `GenericAlias.mp_subscript` reads an undefined `alias.origin`
+(for `self.origin`).
