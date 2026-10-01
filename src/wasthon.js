@@ -8028,19 +8028,11 @@ mergeInto(LibraryManager.library, {
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
     },
 
-    /* PyCFunction_New(ml, self) — a bare C function object from a single
-     * PyMethodDef (Cython's unbound-method unpacking path). Same trampoline
-     * install_methods builds, module-scope shape (no auto-bind). */
-    PyCFunction_New__deps: ['$WasthonRT', '$__wasthon_make_trampoline'],
+    /* PyCFunction_New(ml, self) — CPython: PyCFunction_NewEx(ml, self, NULL).
+     * Its own trampoline dropped self: the C function got a NULL arg0. */
+    PyCFunction_New__deps: ['PyCFunction_NewEx'],
     PyCFunction_New: function(mlPtr, selfH) {
-        var rt = WasthonRT;
-        var namePtr = HEAP32[mlPtr >> 2];
-        var fnPtr   = HEAP32[(mlPtr + 4) >> 2];
-        var flags   = HEAP32[(mlPtr + 8) >> 2];
-        var name    = namePtr ? UTF8ToString(namePtr) : '<anonymous>';
-        var tramp = __wasthon_make_trampoline(fnPtr, flags, 0, name, true, 0);
-        tramp.ob_type = rt.$B.builtin_function_or_method;
-        return rt.wrapNewRef(tramp);
+        return _PyCFunction_NewEx(mlPtr, selfH, 0);
     },
 
     /* PyClassMethod_New / PyDescr_NewClassMethod — real Brython classmethod

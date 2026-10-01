@@ -7,6 +7,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyCFunction_New` passes its self** (`src/wasthon.js`). It built its
+  own trampoline without `self`: the C function got a NULL arg0. Fix —
+  `PyCFunction_NewEx(ml, self, NULL)`, as CPython. +1 bridge test
+  (`test_PyCFunction_New_accessors`).
+
 - **The PyCFunction accessors read the function** (`src/wasthon.js`).
   `PyCFunction_GetFunction` returned NULL, `PyCFunction_GET_FUNCTION` read
   a `__wasthon_fnptr__` nothing set (0), and `PyCFunction_GET_SELF` wrapped
