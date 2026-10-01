@@ -5387,11 +5387,17 @@ mergeInto(LibraryManager.library, {
     /* Bytes accessors. Brython bytes objects store their data in .source as
      * Array<int>. PyBytes_AsString needs to return a C-side pointer; we
      * allocate linear memory once per bytes-object and cache. */
-    PyBytes_AsString__deps: ['$WasthonRT'],
+    PyBytes_AsString__deps: ['$WasthonRT', 'wasthon_isinstance_of_builtin'],
     PyBytes_AsString: function(bytesHandle) {
         var rt = WasthonRT;
         var obj = rt.unwrap(bytesHandle);
         if (obj === null) return 0;
+        // CPython's PyBytes_Check (WT_TAG_BYTES 2); a str went through
+        if (!_wasthon_isinstance_of_builtin(bytesHandle, 2)) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "expected bytes, " +
+                rt.$B.class_name(obj) + " found");
+            return 0;
+        }
         if (obj[WasthonRT._cstrKey]) return obj[WasthonRT._cstrKey];
         if (obj.source === undefined && obj.__wasthon_ptr__) {
             // A C-allocated var-object shell of a bytes subclass — numpy's

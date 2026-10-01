@@ -7,6 +7,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyBytes_AsString` refuses a non-bytes** (`src/wasthon.js`). A str
+  went through. Fix — CPython's `PyBytes_Check` first, TypeError
+  ("expected bytes, str found"). +1 bridge test
+  (`test_PyBytes_AsString_Size`).
+
 - **`Py_BuildValue("y")` builds the bytes** (`src/wasthon.js`). Plain `y`
   called `bytes()` on the decoded C string, which raises "string argument
   without an encoding" (a SystemError out of `Py_BuildValue`). Fix — the

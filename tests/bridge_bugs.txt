@@ -7,7 +7,6 @@ test_object.py::test_PyErr_SetFromErrno
 test_object.py::test_PyErr_WriteUnraisable_FormatUnraisable
 test_runtime.py::test_PyUnstable_Object_IsUniquelyReferenced
 test_runtime.py::test_PyWeakref_NewRef_GetRef_CheckRef
-test_unicode.py::test_PyBytes_AsString_Size
 test_unicode.py::test_PyUnicode_AsEncodedString
 test_unicode.py::test_PyUnicode_AsLatin1String
 test_unicode.py::test_PyUnicode_AsUTF8
