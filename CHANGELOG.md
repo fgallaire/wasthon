@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_Print` writes to its file** (`src/wasthon.c`, `src/wasthon.h`).
+  The JS version logged the repr to the console, ignored the `FILE *` and
+  `Py_PRINT_RAW`, which `wasthon.h` did not define. Fix — CPython's
+  function in C (`Objects/object.c`, without the signal and recursion
+  checks): the repr, or the str under `Py_PRINT_RAW`, written with
+  `fwrite`, OSError on a write error. +1 bridge test (`test_PyObject_Print`).
+
 - **A `d` or `f` value built from C is a float** (`src/wasthon.js`,
   `Py_BuildValue`, `Py_VaBuildValue`, `PyObject_CallFunction`,
   `PyObject_CallMethod`). The double was handed over as a bare JS number,

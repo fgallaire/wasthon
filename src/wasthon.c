@@ -1091,6 +1091,55 @@ void wasthon_set_errno_erange(void) { errno = ERANGE; }
 EMSCRIPTEN_KEEPALIVE
 int wasthon_get_errno(void) { return errno; }
 
+/* PyObject_Print — Objects/object.c, without its signal and recursion
+ * checks: the repr (str under Py_PRINT_RAW) written to fp. The JS version
+ * logged the repr to the console and never wrote the file. */
+int PyObject_Print(PyObject *op, FILE *fp, int flags) {
+    int ret = 0;
+    int write_error = 0;
+    clearerr(fp);
+    if (op == NULL) {
+        fprintf(fp, "<nil>");
+    }
+    else {
+        if (Py_REFCNT(op) <= 0) {
+            fprintf(fp, "<refcnt %zd at %p>", Py_REFCNT(op), (void *)op);
+        }
+        else {
+            PyObject *s;
+            if (flags & Py_PRINT_RAW)
+                s = PyObject_Str(op);
+            else
+                s = PyObject_Repr(op);
+            if (s == NULL) {
+                ret = -1;
+            }
+            else {
+                const char *t;
+                Py_ssize_t len;
+                t = PyUnicode_AsUTF8AndSize(s, &len);
+                if (t == NULL) {
+                    ret = -1;
+                }
+                else {
+                    if (fwrite(t, 1, len, fp) != (size_t)len) {
+                        write_error = 1;
+                    }
+                }
+                Py_DECREF(s);
+            }
+        }
+    }
+    if (ret == 0) {
+        if (write_error || ferror(fp)) {
+            PyErr_SetFromErrno(PyExc_OSError);
+            clearerr(fp);
+            ret = -1;
+        }
+    }
+    return ret;
+}
+
 /* PyThread stubs — single-threaded WASM. Locks always "succeed". We
  * return a non-zero sentinel so callers don't think allocation failed. */
 PyThread_type_lock PyThread_allocate_lock(void) {

@@ -9834,10 +9834,6 @@ mergeInto(LibraryManager.library, {
         } catch (e) {}
         rt.setError(rt.wrap(rt._b_.TypeError), "argument must be an int or have a fileno() method");
         return -1; },
-    PyObject_Print__deps: ['$WasthonRT'],
-    PyObject_Print: function(oH, filePtr, flags) { var rt = WasthonRT;
-        try { console.log(rt.$B.$call(rt._b_.repr, rt.unwrap(oH))); } catch (e) {}
-        return 0; },
     PyObject_GenericGetDict__deps: ['$WasthonRT'],
     PyObject_GenericGetDict: function(oH, ctx) { var rt = WasthonRT; var o = rt.unwrap(oH);
         /* read the instance dict DIRECTLY (create on first read, like CPython's

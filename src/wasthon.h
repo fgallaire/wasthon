@@ -2233,6 +2233,7 @@ PyObject *PyObject_Format(PyObject *, PyObject *);
 int PyObject_Not(PyObject *);
 Py_ssize_t PyObject_LengthHint(PyObject *, Py_ssize_t);
 int PyObject_Print(PyObject *, FILE *, int);
+#define Py_PRINT_RAW    1       /* No string quotes etc. */
 PyObject *PyObject_GenericGetDict(PyObject *, void *);
 PyObject *PySeqIter_New(PyObject *);
 PyObject *PySequence_Concat(PyObject *, PyObject *);
