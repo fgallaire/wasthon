@@ -494,6 +494,15 @@ mergeInto(LibraryManager.library, {
         // dealloc is safe. Runs in its own task, never mid-Python-statement.
         // The tombstone binding gives the tp_dealloc body its
         // Py_TYPE()/self lookups; PyObject_GC_Del at its end unbinds & frees.
+        /* A type's tp_dealloc, inherited up tp_base as decref and releaseSole
+         * find it (bounded: a cyclic tp_base cannot loop). */
+        deallocOf: function(typeH) {
+            for (var g = 16; typeH && g-- > 0; typeH = HEAP32[(typeH + 140) >> 2]) {
+                var d = HEAP32[(typeH + 40) >> 2];
+                if (d) return d;
+            }
+            return 0;
+        },
         _reclaimDead: function(info) {
             var ptr = info.ptr;
             if (!this.demoted.delete(ptr)) return;       // re-bound since, or stale
@@ -501,7 +510,7 @@ mergeInto(LibraryManager.library, {
             if (this.refcounts.get(ptr) !== 1) return;   // ownership moved
             this.refcounts.delete(ptr);
             var typeH = info.typeH;
-            var tp_dealloc = typeH ? HEAP32[(typeH + 40) >> 2] : 0;
+            var tp_dealloc = this.deallocOf(typeH);
             if (!tp_dealloc) {
                 this.clearWeakRefs(ptr);
                 this.gcRegistry.delete(ptr);
@@ -1734,7 +1743,7 @@ mergeInto(LibraryManager.library, {
                             if (w === null) {
                                 st.collected_wrapper++;
                                 var sth = rt.demotedType.get(ptr) || 0;
-                                if (sth && HEAP32[(sth + 40) >> 2]) st.collected_typed++;
+                                if (rt.deallocOf(sth)) st.collected_typed++;
                                 continue;
                             }
                             var noslot = !typeH || !HEAP32[(typeH + 40) >> 2];
@@ -1801,7 +1810,7 @@ mergeInto(LibraryManager.library, {
                                 w2 = toReclaim[s2][2];
                             var collected = w2 === null;
                             if (collected) th2 = rt.demotedType.get(p2) || 0;
-                            if (!th2 || !HEAP32[(th2 + 40) >> 2]) { ss.skip_noslot++; continue; }
+                            if (!rt.deallocOf(th2)) { ss.skip_noslot++; continue; }
                             if (!collected && ck) {
                                 var tb1 = rt.handles.has(p2);
                                 if (!tb1) rt.handles.set(p2, w2);
@@ -2135,7 +2144,7 @@ mergeInto(LibraryManager.library, {
             // and closes the db. Only unreachable instances reach here (the mark
             // phase preserves anything held in a live frame, including self.cur),
             // so freeing is safe. tp_dealloc's PyObject_GC_Del drops the handle.
-            var tp_dealloc = HEAP32[(inst.__wasthon_type__ + 40) >> 2];
+            var tp_dealloc = this.deallocOf(inst.__wasthon_type__);
             if (!tp_dealloc) return;
             this.refcounts.delete(ptr);
             this.pushScope();

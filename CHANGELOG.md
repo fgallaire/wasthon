@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **Every `tp_dealloc` lookup walks `tp_base`** (`src/wasthon.js`,
+  `deallocOf`, used by `_reclaimDead`, `gcFinalize` and the demoted-instance
+  reclaim). `decref` and `releaseSole` find a type's destructor up its base
+  chain, as CPython's `inherit_slots` fills it; these four read `tp_dealloc`
+  off the instance's own type only, so an instance of a type that inherits
+  its destructor was freed (`_reclaimDead`) or skipped (`gcFinalize`, the
+  reclaim counters) without running it. Fix — one bounded walk for all.
+  Latent in the suite (FinalizationRegistry, `gc.collect()` finalization).
+  +0 bridge tests.
+
 - **A type struct is allocated at its full size** (`src/wasthon.js`,
   `subtypeStructFor` and `ensureTypeStruct`). The `PyTypeObject` of
   `wasthon.h` has grown to 180 bytes by appending fields, but the struct a
