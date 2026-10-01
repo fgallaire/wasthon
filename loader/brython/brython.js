@@ -15125,7 +15125,7 @@ $B.module_setattr(module_obj,'__module__','builtins')}
 for(let attr in modules){load(attr,modules[attr])}
 if(!($B.isWebWorker ||$B.isNode)){modules['browser'].html=modules['browser.html']
 modules['browser'].aio=modules['browser.aio']}
-_b_.__builtins__=$B.module.$factory('__builtins__','Python builtins')
+_b_.__builtins__=$B.module.$factory('builtins','Python builtins')
 for(let attr in _b_){$B.module_setattr(_b_.__builtins__,attr,_b_[attr])
 $B.builtins_scope.binding[attr]=true}
 for(let attr in $B){if(Array.isArray($B[attr])){$B[attr].ob_type=_b_.list}}
@@ -15187,6 +15187,7 @@ var builtins_doc="Built-in functions, types, exceptions, and other "+
 $B.imported.builtins=$B.module.tp_new($B.module)
 $B.module.tp_init($B.imported.builtins,'builtins',builtins_doc)
 $B.set_dict($B.imported.builtins,_b_)
+$B.module_setattr($B.imported.builtins,'__name__','builtins')
 $B.module_setattr($B.imported.builtins,'__doc__',builtins_doc)
 $B.module_setattr($B.imported.builtins,'__package__',_b_.None)
 $B.module_setattr($B.imported.builtins,'__loader__',_b_.None)

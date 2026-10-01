@@ -15,7 +15,6 @@ test_private.py::test__PySys_GetRequiredAttr
 test_private.py::test__PyTime_ObjectToTime_t_localtime
 test_runtime.py::test_PyCFunction_New_accessors
 test_runtime.py::test_PyCFunction_NewEx
-test_runtime.py::test_PyEval_GetBuiltins
 test_runtime.py::test_PyModuleDef_Init_FromDefAndSpec2_ExecDef
 test_runtime.py::test_PyUnstable_Object_IsUniquelyReferenced
 test_runtime.py::test_PyWeakref_NewRef_GetRef_CheckRef

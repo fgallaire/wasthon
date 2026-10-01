@@ -5242,3 +5242,27 @@ Fix (vendored brython.js): `$factory` packs a non-tuple `args`. Not fixed:
 `list[T][int]` (T a TypeVar) raises `JavascriptError: argitems is not
 iterable`, and `GenericAlias.mp_subscript` reads an undefined `alias.origin`
 (for `self.origin`).
+
+## The builtins module is not named `builtins`
+
+```python
+import builtins
+builtins.__name__                  # CPython: 'builtins'
+                                   # Brython: AttributeError: 'module' object has no attribute '__name__'
+__builtins__.__dict__['__name__']  # CPython: 'builtins'
+                                   # Brython: '__builtins__'
+```
+
+`builtin_modules.js` builds two module objects. The one bound to
+`__builtins__` (and read by `frame.f_builtins`) is created with the name
+`'__builtins__'`. The one `import builtins` returns gets its name from
+`module.tp_init`, then `$B.set_dict(…, _b_)` swaps its dict for `_b_`,
+which has no `__name__`; `__doc__`, `__package__`, `__loader__` and
+`__spec__` are set again after the swap, `__name__` was not. Found with the
+bridge's `PyEval_GetBuiltins` test (the frame's builtins dict).
+
+Fix (vendored brython.js): the first module is named `'builtins'`, and
+`__name__` is set again after the swap. Not fixed: the two are still two
+objects (`builtins is __builtins__` is False in `__main__`), and
+`print(builtins.__spec__)` raises "descriptor '__str__' of 'object' object
+needs an argument".
