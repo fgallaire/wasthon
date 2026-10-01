@@ -8,7 +8,6 @@ test_object.py::test_PyErr_WriteUnraisable_FormatUnraisable
 test_private.py::test__PyErr_FormatFromCause
 test_private.py::test__Py_hashtable
 test_private.py::test__PyLong_internals
-test_private.py::test__PyNumber_Index
 test_private.py::test__PySet_Update_NextEntryRef
 test_private.py::test__PySys_GetRequiredAttr
 test_private.py::test__PyTime_ObjectToTime_t_localtime

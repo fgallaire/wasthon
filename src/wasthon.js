@@ -11610,8 +11610,12 @@ mergeInto(LibraryManager.library, {
     _PyNumber_Index: function(handle) {
         var rt = WasthonRT;
         var obj = rt.unwrap(handle);
+        // CPython: PyLong_Check (bool and int subclasses too) hands back a
+        // new reference to the object itself; True went through __index__
+        // and came back 1, and the int fast path returned a borrowed ref
         if ((typeof obj === 'number' && Number.isInteger(obj)) ||
-            typeof obj === 'bigint') {
+            typeof obj === 'bigint' || rt.$B.$isinstance(obj, rt._b_.int)) {
+            rt.incref(handle);
             return handle;
         }
         var idx = null;

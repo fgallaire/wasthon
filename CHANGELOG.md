@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`_PyNumber_Index` returns an int as is** (`src/wasthon.js`). Only a JS
+  number or BigInt took the fast path: `True` went through `__index__`
+  and came back `1`, an int subclass was converted, and the fast path
+  returned the argument without the new reference the caller releases.
+  Fix — CPython's `PyLong_Check` (bool and int subclasses), a new
+  reference to the object itself. +1 bridge test (`test__PyNumber_Index`).
+
 - **`_PyArg_CheckPositional` is CPython's** (`src/wasthon.c`). The JS
   version wrote its own message, "f() takes 1 to 3 positional arguments
   but 5 were given", for CPython's "f expected at most 3 arguments, got
