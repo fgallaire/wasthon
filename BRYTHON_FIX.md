@@ -5181,3 +5181,44 @@ NaN is true in C and false in JS, so a NaN remainder or quotient took the
 signed-zero branch.
 
 Fix (vendored brython.js): `mod != 0` and `div != 0`, the C semantics.
+
+## An exception with several args shows the first one only
+
+```python
+str(ValueError(1, 2))   # CPython: '(1, 2)'
+                        # Brython: '1'
+repr(ValueError(1, 2))  # CPython: 'ValueError(1, 2)'
+                        # Brython: 'ValueError(1)'
+str(KeyError(1, 2))     # CPython: '(1, 2)'
+                        # Brython: 'KeyError(1)'
+str(KeyError())         # CPython: ''
+                        # Brython: 'KeyError()'
+```
+
+`BaseException.tp_str` and `tp_repr` (`py_exceptions.js`) read `args[0]`
+whatever the number of args; CPython's `BaseException_str` returns
+`str(args)` and `BaseException_repr` the name followed by `repr(args)` past one
+arg. `KeyError.tp_str` fell back on `tp_repr` where CPython's `KeyError_str`
+falls back on `BaseException_str`. Found with the bridge's
+`PyErr_SetObject(KeyError, (1, 2))` test, which raises `KeyError(1, 2)`.
+
+Fix (vendored brython.js): both take `args` whole past one arg, and
+`KeyError.tp_str` falls back on `tp_str`. Not fixed: `str(ValueError(None))`
+is `''` and its repr `ValueError()` (CPython: `'None'`, `ValueError(None)`).
+
+The first one exposed a second bug, which `args[0]` hid: every
+AttributeError Brython raises has two args.
+
+```python
+try:
+    (1).nope
+except AttributeError as e:
+    print(e.args)  # CPython: ("'int' object has no attribute 'nope'",)
+                   # Brython: ("'int' object has no attribute 'nope'", [])
+```
+
+`$B.attr_error` (`py_exceptions.js`) calls
+`$B.$call(_b_.AttributeError, msg, [], {$kw: [{name, obj}]})`: the `[]` is a
+positional argument. Fix (vendored brython.js): the `[]` removed; `name` and
+`obj` are kept. Without it, test_pickle lost 4 tests to the `__str__` fix
+(`PicklingError` messages built from `str()` of an AttributeError).

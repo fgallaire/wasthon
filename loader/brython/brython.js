@@ -6275,10 +6275,12 @@ return}
 var exc_class=$B.make_builtin_class(exc_name,[base])
 $B.set_func_names(exc_class,'builtins')}
 function check_no_keywords(obj,kw){if(_b_.len(kw)){$B.RAISE(_b_.TypeError,`${$B.class_name(obj)}() takes no keyword arguments`)}}
-_b_.BaseException.tp_repr=function(self){var args=''
+_b_.BaseException.tp_repr=function(self){if(self.args.length > 1){return $B.class_name(self)+_b_.repr(self.args)}
+var args=''
 if(self.args.length > 0 && self.args[0]!==_b_.None){args=_b_.repr(self.args[0])}
 return `${$B.class_name(self)}(${args})`}
-_b_.BaseException.tp_str=function(self){if(self.args.length > 0 && self.args[0]!==_b_.None){return _b_.str.$factory(self.args[0])}
+_b_.BaseException.tp_str=function(self){if(self.args.length > 1){return _b_.str.$factory(self.args)}
+if(self.args.length > 0 && self.args[0]!==_b_.None){return _b_.str.$factory(self.args[0])}
 return ''}
 _b_.BaseException.tp_init=function(self,...args){var $=$B.args('__init__',1,{self:null},arguments,null,'args','kw')
 check_no_keywords($.self,$.kw)
@@ -6358,7 +6360,7 @@ _b_.EnvironmentError=_b_.OSError
 _b_.WindowsError=_b_.OSError
 _b_.IOError=_b_.OSError
 _b_.KeyError.tp_str=function(self){if(self.args.length==1){return _b_.repr(self.args[0])}
-return _b_.BaseException.tp_repr(self)}
+return _b_.BaseException.tp_str(self)}
 $B.set_func_names(_b_.KeyError,'builtins')
 $B.set_expected_kwargs=function(obj,expected,kwargs){for(var item of _b_.dict.$iter_items(kwargs)){if(expected.includes(item.key)){obj[item.key]=item.value}else{var msg=`${$B.class_name(obj)}()  got an unexpected `+
 `keyword argument '${item.key}'`
@@ -6377,7 +6379,7 @@ if($B.is_type(obj)){msg=`type object '${obj.tp_name}'`}else{var cn=$B.class_name
 var mn=cn=='module'?$B.module_getattr(obj,'__name__'):null
 if(typeof mn=='string'){msg=`module '${mn}'`}else{msg=`'${cn}' object`}}
 msg+=` has no attribute '${name}'`
-return $B.$call(_b_.AttributeError,msg,[],{$kw:[{name,obj}]})}
+return $B.$call(_b_.AttributeError,msg,{$kw:[{name,obj}]})}
 _b_.NameError.tp_init=function(){var $=$B.args('__init__',1,{self:null},arguments,null,'args','kw')
 _b_.BaseException.tp_init($.self,...$.args)
 $B.set_expected_kwargs($.self,['name'],$.kw)}
