@@ -10115,7 +10115,7 @@ mergeInto(LibraryManager.library, {
         try { return rt.wrap(rt.$B.$getattr(mv, 'obj')); } catch (e) { return 0; } },
 
     /* --- Vectorcall / arg parsing / OS strtol --- */
-    PyVectorcall_Call__deps: ['$WasthonRT'],
+    PyVectorcall_Call__deps: ['$WasthonRT', 'PyObject_Call'],
     PyVectorcall_Call: function(callableH, tupleH, dictH) { var rt = WasthonRT;
         try {
             var fn = rt.unwrap(callableH);
@@ -10186,11 +10186,9 @@ mergeInto(LibraryManager.library, {
                     }
                 }
             }
-            var args = tupleH ? rt.unwrap(tupleH) : [];
-            var kw = dictH ? rt.unwrap(dictH) : null;
-            var call = [fn].concat(Array.prototype.slice.call(args));
-            if (kw) { var d = rt.$B.$call(rt._b_.dict, kw); call.push({$nat: 'kw', kw: d}); }
-            return rt.wrapNewRef(rt.$B.$call.apply(null, call));
+            // PyObject_Call's $kw marker: the {$nat: 'kw'} one handed the
+            // dict over as one more positional argument
+            return _PyObject_Call(callableH, tupleH, dictH);
         } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
     PyObject_VectorcallMethod__deps: ['$WasthonRT'],
     PyObject_VectorcallMethod: function(nameH, argsPtr, nargsf, kwnamesH) { var rt = WasthonRT;

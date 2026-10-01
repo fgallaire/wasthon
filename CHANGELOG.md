@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyVectorcall_Call` passes its kwargs as keywords** (`src/wasthon.js`).
+  For a callable without a C vectorcall function, it marked the dict
+  `{$nat: 'kw'}`, which this Brython does not read: the dict arrived as
+  one more positional argument ("sorted() takes 1 positional argument but
+  2 were given"). Fix — that path is `PyObject_Call`. +1 bridge test
+  (`test_PyVectorcall_Call`).
+
 - **`PyType_Freeze` freezes** (`src/wasthon.js`). It was a no-op: the
   type still took new attributes. Fix — CPython's check that every base
   in the MRO is immutable ("Creating immutable type ... from mutable base
