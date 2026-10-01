@@ -5653,15 +5653,17 @@ mergeInto(LibraryManager.library, {
     /* _PyLong_NumBits — number of bits required to represent abs(v). */
     _PyLong_NumBits__deps: ['$WasthonRT'],
     _PyLong_NumBits: function(handle) {
+        // int64_t, as CPython 3.14 declares it (an i64 is a BigInt in JS);
+        // the size_t declaration returned a Number
         var obj = WasthonRT.unwrap(handle);
         var n;
         if (typeof obj === 'number') n = BigInt(Math.trunc(Math.abs(obj)));
         else if (typeof obj === 'bigint') n = obj < 0n ? -obj : obj;
-        else return 0;
-        if (n === 0n) return 0;
+        else return 0n;
+        if (n === 0n) return 0n;
         var bits = 0;
         while (n > 0n) { n >>= 1n; bits++; }
-        return bits;
+        return BigInt(bits);
     },
 
     /* _PyLong_AsByteArray — serialize an int into an n-byte buffer (two's

@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`_PyLong_NumBits` returns an `int64_t`** (`src/pycore_long.h`,
+  `src/wasthon.js`). The bridge declared CPython's old `size_t`; 3.14's is
+  `int64_t` (its `_pickle` and `_random` hold the result in one), and C
+  compiled against the 3.14 declaration got a JS Number where an i64 must
+  be a BigInt ("Cannot convert 3 to a BigInt"). Fix — the 3.14
+  declaration, a BigInt result. ABI: callers recompile (Wastdlib's
+  `_pickle`, `_random`, `math`; nothing in NumBry). +1 bridge test
+  (`test__PyLong_internals`).
+
 - **`_PySet_NextEntryRef` gives the key's hash** (`src/wasthon.js`). It
   wrote the position into `*hash`. Fix — `PyObject_Hash` of the key, as
   CPython's `entry->hash`. +1 bridge test

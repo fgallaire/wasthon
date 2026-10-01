@@ -6,7 +6,6 @@ test_macros.py::test_Py_UNICODE_classes
 test_object.py::test_PyErr_SetFromErrno
 test_object.py::test_PyErr_WriteUnraisable_FormatUnraisable
 test_private.py::test__Py_hashtable
-test_private.py::test__PyLong_internals
 test_private.py::test__PyTime_ObjectToTime_t_localtime
 test_runtime.py::test_PyUnstable_Object_IsUniquelyReferenced
 test_runtime.py::test_PyWeakref_NewRef_GetRef_CheckRef

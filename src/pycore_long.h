@@ -6,7 +6,7 @@ int _PyLong_UnsignedLong_Converter(PyObject *obj, void *ptr);
 int _PyLong_UnsignedLongLong_Converter(PyObject *obj, void *ptr);
 int _PyLong_UInt64_Converter(PyObject *obj, void *ptr);
 int _PyLong_UInt32_Converter(PyObject *obj, void *ptr);
-size_t     _PyLong_NumBits(PyObject *vv);
+int64_t    _PyLong_NumBits(PyObject *v);   /* CPython 3.14: int64_t */
 int        _PyLong_AsByteArray(void *v, unsigned char *bytes, size_t n,
                                 int little_endian, int is_signed, int with_exceptions);
 PyObject  *_PyLong_FromByteArray(const unsigned char *bytes, size_t n,
