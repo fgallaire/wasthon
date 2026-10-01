@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A spec type without `Py_TPFLAGS_BASETYPE` cannot be subclassed**
+  (`src/wasthon.js`, `PyType_FromModuleAndSpec`). `make_builtin_class` turns
+  Brython's `BASETYPE` on, and only `PyType_Ready` cleared it for a type
+  whose flags lack it: a spec type stayed subclassable where CPython raises
+  "not an acceptable base type". Fix — the spec path clears it the same way.
+  +1 bridge test (`test_final_type_cannot_be_subclassed`).
+
 - **A static type has no `Py_TPFLAGS_HEAPTYPE`** (`src/wasthon.js`,
   `PyType_GetFlags`). The bridge answers a permissive flag set, every bit
   but `IS_ABSTRACT` and `DISALLOW_INSTANTIATION`, so a type readied by

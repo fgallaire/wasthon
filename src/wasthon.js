@@ -16311,6 +16311,12 @@ mergeInto(LibraryManager.library, {
         if (flags & 0x10) {
             cls.tp_flags = (cls.tp_flags || 0) | rt.$B.TPFLAGS.IMMUTABLETYPE;
         }
+        /* CPython finality, as PyType_Ready has it: a type without
+         * Py_TPFLAGS_BASETYPE (wasthon.h bit 1) cannot be subclassed, and
+         * make_builtin_class defaults Brython's BASETYPE on. */
+        if (!(flags & 2)) {
+            cls.tp_flags = (cls.tp_flags || 0) & ~rt.$B.TPFLAGS.BASETYPE;
+        }
         /* __module__ from the dotted spec name prefix (CPython's
          * PyType_FromMetaclass sets tp_dict['__module__'] = name[:lastdot]),
          * else the module's __name__. Without the dotted form, types like
