@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A list's `sq_concat` and `sq_repeat` return a list** (`src/wasthon.js`).
+  list and tuple share one `PySequenceMethods` table whose two functions
+  built a tuple whatever the left operand, and concatenated any two
+  arrays. Fix — the left operand's type for the result and for the right
+  operand ("can only concatenate list (not "tuple") to list"), as
+  CPython's `list_concat` and `tuple_concat`. +1 bridge test
+  (`test_builtin_sequence_slots`).
+
 - **`PyErr_Print` and `PyErr_PrintEx` go through `sys.excepthook`**
   (`src/wasthon.js`). Both wrote the message to the JS console: nothing
   reached `sys.stderr`, `sys.last_exc` was never set. Fix — CPython's

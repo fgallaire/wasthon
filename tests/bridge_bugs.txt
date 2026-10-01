@@ -1,7 +1,6 @@
 # The cases known to fail on the bridge, as pytest names them. tests/run.mjs
 # reports them as BUG without failing; the commit that fixes one removes its
 # line.
-test_macros.py::test_builtin_sequence_slots
 test_macros.py::test_PyBuffer_IsContiguous
 test_macros.py::test_Py_UNICODE_classes
 test_object.py::test_PyErr_SetFromErrno

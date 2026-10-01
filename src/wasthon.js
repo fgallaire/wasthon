@@ -13700,8 +13700,19 @@ mergeInto(LibraryManager.library, {
         var rt = WasthonRT;
         try {
             var a = rt.unwrap(aH), b = rt.unwrap(bH);
-            if (Array.isArray(a) && Array.isArray(b))
-                return rt.wrapNewRef(rt._b_.tuple.$factory(a.concat(b)));
+            // list and tuple share this table: the result and the operand
+            // CPython accepts are the left operand's type (a list gave a tuple)
+            if (Array.isArray(a)) {
+                var seqT = rt.$B.$isinstance(a, rt._b_.list) ? rt._b_.list : rt._b_.tuple;
+                var seqN = seqT === rt._b_.list ? 'list' : 'tuple';
+                if (!Array.isArray(b) || !rt.$B.$isinstance(b, seqT)) {
+                    rt.setError(rt.wrap(rt._b_.TypeError), "can only concatenate " +
+                        seqN + " (not \"" + rt.$B.class_name(b) + "\") to " + seqN);
+                    return 0;
+                }
+                var cat = Array.prototype.concat.call([], a, b);
+                return rt.wrapNewRef(seqT === rt._b_.list ? rt.$B.$list(cat) : rt._b_.tuple.$factory(cat));
+            }
             if (typeof a === 'string' && typeof b === 'string')
                 return rt.wrapNewRef(a + b);
             rt.setError(rt.wrap(rt._b_.TypeError), "unsupported concat");
@@ -13717,8 +13728,9 @@ mergeInto(LibraryManager.library, {
             if (n < 0) n = 0;
             if (Array.isArray(self)) {
                 var out = [];
-                for (var i = 0; i < n; i++) out = out.concat(self);
-                return rt.wrapNewRef(rt._b_.tuple.$factory(out));
+                for (var i = 0; i < n; i++) out = out.concat(Array.from(self));
+                return rt.wrapNewRef(rt.$B.$isinstance(self, rt._b_.list)
+                    ? rt.$B.$list(out) : rt._b_.tuple.$factory(out));
             }
             if (typeof self === 'string') return rt.wrapNewRef(self.repeat(n));
             rt.setError(rt.wrap(rt._b_.TypeError), "unsupported repeat");
