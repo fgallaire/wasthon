@@ -7,6 +7,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyModule_FromDefAndSpec2` takes the spec's name** (`src/wasthon.js`).
+  The module was named after the def's `m_name`. Fix — `spec.name`, as
+  CPython (AttributeError without one, TypeError for a non-str). +1
+  bridge test (`test_PyModuleDef_Init_FromDefAndSpec2_ExecDef`).
+
 - **`PyImport_GetModuleDict` is `sys.modules`** (`src/wasthon.js`). It
   returned a private dict mirroring `$B.imported`, which
   `PyImport_ImportModule` read back for pygame's C submodules; Python never

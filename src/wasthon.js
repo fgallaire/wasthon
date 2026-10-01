@@ -7797,12 +7797,21 @@ mergeInto(LibraryManager.library, {
                      slots: HEAP32[(defPtr + 20) >> 2] };
             rt.moduleDefs.set(defPtr, info);
         }
+        // CPython names the module after spec.name; the def's m_name was used
+        var name;
+        try { name = rt.$B.$getattr(rt.unwrap(specH), 'name'); }
+        catch (e) { rt.forwardError(e, rt._b_.AttributeError); return 0; }
+        if (rt.asJSStr(name) === null) {
+            rt.setError(rt.wrap(rt._b_.TypeError), "bad argument type for built-in operation");
+            return 0;
+        }
+        name = rt.asJSStr(name);
         var modObj = rt.$B.module.tp_new(rt.$B.module);
-        rt.$B.module.tp_init(modObj, info.name, info.doc || rt._b_.None);
+        rt.$B.module.tp_init(modObj, name, info.doc || rt._b_.None);
         var modHandle = rt.wrapPinned(modObj);
         var statePtr = 0;
         if (info.size > 0) { statePtr = _malloc(info.size); HEAPU8.fill(0, statePtr, statePtr + info.size); }
-        rt.modules.set(modHandle, { def: info, statePtr: statePtr, name: info.name, obj: modObj, types: [] });
+        rt.modules.set(modHandle, { def: info, statePtr: statePtr, name: name, obj: modObj, types: [] });
         WasthonRT_module_state[modHandle] = { state: statePtr, types: [] };
         // Register in the per-def state map, like CPython's import machinery
         // does implicitly for single-phase modules: PyState_FindModule must
