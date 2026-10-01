@@ -7153,7 +7153,9 @@ mergeInto(LibraryManager.library, {
                 installSlot('tp_iter', '__iter__', rt.scoped(function(self) {
                     var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
                     if (tpIterPtr2) {
+                        rt.pendingException = null;
                         var resH = getWasmTableEntry(tpIterPtr2)(selfH);
+                        if (rt.pendingException) { var pe = rt.pendingException; rt.pendingException = null; throw rt.pendingExc(pe); }
                         if (resH !== 0) return rt.unwrapResult(resH);
                     }
                     return self;   /* self-iterator (PyObject_SelfIter) */

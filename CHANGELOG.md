@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A static iterator type's `tp_iter` raises what it sets** (`src/wasthon.js`,
+  `PyType_Ready`, the `__iter__` wired for a type with `tp_iternext`). The
+  wrapper ignored `pendingException`: a C `tp_iter` returning NULL with an
+  error set made `iter(x)` return `x` itself, and left the exception pending
+  for the next unrelated C call. Fix — clear it before the call and raise it
+  after, as the sibling `tp_iternext` and container `tp_iter` wrappers do.
+  +1 bridge test (`test_tp_iter_raises`).
+
 - **Every `tp_dealloc` lookup walks `tp_base`** (`src/wasthon.js`,
   `deallocOf`, used by `_reclaimDead`, `gcFinalize` and the demoted-instance
   reclaim). `decref` and `releaseSole` find a type's destructor up its base

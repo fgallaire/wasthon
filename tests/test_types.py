@@ -179,6 +179,10 @@ def test_uninstantiable_type():
     assert raises(TypeError, _capi.UninstantiableSpec)
 
 
+def test_tp_iter_raises():
+    assert raises(ValueError, iter, _capi.RaisingIterStatic())
+
+
 def test_sequence_flag():
     match _capi.SequenceStatic(3):
         case [a, b, c]:

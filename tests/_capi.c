@@ -20,6 +20,7 @@
  *   ImmutableSpec            Py_TPFLAGS_IMMUTABLETYPE: no class attribute set
  *   UninstantiableSpec       Py_TPFLAGS_DISALLOW_INSTANTIATION: no instance
  *   SequenceStatic           Py_TPFLAGS_SEQUENCE: matches a sequence pattern
+ *   RaisingIterStatic        an iterator type whose tp_iter raises
  *   alloc_drop(T)            one T allocated and dropped in C
  *   deallocs()               how many Obj tp_dealloc has freed
  *   is_heaptype(T)           Py_TPFLAGS_HEAPTYPE in PyType_GetFlags(T)
@@ -290,6 +291,16 @@ static PyType_Spec immutable_spec = {"_capi.ImmutableSpec", sizeof(PyObject), 0,
 static PyType_Spec uninstantiable_spec = {"_capi.UninstantiableSpec", sizeof(PyObject), 0,
                                           Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
                                           flag_slots};
+/* an iterator type whose tp_iter raises */
+static PyObject *raising_iter(PyObject *o) {
+    PyErr_SetString(PyExc_ValueError, "tp_iter raised");
+    return NULL;
+}
+static PyTypeObject RaisingIterStatic = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "_capi.RaisingIterStatic", .tp_basicsize = sizeof(Obj),
+    .tp_flags = Py_TPFLAGS_DEFAULT, .tp_new = obj_new,
+    .tp_iter = raising_iter, .tp_iternext = obj_iternext};
 static PyTypeObject SequenceStatic = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "_capi.SequenceStatic", .tp_basicsize = sizeof(Obj),
@@ -464,7 +475,9 @@ PyMODINIT_FUNC PyInit__capi(void) {
         || add(m, "ImmutableSpec", PyType_FromSpec(&immutable_spec)) < 0
         || add(m, "UninstantiableSpec", PyType_FromSpec(&uninstantiable_spec)) < 0
         || PyType_Ready(&SequenceStatic) < 0
-        || add(m, "SequenceStatic", (PyObject *)&SequenceStatic) < 0) {
+        || add(m, "SequenceStatic", (PyObject *)&SequenceStatic) < 0
+        || PyType_Ready(&RaisingIterStatic) < 0
+        || add(m, "RaisingIterStatic", (PyObject *)&RaisingIterStatic) < 0) {
         Py_DECREF(m);
         return NULL;
     }
