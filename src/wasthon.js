@@ -10740,6 +10740,11 @@ mergeInto(LibraryManager.library, {
             return -1;
         }
         try {
+            if (!valueHandle) {   // a NULL value deletes, as PyObject_SetAttr
+                rt._b_.delattr(obj, name);
+                rt.__wasthon_resync_slot(obj, name);
+                return 0;
+            }
             var _v = rt.unwrap(valueHandle);
             rt._b_.setattr(obj, name, _v);
             rt.__wasthon_resync_slot(obj, name);
@@ -10820,6 +10825,11 @@ mergeInto(LibraryManager.library, {
             return -1;
         }
         try {
+            if (!valueH) {   // a NULL value deletes, as CPython (PyObject_DelAttr)
+                rt._b_.delattr(obj, name);
+                rt.__wasthon_resync_slot(obj, name);
+                return 0;
+            }
             rt._b_.setattr(obj, name, rt.unwrap(valueH));
             rt.__wasthon_resync_slot(obj, name);
             rt.incref(valueH);  // no-steal: attribute slot takes its own ref

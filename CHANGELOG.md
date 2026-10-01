@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_SetAttr` with a NULL value deletes** (`src/wasthon.js`,
+  `PyObject_SetAttr`, `PyObject_SetAttrString`). Both set the attribute to
+  the unwrapped NULL instead of removing it, which is how CPython defines a
+  NULL value (and `PyObject_DelAttr` on top of it). Fix — `delattr`. +1
+  bridge test (`test_PyObject_SetAttr_SetAttrString`).
+
 - **`PyLong_AsNativeBytes` is CPython's** (`src/wasthon.h`, `src/wasthon.js`).
   The `Py_ASNATIVEBYTES_*` flags were the bridge's own (DEFAULTS 0,
   BIG_ENDIAN 1, LITTLE_ENDIAN 2), so a module passing CPython's 1 for

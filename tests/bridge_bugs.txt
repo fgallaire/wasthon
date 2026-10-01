@@ -15,7 +15,6 @@ test_object.py::test_PyException_SetCause_SetContext
 test_object.py::test_PyException_SetTraceback
 test_object.py::test_PyObject_GC_IsTracked
 test_object.py::test_PyObject_Hash
-test_object.py::test_PyObject_SetAttr_SetAttrString
 test_private.py::test__PyArg_CheckPositional
 test_private.py::test__PyErr_FormatFromCause
 test_private.py::test__Py_HashDouble
