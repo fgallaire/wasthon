@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyArg_Parse` writes `L`, `K` and `k` exactly** (`src/wasthon.js`, the
+  integer formats of the tuple/keywords parser). The value was turned into a
+  JS Number (past 2**53, inexact) and its 64-bit slot written as `n | 0` and
+  `(n / 2**32) | 0`: -5 read back 4294967291, 2**63-1 read -2**63 and
+  2**64-1 read 0; and `k`, an `unsigned long` of 4 bytes on wasm32, got 8,
+  overwriting the C variable next to it. Fix — the exact BigInt kept from
+  the int or its `__index__`; `L` range-checked (OverflowError), `K` masked
+  to 64 bits, `k` to 32, as getargs.c. +2 bridge tests
+  (`test_PyLong_FromLongLong`, `test_PyLong_FromUnsignedLongLong`).
+
 - **The unary `PyNumber_*` raise CPython's TypeError** (`src/wasthon.js`,
   `__wasthon_unary`, `PyNumber_Absolute`). `PyNumber_Negative('x')` and
   its `Positive`/`Invert` siblings surfaced the missing dunder as an

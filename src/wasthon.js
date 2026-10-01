@@ -11957,10 +11957,11 @@ mergeInto(LibraryManager.library, {
                          * rejects str/float/None with TypeError. The old
                          * Number(value)||0 parsed _ZlibDecompressor("ASDA")
                          * as wbits=0. */
-                        var n;
+                        var n, nBig = null;   // nBig: the exact value past 2**53
                         if (typeof value === 'number' && Number.isInteger(value)) {
                             n = value;
                         } else if (typeof value === 'bigint') {
+                            nBig = value;
                             n = Number(value);
                         } else if (value === true) {
                             n = 1;
@@ -11973,6 +11974,7 @@ mergeInto(LibraryManager.library, {
                             if (idxFn) {
                                 try {
                                     var iv = rt.$B.$call(idxFn);
+                                    if (typeof iv === 'bigint') nBig = iv;
                                     n = (typeof iv === 'bigint') ? Number(iv)
                                       : (iv && iv.value !== undefined ? iv.value
                                                                       : Number(iv));
@@ -11992,11 +11994,26 @@ mergeInto(LibraryManager.library, {
                         switch (c) {
                             case 'i': case 'I': case 'l':
                                 HEAP32[outPtr >> 2] = n | 0; break;
-                            case 'k': case 'L': case 'K':
-                                /* 64-bit slot: write low 32, zero high 32 */
-                                HEAP32[outPtr >> 2] = n | 0;
-                                HEAP32[(outPtr + 4) >> 2] = ((n / 0x100000000) | 0);
+                            case 'k':   /* unsigned long, 32 bits on wasm32, masked */
+                                HEAP32[outPtr >> 2] = Number(BigInt.asUintN(32,
+                                    nBig !== null ? nBig : BigInt(n))) | 0;
                                 break;
+                            case 'L': case 'K': {
+                                /* 64-bit slot from the exact value: (n / 2**32)|0
+                                 * lost a negative's sign (-5 read 4294967291) and
+                                 * 2**63-1 read -2**63; 'L' is range-checked,
+                                 * 'K' masked, as getargs.c */
+                                var ex = nBig !== null ? nBig : BigInt(n);
+                                if (c === 'L' && (ex < -(1n << 63n) || ex > (1n << 63n) - 1n)) {
+                                    rt.setError(rt.wrap(rt._b_.OverflowError),
+                                        "Python int too large to convert to C long long");
+                                    return 0;
+                                }
+                                var u64 = BigInt.asUintN(64, ex);
+                                HEAP32[outPtr >> 2] = Number(u64 & 0xffffffffn) | 0;
+                                HEAP32[(outPtr + 4) >> 2] = Number(u64 >> 32n) | 0;
+                                break;
+                            }
                             case 'n':  /* Py_ssize_t: 32-bit in wasm32 */
                                 /* CPython's 'n' raises OverflowError when the
                                  * value doesn't fit Py_ssize_t (it doesn't
