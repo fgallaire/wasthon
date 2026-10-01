@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **The capsule accessors refuse a non-capsule** (`src/wasthon.js`). On
+  anything but a capsule with a pointer, `GetPointer`, `GetName`,
+  `GetContext`, `SetPointer`, `SetName` and `SetContext` returned 0 or -1
+  with nothing set, and `New`/`SetPointer` took a NULL pointer. Fix —
+  CPython's `is_legal_capsule`: ValueError ("PyCapsule_GetName called with
+  invalid PyCapsule object", "... called with null pointer"). +1 bridge
+  test (`test_PyCapsule_New_GetPointer_GetName_IsValid`).
+
 - **`Py_HashBuffer` is the hash of the bytes** (`src/wasthon.js`). An FNV
   hash that matched no Python-side value. Fix — `PyObject_Hash` of
   `bytes(buf)`, as CPython's `Py_HashBuffer` is `hash(bytes)`. The test

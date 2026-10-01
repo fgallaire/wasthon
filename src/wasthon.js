@@ -10031,15 +10031,15 @@ mergeInto(LibraryManager.library, {
         return rt.wrapNewRef({ __class__: 'ContextToken', old: old }); },
 
     /* --- Capsule (New/GetPointer already exist) --- */
-    PyCapsule_GetContext__deps: ['$WasthonRT'],
-    PyCapsule_GetContext: function(capH) { var o = WasthonRT.unwrap(capH);
+    PyCapsule_GetContext__deps: ['$wasthonCapsule'],
+    PyCapsule_GetContext: function(capH) { var o = wasthonCapsule(capH, 'PyCapsule_GetContext');
         return (o && o.context) ? o.context : 0; },
-    PyCapsule_SetContext__deps: ['$WasthonRT'],
-    PyCapsule_SetContext: function(capH, ctx) { var o = WasthonRT.unwrap(capH);
-        if (o) o.context = ctx; return 0; },
-    PyCapsule_SetName__deps: ['$WasthonRT'],
-    PyCapsule_SetName: function(capH, namePtr) { var o = WasthonRT.unwrap(capH);
-        if (o) o.name = namePtr ? UTF8ToString(namePtr) : null; return 0; },
+    PyCapsule_SetContext__deps: ['$wasthonCapsule'],
+    PyCapsule_SetContext: function(capH, ctx) { var o = wasthonCapsule(capH, 'PyCapsule_SetContext');
+        if (!o) return -1; o.context = ctx; return 0; },
+    PyCapsule_SetName__deps: ['$wasthonCapsule'],
+    PyCapsule_SetName: function(capH, namePtr) { var o = wasthonCapsule(capH, 'PyCapsule_SetName');
+        if (!o) return -1; o.name = namePtr ? UTF8ToString(namePtr) : null; return 0; },
     PyCapsule_Import__deps: ['$WasthonRT'],
     PyCapsule_Import: function(namePtr, noBlock) { var rt = WasthonRT;
         var name = namePtr ? UTF8ToString(namePtr) : "";
@@ -15075,21 +15075,36 @@ mergeInto(LibraryManager.library, {
     PyCapsule_New__deps: ['$WasthonRT'],
     PyCapsule_New: function(ptr, namePtr, dtor) {
         var rt = WasthonRT;
+        if (!ptr) {
+            rt.setError(rt.wrap(rt._b_.ValueError), "PyCapsule_New called with null pointer");
+            return 0;
+        }
         var name = namePtr ? UTF8ToString(namePtr) : null;
         return rt.wrapNewRef({ __class__: 'PyCapsule', ptr: ptr, name: name });
     },
 
-    PyCapsule_GetPointer__deps: ['$WasthonRT'],
+    /* CPython's is_legal_capsule, which every accessor goes through: a
+     * capsule with a pointer, else ValueError; they returned 0 or -1 with
+     * nothing set. */
+    $wasthonCapsule__deps: ['$WasthonRT'],
+    $wasthonCapsule: function(capH, fn) {
+        var rt = WasthonRT, o = rt.unwrap(capH);
+        if (o && o.__class__ === 'PyCapsule' && o.ptr) return o;
+        rt.setError(rt.wrap(rt._b_.ValueError), fn + " called with invalid PyCapsule object");
+        return null;
+    },
+
+    PyCapsule_GetPointer__deps: ['$wasthonCapsule'],
     PyCapsule_GetPointer: function(capsuleHandle, namePtr) {
-        var obj = WasthonRT.unwrap(capsuleHandle);
-        if (!obj || obj.__class__ !== 'PyCapsule') return 0;
+        var obj = wasthonCapsule(capsuleHandle, 'PyCapsule_GetPointer');
+        if (!obj) return 0;
         return obj.ptr;
     },
 
-    PyCapsule_GetName__deps: ['$WasthonRT'],
+    PyCapsule_GetName__deps: ['$wasthonCapsule'],
     PyCapsule_GetName: function(capsuleHandle) {
-        var obj = WasthonRT.unwrap(capsuleHandle);
-        if (!obj || obj.__class__ !== 'PyCapsule' || obj.name == null) return 0;
+        var obj = wasthonCapsule(capsuleHandle, 'PyCapsule_GetName');
+        if (!obj || obj.name == null) return 0;
         if (!obj.$namePtr) {
             var n = lengthBytesUTF8(obj.name) + 1;
             obj.$namePtr = _malloc(n);
@@ -15098,10 +15113,15 @@ mergeInto(LibraryManager.library, {
         return obj.$namePtr;
     },
 
-    PyCapsule_SetPointer__deps: ['$WasthonRT'],
+    PyCapsule_SetPointer__deps: ['$WasthonRT', '$wasthonCapsule'],
     PyCapsule_SetPointer: function(capsuleHandle, ptr) {
-        var obj = WasthonRT.unwrap(capsuleHandle);
-        if (!obj || obj.__class__ !== 'PyCapsule') return -1;
+        if (!ptr) {
+            WasthonRT.setError(WasthonRT.wrap(WasthonRT._b_.ValueError),
+                "PyCapsule_SetPointer called with null pointer");
+            return -1;
+        }
+        var obj = wasthonCapsule(capsuleHandle, 'PyCapsule_SetPointer');
+        if (!obj) return -1;
         obj.ptr = ptr;
         return 0;
     },
