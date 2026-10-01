@@ -7,6 +7,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyLong_As[Long]LongAndOverflow` return -1 on overflow** (`src/wasthon.js`).
+  The overflow flag was set, but `AsLongAndOverflow` returned the clamped
+  value (2147483647) and `AsLongLongAndOverflow` 0, where CPython returns -1
+  (callers test `v == -1 && overflow`). +2 bridge tests.
+
 - **`PyLong_FromDouble` raises on an infinity or a NaN** (`src/wasthon.js`).
   It wrapped `Math.trunc(v)`, an infinity or a NaN as an "int", and a
   value past 2**53 as an inexact JS number. Fix — CPython's OverflowError

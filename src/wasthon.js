@@ -12613,8 +12613,7 @@ mergeInto(LibraryManager.library, {
             HEAP32[overflowPtr >> 2] = (v > 2147483647n) ? 1 :
                                        (v < -2147483648n) ? -1 : 0;
         }
-        if (v > 2147483647n) return 2147483647;
-        if (v < -2147483648n) return -2147483648;
+        if (v > 2147483647n || v < -2147483648n) return -1;   // CPython: -1 on overflow
         return Number(v) | 0;
     },
 
@@ -12748,13 +12747,14 @@ mergeInto(LibraryManager.library, {
         }
         var bi = (typeof n === 'bigint') ? n : BigInt(Math.trunc(n));
         var max = 9223372036854775807n, min = -9223372036854775808n;
+        /* CPython returns -1 on overflow (a BigInt: emcc's i64 return) */
         if (bi > max) {
             if (overflowPtr) HEAP32[overflowPtr >> 2] = 1;
-            return 0n;  /* return BigInt 0 so emcc's i64 conversion doesn't see Infinity */
+            return -1n;
         }
         if (bi < min) {
             if (overflowPtr) HEAP32[overflowPtr >> 2] = -1;
-            return 0n;
+            return -1n;
         }
         if (overflowPtr) HEAP32[overflowPtr >> 2] = 0;
         return bi;  /* return as BigInt directly — emcc handles i64 returns natively */

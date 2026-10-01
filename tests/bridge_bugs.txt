@@ -4,8 +4,6 @@
 test_macros.py::test_builtin_sequence_slots
 test_macros.py::test_PyBuffer_IsContiguous
 test_macros.py::test_Py_UNICODE_classes
-test_number.py::test_PyLong_AsLongAndOverflow
-test_number.py::test_PyLong_AsLongLongAndOverflow
 test_number.py::test_PyLong_AsNativeBytes
 test_number.py::test_PyLong_FromString
 test_object.py::test_PyErr_NewException
