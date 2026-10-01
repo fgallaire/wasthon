@@ -13107,10 +13107,15 @@ mergeInto(LibraryManager.library, {
         var id = HEAP32[(writerPtr + 4) >> 2];
         var chunks = rt._writers.get(id);
         if (!chunks) return -1;
-        var s = rt.asJSStr(rt.unwrap(strH));
-        if (s === null) {
-            rt.setError(rt.wrap(rt._b_.TypeError), "expected str");
-            return -1;
+        // CPython writes PyObject_Str(obj), the str itself for a str (a
+        // PyUnicode_New buffer too, which _json writes); a non-str was a
+        // TypeError
+        var obj = rt.unwrap(strH), s;
+        if (typeof obj === 'string' || (obj && obj.__wasthon_unicode_buf__ !== undefined)) {
+            s = rt.asJSStr(obj);
+        } else {
+            try { s = rt.asJSStr(rt.$B.$call(rt._b_.str, obj)); }
+            catch (e) { rt.forwardError(e); return -1; }
         }
         chunks.push(s);
         HEAP32[writerPtr >> 2] += s.length;

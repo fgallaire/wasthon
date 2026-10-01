@@ -7,6 +7,10 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicodeWriter_WriteStr` writes `str(obj)`** (`src/wasthon.js`). A
+  non-str raised TypeError "expected str". Fix — `PyObject_Str` of the
+  object, as CPython. +1 bridge test (`test_PyUnicodeWriter_WriteStr`).
+
 - **The `_PyLong_*` internals read any int** (`src/wasthon.js`).
   `_PyLong_NumBits`, `IsZero`, `IsNegative`, `IsPositive`, `Lshift`,
   `Rshift` and `Frexp` read a JS number or BigInt only: a bool or an int
