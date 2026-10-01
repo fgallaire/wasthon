@@ -7,6 +7,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyUnicodeWriter_Format` formats** (`src/wasthon.js`). It appended the
+  format string literally, its arguments unread ("%d%%" for "50%"). Fix —
+  `PyUnicode_FromFormat`'s output written into the writer, as CPython. +2
+  bridge tests (`test_PyUnicodeWriter_Format`, `test_PyUnicodeWriter`).
+
 - **`PyUnicodeWriter_WriteStr` writes `str(obj)`** (`src/wasthon.js`). A
   non-str raised TypeError "expected str". Fix — `PyObject_Str` of the
   object, as CPython. +1 bridge test (`test_PyUnicodeWriter_WriteStr`).

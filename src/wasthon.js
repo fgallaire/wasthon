@@ -13204,18 +13204,20 @@ mergeInto(LibraryManager.library, {
         } catch (e) { return -1; }
     },
 
-    PyUnicodeWriter_Format__deps: ['$WasthonRT'],
+    PyUnicodeWriter_Format__deps: ['$WasthonRT', 'PyUnicode_FromFormat'],
     PyUnicodeWriter_Format: function(writerPtr, fmtPtr, varargs) {
         var rt = WasthonRT;
         var id = HEAP32[(writerPtr + 4) >> 2];
         var chunks = rt._writers.get(id);
         if (!chunks) return -1;
-        /* Minimal: just append the format string with %s/%d resolved best-
-         * effort. _json only uses Format with literal strings; this is
-         * sufficient for the current call sites. */
-        var fmt = fmtPtr ? UTF8ToString(fmtPtr) : "";
-        chunks.push(fmt);
-        HEAP32[writerPtr >> 2] += fmt.length;
+        // CPython: PyUnicode_FromFormat written into the writer; the format
+        // was appended literally, its arguments unread
+        var h = _PyUnicode_FromFormat(fmtPtr, varargs);
+        if (!h) return -1;
+        var s = rt.asJSStr(rt.unwrap(h));
+        rt.decref(h);
+        chunks.push(s);
+        HEAP32[writerPtr >> 2] += s.length;
         return 0;
     },
 
