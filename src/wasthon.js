@@ -4875,16 +4875,25 @@ mergeInto(LibraryManager.library, {
     PyType_GetModuleByDef: function(typeHandle, defHandle) {
         var rt = WasthonRT;
         var t = rt.unwrap(typeHandle);
-        if (!t) return 0;
-        if (t.__wasthon_module__) return t.__wasthon_module__;
-        var mro = t.tp_mro || t.__mro__;
-        if (mro) {
-            for (var i = 0; i < mro.length; i++) {
-                if (mro[i] && mro[i].__wasthon_module__) {
-                    return mro[i].__wasthon_module__;
+        // CPython: the module of the first type in the MRO whose module was
+        // created from `def`, else TypeError; any module was returned, and
+        // NULL with nothing set
+        var defOf = function(c) {
+            var m = c && c.__wasthon_module__ && rt.modules.get(c.__wasthon_module__);
+            return m && m.def ? m.def.defPtr : 0;
+        };
+        if (t) {
+            if (defOf(t) === defHandle) return t.__wasthon_module__;
+            var mro = t.tp_mro || t.__mro__;
+            if (mro) {
+                for (var i = 0; i < mro.length; i++) {
+                    if (defOf(mro[i]) === defHandle) return mro[i].__wasthon_module__;
                 }
             }
         }
+        var info = rt.types.get(typeHandle);
+        rt.setError(rt.wrap(rt._b_.TypeError), "PyType_GetModuleByDef: No superclass of '" +
+            (info ? info.fullName : t && t.__name__) + "' has the given module");
         return 0;
     },
 

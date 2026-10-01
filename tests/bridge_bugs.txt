@@ -32,7 +32,6 @@ test_runtime.py::test_PyVectorcall_Call
 test_runtime.py::test_PyWeakref_NewRef_GetRef_CheckRef
 test_runtime.py::test_thread_state_and_GIL
 test_types.py::test_PyType_Freeze
-test_types.py::test_PyType_GetModuleByDef
 test_unicode.py::test_PyBytes_AsString_Size
 test_unicode.py::test_PyUnicode_AsEncodedString
 test_unicode.py::test_PyUnicode_AsLatin1String

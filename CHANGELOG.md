@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyType_GetModuleByDef` matches the def** (`src/wasthon.js`). It
+  returned the first module found in the MRO whatever its def, and NULL
+  with nothing set when there was none. Fix — the module whose def is the
+  one given, else TypeError ("PyType_GetModuleByDef: No superclass of
+  '...' has the given module"), as CPython. +1 bridge test
+  (`test_PyType_GetModuleByDef`).
+
 - **`PyType_GetSlot` reads a static type's own slots** (`src/wasthon.c`,
   `src/wasthon.js`). A PyType_Ready type got the generic trampolines for
   its `nb_` binary slots and an 8-entry offset table for the rest: its
