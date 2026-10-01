@@ -8792,7 +8792,21 @@ mergeInto(LibraryManager.library, {
      * (JS GC owns lifetime). _decimal uses this only inside assert()s. */
     PyObject_GC_IsTracked__deps: ['$WasthonRT'],
     PyObject_GC_IsTracked: function(handle) {
-        return handle === 0 ? 0 : 1;
+        // CPython tracks containers and instances, never the atomic types
+        // (its lazy untracking of atomic-only tuples and dicts aside); every
+        // object answered 1
+        var rt = WasthonRT;
+        if (handle === 0) return 0;
+        var obj = rt.unwrap(handle);
+        if (obj === null || obj === undefined || obj === rt._b_.None) return 0;
+        var t = typeof obj;
+        if (t === 'number' || t === 'bigint' || t === 'boolean' || t === 'string') return 0;
+        var atomic = [rt._b_.int, rt._b_.float, rt._b_.complex, rt._b_.str, rt._b_.bytes,
+                      rt._b_.bool, rt.$B.NoneType];
+        try {
+            if (atomic.indexOf(rt.$B.get_class(obj)) !== -1) return 0;
+        } catch (e) {}
+        return 1;
     },
 
     /* ----------------------------------------------------------------

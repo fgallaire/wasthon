@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyObject_GC_IsTracked` leaves the atomic types out** (`src/wasthon.js`).
+  It answered 1 for every object. CPython tracks containers and instances,
+  never `int`, `float`, `complex`, `str`, `bytes`, `bool` or None. Fix —
+  that rule (CPython's lazy untracking of atomic-only tuples and dicts is
+  not modelled). +1 bridge test (`test_PyObject_GC_IsTracked`).
+
 - **`PyObject_Hash` raises for an unhashable object** (`src/wasthon.js`). It
   returned -1 with no exception set for a list: the C caller saw an error
   and nothing to raise. Fix — the TypeError forwarded. The test compares
