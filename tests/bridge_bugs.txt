@@ -11,7 +11,6 @@ test_number.py::test_PyLong_FromDouble
 test_number.py::test_PyLong_FromLongLong
 test_number.py::test_PyLong_FromString
 test_number.py::test_PyLong_FromUnsignedLongLong
-test_number.py::test_PyNumber_unary
 test_object.py::test_PyErr_NewException
 test_object.py::test_PyErr_NewExceptionWithDoc
 test_object.py::test_PyErr_Print

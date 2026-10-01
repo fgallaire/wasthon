@@ -4851,7 +4851,7 @@ mergeInto(LibraryManager.library, {
         if (typeof obj === 'number') return rt.wrapNewRef(Math.abs(obj));
         if (typeof obj === 'bigint') return rt.wrapNewRef(obj < 0n ? -obj : obj);
         try { return rt.wrapNewRef(rt.$B.$call(rt._b_.abs, obj)); }
-        catch (e) { return 0; }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }  // NULL had no error set
     },
 
     /* PyType_GetModuleByDef — looks up the module that owns a type, given
@@ -9490,18 +9490,27 @@ mergeInto(LibraryManager.library, {
     PyNumber_Xor: function(aH, bH) { var rt = WasthonRT;
         try { return rt.wrapNewRef(rt.$B.rich_op1('__xor__', rt.unwrap(aH), rt.unwrap(bH))); }
         catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
-    PyNumber_Negative__deps: ['$WasthonRT'],
-    PyNumber_Negative: function(aH) { var rt = WasthonRT; var a = rt.unwrap(aH);
-        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__neg__'))); }
-        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
-    PyNumber_Positive__deps: ['$WasthonRT'],
-    PyNumber_Positive: function(aH) { var rt = WasthonRT; var a = rt.unwrap(aH);
-        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__pos__'))); }
-        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
-    PyNumber_Invert__deps: ['$WasthonRT'],
-    PyNumber_Invert: function(aH) { var rt = WasthonRT; var a = rt.unwrap(aH);
-        try { return rt.wrapNewRef(rt.$B.$call(rt.$B.$getattr(a, '__invert__'))); }
-        catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; } },
+    /* CPython's UNARY_FUNC: a type without the slot is "bad operand type for
+     * unary -: 'str'" (the missing dunder surfaced as an AttributeError) */
+    $__wasthon_unary__deps: ['$WasthonRT'],
+    $__wasthon_unary: function(aH, dunder, descr) {
+        var rt = WasthonRT; var a = rt.unwrap(aH);
+        try {
+            var f = rt.$B.$getattr(a, dunder, null);
+            if (f === null) {
+                rt.setError(rt.wrap(rt._b_.TypeError),
+                    "bad operand type for " + descr + ": '" + rt.$B.class_name(a) + "'");
+                return 0;
+            }
+            return rt.wrapNewRef(rt.$B.$call(f));
+        } catch (e) { rt.forwardError(e, rt._b_.TypeError); return 0; }
+    },
+    PyNumber_Negative__deps: ['$__wasthon_unary'],
+    PyNumber_Negative: function(aH) { return __wasthon_unary(aH, '__neg__', 'unary -'); },
+    PyNumber_Positive__deps: ['$__wasthon_unary'],
+    PyNumber_Positive: function(aH) { return __wasthon_unary(aH, '__pos__', 'unary +'); },
+    PyNumber_Invert__deps: ['$__wasthon_unary'],
+    PyNumber_Invert: function(aH) { return __wasthon_unary(aH, '__invert__', 'unary ~'); },
 
     /* --- Long / hash / complex accessors --- */
     PyLong_IsZero__deps: ['$WasthonRT'],

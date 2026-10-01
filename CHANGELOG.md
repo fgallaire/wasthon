@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **The unary `PyNumber_*` raise CPython's TypeError** (`src/wasthon.js`,
+  `__wasthon_unary`, `PyNumber_Absolute`). `PyNumber_Negative('x')` and
+  its `Positive`/`Invert` siblings surfaced the missing dunder as an
+  AttributeError; `PyNumber_Absolute` returned NULL with nothing raised.
+  Fix — "bad operand type for unary -: 'str'", as CPython's `UNARY_FUNC`,
+  and abs()'s own error forwarded. +1 bridge test (`test_PyNumber_unary`).
+
 - **`PyComplex_RealAsDouble` and `ImagAsDouble` follow CPython**
   (`src/wasthon.js`, `__wasthon_complex_part`). They read `.real`/`.imag` of
   any object and swallowed the error: a str gave -1.0 and 0.0 with nothing
