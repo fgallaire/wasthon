@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyImport_GetModuleDict` is `sys.modules`** (`src/wasthon.js`). It
+  returned a private dict mirroring `$B.imported`, which
+  `PyImport_ImportModule` read back for pygame's C submodules; Python never
+  saw what C put in it. Fix — `sys.modules` itself, whose entries Brython's
+  import honors (dotted names included); the mirror and its lookup are
+  gone. +1 bridge test (`test_PyImport_AddModule_GetModuleDict`).
+
 - **`PyCapsule_GetPointer` checks the name** (`src/wasthon.js`). It
   returned the pointer whatever name was asked. Fix — CPython's
   `name_matches` (both NULL or equal), else ValueError ("PyCapsule_

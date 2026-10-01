@@ -6602,12 +6602,10 @@ mergeInto(LibraryManager.library, {
     PyImport_GetModuleDict__deps: ['$WasthonRT'],
     PyImport_GetModuleDict: function() {
         var rt = WasthonRT;
-        if (!rt._cModules) rt._cModules = rt._b_.dict.$factory();
-        try {                          /* mirror Brython's imported modules in */
-            var imp = rt.$B.imported || {};
-            for (var k in imp) { try { rt.$B.$setitem(rt._cModules, k, imp[k]); } catch (e) {} }
-        } catch (e) {}
-        return rt.wrap(rt._cModules);
+        // sys.modules itself, as CPython (Brython's import honors its
+        // entries); a private mirror of $B.imported was not sys.modules
+        try { return rt.wrap(rt.$B.$getattr(rt.$B.$call(rt._b_.__import__, 'sys'), 'modules')); }
+        catch (e) { rt.forwardError(e); return 0; }
     },
 
     PyModule_Create2__deps: ['$WasthonRT', '$WasthonRT_module_state', '$__wasthon_install_methods'],
@@ -13524,18 +13522,6 @@ mergeInto(LibraryManager.library, {
         if (namePtr === 0) return 0;
         var name = UTF8ToString(namePtr);
         rt.trace('PyImport_ImportModule', name);
-        /* C-registered modules (pygame's static submodules, put in _cModules
-         * by load_submodule via PyDict_SetItemString) have no .py file, so
-         * Brython's finder-based __import__ can't load them ("pygame.time").
-         * Resolve them here first. */
-        try {
-            if (rt._cModules) {
-                /* read with str_dict_get to match PyDict_SetItemString's
-                 * str_dict_set write (the modules dict is string-keyed). */
-                var cm = rt.$B.str_dict_get(rt._cModules, name, rt.$B.NULL);
-                if (cm !== rt.$B.NULL && cm !== undefined) return rt.wrapPinned(cm);
-            }
-        } catch (e) { /* not a C module, fall through */ }
         try {
             // Brython's __import__ takes (name, globals, locals, fromlist, level).
             // For dotted names, CPython's PyImport_ImportModule returns the
