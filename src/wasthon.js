@@ -12891,7 +12891,9 @@ mergeInto(LibraryManager.library, {
         }
         var rest = p;
         while (rest < s.length && s.charCodeAt(rest) <= 32) rest++;
-        if (ndigits === 0 || (!pendPtr && rest < s.length)) {
+        // CPython: anything left after the trailing space is an error, with
+        // or without pend (which ends past that space)
+        if (ndigits === 0 || rest < s.length) {
             rt.setError(rt.wrap(rt._b_.ValueError),
                 "invalid literal for int() with base " + b + ": '" + s + "'");
             return 0;
@@ -12907,7 +12909,7 @@ mergeInto(LibraryManager.library, {
                 "conversion; use sys.set_int_max_str_digits() to increase the limit");
             return 0;
         }
-        if (pendPtr) HEAP32[pendPtr >> 2] = strPtr + p;
+        if (pendPtr) HEAP32[pendPtr >> 2] = strPtr + rest;
         v = sign * v;
         if (v >= -2147483648n && v <= 2147483647n) return rt.wrapNewRef(Number(v));
         return rt.wrapNewRef(v);

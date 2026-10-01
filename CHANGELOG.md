@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyLong_FromString` ends where CPython does** (`src/wasthon.js`). With a
+  `pend` pointer it set it right after the digits, before the trailing
+  space, and accepted trailing garbage (`"  -12xyz"` gave -12). Fix — as
+  CPython: `pend` past the trailing space, and anything left after it a
+  ValueError whether or not `pend` is given. +1 bridge test.
+
 - **`PyLong_As[Long]LongAndOverflow` return -1 on overflow** (`src/wasthon.js`).
   The overflow flag was set, but `AsLongAndOverflow` returned the clamped
   value (2147483647) and `AsLongLongAndOverflow` 0, where CPython returns -1
