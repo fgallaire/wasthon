@@ -7,6 +7,14 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`_PyArg_CheckPositional` is CPython's** (`src/wasthon.c`). The JS
+  version wrote its own message, "f() takes 1 to 3 positional arguments
+  but 5 were given", for CPython's "f expected at most 3 arguments, got
+  5" (and the "unpacked tuple should have ..." form without a name). Fix —
+  `Python/getargs.c`'s function in C; the stale "not implemented yet"
+  note above `_PyArg_UnpackKeywords` is gone. +1 bridge test
+  (`test__PyArg_CheckPositional`).
+
 - **One interpreter state** (`src/wasthon.js`). `PyInterpreterState_Get`
   returned a sentinel ID of its own while `PyInterpreterState_Main` and
   `tstate->interp` gave a malloc'd address: `PyInterpreterState_Get() ==

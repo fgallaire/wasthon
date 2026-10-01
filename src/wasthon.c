@@ -1560,9 +1560,6 @@ void PyThread_release_lock(PyThread_type_lock lock)          { (void)lock; }
  *                                                                  *
  * Note: `kwargs` (the dict-style param for older calling conv) is  *
  * always NULL for FASTCALL|KEYWORDS — we accept it but ignore it.  *
- * `_PyArg_BadArgument` and `_PyArg_CheckPositional` are also       *
- * referenced by some clinic outputs; sha2's doesn't use them, so   *
- * they're not implemented yet.                                     *
  * ---------------------------------------------------------------- */
 
 extern PyObject **wasthon_unpack_keywords(
@@ -1581,6 +1578,49 @@ PyObject **_PyArg_UnpackKeywords(
 {
     return wasthon_unpack_keywords(args, nargs, kwargs, kwnames, parser,
                                     minpos, maxpos, minkw, varpos, buf);
+}
+
+/* _PyArg_CheckPositional — Python/getargs.c. The JS version wrote its own
+ * message ("f() takes 1 to 3 positional arguments but 5 were given"). */
+int
+_PyArg_CheckPositional(const char *name, Py_ssize_t nargs,
+                       Py_ssize_t min, Py_ssize_t max)
+{
+    if (nargs < min) {
+        if (name != NULL)
+            PyErr_Format(
+                PyExc_TypeError,
+                "%.200s expected %s%zd argument%s, got %zd",
+                name, (min == max ? "" : "at least "), min, min == 1 ? "" : "s", nargs);
+        else
+            PyErr_Format(
+                PyExc_TypeError,
+                "unpacked tuple should have %s%zd element%s,"
+                " but has %zd",
+                (min == max ? "" : "at least "), min, min == 1 ? "" : "s", nargs);
+        return 0;
+    }
+
+    if (nargs == 0) {
+        return 1;
+    }
+
+    if (nargs > max) {
+        if (name != NULL)
+            PyErr_Format(
+                PyExc_TypeError,
+                "%.200s expected %s%zd argument%s, got %zd",
+                name, (min == max ? "" : "at most "), max, max == 1 ? "" : "s", nargs);
+        else
+            PyErr_Format(
+                PyExc_TypeError,
+                "unpacked tuple should have %s%zd element%s,"
+                " but has %zd",
+                (min == max ? "" : "at most "), max, max == 1 ? "" : "s", nargs);
+        return 0;
+    }
+
+    return 1;
 }
 
 /* ---- pyexpat shims ---- */

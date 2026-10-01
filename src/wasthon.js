@@ -8397,22 +8397,6 @@ mergeInto(LibraryManager.library, {
         return 1;
     },
 
-    /* Positional argument count check used by clinic glue for fixed-arity
-     * functions. Returns 1 if min ≤ nargs ≤ max, else sets TypeError and
-     * returns 0. */
-    _PyArg_CheckPositional__deps: ['$WasthonRT'],
-    _PyArg_CheckPositional: function(fnamePtr, nargs, min, max) {
-        var rt = WasthonRT;
-        if (nargs < min || nargs > max) {
-            var fname = fnamePtr ? UTF8ToString(fnamePtr) : "function";
-            var expected = (min === max) ? min : (min + " to " + max);
-            rt.setError(rt.wrap(rt._b_.TypeError),
-                fname + "() takes " + expected + " positional arguments but " + nargs + " were given");
-            return 0;
-        }
-        return 1;
-    },
-
     /* Py_GetConstant — returns interned singletons. CPython 3.14 API. */
     Py_GetConstant__deps: ['$WasthonRT'],
     Py_GetConstant: function(id) {
