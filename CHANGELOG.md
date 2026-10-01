@@ -7,6 +7,12 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyException_SetCause` sets `__suppress_context__`** (`src/wasthon.js`).
+  It went through Brython's `__cause__` setter, which leaves the flag False,
+  and swallowed its TypeError, as `SetContext` did. Fix — both write the
+  field unchecked, as CPython, and `SetCause` sets `suppress_context`.
+  +1 bridge test (`test_PyException_SetCause_SetContext`).
+
 - **`PyException_SetTraceback` refuses a non-traceback** (`src/wasthon.js`).
   It swallowed the setter's TypeError and returned 0. Fix — the error
   forwarded with -1, as CPython ("__traceback__ must be a traceback or

@@ -9738,10 +9738,15 @@ mergeInto(LibraryManager.library, {
         rt.pendingException = null; },
     PyException_SetCause__deps: ['$WasthonRT'],
     PyException_SetCause: function(excH, causeH) { var rt = WasthonRT;
-        try { rt.$B.$setattr(rt.unwrap(excH), '__cause__', causeH ? rt.unwrap(causeH) : rt._b_.None); } catch (e) {} },
+        // CPython writes the field unchecked and sets suppress_context;
+        // Brython's __cause__ setter leaves __suppress_context__ False
+        var exc = rt.unwrap(excH);
+        if (causeH) exc.__cause__ = rt.unwrap(causeH); else delete exc.__cause__;
+        exc.suppress_context = true; },
     PyException_SetContext__deps: ['$WasthonRT'],
     PyException_SetContext: function(excH, ctxH) { var rt = WasthonRT;
-        try { rt.$B.$setattr(rt.unwrap(excH), '__context__', ctxH ? rt.unwrap(ctxH) : rt._b_.None); } catch (e) {} },
+        var exc = rt.unwrap(excH);
+        if (ctxH) exc.__context__ = rt.unwrap(ctxH); else delete exc.__context__; },
     PyException_SetTraceback__deps: ['$WasthonRT'],
     PyException_SetTraceback: function(excH, tbH) { var rt = WasthonRT;
         // the setter's TypeError (not a traceback) was swallowed with a 0
