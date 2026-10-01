@@ -19,7 +19,6 @@ test_runtime.py::test_PyCFunction_New_accessors
 test_runtime.py::test_PyCFunction_NewEx
 test_runtime.py::test_PyEval_GetBuiltins
 test_runtime.py::test_Py_GenericAlias
-test_runtime.py::test_Py_HashBuffer
 test_runtime.py::test_PyImport_AddModule_GetModuleDict
 test_runtime.py::test_PyModuleDef_Init_FromDefAndSpec2_ExecDef
 test_runtime.py::test_PyUnstable_Object_IsUniquelyReferenced

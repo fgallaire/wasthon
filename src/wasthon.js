@@ -8441,14 +8441,12 @@ mergeInto(LibraryManager.library, {
         throw new Error("Py_FatalError: " + msg);
     },
 
-    /* Py_HashBuffer — simple FNV-like hash for keying _Py_hashtable_t entries. */
-    Py_HashBuffer__deps: ['$WasthonRT'],
+    /* Py_HashBuffer — CPython: the hash of bytes(buf), as PyObject_Hash
+     * hands it to C. An FNV hash matched no Python-side value. */
+    Py_HashBuffer__deps: ['$WasthonRT', 'PyObject_Hash'],
     Py_HashBuffer: function(ptr, len) {
-        var h = 2166136261 >>> 0;
-        for (var i = 0; i < len; i++) {
-            h = Math.imul(h ^ HEAPU8[ptr + i], 16777619) >>> 0;
-        }
-        return h | 0;  // signed for Py_hash_t
+        return _PyObject_Hash(WasthonRT.wrap(
+            WasthonRT._b_.bytes.$factory(Array.from(HEAPU8.subarray(ptr, ptr + len)))));
     },
 
     /* PyErr_NewExceptionWithDoc — CPython puts the doc in `dict` (a new

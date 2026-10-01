@@ -7,6 +7,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`Py_HashBuffer` is the hash of the bytes** (`src/wasthon.js`). An FNV
+  hash that matched no Python-side value. Fix — `PyObject_Hash` of
+  `bytes(buf)`, as CPython's `Py_HashBuffer` is `hash(bytes)`. The test
+  compares with `c_hash`. +1 bridge test (`test_Py_HashBuffer`).
+
 - **`_Py_HashDouble` agrees with `PyObject_Hash`** (`src/wasthon.js`). It
   returned `Number()` of Brython's BigInt float hash, which reached C as
   2147483647 for 1.5. Fix — `PyObject_Hash` of the float (Brython's hash

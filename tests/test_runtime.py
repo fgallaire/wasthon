@@ -6,6 +6,17 @@
 import sys
 
 import _capi_runtime as r
+import _capi_number
+
+# Py_hash_t is a Py_ssize_t: 32 bits on wasm32, where Brython's hash() is
+# wider (CPython's never is). A hash as C holds it:
+HASH_BITS = 8 * _capi_number.sizes()['ssize_t']
+
+
+def c_hash(v):
+    h = hash(v) & (2 ** HASH_BITS - 1)
+    h = h - 2 ** HASH_BITS if h >= 2 ** (HASH_BITS - 1) else h
+    return -2 if h == -1 else h
 
 
 def raises(exc, f, *args, **kw):
@@ -267,7 +278,7 @@ def test_Py_GetConstant():
 
 
 def test_Py_HashBuffer():
-    assert r.hash_buffer(b'abc') == hash(b'abc')
+    assert r.hash_buffer(b'abc') == c_hash(b'abc')
 
 
 def test_Py_IsInitialized():
