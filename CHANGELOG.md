@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **The `_PyLong_*` internals read any int** (`src/wasthon.js`).
+  `_PyLong_NumBits`, `IsZero`, `IsNegative`, `IsPositive`, `Lshift`,
+  `Rshift` and `Frexp` read a JS number or BigInt only: a bool or an int
+  subclass was 0 (`False` not zero, `True << 1` gave 0). Exposed when
+  `_PyNumber_Index` started returning `True` itself: `math.isqrt(True)`
+  failed `assert(c > 0)` on `_PyLong_NumBits`. Fix — `rt.longBig`, the
+  value through `coerceInt`, as CPython runs them on any PyLong. +1
+  CPython test (test_math 81 → 82).
+
 - **`PyUnicode_MAX_CHAR_VALUE` is the kind's maximum** (`src/wasthon.js`).
   It returned the string's largest character ('abc' gave 0x63). Fix —
   CPython's: 0x7f for ASCII, else 0xff, 0xffff or 0x10ffff by kind. +1

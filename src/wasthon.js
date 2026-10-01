@@ -2691,6 +2691,12 @@ mergeInto(LibraryManager.library, {
          * (IntEnum, IntFlag, user-defined `class X(int)`) fail to convert
          * because they reach C-side as Brython objects, not JS primitives.
          * Mirrors CPython's PyLong_AsLong which dispatches through nb_int. */
+        /* The BigInt value of any int, bool and int subclasses included, for
+         * the _PyLong_* internals CPython runs on any PyLong; 0n otherwise. */
+        longBig: function(obj) {
+            var v = this.coerceInt(obj);
+            return v === undefined ? 0n : BigInt(v);
+        },
         coerceInt: function(obj) {
             // bool is a Python int subclass: int(True) == 1, int(False) == 0.
             // Brython's True/False don't reach the int.$factory path as 1/0
@@ -5657,12 +5663,10 @@ mergeInto(LibraryManager.library, {
     _PyLong_NumBits__deps: ['$WasthonRT'],
     _PyLong_NumBits: function(handle) {
         // int64_t, as CPython 3.14 declares it (an i64 is a BigInt in JS);
-        // the size_t declaration returned a Number
-        var obj = WasthonRT.unwrap(handle);
-        var n;
-        if (typeof obj === 'number') n = BigInt(Math.trunc(Math.abs(obj)));
-        else if (typeof obj === 'bigint') n = obj < 0n ? -obj : obj;
-        else return 0n;
+        // the size_t declaration returned a Number. Any int: bool and int
+        // subclasses counted 0 bits (math.isqrt(True) failed its assert)
+        var n = WasthonRT.longBig(WasthonRT.unwrap(handle));
+        if (n < 0n) n = -n;
         if (n === 0n) return 0n;
         var bits = 0;
         while (n > 0n) { n >>= 1n; bits++; }
@@ -12697,9 +12701,7 @@ mergeInto(LibraryManager.library, {
     _PyLong_Lshift__deps: ['$WasthonRT'],
     _PyLong_Lshift: function(aH, shift) {
         var rt = WasthonRT;
-        var a = rt.unwrap(aH);
-        var bi = (typeof a === 'bigint') ? a :
-                 (typeof a === 'number') ? BigInt(Math.trunc(a)) : 0n;
+        var bi = rt.longBig(rt.unwrap(aH));
         var s = typeof shift === 'bigint' ? shift : BigInt(shift | 0);
         var result = bi << s;
         if (result >= -2147483648n && result <= 2147483647n) return rt.wrapNewRef(Number(result));
@@ -12842,9 +12844,7 @@ mergeInto(LibraryManager.library, {
     _PyLong_Frexp__deps: ['$WasthonRT'],
     _PyLong_Frexp: function(vH, ePtr) {
         var rt = WasthonRT;
-        var v = rt.unwrap(vH);
-        var bi = (typeof v === 'bigint') ? v :
-                 (typeof v === 'number') ? BigInt(Math.trunc(v)) : 0n;
+        var bi = rt.longBig(rt.unwrap(vH));
         var neg = bi < 0n;
         if (neg) bi = -bi;
         if (bi === 0n) {
@@ -12870,35 +12870,26 @@ mergeInto(LibraryManager.library, {
 
     _PyLong_IsNegative__deps: ['$WasthonRT'],
     _PyLong_IsNegative: function(vH) {
-        var v = WasthonRT.unwrap(vH);
-        if (typeof v === 'bigint') return v < 0n ? 1 : 0;
-        if (typeof v === 'number') return v < 0 ? 1 : 0;
-        return 0;
+        return WasthonRT.longBig(WasthonRT.unwrap(vH)) < 0n ? 1 : 0;
     },
 
     _PyLong_IsPositive__deps: ['$WasthonRT'],
     _PyLong_IsPositive: function(vH) {
-        var v = WasthonRT.unwrap(vH);
-        if (typeof v === 'bigint') return v > 0n ? 1 : 0;
-        if (typeof v === 'number') return v > 0 ? 1 : 0;
-        return 0;
+        return WasthonRT.longBig(WasthonRT.unwrap(vH)) > 0n ? 1 : 0;
     },
 
     _PyLong_IsZero__deps: ['$WasthonRT'],
     _PyLong_IsZero: function(vH) {
         var v = WasthonRT.unwrap(vH);
-        if (typeof v === 'bigint') return v === 0n ? 1 : 0;
-        if (typeof v === 'number') return v === 0 ? 1 : 0;
-        return 0;
+        if (WasthonRT.coerceInt(v) === undefined) return 0;
+        return WasthonRT.longBig(v) === 0n ? 1 : 0;
     },
 
     /* _PyLong_Rshift(a, shift) — shift is int64_t at the emcc boundary. */
     _PyLong_Rshift__deps: ['$WasthonRT'],
     _PyLong_Rshift: function(aH, shift) {
         var rt = WasthonRT;
-        var a = rt.unwrap(aH);
-        var bi = (typeof a === 'bigint') ? a :
-                 (typeof a === 'number') ? BigInt(Math.trunc(a)) : 0n;
+        var bi = rt.longBig(rt.unwrap(aH));
         var s = typeof shift === 'bigint' ? shift : BigInt(shift | 0);
         var result = bi >> s;
         if (result >= -2147483648n && result <= 2147483647n) return rt.wrapNewRef(Number(result));
