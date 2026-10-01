@@ -330,13 +330,15 @@ def test_PyObject_CallObject_CallNoArgs_CallOneArg():
 
 
 def test_PyObject_CallFunction_CallFunctionObjArgs():
-    assert o.call_function(lambda *a: a) == (1, 'two', None)
+    r = o.call_function(lambda *a: a)
+    assert r == (1, 'two', None, 2.0) and type(r[3]) is float
     assert o.call_function_obj_args(C().m, 'a', 'b') == ('m', ('a', 'b'), {})
 
 
 def test_PyObject_CallMethod_variants():
     c = C()
-    assert o.call_method(c, 'm') == ('m', (3,), {})
+    r = o.call_method(c, 'm')
+    assert r == ('m', (3, 2.0), {}) and type(r[1][1]) is float
     assert o.call_method_obj_args(c, 'm', 7) == ('m', (7,), {})
     assert o.call_method_no_args(c, 'm') == ('m', (), {})
     assert o.call_method_one_arg(c, 'm', 8) == ('m', (8,), {})

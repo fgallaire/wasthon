@@ -167,8 +167,8 @@ static PyObject *va_build(const char *fmt, ...) {
     return r;
 }
 static PyObject *build_values(PyObject *m, PyObject *u) {
-    return Py_BuildValue("(i,s,[d,z],{s:O},N)", 1, "two", 3.5, NULL, "k", Py_True,
-                         va_build("(ii)", 4, 5));
+    return Py_BuildValue("(i,s,[d,d,z],{s:O},N)", 1, "two", 3.5, 4.0, NULL, "k", Py_True,
+                         va_build("(id)", 4, 5.0));
 }
 
 /* ---- import --------------------------------------------------------------------------- */

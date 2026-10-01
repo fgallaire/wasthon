@@ -311,7 +311,7 @@ static PyObject *call_one_arg(PyObject *m, PyObject *a) {
     return PyArg_ParseTuple(a, "OO", &f, &x) ? PyObject_CallOneArg(f, x) : NULL;
 }
 static PyObject *call_function(PyObject *m, PyObject *f) {
-    return PyObject_CallFunction(f, "isO", 1, "two", Py_None);
+    return PyObject_CallFunction(f, "isOd", 1, "two", Py_None, 2.0);
 }
 static PyObject *call_function_obj_args(PyObject *m, PyObject *a) {
     PyObject *f, *x, *y;
@@ -321,7 +321,7 @@ static PyObject *call_function_obj_args(PyObject *m, PyObject *a) {
 static PyObject *call_method(PyObject *m, PyObject *a) {
     PyObject *o; const char *name;
     if (!PyArg_ParseTuple(a, "Os", &o, &name)) return NULL;
-    return PyObject_CallMethod(o, name, "i", 3);
+    return PyObject_CallMethod(o, name, "id", 3, 2.0);
 }
 static PyObject *call_method_obj_args(PyObject *m, PyObject *a) {
     PyObject *o, *name, *x;

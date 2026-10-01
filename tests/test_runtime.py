@@ -108,7 +108,9 @@ def test_PyArg_UnpackTuple():
 
 
 def test_Py_BuildValue_Py_VaBuildValue():
-    assert r.build_values() == (1, 'two', [3.5, None], {'k': True}, (4, 5))
+    v = r.build_values()
+    assert v == (1, 'two', [3.5, 4.0, None], {'k': True}, (4, 5.0))
+    assert type(v[2][1]) is float and type(v[4][1]) is float
 
 
 # ---- import

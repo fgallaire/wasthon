@@ -5050,7 +5050,8 @@ mergeInto(LibraryManager.library, {
                 case 'n':
                     return [readInt(), i+1];
                 case 'd': case 'f':
-                    return [readDouble(), i+1];
+                    // a float even when integral: a bare JS number is a Brython int
+                    return [rt.$B.fast_float(readDouble()), i+1];
                 case '(': case '[': case '{': {
                     var close = c === '(' ? ')' : (c === '[' ? ']' : '}');
                     var items = [];
@@ -8773,7 +8774,7 @@ mergeInto(LibraryManager.library, {
             } else if (c === 'd' || c === 'f') {
                 // Doubles in varargs must be 8-byte aligned.
                 if (p & 7) p = (p + 7) & ~7;
-                args.push(HEAPF64[p >> 3]);
+                args.push(rt.$B.fast_float(HEAPF64[p >> 3]));
                 p += 8;
             }
         }
@@ -10645,7 +10646,7 @@ mergeInto(LibraryManager.library, {
                              return sp === 0 ? null : UTF8ToString(sp); }
             if (c === 'i') { var v = HEAP32[p >> 2]; p += 4; return v; }
             if (c === 'd') { if (p & 7) p = (p + 7) & ~7;
-                             var v = HEAPF64[p >> 3]; p += 8; return v; }
+                             var v = HEAPF64[p >> 3]; p += 8; return rt.$B.fast_float(v); }
             return undefined;
         }
         function parse(endChar) {
@@ -13597,7 +13598,7 @@ mergeInto(LibraryManager.library, {
                       p += 8; return hi * 4294967296 + lo; }
                 case 'd': case 'f':
                     { if (p & 7) p = (p + 7) & ~7;
-                      var vd = HEAPF64[p >> 3]; p += 8; return vd; }
+                      var vd = HEAPF64[p >> 3]; p += 8; return rt.$B.fast_float(vd); }
             }
             return undefined;
         }

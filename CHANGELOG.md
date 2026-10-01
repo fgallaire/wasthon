@@ -7,6 +7,16 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A `d` or `f` value built from C is a float** (`src/wasthon.js`,
+  `Py_BuildValue`, `Py_VaBuildValue`, `PyObject_CallFunction`,
+  `PyObject_CallMethod`). The double was handed over as a bare JS number,
+  which Brython takes for an int when it is integral: `Py_BuildValue("d",
+  4.0)` gave `4`. Fix — `$B.fast_float` on the four paths. Three bridge
+  tests extended with an integral double and its type
+  (`test_Py_BuildValue_Py_VaBuildValue`,
+  `test_PyObject_CallFunction_CallFunctionObjArgs`,
+  `test_PyObject_CallMethod_variants`).
+
 - **A list's `sq_concat` and `sq_repeat` return a list** (`src/wasthon.js`).
   list and tuple share one `PySequenceMethods` table whose two functions
   built a tuple whatever the left operand, and concatenated any two
