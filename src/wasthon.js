@@ -6566,7 +6566,7 @@ mergeInto(LibraryManager.library, {
         return modHandle;
     },
 
-    PyType_Ready__deps: ['$WasthonRT', '$__wasthon_install_methods', '$__wasthon_install_getsets', '$__wasthon_install_members', 'PyObject_GetBuffer', 'PyBuffer_Release'],
+    PyType_Ready__deps: ['$WasthonRT', '$__wasthon_install_methods', '$__wasthon_install_getsets', '$__wasthon_install_members', '$__wasthon_text_signature', 'PyObject_GetBuffer', 'PyBuffer_Release'],
     PyType_Ready: function(typePtr) {
         var rt = WasthonRT;
         if (typePtr === 0) return -1;
@@ -6607,6 +6607,15 @@ mergeInto(LibraryManager.library, {
              * re-seeds __module__ in tp_dict for the same shadowing reason —
              * this is the __qualname__ half. */
             rt.$B.set_to_dict(cls, '__qualname__', shortName);
+            /* __doc__: tp_doc minus its clinic signature line, as CPython's
+             * _PyType_GetDocFromInternalDoc (__doc__ was None). */
+            var docPtr = HEAP32[(typePtr + 124) >> 2];       /* tp_doc        */
+            if (docPtr) {
+                var typeSig = __wasthon_text_signature(shortName, docPtr);
+                var typeDoc = UTF8ToString(docPtr);
+                rt.$B.set_to_dict(cls, '__doc__',
+                    typeSig ? typeDoc.slice(shortName.length + typeSig.length + 5) : typeDoc);
+            }
 
             if (basePtr) {
                 /* A static type whose tp_base is a BOUND BUILTIN struct
@@ -16264,9 +16273,16 @@ mergeInto(LibraryManager.library, {
         }
 
         // Py_tp_doc (slot 56) carries the class docstring, whose first line may
-        // be a clinic text signature — expose it for inspect.signature(cls).
+        // be a clinic text signature — expose it for inspect.signature(cls),
+        // and the rest as __doc__, as CPython's _PyType_GetDocFromInternalDoc
+        // does (__doc__ was None).
         var typeSig = __wasthon_text_signature(shortName, slotMap[56] || 0);
         if (typeSig) cls.$text_signature = typeSig;
+        if (slotMap[56]) {
+            var typeDoc = UTF8ToString(slotMap[56]);
+            rt.$B.set_to_dict(cls, '__doc__',
+                typeSig ? typeDoc.slice(shortName.length + typeSig.length + 5) : typeDoc);
+        }
         /* Py_TPFLAGS_IMMUTABLETYPE (wasthon.h: 1<<4): mark the Brython class
          * so type.tp_setattro refuses Python-level writes ("cannot set ...
          * attribute of immutable type ..."), as CPython does. Bridge-side

@@ -71,8 +71,6 @@ test_types.py::test_final_type_cannot_be_subclassed[FinalSpec]
 test_types.py::test_heaptype_flag[StaticObj]
 test_types.py::test_inplace_add[SpecObj]
 test_types.py::test_multiply[SpecObj]
-test_types.py::test_names_and_doc[SpecObj]
-test_types.py::test_names_and_doc[StaticObj]
 test_types.py::test_PyErr_PrintEx
 test_types.py::test_PyObject_Print
 test_types.py::test_PyType_Freeze

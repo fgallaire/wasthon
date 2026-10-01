@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A C type's `__doc__` is its `tp_doc`** (`src/wasthon.js`,
+  `PyType_FromModuleAndSpec` and `PyType_Ready`). Both paths read `tp_doc`
+  only for its clinic text signature, never for `__doc__`, which stayed
+  `None`. Fix — `__doc__` is `tp_doc` minus its `Name(sig)\n--\n\n` line, as
+  CPython's `_PyType_GetDocFromInternalDoc` makes it. +2 bridge tests
+  (`test_names_and_doc`, both paths).
+
 - **A C type's `__new__` leaves a primitive result alone** (`src/wasthon.js`,
   the re-stamp after `tp_new`). Since 2026-07-26 the wrapper re-stamps a
   result that has no `ob_type` as a bare instance of the constructed class; a
