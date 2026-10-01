@@ -15372,6 +15372,27 @@ return self.m_self===other.m_self && self.ml && other.ml && self.ml.ml_name===ot
 $B.set_to_dict(ucls,p[0],$B.getset_descriptor.$factory(ucls,p[0],
 [function(self){var a=self.args
 return(a && a.length===5)? a[p[1]] : _b_.None},_b_.None]))})})
+// and their str() of that form, as CPython's exceptions.c (BaseException's
+// showed the args tuple)
+function unicode_error_pos(a){var len=_b_.len(a[1]),start=a[2],end=a[3]
+return(start>=0 && start<len && end>=0 && end<=len && end===start+1)}
+function unicode_error_hex(n,width){var h=n.toString(16)
+while(h.length<width){h='0'+h}
+return h}
+_b_.UnicodeEncodeError.tp_str=function(self){var a=self.args
+if(!a ||a.length!==5){return _b_.BaseException.tp_str(self)}
+var enc=_b_.str.$factory(a[0]),reason=_b_.str.$factory(a[4])
+if(unicode_error_pos(a)){var c=_b_.ord($B.$getitem(a[1],a[2]))
+var ch=c<=0xff ? '\\x'+unicode_error_hex(c,2):c<=0xffff ? '\\u'+unicode_error_hex(c,4):
+'\\U'+unicode_error_hex(c,8)
+return `'${enc}' codec can't encode character '${ch}' in position ${a[2]}: ${reason}`}
+return `'${enc}' codec can't encode characters in position ${a[2]}-${a[3]-1}: ${reason}`}
+_b_.UnicodeDecodeError.tp_str=function(self){var a=self.args
+if(!a ||a.length!==5){return _b_.BaseException.tp_str(self)}
+var enc=_b_.str.$factory(a[0]),reason=_b_.str.$factory(a[4])
+if(unicode_error_pos(a)){var b=$B.$getitem(a[1],a[2])
+return `'${enc}' codec can't decode byte 0x${unicode_error_hex(b,2)} in position ${a[2]}: ${reason}`}
+return `'${enc}' codec can't decode bytes in position ${a[2]}-${a[3]-1}: ${reason}`}
 for(var builtin_func of $B.builtin_funcs){if(_b_[builtin_func]){_b_[builtin_func].ob_type=$B.builtin_function_or_method
 _b_[builtin_func].m_module='builtins'
 _b_[builtin_func].$function_infos=['builtins',builtin_func,builtin_func]}else{console.log('missing builtin function',builtin_func)}}})(__BRYTHON__)

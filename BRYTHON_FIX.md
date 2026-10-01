@@ -5266,3 +5266,26 @@ Fix (vendored brython.js): the first module is named `'builtins'`, and
 objects (`builtins is __builtins__` is False in `__main__`), and
 `print(builtins.__spec__)` raises "descriptor '__str__' of 'object' object
 needs an argument".
+
+## `str()` of a 5-argument Unicode error shows its args tuple
+
+```python
+str(UnicodeEncodeError('latin-1', '€', 0, 1, 'ordinal not in range(256)'))
+# CPython: "'latin-1' codec can't encode character '\\u20ac' in position 0: ordinal not in range(256)"
+# Brython: "('latin-1', '€', 0, 1, 'ordinal not in range(256)')"
+str(UnicodeDecodeError('utf-8', b'a\xffb', 1, 2, 'invalid start byte'))
+# CPython: "'utf-8' codec can't decode byte 0xff in position 1: invalid start byte"
+# Brython: "('utf-8', b'a\\xffb', 1, 2, 'invalid start byte')"
+```
+
+`UnicodeEncodeError` and `UnicodeDecodeError` (`py_exceptions.js`) have no
+`__str__` of their own: `BaseException`'s shows `args` (it showed `args[0]`,
+the encoding, before the several-args fix above). Brython raises its own
+codec errors with one message argument, which still prints as is. Found
+making the bridge's `PyUnicode_AsLatin1String` raise CPython's
+exception.
+
+Fix (vendored brython.js): CPython's `UnicodeEncodeError_str` and
+`UnicodeDecodeError_str` for the 5-argument form: one character or byte
+(`'\x..'`, `'\u....'`, `'\U........'`, `0x..`) or a position range.
+Not fixed: `UnicodeTranslateError`.
