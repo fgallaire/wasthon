@@ -739,12 +739,13 @@ void *PyMem_RawCalloc(size_t n, size_t s) { return calloc(n, s); }
 void *PyMem_RawRealloc(void *p, size_t s) { return realloc(p, s); }
 void  PyMem_RawFree(void *p)      { free(p); }
 
-/* _PyOnceFlag — single-threaded WASM. Init runs exactly once. */
+/* _PyOnceFlag — single-threaded WASM. Init runs once it succeeds: a failed
+ * run (-1) leaves the flag unset, so the next call tries again, as
+ * CPython's unlock_once does. */
 int _PyOnceFlag_CallOnce(_PyOnceFlag *flag, int (*func)(void *), void *arg) {
     if (*flag == 0) {
-        int r = func(arg);
+        if (func(arg) < 0) return -1;
         *flag = 1;
-        return r;
     }
     return 0;
 }

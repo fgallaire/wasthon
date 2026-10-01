@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`_PyOnceFlag_CallOnce` retries a failed init** (`src/wasthon.c`). It set
+  the flag whatever the init function returned: a run that failed (-1) was
+  never retried, and every later call answered 0, success, over a half-done
+  init. Fix — the flag is set only on success, as CPython's `unlock_once`
+  does (`_struct` uses it). +0 bridge tests (CPython's version is a static
+  inline of an internal header, out of the oracle's reach).
+
 - **A static iterator type's `tp_iter` raises what it sets** (`src/wasthon.js`,
   `PyType_Ready`, the `__iter__` wired for a type with `tp_iternext`). The
   wrapper ignored `pendingException`: a C `tp_iter` returning NULL with an
