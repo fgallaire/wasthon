@@ -295,6 +295,7 @@ int       PyCapsule_SetPointer(PyObject *capsule, void *pointer);
 #define PyMem_NEW(type, n)  ((type *)PyMem_Malloc((n) * sizeof(type)))
 
 int PyOS_snprintf(char *str, size_t size, const char *format, ...);
+int PyOS_vsnprintf(char *str, size_t size, const char *format, va_list va);
 int PyOS_strnicmp(const char *s1, const char *s2, size_t n);
 
 /* unicodedata's capsule name (used to expose name<->codepoint API). */

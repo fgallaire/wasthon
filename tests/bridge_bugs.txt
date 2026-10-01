@@ -23,7 +23,6 @@ test_runtime.py::test_Py_GenericAlias
 test_runtime.py::test_Py_HashBuffer
 test_runtime.py::test_PyImport_AddModule_GetModuleDict
 test_runtime.py::test_PyModuleDef_Init_FromDefAndSpec2_ExecDef
-test_runtime.py::test_PyOS_strnicmp_snprintf
 test_runtime.py::test_PyUnstable_Object_IsUniquelyReferenced
 test_runtime.py::test_PyWeakref_NewRef_GetRef_CheckRef
 test_runtime.py::test_thread_state_and_GIL

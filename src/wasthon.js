@@ -15626,8 +15626,6 @@ mergeInto(LibraryManager.library, {
         return buf;
     },
 
-    /* PyOS_snprintf — minimal printf-style. unicodedata uses it to format
-     * a name buffer like "U+XXXX". Implement %s/%d/%X/%lx via JS join. */
     /* PyOS_strnicmp — case-insensitive strncmp (ASCII). */
     PyOS_strnicmp: function(s1Ptr, s2Ptr, n) {
         for (var i = 0; i < n; i++) {
@@ -15640,97 +15638,6 @@ mergeInto(LibraryManager.library, {
             if (a === 0) return 0;
         }
         return 0;
-    },
-
-    PyOS_snprintf__deps: ['$WasthonRT'],
-    PyOS_snprintf: function(strPtr, size, fmtPtr, varargs) {
-        // Variadic args arrive via emcc's va_list ABI (same pattern as
-        // PyErr_Format / PyUnicode_FromFormat): `varargs` points into
-        // linear memory where each value is laid out in order. Supported
-        // codes mirror the subset needed by stdlib callers: %s %d/%i %u
-        // %x/%X %p %c %% with l/ll/z/h/j length qualifiers (all 32-bit
-        // on wasm32 except %lld/%llu/%zd-where-Py_ssize_t is 64-bit;
-        // currently Py_ssize_t == int on wasm32 so %zd reads 32-bit).
-        // Pickle protocol 0 emits ints via `%zd\n` here — leaving the
-        // token unsubstituted produced `'%zd'` in the pickle stream.
-        var fmt = fmtPtr ? UTF8ToString(fmtPtr) : "";
-        var p = varargs | 0;
-        var out = "";
-        for (var i = 0; i < fmt.length; i++) {
-            if (fmt[i] !== '%') { out += fmt[i]; continue; }
-            // Parse the spec: [flags][width][.precision][length]conversion.
-            // Width matters for unicodedata's `%04X` (zero-padded hex codepoint).
-            var rawStart = i;
-            var leftAlign = false, zeroPad = false;
-            while (i + 1 < fmt.length && "-+0 #".indexOf(fmt[i+1]) !== -1) {
-                if (fmt[i+1] === '-') leftAlign = true;
-                else if (fmt[i+1] === '0') zeroPad = true;
-                i++;
-            }
-            var width = 0;
-            while (i + 1 < fmt.length && fmt[i+1] >= '0' && fmt[i+1] <= '9') {
-                width = width * 10 + (fmt[++i].charCodeAt(0) - 48);
-            }
-            var precision = -1;
-            if (i + 1 < fmt.length && fmt[i+1] === '.') {
-                i++; precision = 0;
-                while (i + 1 < fmt.length && fmt[i+1] >= '0' && fmt[i+1] <= '9') {
-                    precision = precision * 10 + (fmt[++i].charCodeAt(0) - 48);
-                }
-            }
-            while (i + 1 < fmt.length && "lhzj".indexOf(fmt[i+1]) !== -1) { i++; }
-            var c = fmt[++i];
-            var piece = null;
-            if (c === 's') {
-                var sp = HEAP32[p >> 2]; p += 4;
-                piece = (sp === 0) ? "(null)" : UTF8ToString(sp);
-                if (precision >= 0) piece = piece.slice(0, precision);
-            } else if (c === 'd' || c === 'i') {
-                piece = String(HEAP32[p >> 2] | 0); p += 4;
-            } else if (c === 'u') {
-                piece = String(HEAPU32[p >> 2] >>> 0); p += 4;
-            } else if (c === 'x') {
-                piece = (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
-            } else if (c === 'X') {
-                piece = (HEAPU32[p >> 2] >>> 0).toString(16).toUpperCase(); p += 4;
-            } else if (c === 'p') {
-                piece = "0x" + (HEAPU32[p >> 2] >>> 0).toString(16); p += 4;
-            } else if (c === 'c') {
-                piece = String.fromCharCode(HEAP32[p >> 2] & 0xff); p += 4;
-            } else if (c === 'f' || c === 'F' || c === 'e' || c === 'E' ||
-                       c === 'g' || c === 'G') {
-                /* double, 8-aligned in the varargs — pygame reprs go through
-                 * here (Vector2 "[%g, %g]", Clock "<Clock(fps=%.2f)>"). */
-                p = (p + 7) & ~7;
-                var dv = HEAPF64[p >> 3]; p += 8;
-                if (c === 'f' || c === 'F') {
-                    piece = dv.toFixed(precision >= 0 ? precision : 6);
-                } else if (c === 'e' || c === 'E') {
-                    piece = dv.toExponential(precision >= 0 ? precision : 6);
-                    if (c === 'E') piece = piece.toUpperCase();
-                } else {   /* %g: shortest form, `precision` significant digits */
-                    piece = String(parseFloat(dv.toPrecision(precision > 0 ? precision : 6)));
-                    if (c === 'G') piece = piece.toUpperCase();
-                }
-            } else if (c === '%') {
-                piece = '%';
-            } else {
-                out += fmt.slice(rawStart, i + 1);  // unknown — leave as-is
-                continue;
-            }
-            if (width > piece.length) {
-                var pad = (zeroPad && !leftAlign && c !== 's' && c !== 'c')
-                    ? '0' : ' ';
-                var fill = pad.repeat(width - piece.length);
-                piece = leftAlign ? (piece + fill) : (fill + piece);
-            }
-            out += piece;
-        }
-        var bytes = new TextEncoder().encode(out);
-        var n = Math.min(bytes.length, size - 1);
-        for (var i = 0; i < n; i++) HEAPU8[strPtr + i] = bytes[i];
-        HEAPU8[strPtr + n] = 0;
-        return n;
     },
 
     PyUnicode_Compare__deps: ['$WasthonRT'],

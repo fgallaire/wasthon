@@ -7,6 +7,13 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyOS_snprintf` is CPython's, with `PyOS_vsnprintf`** (`src/wasthon.c`,
+  `src/wasthon.h`). The JS version was a printf subset that returned the
+  count written (7 for `"%d-%s"` into 8 bytes, where CPython returns the 9
+  the output needs), formatted `%g` through toPrecision and read 64-bit
+  `%lld` as 32; `PyOS_vsnprintf` did not exist. Fix — `Python/mysnprintf.c`
+  over libc's `vsnprintf`. +1 bridge test (`test_PyOS_strnicmp_snprintf`).
+
 - **`PyOS_strtol` and `PyOS_strtoul` are CPython's** (`src/wasthon.c`).
   The JS versions went through `parseInt`: no 0x/0o/0b prefix under base
   0 (`'0x1Fz'` read 0), an end pointer past any alphanumeric run, and a

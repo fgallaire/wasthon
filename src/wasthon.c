@@ -1091,6 +1091,44 @@ void wasthon_set_errno_erange(void) { errno = ERANGE; }
 EMSCRIPTEN_KEEPALIVE
 int wasthon_get_errno(void) { return errno; }
 
+/* PyOS_snprintf / PyOS_vsnprintf — Python/mysnprintf.c: libc's vsnprintf,
+ * returning the length the output would have. The JS version was a
+ * printf subset returning the count written (7 for "%d-%s" into 8 bytes
+ * where CPython says 9), %g through toPrecision, 64-bit %lld read as 32. */
+#include <limits.h>
+int
+PyOS_vsnprintf(char *str, size_t size, const char  *format, va_list va)
+{
+    int len;  /* # bytes written, excluding \0 */
+    /* We take a size_t as input but return an int.  Sanity check
+     * our input so that it won't cause an overflow in the
+     * vsnprintf return value.  */
+    if (size > INT_MAX - 1) {
+        len = -666;
+        goto Done;
+    }
+
+    len = vsnprintf(str, size, format, va);
+
+Done:
+    if (size > 0) {
+        str[size-1] = '\0';
+    }
+    return len;
+}
+
+int
+PyOS_snprintf(char *str, size_t size, const  char  *format, ...)
+{
+    int rc;
+    va_list va;
+
+    va_start(va, format);
+    rc = PyOS_vsnprintf(str, size, format, va);
+    va_end(va);
+    return rc;
+}
+
 /* PyOS_strtoul / PyOS_strtol — Python/mystrtoul.c, long being 4 bytes on
  * wasm32. The JS versions went through parseInt: no 0x/0o/0b prefix
  * under base 0, an end pointer past any alphanumeric run, and no
