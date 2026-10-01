@@ -7,6 +7,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`_PyTime_ObjectToTime_t` honors its rounding mode** (`src/wasthon.js`).
+  Every mode floored. Fix — `pytime.c`'s `pytime_round`: FLOOR, CEILING,
+  HALF_EVEN (C's `round()` then even on a tie), UP, before the time_t range
+  check. +1 bridge test (`test__PyTime_ObjectToTime_t_localtime`).
+
 - **`_PyLong_NumBits` returns an `int64_t`** (`src/pycore_long.h`,
   `src/wasthon.js`). The bridge declared CPython's old `size_t`; 3.14's is
   `int64_t` (its `_pickle` and `_random` hold the result in one), and C

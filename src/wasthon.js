@@ -10508,14 +10508,23 @@ mergeInto(LibraryManager.library, {
                 "Invalid value NaN (not a number)");
             return -1;
         }
+        // pytime.c's pytime_round (FLOOR 0, CEILING 1, HALF_EVEN 2, UP 3);
+        // every mode floored
+        var sec;
+        if (_round === 2) {
+            sec = Math.round(num);
+            if (Math.abs(num - sec) === 0.5) sec = 2 * Math.round(num / 2);
+        }
+        else if (_round === 1) sec = Math.ceil(num);
+        else if (_round === 0) sec = Math.floor(num);
+        else sec = num >= 0 ? Math.ceil(num) : Math.floor(num);
         // CPython raises before ever calling localtime: a double beyond
         // time_t (int64) is an OverflowError, not a wrapped year-1900 date.
-        if (num < -9223372036854775808.0 || num >= 9223372036854775808.0) {
+        if (sec < -9223372036854775808.0 || sec >= 9223372036854775808.0) {
             rt.setError(rt.wrap(rt._b_.OverflowError),
                 "timestamp out of range for platform time_t");
             return -1;
         }
-        var sec = Math.floor(num);
         // time_t is 8 bytes on wasm32 (it's typedef'd to int64_t in emscripten).
         var asU = sec < 0 ? (BigInt(sec) + 0x10000000000000000n) : BigInt(sec);
         HEAP32[ secOutPtr      >> 2] = Number(asU & 0xFFFFFFFFn) | 0;
