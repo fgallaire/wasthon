@@ -7,6 +7,11 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **`PyException_SetTraceback` refuses a non-traceback** (`src/wasthon.js`).
+  It swallowed the setter's TypeError and returned 0. Fix — the error
+  forwarded with -1, as CPython ("__traceback__ must be a traceback or
+  None"). +1 bridge test (`test_PyException_SetTraceback`).
+
 - **`PyObject_GC_IsTracked` leaves the atomic types out** (`src/wasthon.js`).
   It answered 1 for every object. CPython tracks containers and instances,
   never `int`, `float`, `complex`, `str`, `bytes`, `bool` or None. Fix —

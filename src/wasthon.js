@@ -9744,7 +9744,9 @@ mergeInto(LibraryManager.library, {
         try { rt.$B.$setattr(rt.unwrap(excH), '__context__', ctxH ? rt.unwrap(ctxH) : rt._b_.None); } catch (e) {} },
     PyException_SetTraceback__deps: ['$WasthonRT'],
     PyException_SetTraceback: function(excH, tbH) { var rt = WasthonRT;
-        try { rt.$B.$setattr(rt.unwrap(excH), '__traceback__', tbH ? rt.unwrap(tbH) : rt._b_.None); } catch (e) {}
+        // the setter's TypeError (not a traceback) was swallowed with a 0
+        try { rt.$B.$setattr(rt.unwrap(excH), '__traceback__', tbH ? rt.unwrap(tbH) : rt._b_.None); }
+        catch (e) { rt.forwardError(e, rt._b_.TypeError); return -1; }
         return 0; },
 
     /* --- Object --- */
