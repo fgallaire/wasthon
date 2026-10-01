@@ -7,6 +7,15 @@ Module ports and the bridge-surface inventory live in `README.md`.
 
 ---
 
+- **A `METH_VARARGS` function gets a real tuple** (`src/wasthon.js`,
+  `__wasthon_make_trampoline`, and `PyType_Ready`'s `tp_init`). The
+  `METH_VARARGS | METH_KEYWORDS` branch built `args` as a tuple, the plain
+  `METH_VARARGS` one passed the bare JS array, which failed `PyTuple_Check`;
+  so did a static type's `tp_init`, where the spec path passes a tuple:
+  harmless only while `PyTuple_Size` accepted any array. Fix — a tuple
+  everywhere C receives its args. +0 bridge tests (the next entry's
+  `PyTuple_Size` check needs it).
+
 - **int and float have every number slot, set before C++ initializers**
   (`src/wasthon.c` `wasthon_init_number_protocols`, `src/wasthon.js`
   `wasthon_builtin_nb_*`). `PyLong_Type.tp_as_number` held six slots and

@@ -6989,7 +6989,8 @@ mergeInto(LibraryManager.library, {
                         }
                     }
                     var selfH = self && self.__wasthon_ptr__ ? self.__wasthon_ptr__ : rt.wrap(self);
-                    var argsH = rt.wrap(jsArgs);
+                    // a tuple, as the spec path's tp_init passes it
+                    var argsH = rt.wrap(rt.$B.fast_tuple(jsArgs));
                     var kwH = 0;
                     if (kwPairs && kwPairs.length > 0) {
                         var kwDict = rt.$B.empty_dict();
@@ -18759,7 +18760,9 @@ mergeInto(LibraryManager.library, {
                     // silently let utcfromtimestamp(ts, tz=...) succeed.
                     if (kwNames.length > 0) throw rt.$B.$call(rt._b_.TypeError,
                         methName + "() takes no keyword arguments");
-                    resultHandle = fn(selfHandle, rt.wrap(posArgs));
+                    // a real tuple, as the KEYWORDS branch above builds it:
+                    // the bare array failed PyTuple_Check
+                    resultHandle = fn(selfHandle, rt.wrap(rt._b_.tuple.$factory(posArgs)));
                 }
             } finally {
                 if (argsBufPtr !== 0) _free(argsBufPtr);
